@@ -1,9 +1,11 @@
 # DSH Sidebar 🐋
 
 > [!NOTE]
-> ⭐ Like DSH Sidebar? [Give it a Star on GitHub](https://github.com/Lixxx1/dsh-vscode)! It helps more people find the project.
+> **This is a personal fork of [Lixxx1/dsh-vscode](https://github.com/Lixxx1/dsh-vscode)** (MIT License), maintained
+> independently and pinned to a newer DeepSeek Harness release than the upstream build.
+> Original work © Lixxx1. This fork is not affiliated with DeepSeek or with the upstream project.
 >
-> GitHub: https://github.com/Lixxx1/dsh-vscode
+> Fork: https://github.com/fallleaves01/dsh-vscode
 
 Bring DeepSeek Harness into the place where you already write, run, and review code.
 
@@ -47,10 +49,11 @@ Enable **DeepSeek Harness: Autonomous Debugging** in VS Code Settings and add a 
 
 DeepSeek can then start the debugger, set breakpoints, step through execution, inspect runtime values, fix the code, and verify the result directly from the sidebar.
 
-Requires DeepSeek Harness `0.1.2-rc.1` or a compatible newer release. Tested with `0.1.5-rc.1`.
+Targets DeepSeek Harness `0.1.7-rc.1`. The upstream v0.0.5 release targets `0.1.5-rc.1`, so install a matching runtime.
 
 ## 💬 Feedback
 
-If something feels awkward or you have an idea for the next feature, come say hi in [GitHub Issues](https://github.com/Lixxx1/dsh-vscode/issues). PRs are welcome too!
+Issues for this fork: [GitHub Issues](https://github.com/fallleaves01/dsh-vscode/issues).
+For the original project, see [Lixxx1/dsh-vscode](https://github.com/Lixxx1/dsh-vscode).
 
-[Website](https://lixxx1.github.io/dsh-vscode/) · [GitHub](https://github.com/Lixxx1/dsh-vscode)
+[GitHub](https://github.com/fallleaves01/dsh-vscode)

@@ -1,20 +1,23 @@
 # DeepSeek Harness for VS Code 🐋
 
 > [!NOTE]
-> ⭐ Like DSH Sidebar? [Give it a Star on GitHub](https://github.com/Lixxx1/dsh-vscode)! It helps more people find the project.
+> **This is a personal fork of [Lixxx1/dsh-vscode](https://github.com/Lixxx1/dsh-vscode)** (MIT License),
+> maintained independently and pinned to a newer DeepSeek Harness release than the upstream build.
+> Original work © Lixxx1. Not affiliated with DeepSeek or with the upstream project.
+>
+> Fork: https://github.com/fallleaves01/dsh-vscode
 
 Bring DeepSeek Harness into the same place you write code. dsh-vscode gives DSH a Claude Code/Codex-style right sidebar that already understands your project, active file, and selected code.
 
 Ask DeepSeek to inspect, change, and verify code without switching between your editor, terminal, and a separate chat window.
 
-👋 I built this because I wanted DSH right beside my editor. If that sounds useful to you too, give it a try! I'd love to hear how it fits into your workflow.
+👋 Originally built by [Lixxx1](https://github.com/Lixxx1), who wanted DSH right beside the editor. This fork continues that work against a newer DSH runtime.
 
 **English** | [简体中文](README.zh.md) | [日本語](README.ja.md)
 
-[Website](https://lixxx1.github.io/dsh-vscode/) · [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar)
+[GitHub](https://github.com/fallleaves01/dsh-vscode)
 
-[![CI](https://github.com/Lixxx1/dsh-vscode/actions/workflows/ci.yml/badge.svg)](https://github.com/Lixxx1/dsh-vscode/actions/workflows/ci.yml)
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/lixxx1.dsh-sidebar?style=flat-square&label=VS%20Code%20Marketplace&color=4d6bfe)](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar)
+[![CI](https://github.com/fallleaves01/dsh-vscode/actions/workflows/ci.yml/badge.svg)](https://github.com/fallleaves01/dsh-vscode/actions/workflows/ci.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-263146?style=flat-square)](LICENSE)
 ![Status](https://img.shields.io/badge/status-alpha-7da1de?style=flat-square)
 
@@ -43,14 +46,14 @@ Then choose the extension channel that fits you:
 
 ### Published release
 
-Open **Extensions** in VS Code, search for **DSH Sidebar**, and select **Install**. You can also install it from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar).
+Open **Extensions** in VS Code, search for **DSH Sidebar**, and select **Install**. (The Marketplace listing is the upstream one; this fork is installed from a VSIX.)
 
 ### Latest development build
 
-To try features already available on `main` but not yet published to the Marketplace, build and install the latest VSIX:
+To try features already available on `main` but not yet published, build and install the latest VSIX:
 
 ```sh
-git clone https://github.com/Lixxx1/dsh-vscode.git
+git clone https://github.com/fallleaves01/dsh-vscode.git
 cd dsh-vscode
 pnpm install --frozen-lockfile
 pnpm run package
@@ -76,9 +79,9 @@ Enable **DeepSeek Harness: Autonomous Debugging** in VS Code Settings and add a 
 
 DeepSeek can then start the debugger, set breakpoints, step through execution, inspect runtime values, fix the code, and verify the result directly from the sidebar.
 
-Requires DeepSeek Harness `0.1.2-rc.1` or a compatible newer release. Tested with `0.1.5-rc.1`.
+Targets DeepSeek Harness `0.1.7-rc.1` (upstream v0.0.5 targets `0.1.5-rc.1`).
 
-💬 Found a rough edge or have an idea for what should come next? [Open an issue](https://github.com/Lixxx1/dsh-vscode/issues). I read every piece of feedback, and contributions are welcome too.
+💬 Found a rough edge or have an idea for what should come next? [Open an issue](https://github.com/fallleaves01/dsh-vscode/issues).
 
 ## License
 

@@ -3,17 +3,17 @@
   "displayName": "DSH Sidebar",
   "description": "A project-aware VS Code chat sidebar powered by the official DeepSeek Harness runtime.",
   "icon": "media/deepseek.png",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "private": true,
-  "publisher": "lixxx1",
+  "publisher": "fallleaves01",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Lixxx1/dsh-vscode.git"
+    "url": "git+https://github.com/fallleaves01/dsh-vscode.git"
   },
-  "homepage": "https://lixxx1.github.io/dsh-vscode/",
+  "homepage": "https://github.com/fallleaves01/dsh-vscode",
   "bugs": {
-    "url": "https://github.com/Lixxx1/dsh-vscode/issues"
+    "url": "https://github.com/fallleaves01/dsh-vscode/issues"
   },
   "type": "commonjs",
   "packageManager": "pnpm@11.7.0",

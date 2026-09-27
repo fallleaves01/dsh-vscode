@@ -1,7 +1,10 @@
 # DeepSeek Harness for VS Code 🐋
 
 > [!NOTE]
-> ⭐ DSH Sidebar が気に入ったら、[GitHub でスターを付けてください](https://github.com/Lixxx1/dsh-vscode)！より多くの人にこのプロジェクトを届けられます。
+> **これは [Lixxx1/dsh-vscode](https://github.com/Lixxx1/dsh-vscode) の個人 fork です**（MIT ライセンス）。独立して維持され、上流より新しい DSH バージョンに追随します。
+> 元のコードの著作権は Lixxx1 に帰属します。DeepSeek および上流プロジェクトとは無関係です。
+>
+> Fork: https://github.com/fallleaves01/dsh-vscode
 
 DeepSeek Harness を、実際にコードを書く場所へ。dsh-vscode は Claude Code や Codex のような右サイドバーを DSH に提供し、プロジェクト・開いているファイル・選択中のコードを最初から理解した状態で動きます。
 
@@ -11,10 +14,9 @@ DeepSeek Harness を、実際にコードを書く場所へ。dsh-vscode は Cla
 
 [English](README.md) | [简体中文](README.zh.md) | **日本語**
 
-[Web サイト](https://lixxx1.github.io/dsh-vscode/) · [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar)
+[GitHub](https://github.com/fallleaves01/dsh-vscode)
 
-[![CI](https://github.com/Lixxx1/dsh-vscode/actions/workflows/ci.yml/badge.svg)](https://github.com/Lixxx1/dsh-vscode/actions/workflows/ci.yml)
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/lixxx1.dsh-sidebar?style=flat-square&label=VS%20Code%20Marketplace&color=4d6bfe)](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar)
+[![CI](https://github.com/fallleaves01/dsh-vscode/actions/workflows/ci.yml/badge.svg)](https://github.com/fallleaves01/dsh-vscode/actions/workflows/ci.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-263146?style=flat-square)](LICENSE)
 ![Status](https://img.shields.io/badge/status-alpha-7da1de?style=flat-square)
 
@@ -43,14 +45,14 @@ npm install -g @deepseek-ai/dsh
 
 ### 公開リリース版
 
-VS Code で**拡張機能**を開き、**DSH Sidebar** を検索して**インストール**を選択します。[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar) から直接インストールすることもできます。
+VS Code で**拡張機能**を開き、**DSH Sidebar** を検索して**インストール**を選択します。この fork は VSIX からインストールしてください（下記の開発版ビルドを参照）。
 
 ### 最新の開発ビルド
 
 `main` にはすでに入っているものの Marketplace には未公開の機能を試したい場合は、最新の VSIX をビルドしてインストールします:
 
 ```sh
-git clone https://github.com/Lixxx1/dsh-vscode.git
+git clone https://github.com/fallleaves01/dsh-vscode.git
 cd dsh-vscode
 pnpm install --frozen-lockfile
 pnpm run package
@@ -76,9 +78,9 @@ VS Code の設定で **DeepSeek Harness: Autonomous Debugging** を有効にし�
 
 DeepSeek はサイドバーからデバッガーを起動し、ブレークポイントの設定、ステップ実行、実行時の値の確認、コードの修正、結果の検証まで行えるようになります。
 
-DeepSeek Harness `0.1.2-rc.1` または互換性のある新しいバージョンが必要です。`0.1.5-rc.1` で動作確認済みです。
+DeepSeek Harness `0.1.7-rc.1` が必要です（上流 v0.0.5 は `0.1.5-rc.1` 対象）。
 
-💬 使いにくい点や「次はこれが欲しい」というアイデアがあれば、[Issue を立ててください](https://github.com/Lixxx1/dsh-vscode/issues)。いただいたフィードバックはすべて読んでいます。PR も歓迎です。
+💬 使いにくい点や「次はこれが欲しい」というアイデアがあれば、[Issue を立ててください](https://github.com/fallleaves01/dsh-vscode/issues)。いただいたフィードバックはすべて読んでいます。PR も歓迎です。
 
 ## License
 
