@@ -4,3 +4,5 @@ coverage/
 *.vsix
 .DS_Store
 *.log
+.build/
+artifacts/

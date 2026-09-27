@@ -3,6 +3,11 @@
 src/**
 tests/**
 scripts/**
+tooling/**
+docs/**
+build.sh
+.build/**
+artifacts/**
 coverage/**
 node_modules/**
 website/**
