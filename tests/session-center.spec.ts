@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionSummary } from '../src/dsh-client.js'
-import { filterSessionItems, sessionItems, sessionTitle } from '../src/session-center.js'
+import { archivedSessionItems, filterSessionItems, sessionItems, sessionTitle } from '../src/session-center.js'
 
 function summary(overrides: Partial<SessionSummary> & Pick<SessionSummary, 'sessionId'>): SessionSummary {
   return {
@@ -49,5 +49,23 @@ describe('session center state', () => {
     ], new Set(), undefined, new Set())
 
     expect(filterSessionItems(items, 'path').map(item => item.id)).toEqual(['one', 'two'])
+  })
+
+  it('lists only archived conversations, newest first, so they can be restored', () => {
+    const archived = archivedSessionItems([
+      summary({ sessionId: 'active', updatedAt: 90 }),
+      summary({ sessionId: 'older', updatedAt: 10, projections: { values: { title: 'Older work' } } }),
+      summary({ sessionId: 'newer', updatedAt: 40, projections: { values: { title: 'Newer work' } } }),
+      summary({ sessionId: 'blank-archived', updatedAt: 99, blank: true }),
+    ], new Set(['older', 'newer', 'blank-archived']), new Set(['older']))
+
+    expect(archived).toEqual([
+      expect.objectContaining({ id: 'newer', title: 'Newer work' }),
+      expect.objectContaining({ id: 'older', title: 'Older work', unread: true }),
+    ])
+  })
+
+  it('reports nothing archived when no conversation is archived', () => {
+    expect(archivedSessionItems([summary({ sessionId: 'one' })], new Set(), new Set())).toEqual([])
   })
 })

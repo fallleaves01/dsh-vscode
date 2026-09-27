@@ -52,6 +52,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .session-meta { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .session-more { width: 24px; height: 24px; min-width: 24px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 5px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 17px; line-height: 1; }
     .session-more:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    .session-archived-toggle { margin-top: 6px; padding: 6px 7px 4px; border: 0; border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 60%, transparent); border-radius: 0; color: var(--vscode-descriptionForeground); background: transparent; text-align: left; font-size: 10px; font-weight: 600; letter-spacing: .3px; }
+    .session-archived-toggle:hover { color: var(--vscode-foreground); }
+    .session-row.archived { grid-template-columns: minmax(0, 1fr) auto; }
+    .session-row.archived .session-name { color: var(--vscode-descriptionForeground); font-weight: 500; }
+    .session-restore { margin-right: 5px; padding: 3px 8px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-foreground); background: transparent; font-size: 10px; white-space: nowrap; }
+    .session-restore:hover { background: var(--vscode-toolbar-hoverBackground); }
     .session-actions { grid-column: 1 / -1; margin: 0 5px 5px 22px; padding: 3px; display: flex; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-editor-background); }
     .session-action { min-height: 25px; padding: 2px 7px; border: 0; border-radius: 4px; color: var(--vscode-foreground); background: transparent; font-size: 11px; }
     .session-action:hover { background: var(--vscode-toolbar-hoverBackground); }
@@ -65,13 +71,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .jobs-trigger.live .jobs-dot { background: var(--vscode-charts-blue, #4d6bfe); box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-charts-blue, #4d6bfe) 20%, transparent); }
     .jobs-menu { position: absolute; z-index: 20; top: calc(100% + 5px); right: 0; width: min(340px, calc(100vw - 20px)); max-height: min(420px, 70vh); padding: 6px; overflow: auto; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 5px 18px var(--vscode-widget-shadow); }
     .jobs-title { padding: 5px 7px 7px; font-size: 11px; font-weight: 600; }
-    .job-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 7px; padding: 7px; border-radius: 5px; }
+    .job-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 2px 7px; padding: 7px; border-radius: 5px; }
     .job-row + .job-row { border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 50%, transparent); }
     .job-kind { grid-row: 1 / 3; align-self: start; padding: 1px 5px; border-radius: 999px; color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); font-size: 9px; text-transform: uppercase; }
     .job-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; font-weight: 600; }
     .job-status { color: var(--vscode-descriptionForeground); font-size: 10px; }
     .job-detail { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .job-duration { grid-column: 3; grid-row: 1 / 3; align-self: center; color: var(--vscode-descriptionForeground); font: 10px var(--vscode-editor-font-family); }
+    .job-stop { grid-column: 4; grid-row: 1 / 3; align-self: center; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; color: var(--vscode-foreground); background: transparent; font-size: 10px; }
+    .job-stop:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .job-stop.armed { border-color: var(--vscode-inputValidation-errorBorder, #be1100); color: var(--vscode-errorForeground, #f48771); font-weight: 600; }
     .icon-button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible, button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
     svg:where(:not(.katex svg)) { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
     .conversation-pane { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); }
@@ -103,6 +112,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .user .message-body { width: fit-content; max-width: 82%; margin-left: auto; padding: 8px 12px; white-space: pre-wrap; border-radius: 16px; background: color-mix(in srgb, var(--vscode-foreground) 8%, var(--vscode-editor-background)); }
     .message-images { width: 100%; display: grid; gap: 7px; margin-top: 8px; }
     .message-image { display: block; max-width: 100%; max-height: 380px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; object-fit: contain; background: var(--vscode-editor-background); }
+    .thinking { margin: 0 0 8px; padding-left: 29px; }
+    .thinking summary { display: flex; align-items: center; gap: 6px; min-height: 22px; padding: 1px 0; cursor: pointer; list-style: none; color: var(--vscode-descriptionForeground); }
+    .thinking summary::-webkit-details-marker { display: none; }
+    .thinking-icon { flex: none; font-size: 10px; opacity: .85; }
+    .thinking-title { flex: none; font-size: 12px; font-weight: 600; }
+    .thinking-preview { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; opacity: .85; }
+    .thinking-body { margin: 3px 0 2px; padding: 2px 0 2px 9px; border-left: 2px solid var(--vscode-widget-border); color: var(--vscode-descriptionForeground); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
     .message-image-status { padding: 8px 10px; border: 1px dashed var(--vscode-widget-border); border-radius: 7px; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .message-image-status.failed { color: var(--vscode-errorForeground); }
     .pending-steering { opacity: .82; }
@@ -367,6 +383,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let jobsOpen = false;
     let sessionMenuOpen = false;
     let sessionActionId;
+    let archivedOpen = false;
+    let armedJobId;
+    let armedJobTimer;
     let jobsTimer;
     let historyAnchor;
     let renderFrame;
@@ -388,6 +407,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const toolOutputPages = new Map();
     const deferredOutputViews = new Map();
     const pendingMessageAppends = new Map();
+    const pendingReasoningAppends = new Map();
     let toolOutputRequestId = 0;
     const toolOutputChunkSize = 20000;
 
@@ -431,7 +451,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.sessionList.replaceChildren();
       const query = elements.sessionSearch.value.trim().toLocaleLowerCase();
       const visible = sessions.filter(session => !query || string(session.title).toLocaleLowerCase().includes(query));
-      if (!visible.length) {
+      const archived = array(current.archivedSessions).filter(session => !query || string(session.title).toLocaleLowerCase().includes(query));
+      if (!visible.length && !archived.length) {
         elements.sessionList.append(node('div', 'session-empty', query ? 'No matching conversations' : 'No conversations yet'));
         return;
       }
@@ -466,6 +487,31 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           }
         }
         elements.sessionList.append(row);
+      }
+      if (archived.length) {
+        const toggle = node('button', 'session-archived-toggle', (archivedOpen ? '▾ ' : '▸ ') + 'Archived (' + archived.length + ')');
+        toggle.type = 'button';
+        toggle.setAttribute('aria-expanded', String(archivedOpen));
+        toggle.title = archivedOpen ? 'Hide archived conversations' : 'Show archived conversations';
+        toggle.addEventListener('click', () => { archivedOpen = !archivedOpen; renderSessionCenter(current); });
+        elements.sessionList.append(toggle);
+      }
+      if (archivedOpen) {
+        for (const session of archived) {
+          const title = string(session.title, 'New conversation');
+          const row = node('div', 'session-row archived');
+          const main = node('button', 'session-main'); main.type = 'button';
+          main.title = 'Restore “' + title + '” to the conversation list';
+          main.setAttribute('aria-label', 'Restore ' + title);
+          main.append(node('span', 'session-indicator'), node('span', 'session-name', title), node('span', 'session-meta', relativeSessionTime(session.updatedAt)));
+          const restore = node('button', 'session-restore', 'Restore'); restore.type = 'button';
+          restore.title = main.title;
+          const restoreSession = () => { sessionActionId = undefined; vscode.postMessage({ type: 'unarchive-session', sessionId: session.id }); };
+          main.addEventListener('click', restoreSession);
+          restore.addEventListener('click', restoreSession);
+          row.append(main, restore);
+          elements.sessionList.append(row);
+        }
       }
     }
 
@@ -828,6 +874,33 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const body = view && view.plainText === true ? node('div', 'streaming-plain', page.text) : renderMarkdown(page.text);
       body.classList.add('assistant-page'); appendImages(body, page.images); return body;
     }
+    function hasThinking(message) { return typeof message.reasoning === 'string' && message.reasoning !== ''; }
+    function thinkingPreview(text) {
+      const flat = String(text || '').replace(/\s+/g, ' ').trim();
+      return flat.length > 140 ? flat.slice(0, 140) + '…' : flat;
+    }
+    /** Collapsed-by-default model thinking, folded above the answer. */
+    function renderThinking(message) {
+      const root = document.createElement('details');
+      root.className = 'thinking';
+      const summary = document.createElement('summary');
+      const title = node('span', 'thinking-title', message.streaming === true ? 'Thinking' : 'Thought');
+      const preview = node('span', 'thinking-preview', thinkingPreview(message.reasoning));
+      summary.append(node('span', 'thinking-icon', '✦'), title, preview);
+      const body = node('div', 'thinking-body');
+      root.append(summary, body);
+      const thinking = { root, title, preview, body, message };
+      // A collapsed body is never materialized, so long thinking stays cheap.
+      root.addEventListener('toggle', () => { if (root.open) body.textContent = thinking.message.reasoning || ''; });
+      if (root.open) body.textContent = message.reasoning || '';
+      return thinking;
+    }
+    function syncThinking(thinking, message) {
+      thinking.message = message;
+      thinking.title.textContent = message.streaming === true ? 'Thinking' : 'Thought';
+      thinking.preview.textContent = thinkingPreview(message.reasoning);
+      if (thinking.root.open) thinking.body.textContent = message.reasoning || '';
+    }
     function renderMessage(message) {
       if (message.role === 'tool') return { message, node: renderTool(message) };
       if (message.role === 'command') return { message, node: renderCommand(message) };
@@ -837,6 +910,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       head.append(node('span', 'avatar' + (message.role === 'assistant' ? ' deepseek-mark' : ''), message.role === 'user' ? 'Y' : ''));
       head.append(node('span', '', message.role === 'user' ? 'You' : 'DeepSeek'));
       const markdown = message.role === 'assistant' && message.streaming === true ? createMarkdownStream(message.text) : undefined;
+      const thinking = message.role === 'assistant' && hasThinking(message) ? renderThinking(message) : undefined;
       const body = message.role === 'assistant'
         ? message.deferredBody === true ? node('div', 'markdown') : (markdown ? markdown.root : renderMarkdown(message.text))
         : node('div', '', message.text);
@@ -844,21 +918,31 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (message.streaming) body.classList.add('streaming');
       if (message.deferredBody === true) attachDeferredOutput(message, body, renderAssistantPage, false, 'Show full response' + (message.bodyLength ? ' · ' + String(message.bodyLength) + ' characters' : ''));
       else appendImages(body, message.images);
-      item.append(head, body); return { message, node: item, ...(markdown ? { markdown } : {}) };
+      item.append(head);
+      if (thinking) item.append(thinking.root);
+      item.append(body);
+      return { message, node: item, ...(markdown ? { markdown } : {}), ...(thinking ? { thinking } : {}) };
     }
     function messageNode(message) {
       const rendered = renderedMessages.get(message.id);
       if (rendered && rendered.message === message) return rendered.node;
       if (rendered && rendered.message.deferredBodyRevision !== message.deferredBodyRevision) resetDeferredOutput(message.id);
       const appended = pendingMessageAppends.get(message.id);
-      if (rendered && rendered.markdown && appended !== undefined && message.role === 'assistant' && message.images === rendered.message.images) {
-        pendingMessageAppends.delete(message.id); appendMarkdownStream(rendered.markdown, appended, message.streaming === true);
+      // Thinking that shows up after the node was built needs a fresh render.
+      const thinkingAppeared = hasThinking(message) && rendered !== undefined && rendered.thinking === undefined;
+      if (rendered && rendered.markdown && appended !== undefined && !thinkingAppeared && message.role === 'assistant' && message.images === rendered.message.images) {
+        pendingMessageAppends.delete(message.id); pendingReasoningAppends.delete(message.id);
+        // Always run this: an empty delta with streaming=false is what flushes
+        // the settled markdown and drops the streaming tail node.
+        appendMarkdownStream(rendered.markdown, appended, message.streaming === true);
+        if (rendered.thinking !== undefined) syncThinking(rendered.thinking, message);
         rendered.message = message;
         rendered.markdown.root.classList.toggle('streaming', message.streaming === true);
         return rendered.node;
       }
       if (rendered) deferredOutputViews.delete(message.id);
       pendingMessageAppends.delete(message.id);
+      pendingReasoningAppends.delete(message.id);
       const next = renderMessage(message);
       // reconcileMessages owns node placement. Replacing a connected node here
       // invalidates its cursor before insertBefore can finish reconciling the list.
@@ -872,7 +956,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const ids = new Set(messages.map(message => message.id));
       for (const [id, rendered] of renderedMessages) {
         if (!ids.has(id)) {
-          rendered.node.remove(); renderedMessages.delete(id); expandedToolIds.delete(id); resetDeferredOutput(id); pendingMessageAppends.delete(id);
+          rendered.node.remove(); renderedMessages.delete(id); expandedToolIds.delete(id); resetDeferredOutput(id); pendingMessageAppends.delete(id); pendingReasoningAppends.delete(id);
         }
       }
       let cursor = elements.messages.firstChild;
@@ -1376,9 +1460,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const minutes = Math.floor(seconds / 60); if (minutes < 60) return minutes + 'm ' + (seconds % 60) + 's';
       return Math.floor(minutes / 60) + 'h ' + (minutes % 60) + 'm';
     }
+    function armJob(jobId) {
+      armedJobId = jobId;
+      if (armedJobTimer) { clearTimeout(armedJobTimer); armedJobTimer = undefined; }
+      if (jobId !== undefined) armedJobTimer = setTimeout(() => { armedJobId = undefined; armedJobTimer = undefined; renderJobs(); }, 3000);
+    }
     function renderJobs() {
       const jobs = array(state && state.jobs);
       const live = jobs.filter(liveJob).length;
+      if (!jobsOpen && armedJobId !== undefined) { armedJobId = undefined; if (armedJobTimer) { clearTimeout(armedJobTimer); armedJobTimer = undefined; } }
       elements.jobsControl.classList.toggle('hidden', jobs.length === 0);
       elements.jobsTrigger.classList.toggle('live', live > 0);
       elements.jobsCount.textContent = String(live || jobs.length);
@@ -1390,7 +1480,23 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const ordered = [...jobs].sort((a, b) => liveJob(a) !== liveJob(b) ? (liveJob(a) ? -1 : 1) : (liveJob(a) ? Number(a.startedAt) - Number(b.startedAt) : Number(b.finishedAt || b.startedAt) - Number(a.finishedAt || a.startedAt)));
         for (const job of ordered) {
           const row = node('div', 'job-row'); const status = string(job.detail) || string(job.status);
-          row.title = status; row.append(node('span', 'job-kind', string(job.kind, 'job')), node('span', 'job-label', string(job.label, 'Background job')), node('span', 'job-detail', status), node('span', 'job-duration', jobDuration(job))); elements.jobsMenu.append(row);
+          row.title = status; row.append(node('span', 'job-kind', string(job.kind, 'job')), node('span', 'job-label', string(job.label, 'Background job')), node('span', 'job-detail', status), node('span', 'job-duration', jobDuration(job)));
+          if (liveJob(job)) {
+            // DSH web arms first and confirms on a second press within three seconds.
+            const armed = armedJobId === job.id;
+            const stop = node('button', 'job-stop' + (armed ? ' armed' : ''), armed ? 'Confirm' : 'Stop');
+            stop.type = 'button';
+            stop.title = armed ? 'Click again within 3 seconds to stop this job' : 'Stop this background job';
+            stop.setAttribute('aria-label', (armed ? 'Confirm stopping ' : 'Stop ') + string(job.label, 'background job'));
+            stop.addEventListener('click', event => {
+              event.stopPropagation();
+              if (armed) { armJob(undefined); vscode.postMessage({ type: 'kill-job', sessionId: state.sessionId, jobId: job.id }); }
+              else armJob(job.id);
+              renderJobs();
+            });
+            row.append(stop);
+          }
+          elements.jobsMenu.append(row);
         }
       }
       if (jobsTimer) { clearInterval(jobsTimer); jobsTimer = undefined; }
@@ -1499,8 +1605,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       for (const append of array(patch && patch.appends)) {
         const index = indexes.get(append.id); const message = index === undefined ? undefined : messages[index];
         if (!message || message.role !== 'assistant') continue;
-        pendingMessageAppends.set(append.id, string(pendingMessageAppends.get(append.id)) + string(append.text));
-        messages[index] = { ...message, text: message.text + string(append.text), streaming: append.streaming === true };
+        const text = string(append.text);
+        const reasoning = string(append.reasoning);
+        pendingMessageAppends.set(append.id, string(pendingMessageAppends.get(append.id)) + text);
+        if (reasoning !== '') pendingReasoningAppends.set(append.id, string(pendingReasoningAppends.get(append.id)) + reasoning);
+        messages[index] = {
+          ...message,
+          text: message.text + text,
+          ...(reasoning === '' ? {} : { reasoning: string(message.reasoning) + reasoning }),
+          streaming: append.streaming === true,
+        };
       }
       return messages;
     }

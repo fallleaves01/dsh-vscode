@@ -99,8 +99,8 @@ describe('chat webview', () => {
     })
     const badge = node('span')
     const elements = { sessionTrigger: node('button'), sessionTriggerTitle: node('span'), sessionList: node('div'), sessionSearch: { value: '' } }
-    const render = new Function('elements', 'document', 'node', 'array', 'string', 'relativeSessionTime', 'sessionActionId',
-      `${source}; return renderSessionCenter;`)(elements, { getElementById: () => badge }, node, (a: any) => a, (s: any) => s, () => 'Just now', undefined)
+    const render = new Function('elements', 'document', 'node', 'array', 'string', 'relativeSessionTime', 'sessionActionId', 'archivedOpen',
+      `${source}; return renderSessionCenter;`)(elements, { getElementById: () => badge }, node, (a: any) => (Array.isArray(a) ? a : []), (s: any) => s, () => 'Just now', undefined, false)
     const current = { sessionId: 'a', sessions: [
       { id: 'a', title: 'Current', blank: true },
       { id: 'b', title: 'Work', blank: true, running: true, attention: { approvals: 2, questions: 1 } },
@@ -215,5 +215,34 @@ describe('chat webview', () => {
     expect(html).toContain('tabindex="0" aria-label="Conversation"')
     expect(html).toContain('dshConversationScroll.createConversationScroller(')
     expect(html).not.toContain('scheduleTailScroll(Boolean(current.approval || current.question))')
+  })
+
+  it('offers a collapsed archived section that can restore a conversation', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const html = chatHtml(webview, mark)
+    const source = html.slice(html.indexOf('function renderSessionCenter('), html.indexOf('function record('))
+
+    expect(source).toContain('const archived = array(current.archivedSessions)')
+    expect(source).toContain("'Archived ('")
+    expect(source).toContain('archivedOpen = !archivedOpen')
+    expect(source).toContain("type: 'unarchive-session'")
+    expect(source).toContain("node('button', 'session-restore', 'Restore')")
+    expect(source).toContain("if (!visible.length && !archived.length)")
+  })
+
+  it('arms a job stop before it kills, so one click cannot end a background job', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const html = chatHtml(webview, mark)
+    const source = html.slice(html.indexOf('function armJob(jobId)'), html.indexOf('function renderConversation('))
+
+    expect(source).toContain('function armJob(jobId)')
+    expect(source).toContain('armedJobId === job.id')
+    expect(source).toContain("armed ? 'Confirm' : 'Stop'")
+    expect(source).toContain('armJob(job.id)')
+    expect(source).toContain('}, 3000)')
+    // The first press only arms: killing stays behind the confirm branch.
+    expect(source).toContain("if (armed) { armJob(undefined); vscode.postMessage({ type: 'kill-job'")
   })
 })

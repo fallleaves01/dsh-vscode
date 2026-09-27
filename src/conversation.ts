@@ -9,6 +9,8 @@ export interface ConversationMessage {
   id: string
   role: ConversationRole
   text: string
+  /** Model thinking for this turn, shown collapsed above the answer. */
+  reasoning?: string
   detail?: string
   streaming?: boolean
   failed?: boolean
@@ -85,6 +87,19 @@ function textContent(value: unknown): string {
   return value.flatMap((part) => {
     const item = record(part)
     return item?.type === 'text' && typeof item.text === 'string' ? [item.text] : []
+  }).join('\n')
+}
+
+/**
+ * DSH persists model thinking as `{ type: 'reasoning' }` content parts alongside
+ * the answer's `{ type: 'text' }` parts. Without this the sidebar silently drops
+ * every thought, which is why thinking only appeared in the browser UI.
+ */
+function reasoningContent(value: unknown): string {
+  if (!Array.isArray(value)) return ''
+  return value.flatMap((part) => {
+    const item = record(part)
+    return item?.type === 'reasoning' && typeof item.text === 'string' ? [item.text] : []
   }).join('\n')
 }
 
@@ -171,10 +186,13 @@ export class ConversationProjector {
     const current = active.message
     const images = chunk.type === 'block-end' ? imageContent(chunk.block) : []
     const text = chunk.type === 'text-delta' && typeof chunk.text === 'string' ? chunk.text : ''
-    if (text === '' && images.length === 0) return
+    const reasoning = chunk.type === 'reasoning-delta' && typeof chunk.text === 'string' ? chunk.text : ''
+    if (text === '' && images.length === 0 && reasoning === '') return
+    const accumulated = `${current?.reasoning ?? ''}${reasoning}`
     const next: ConversationMessage = {
       id: `assistant-live:${active.attemptId}`, role: 'assistant', streaming: true,
       text: `${current?.text ?? ''}${text}`,
+      ...(accumulated === '' ? {} : { reasoning: accumulated }),
       ...(current?.images === undefined && images.length === 0 ? {} : { images: mergeImages(current?.images, images) }),
     }
     if (text !== '') appendAssistantStream(current, next, text)
@@ -217,14 +235,18 @@ export class ConversationProjector {
         this.set(id, next)
         return
       }
-      if (chunk?.type !== 'text-delta' || typeof chunk.text !== 'string') return
+      if ((chunk?.type !== 'text-delta' && chunk?.type !== 'reasoning-delta') || typeof chunk.text !== 'string') return
+      const reasoning = chunk.type === 'reasoning-delta' ? chunk.text : ''
+      const accumulated = `${current?.reasoning ?? ''}${reasoning}`
       const next: ConversationMessage = {
         id,
         role: 'assistant',
-        text: `${current?.text ?? ''}${chunk.text}`,
+        text: reasoning === '' ? `${current?.text ?? ''}${chunk.text}` : (current?.text ?? ''),
+        ...(accumulated === '' ? {} : { reasoning: accumulated }),
         streaming: true,
       }
-      appendAssistantStream(current, next, chunk.text)
+      if (reasoning === '') appendAssistantStream(current, next, chunk.text)
+      else inheritAssistantStream(current, next)
       this.set(id, next)
       return
     }
@@ -234,9 +256,14 @@ export class ConversationProjector {
       const id = `assistant:${String(data.turn)}:${String(data.step)}`
       const current = this.byId.get(id)
       const text = textContent(message?.content)
+      const reasoning = reasoningContent(message?.content)
       const images = imageContent(message?.content)
-      if (text !== '' || images.length > 0) {
-        const next: ConversationMessage = { id, role: 'assistant', text, ...(images.length > 0 ? { images } : {}) }
+      if (text !== '' || images.length > 0 || reasoning !== '') {
+        const next: ConversationMessage = {
+          id, role: 'assistant', text,
+          ...(reasoning === '' ? {} : { reasoning }),
+          ...(images.length > 0 ? { images } : {}),
+        }
         if (current !== undefined && text === current.text) inheritAssistantStream(current, next)
         this.set(id, next)
       }

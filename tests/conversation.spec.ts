@@ -18,7 +18,33 @@ describe('ConversationProjector', () => {
 
     expect(projector.messages()).toEqual([
       { id: 'human', role: 'user', text: 'hello' },
-      { id: 'assistant:1:1', role: 'assistant', text: 'Hi there' },
+      // Thinking is surfaced alongside the answer; the plugin-authored user
+      // message above is still dropped.
+      { id: 'assistant:1:1', role: 'assistant', text: 'Hi there', reasoning: 'private' },
+    ])
+  })
+
+  it('surfaces live thinking chunks alongside the answer', () => {
+    const projector = new ConversationProjector()
+    projector.applyStream({ kind: 'start', attemptId: 'attempt', turn: 1, step: 1 })
+    projector.applyStream({ kind: 'chunk', attemptId: 'attempt', chunk: { type: 'reasoning-delta', index: 0, text: 'Weighing ' } })
+    projector.applyStream({ kind: 'chunk', attemptId: 'attempt', chunk: { type: 'reasoning-delta', index: 1, text: 'options' } })
+    projector.applyStream({ kind: 'chunk', attemptId: 'attempt', chunk: { type: 'text-delta', index: 2, text: 'Answer' } })
+
+    const live = projector.messages().filter(message => message.role === 'assistant')
+    expect(live).toHaveLength(1)
+    expect(live[0]?.reasoning).toBe('Weighing options')
+    expect(live[0]?.text).toBe('Answer')
+  })
+
+  it('keeps thinking visible for a step that produced no answer text', () => {
+    const projector = new ConversationProjector()
+    projector.reset([
+      event('assistant/message', 1, { turn: 1, step: 1, message: { content: [{ type: 'reasoning', text: 'Only thinking here' }] } }),
+    ])
+
+    expect(projector.messages()).toEqual([
+      { id: 'assistant:1:1', role: 'assistant', text: '', reasoning: 'Only thinking here' },
     ])
   })
 

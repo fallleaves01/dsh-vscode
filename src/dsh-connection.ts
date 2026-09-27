@@ -92,7 +92,11 @@ export class DshConnection {
         signal: this.signal(10_000, signal),
       })
       try {
-        if (response.status !== 303 || response.headers.get('location') !== '/') {
+        // DSH <= 0.1.5 answers the launch token with `Location: /`, while newer
+        // releases (observed on 0.1.7-rc.1) use the equivalent relative form
+        // `Location: ./`. Both resolve to the site root, so accept either.
+        const location = response.headers.get('location')
+        if (response.status !== 303 || (location !== '/' && location !== './')) {
           throw new DshConnectionError('authentication-failed', 'DSH did not accept its launch token. Restart the runtime.', response.status)
         }
         const cookieName = `dsh-auth-${createHash('sha256').update(url.host).digest('base64url')}`

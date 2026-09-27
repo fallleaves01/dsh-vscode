@@ -25,6 +25,22 @@ export interface SessionOpening {
   isCurrent: () => boolean
 }
 
+/**
+ * Project one DSH 0.1.7 `inbox` array into the sidebar's queue item shape.
+ *
+ * The 0.1.7 `inbox` projection groups messages by delivery target instead of
+ * tagging each item with a `placement`, so the target becomes the placement and
+ * the message's own id becomes the item id the UI mutates against.
+ * Never throws: this runs inside the shared frame handler, where a throw would
+ * tear down every stream.
+ */
+function inboxItems(value: unknown, placement: 'queued' | 'steering'): unknown[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap(message => wireRecord(message) && typeof message.id === 'string'
+    ? [{ id: message.id, placement, message }]
+    : [])
+}
+
 /** Adapts the 0.1.2 streams to the sidebar's internal (not wire) event vocabulary. */
 export class DshSessionFeed {
   private readonly streams: DshStreams
@@ -36,6 +52,8 @@ export class DshSessionFeed {
   private readonly projectionFloors = new Map<string, number>()
   private readonly queues = new Map<string, unknown[]>()
   private readonly jobs = new Map<string, unknown[]>()
+  /** Per-session `job/list` subscriptions (DSH 0.1.7 moved jobs out of the control baseline). */
+  private readonly jobStreams = new Map<string, () => void>()
   private readonly running = new Map<string, boolean>()
   private readonly questions = new Map<string, PendingQuestion>()
   private readonly displayedQuestions = new Map<string, string>()
@@ -127,6 +145,7 @@ export class DshSessionFeed {
     return new Promise((resolve, reject) => {
       const state: Follow = { sessionId, cursor: -1, lastSeq: -1, active: false, pending: [], committedMessages: new Set(), cancel: () => {}, reject }
       this.follow = state
+      this.subscribeJobs(sessionId)
       const assistant = new DshAssistantStream(
         update => this.mux({ type: 'session/assistant-stream', sessionId, update }),
         entry => this.mux({ type: 'session/event', sessionId, event: entry.event }),
@@ -202,6 +221,8 @@ export class DshSessionFeed {
 
   dispose(): void {
     this.closeFollow()
+    for (const cancel of this.jobStreams.values()) cancel()
+    this.jobStreams.clear()
     this.questions.clear()
     this.requestSessions.clear()
     this.streams.dispose()
@@ -212,6 +233,8 @@ export class DshSessionFeed {
     this.follow = undefined
     this.displayedQuestions.clear()
     if (previous === undefined) return
+    this.jobStreams.get(previous.sessionId)?.()
+    this.jobStreams.delete(previous.sessionId)
     previous.cancel()
     previous.reject(error)
   }
@@ -227,6 +250,41 @@ export class DshSessionFeed {
     })
   }
 
+  /**
+   * DSH 0.1.7 moved jobs out of the `session/control` baseline into a per-session
+   * `job/list` stream emitting `{ type: 'rows', jobs }`.
+   *
+   * The stream is optional, and its item handler never throws: a runtime that does
+   * not serve `job/list` (DSH <= 0.1.5) must degrade to an empty job list rather
+   * than fail the shared stream carrier.
+   */
+  private subscribeJobs(sessionId: string): void {
+    this.jobStreams.get(sessionId)?.()
+    const cancel = this.streams.open('job/list', { request: { sessionId } }, raw => {
+      if (!wireRecord(raw) || raw.type !== 'rows' || !Array.isArray(raw.jobs)) return
+      this.publishJobs(sessionId, raw.jobs)
+    }, () => {}, true)
+    this.jobStreams.set(sessionId, cancel)
+  }
+
+  /**
+   * DSH 0.1.7 replaced the control baseline's `queues` map with an `inbox`
+   * projection shaped `{ 'next-turn': [...], 'next-step': [...] }`.
+   *
+   * `next-turn` holds messages waiting for the next turn, which are the ones the
+   * sidebar can still steer; `next-step` holds messages already destined for the
+   * running turn's next step. Never throws (see {@link inboxItems}).
+   */
+  private applyInbox(sessionId: string, value: unknown): void {
+    if (!wireRecord(value)) return
+    const items = [
+      ...inboxItems(value['next-turn'], 'queued'),
+      ...inboxItems(value['next-step'], 'steering'),
+    ]
+    this.queues.set(sessionId, items)
+    if (this.follow?.active) this.mux({ type: 'session/queue', sessionId, items: this.queueItems(sessionId) })
+  }
+
   private installProjections(sessionId: string, seq: number, values: Record<string, unknown>): void {
     const previous = this.projections.get(sessionId)
     const next = new Map<string, Projection>()
@@ -235,14 +293,23 @@ export class DshSessionFeed {
     for (const [key, projection] of previous ?? []) if (projection.seq > seq) next.set(key, projection)
     this.projections.set(sessionId, next)
     this.projectionFloors.set(sessionId, Math.max(seq, this.projectionFloors.get(sessionId) ?? -1))
+    // DSH 0.1.7 carries the message queue in the `inbox` projection, so seed the
+    // queue model from the merged snapshot rather than only from live frames.
+    const inbox = next.get('inbox')
+    if (inbox !== undefined) this.applyInbox(sessionId, inbox.value)
   }
 
   private control(frame: Record<string, unknown>): void {
     if (frame.type === 'baseline') {
-      const value = frame.value
-      if (!wireRecord(value) || !wireRecord(value.queues) || !wireRecord(value.jobs) || !wireRecord(value.projections)) throw new Error('Invalid control baseline.')
-      for (const [id, items] of Object.entries(value.queues)) this.control({ type: 'queue', sessionId: id, items })
-      for (const [id, jobs] of Object.entries(value.jobs)) this.control({ type: 'jobs', sessionId: id, jobs })
+      // DSH 0.1.7 answers with `{ type: 'baseline', value: { projections } }`:
+      // the payload moved under `value`, and `queues`/`jobs` were dropped from
+      // the baseline entirely (their incremental frame types are gone too).
+      // DSH <= 0.1.5 carried all three inline on the frame, so read whichever
+      // shape actually arrived and treat queues/jobs as optional.
+      const value = wireRecord(frame.value) ? frame.value : frame
+      if (!wireRecord(value) || !wireRecord(value.projections)) throw new Error('Invalid control baseline.')
+      if (wireRecord(value.queues)) for (const [id, items] of Object.entries(value.queues)) this.control({ type: 'queue', sessionId: id, items })
+      if (wireRecord(value.jobs)) for (const [id, jobs] of Object.entries(value.jobs)) this.control({ type: 'jobs', sessionId: id, jobs })
       for (const [id, projection] of Object.entries(value.projections)) {
         if (!wireRecord(projection) || !wireRecord(projection.values) || !Number.isSafeInteger(projection.asOfSeq)) throw new Error('Invalid projection baseline.')
         this.installProjections(id, projection.asOfSeq as number, projection.values)
@@ -263,6 +330,8 @@ export class DshSessionFeed {
       if ((map.get(frame.key)?.seq ?? -1) > (frame.seq as number)) return
       map.set(frame.key, { seq: frame.seq as number, value: frame.value })
       this.projections.set(id, map)
+      // DSH 0.1.7 delivers the message queue as the `inbox` projection.
+      if (frame.key === 'inbox') this.applyInbox(id, frame.value)
       // Replayed from the newest cached value on activation, never from stale buffered values.
       if (this.follow?.sessionId !== id || this.follow.active) this.mux({ type: 'session/projection', sessionId: id, key: frame.key, value: frame.value })
     } else throw new Error('Invalid control update.')

@@ -12,6 +12,8 @@ export interface ConversationMessageAppend {
   id: string
   text: string
   streaming: boolean
+  /** Appended thinking text, when this delta carried reasoning rather than answer text. */
+  reasoning?: string
 }
 
 function compactToolView(value: unknown): unknown {
@@ -25,7 +27,7 @@ function compactToolView(value: unknown): unknown {
 
 function bodyRevision(message: ConversationMessage): string {
   const images = (message.images ?? []).map(image => `${image.attachmentId}:${image.data?.length ?? 0}:${image.error ?? ''}`).join('|')
-  return `${message.streaming === true ? 'streaming' : 'settled'}:${message.text.length}:${message.rawInput?.length ?? 0}:${message.rawResult?.length ?? 0}:${images}`
+  return `${message.streaming === true ? 'streaming' : 'settled'}:${message.text.length}:${message.reasoning?.length ?? 0}:${message.rawInput?.length ?? 0}:${message.rawResult?.length ?? 0}:${images}`
 }
 
 /** Keeps large or structured message bodies lightweight until they are displayed. */
@@ -49,6 +51,7 @@ export function messageForWebview(message: ConversationMessage): ConversationMes
     id: message.id,
     role: message.role,
     text: hasLargeAssistantBody ? '' : message.text,
+    ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
     ...(message.streaming === undefined ? {} : { streaming: message.streaming }),
     ...(message.detail === undefined ? {} : { detail: message.detail }),
     ...(message.failed === undefined ? {} : { failed: message.failed }),
@@ -93,6 +96,7 @@ function sameMessage(left: ConversationMessage, right: ConversationMessage): boo
   return left.id === right.id
     && left.role === right.role
     && left.text === right.text
+    && left.reasoning === right.reasoning
     && left.detail === right.detail
     && left.streaming === right.streaming
     && left.failed === right.failed
@@ -106,7 +110,7 @@ function sameMessage(left: ConversationMessage, right: ConversationMessage): boo
     && sameImages(left.images, right.images)
 }
 
-function appendedAssistantText(left: ConversationMessage, right: ConversationMessage): string | undefined {
+function appendedAssistantParts(left: ConversationMessage, right: ConversationMessage): { text: string; reasoning: string } | undefined {
   const compatible = left.id === right.id
     && left.role === 'assistant'
     && right.role === 'assistant'
@@ -121,8 +125,14 @@ function appendedAssistantText(left: ConversationMessage, right: ConversationMes
     && sameImages(left.images, right.images)
   if (!compatible) return undefined
   const projected = assistantStreamAppend(left, right)
-  if (projected !== undefined) return projected
-  return right.text.startsWith(left.text) ? right.text.slice(left.text.length) : undefined
+  const text = projected ?? (right.text.startsWith(left.text) ? right.text.slice(left.text.length) : undefined)
+  if (text === undefined) return undefined
+  const before = left.reasoning ?? ''
+  const after = right.reasoning ?? ''
+  // Thinking normally only grows, but a settlement may rewrite it; that has to
+  // fall back to an upsert rather than silently dropping the new body.
+  if (!after.startsWith(before)) return undefined
+  return { text, reasoning: after.slice(before.length) }
 }
 
 /**
@@ -150,12 +160,15 @@ export function diffConversationMessages(
       continue
     }
     if (sameMessage(current, message)) continue
-    const appendedText = appendedAssistantText(current, message)
-    if (appendedText !== undefined) {
+    const appended = appendedAssistantParts(current, message)
+    if (appended !== undefined) {
+      // An append is sent even when nothing was appended: it also carries the
+      // streaming flag that settles a finished message without resending it.
       appends.push({
         id: message.id,
-        text: appendedText,
+        text: appended.text,
         streaming: message.streaming === true,
+        ...(appended.reasoning === '' ? {} : { reasoning: appended.reasoning }),
       })
     } else {
       upserts.push(message)

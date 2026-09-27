@@ -18,6 +18,8 @@ interface Stream {
   args: Record<string, unknown>
   item: (value: unknown) => void
   fail: (error: Error) => void
+  /** An optional stream that a runtime may not serve; its failure must not tear down the feed. */
+  optional: boolean
 }
 
 /** One authenticated carrier; logical subscriptions have independent lifetimes. */
@@ -28,13 +30,14 @@ export class DshStreams {
 
   constructor(private readonly connection: DshConnection, private readonly failed: (error: Error) => void) {}
 
-  open(endpoint: string, args: Record<string, unknown>, item: Stream['item'], fail: Stream['fail']): () => void {
+  open(endpoint: string, args: Record<string, unknown>, item: Stream['item'], fail: Stream['fail'],
+    optional = false): () => void {
     if (this.closed) {
       fail(new Error('The DSH event stream is closed. Reconnect the runtime.'))
       return () => {}
     }
     const id = randomUUID()
-    const stream = { endpoint, args, item, fail }
+    const stream = { endpoint, args, item, fail, optional }
     this.streams.set(id, stream)
     try {
       if (this.socket === undefined) this.connect()
@@ -73,7 +76,8 @@ export class DshStreams {
           // Do not put arbitrary remote error text (or credentials) in logs.
           const error = new DshStreamError(`DSH ${stream.endpoint} subscription ended. Reconnect to refresh its snapshot.`)
           stream.fail(error)
-          this.abort(error)
+          // A runtime that does not serve an optional stream must not lose the feed.
+          if (!stream.optional) this.abort(error)
         } else throw new Error('Unknown envelope')
       } catch {
         this.abort(new DshStreamError('DSH sent an invalid event stream frame. Reconnect to refresh its snapshot.'))

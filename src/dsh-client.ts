@@ -185,6 +185,14 @@ export class DshClient {
   archiveSession(sessionId: string): Promise<{ archivedSessionIds: string[] }> {
     return this.call('workspace/archiveSession', { request: { sessionId } })
   }
+  /** DSH answers with the same `WorkspaceArchiveValue` shape as archiving does. */
+  unarchiveSession(sessionId: string): Promise<{ archivedSessionIds: string[] }> {
+    return this.call('workspace/unarchiveSession', { request: { sessionId } })
+  }
+  /** Requests one background job stop; the `job/list` stream converges the row. */
+  killJob(sessionId: string, jobId: string): Promise<{ outcome: 'requested' | 'already-finished' }> {
+    return this.call('job/kill', { request: { sessionId, jobId } })
+  }
   createSession(cwd: string): Promise<{ sessionId: string; agentPreset?: string }> { return this.api.createSession(cwd) }
   history(sessionId: string, beforeSeq: number): Promise<{ events: HistoryEntry[]; hasMore: boolean }> { return this.feed.page(sessionId, beforeSeq) }
 

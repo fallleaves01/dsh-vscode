@@ -65,7 +65,7 @@ import {
   messagesPatchForWebview,
   type ConversationMessagesPatch,
 } from './chat-state-patch.js'
-import { sessionItems, type SessionItem, type SessionAttention } from './session-center.js'
+import { archivedSessionItems, sessionItems, type SessionItem, type SessionAttention } from './session-center.js'
 import { wireRecord } from './dsh-streams.js'
 import type { DshConnection } from './dsh-connection.js'
 import { canRetryConnection, reconnectAttempts } from './dsh-reconnect.js'
@@ -134,6 +134,7 @@ interface ChatViewState {
   workspaceName: string
   cwd: string
   sessions: SessionItem[]
+  archivedSessions: SessionItem[]
   sessionId: string
   messages: ConversationMessage[]
   running: boolean
@@ -194,6 +195,7 @@ function initialState(cwd: string): ChatViewState {
     workspaceName: path.basename(cwd),
     cwd,
     sessions: [],
+    archivedSessions: [],
     sessionId: '',
     messages: [],
     running: false,
@@ -338,6 +340,7 @@ export class DshChatController implements vscode.Disposable {
       canReconnect: false,
       messages: [],
       sessions: [],
+      archivedSessions: [],
       sessionId: '',
       running: false,
       routable: this.cwd !== '',
@@ -587,6 +590,32 @@ export class DshChatController implements vscode.Disposable {
     this.unreadSessionIds.delete(sessionId)
     this.persistUnreadSessions()
     await this.loadSessions()
+  }
+
+  /**
+   * Restores an archived conversation to the active list without stealing focus
+   * from whatever the user is working on.
+   */
+  async unarchiveSession(sessionId: string): Promise<void> {
+    this.requireReady()
+    if (!this.archivedSessionIds.has(sessionId)) return
+    const client = this.requireClient()
+    const result = await client.unarchiveSession(sessionId)
+    if (this.client !== client) return
+    this.archivedSessionIds = new Set(result.archivedSessionIds)
+    this.publish(this.sessionItemPatch())
+  }
+
+  /**
+   * Asks DSH to stop one background job. The row converges through the
+   * `job/list` stream, so the authoritative state arrives on its own.
+   */
+  async killJob(sessionId: string, jobId: string): Promise<void> {
+    this.requireReady()
+    if (sessionId !== this._state.sessionId) return
+    const job = this.jobsBySession.get(sessionId)?.find(item => item.id === jobId)
+    if (job === undefined || (job.status !== 'running' && job.status !== 'stopping')) return
+    await this.requireClient().killJob(sessionId, jobId)
   }
 
   async loadOlderHistory(): Promise<void> {
@@ -892,7 +921,7 @@ export class DshChatController implements vscode.Disposable {
       ?? selectable[0]?.sessionId
 
     if (selectedId !== undefined && this.unreadSessionIds.delete(selectedId)) this.persistUnreadSessions()
-    this.publish({ sessions: sessionItems(this.summaries, this.archivedSessionIds, selectedId, this.unreadSessionIds, this.sessionAttention) })
+    this.publish(this.sessionItemPatch(selectedId))
     if (selectedId === undefined) {
       if (!allowCreate) throw new Error('No conversation is available to restore. Start a new conversation after reconnecting the runtime.')
       const created = await client.createSession(this.cwd)
@@ -915,10 +944,15 @@ export class DshChatController implements vscode.Disposable {
     }
   }
 
+  private sessionItemPatch(selectedId: string | undefined = this._state.sessionId): Pick<ChatViewState, 'sessions' | 'archivedSessions'> {
+    return {
+      sessions: sessionItems(this.summaries, this.archivedSessionIds, selectedId, this.unreadSessionIds, this.sessionAttention),
+      archivedSessions: archivedSessionItems(this.summaries, this.archivedSessionIds, this.unreadSessionIds, this.sessionAttention),
+    }
+  }
+
   private publishSessionItems(): void {
-    this.publish({
-      sessions: sessionItems(this.summaries, this.archivedSessionIds, this._state.sessionId, this.unreadSessionIds, this.sessionAttention),
-    })
+    this.publish(this.sessionItemPatch())
   }
 
   private markRead(sessionId: string): void {
@@ -1793,7 +1827,7 @@ class DshSurface implements vscode.Disposable {
             if (session === undefined || session.blank) return
             const confirmed = await vscode.window.showWarningMessage(
               `Archive “${session.title}”?`,
-              { modal: true, detail: 'This removes the conversation from this sidebar. Its DSH session data is not deleted.' },
+              { modal: true, detail: 'This removes the conversation from this sidebar. You can restore it later from the Archived section at the bottom of the conversation list; its DSH session data is not deleted.' },
               'Archive',
             )
             if (confirmed !== 'Archive') return
@@ -1802,6 +1836,26 @@ class DshSurface implements vscode.Disposable {
             } catch (error) {
               const detail = error instanceof Error ? error.message : String(error)
               await vscode.window.showErrorMessage(`Could not archive the conversation. ${detail} Update DSH if this method is unavailable.`)
+            }
+          }
+          return
+        case 'unarchive-session':
+          if (typeof value.sessionId === 'string') {
+            try {
+              await this.controller.unarchiveSession(value.sessionId)
+            } catch (error) {
+              const detail = error instanceof Error ? error.message : String(error)
+              await vscode.window.showErrorMessage(`Could not restore the conversation. ${detail} Update DSH if this method is unavailable.`)
+            }
+          }
+          return
+        case 'kill-job':
+          if (typeof value.sessionId === 'string' && typeof value.jobId === 'string') {
+            try {
+              await this.controller.killJob(value.sessionId, value.jobId)
+            } catch (error) {
+              const detail = error instanceof Error ? error.message : String(error)
+              await vscode.window.showErrorMessage(`Could not stop the background job. ${detail} Update DSH if this method is unavailable.`)
             }
           }
           return

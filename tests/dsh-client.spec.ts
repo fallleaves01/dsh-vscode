@@ -16,7 +16,7 @@ const snapshot = (id = 's', cursor = 5, values: Record<string, unknown> = {}) =>
   type: 'snapshot', header: { id }, cursor, records: [event(cursor)], hasMore: true, projections: { asOfSeq: cursor, values },
 })
 
-function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {}) {
+function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {}, jobList = false) {
   const requests: { endpoint: string; args: any }[] = []
   const outgoing: any[] = []
   const ids = new Map<string, string>()
@@ -42,6 +42,8 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
       if (frame.endpoint === 'session/control') receive(frame.streamId, { type: 'baseline', value: { queues: {}, jobs: initialJobs, projections: {} } })
       if (frame.endpoint === 'workspace/follow') receive(frame.streamId, { type: 'baseline', value: { items: [], archivedSessionIds: ['archived'] } })
       if (frame.endpoint === 'session/follow' && autoSnapshot) receive(frame.streamId, snapshot(frame.payload.args.request.address.sessionId))
+      // Opt-in: DSH 0.1.7 serves jobs from a per-session `job/list` stream.
+      if (jobList && frame.endpoint === 'job/list') receive(frame.streamId, { type: 'rows', jobs: initialJobs[frame.payload.args.request.sessionId] ?? [] })
     })
   }
   socket.terminate = () => { socket.readyState = 3; socket.emit('close') }
@@ -199,6 +201,18 @@ describe('DSH 0.1.2 chat transport', () => {
     ])
   })
 
+  it('carries the 0.1.7 unarchive and job-kill request contracts', async () => {
+    const h = harness()
+    h.results['workspace/unarchiveSession'] = { archivedSessionIds: [] }
+    h.results['job/kill'] = { outcome: 'requested' }
+    expect(await h.client.unarchiveSession('s')).toEqual({ archivedSessionIds: [] })
+    expect(await h.client.killJob('s', 'job-1')).toEqual({ outcome: 'requested' })
+    expect(h.requests).toEqual([
+      { endpoint: 'workspace/unarchiveSession', args: { request: { sessionId: 's' } } },
+      { endpoint: 'job/kill', args: { request: { sessionId: 's', jobId: 'job-1' } } },
+    ])
+  })
+
   it('buffers post-snapshot events until activation, and pins pagination to the opening cursor', async () => {
     const h = harness()
     await h.client.startStreams()
@@ -285,7 +299,16 @@ describe('DSH 0.1.2 chat transport', () => {
     await secondRejection
     opening.activate()
     h.receive(oldId, event(6))
-    expect(h.outgoing.filter(f => f.type === 'cancel')).toHaveLength(2)
+    // Each conversation subscription also opens an optional job/list stream, so
+    // assert the intent (every superseded session/follow is cancelled, the live
+    // one is not) rather than a total cancel count.
+    const followOpens = h.outgoing
+      .filter(f => f.type === 'open' && f.endpoint === 'session/follow')
+      .map(f => f.streamId)
+    expect(followOpens).toHaveLength(3)
+    const cancelled = h.outgoing.filter(f => f.type === 'cancel').map(f => f.streamId)
+    expect(cancelled).toEqual(expect.arrayContaining(followOpens.slice(0, 2)))
+    expect(cancelled).not.toContain(followOpens[2])
     expect(h.frames.filter(f => f.payload.type === 'session/event')).toHaveLength(0)
   })
 
@@ -495,6 +518,46 @@ describe('DSH 0.1.2 chat transport', () => {
     const second = await h.client.openSession('other')
     second.activate()
     expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toEqual([])
+  })
+
+  it('subscribes to the DSH 0.1.7 job/list stream and publishes its rows', async () => {
+    const job = { id: 'bash-1', kind: 'bash', label: 'run the tests', status: 'completed', startedAt: 1 }
+    const h = harness(true, { s: [job] }, true)
+    await h.client.startStreams()
+    const opening = await h.client.openSession('s')
+    opening.activate()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(h.frames.filter(f => f.payload.type === 'session/jobs').at(-1)?.payload)
+      .toEqual({ type: 'session/jobs', sessionId: 's', jobs: [job] })
+    expect(h.errors).toEqual([])
+  })
+
+  it('does not fail the feed when the runtime does not serve job/list', async () => {
+    // DSH <= 0.1.5 has no job/list endpoint; the optional stream must degrade silently.
+    const h = harness()
+    await h.client.startStreams()
+    const opening = await h.client.openSession('s')
+    opening.activate()
+    h.receive(h.ids.get('job/list')!, { type: 'error', error: { code: 'gateway/not-found', message: 'no such endpoint' } })
+    expect(h.errors).toEqual([])
+    expect(h.frames.filter(f => f.payload.type === 'session/jobs').at(-1)?.payload)
+      .toEqual({ type: 'session/jobs', sessionId: 's', jobs: [] })
+  })
+
+  it('maps the DSH 0.1.7 inbox projection onto the queue', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    ;(await h.client.openSession('s')).activate()
+    const message = (id: string) => ({ id, content: [{ type: 'text', text: id }] })
+    h.push('session/control', {
+      type: 'projection', sessionId: 's', key: 'inbox', seq: 10,
+      value: { 'next-turn': [message('turn')], 'next-step': [message('step')] },
+    })
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toEqual([
+      { id: 'turn', placement: 'queued', message: message('turn') },
+      { id: 'step', placement: 'steering', message: message('step') },
+    ])
+    expect(h.errors).toEqual([])
   })
 
   it.each(['queue-first', 'event-first'] as const)('retires durable steering messages across %s delivery', async order => {

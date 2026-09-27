@@ -48,6 +48,22 @@ describe('diffConversationMessages', () => {
     })
   })
 
+  it('streams thinking as a reasoning append beside the answer text', () => {
+    const previous = [message('assistant:1', '', { streaming: true, reasoning: 'Think' })]
+    const next = [message('assistant:1', '', { streaming: true, reasoning: 'Thinking' })]
+
+    expect(diffConversationMessages(previous, next)).toEqual({
+      appends: [{ id: 'assistant:1', text: '', streaming: true, reasoning: 'ing' }],
+    })
+  })
+
+  it('falls back to an upsert when settled thinking is rewritten', () => {
+    const previous = [message('assistant:1', 'Answer', { streaming: true, reasoning: 'Draft' })]
+    const next = [message('assistant:1', 'Answer', { reasoning: 'A rewritten thought' })]
+
+    expect(diffConversationMessages(previous, next)).toEqual({ upserts: next })
+  })
+
   it('falls back to an upsert when streamed text is rewritten', () => {
     const previous = [message('assistant:1', 'Original', { streaming: true })]
     const next = [message('assistant:1', 'Replacement', { streaming: true })]
@@ -88,7 +104,7 @@ describe('diffConversationMessages', () => {
       callView: { card: 'generic', title: 'Router status' },
       resultView: { card: 'generic', title: 'Router status' },
       deferredBody: true,
-      deferredBodyRevision: 'settled:17:16:100000:',
+      deferredBodyRevision: 'settled:17:0:16:100000:',
       bodyLength: 100_000,
     })
   })

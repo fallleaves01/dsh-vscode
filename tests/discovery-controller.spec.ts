@@ -53,6 +53,9 @@ function testClient() {
     selectAgentPreset: vi.fn(), prompt: vi.fn(async () => ({})),
     updateQueue: vi.fn(async () => ({ accepted: true })),
     executeCommand: vi.fn(async () => ({ result: { kind: 'success' } })),
+    archiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
+    unarchiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
+    killJob: vi.fn(async () => ({ outcome: 'requested' as const })),
   }
   const emit = (payload: Record<string, unknown>, channel: 'host' | 'mux' = 'host', rpcId = '') => {
     for (const listener of listeners) listener({ channel, rpcId, payload })
@@ -966,5 +969,52 @@ describe('sidebar discovery notifications', () => {
     await h.controller.start()
     pending.resolve({ entries: [] })
     await rejected
+  })
+})
+
+describe('archived conversations and background jobs', () => {
+  it('restores an archived conversation without stealing focus', async () => {
+    const h = await harness()
+    h.client.listSessions.mockResolvedValue({ items: [
+      { sessionId: 'a', cwd: '/workspace', updatedAt: 5, blank: false, running: false, projections: { values: { title: 'Older work' } } },
+      { sessionId: 'b', cwd: '/workspace', updatedAt: 9, blank: false, running: false, projections: { values: { title: 'Current work' } } },
+    ] })
+    h.client.unarchiveSession.mockResolvedValue({ archivedSessionIds: [] })
+    // `workspace/follow` is authoritative: every reload re-reads the archive list.
+    h.client.listWorkspaces.mockResolvedValue({ archivedSessionIds: ['a'] })
+
+    h.emit({ type: 'host/archived-sessions-changed', archivedSessionIds: ['a'] })
+    await vi.waitFor(() => expect(h.controller.state.archivedSessions).toHaveLength(1))
+    expect(h.controller.state.archivedSessions[0]).toMatchObject({ id: 'a', title: 'Older work' })
+    expect(h.controller.state.sessions.map(item => item.id)).toEqual(['b'])
+
+    await h.controller.unarchiveSession('a')
+    expect(h.client.unarchiveSession).toHaveBeenCalledWith('a')
+    expect(h.controller.state.archivedSessions).toEqual([])
+    expect(h.controller.state.sessions.map(item => item.id)).toEqual(['b', 'a'])
+    expect(h.controller.state.sessionId).toBe('b')
+  })
+
+  it('leaves a conversation alone when it is not archived', async () => {
+    const h = await harness()
+    await h.controller.unarchiveSession('a')
+    expect(h.client.unarchiveSession).not.toHaveBeenCalled()
+  })
+
+  it('stops only a live job that belongs to the visible session', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/jobs', sessionId: 'a', jobs: [
+      { id: 'live', kind: 'bash', label: 'npm test', status: 'running', startedAt: 1 },
+      { id: 'settled', kind: 'bash', label: 'build', status: 'completed', startedAt: 2, finishedAt: 3 },
+    ] }, 'mux')
+    expect(h.controller.state.jobs.map(job => job.id)).toEqual(['live', 'settled'])
+
+    await h.controller.killJob('a', 'settled')
+    await h.controller.killJob('b', 'live')
+    await h.controller.killJob('a', 'missing')
+    expect(h.client.killJob).not.toHaveBeenCalled()
+
+    await h.controller.killJob('a', 'live')
+    expect(h.client.killJob).toHaveBeenCalledWith('a', 'live')
   })
 })
