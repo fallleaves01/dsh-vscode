@@ -116,6 +116,20 @@ describe('authenticated runtime startup', () => {
     expect(readSecret).not.toHaveBeenCalled()
   })
 
+  it('never adopts an unauthenticated listener on the shared loopback port', async () => {
+    state.reuse = true
+    // 127.0.0.1 is host-wide, so any local account can bind 3080. A real DSH
+    // answers 401 without its launch token; the stub here answers session/list
+    // with a valid-looking shape, which is exactly the impostor case.
+    const { instance, logs } = runtime()
+    const pending = instance.start()
+    await vi.waitFor(() => expect(state.children).toHaveLength(1))
+    state.children[0]!.stdout.emit('data', `dsh web: ${external.launchUrl.href}\n`)
+    await pending
+    expect(instance.state).toMatchObject({ kind: 'ready', ownership: 'managed' })
+    expect(logs.join('\n')).toContain('ignoring an unauthenticated service')
+  })
+
   it('skips automatic reuse when the user explicitly chooses a managed runtime', async () => {
     state.reuse = true
     const { instance } = runtime()

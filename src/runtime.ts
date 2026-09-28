@@ -202,21 +202,15 @@ export class DshRuntime implements vscode.Disposable {
         this.publish({ kind: 'starting', detail: 'Looking for an existing DeepSeek Harness runtime…' })
         const connection = new DshConnection(existingUrl)
         const probe = await probeDshServer(connection)
-        if (probe.kind === 'ready') {
-          if (this.pending !== pending) {
-            connection.dispose()
-            return pending.promise
-          }
-          const localUri = vscode.Uri.parse(existingUrl.href)
-          this.output.appendLine(`[runtime] reusing existing DSH: ${existingUrl.href}`)
-          this._connection = connection
-          this.pending = undefined
-          this.publish({ kind: 'ready', localUri, ownership: 'external' })
-          pending.resolve(localUri)
-          return pending.promise
-        }
         connection.dispose()
-        if (probe.kind === 'authentication-required') {
+        // `127.0.0.1` is host-wide, not user-wide: on a shared machine every
+        // local account can bind this port. A real DSH always demands its
+        // launch token, so an endpoint that answers `session/list` without one
+        // is not a runtime this sidebar may adopt — adopting it would hand the
+        // user's prompts and workspace files to whoever is listening.
+        if (probe.kind === 'ready') {
+          this.output.appendLine('[runtime] ignoring an unauthenticated service on 127.0.0.1:3080: a DeepSeek Harness runtime must present its launch token. Starting a separate managed runtime.')
+        } else if (probe.kind === 'authentication-required') {
           throw new ExistingRuntimeConnectionError()
         } else if (probe.kind === 'unsupported') {
           this.output.appendLine('[runtime] existing endpoint does not support the required DSH Remote protocol; starting a separate managed runtime.')

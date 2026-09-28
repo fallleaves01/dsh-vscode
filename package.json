@@ -214,7 +214,7 @@
           "type": "boolean",
           "scope": "resource",
           "default": true,
-          "description": "Look for an existing DSH Web runtime on 127.0.0.1:3080 when no custom executable or arguments are configured. Authenticated runtimes prompt you to connect with their launch URL or start a separate managed runtime."
+          "description": "Look for an existing DSH Web runtime on 127.0.0.1:3080 when no custom executable or arguments are configured. Authenticated runtimes prompt you to connect with their launch URL or start a separate managed runtime. A service that answers without its launch token is never adopted: 127.0.0.1 is reachable by every local user on a shared host."
         },
         "deepseekHarness.autonomousDebugging": {
           "type": "boolean",
