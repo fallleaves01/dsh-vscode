@@ -245,6 +245,40 @@ export class DshClient {
     }, 300_000)
   }
   pluginInventory(): Promise<PluginInventorySnapshot> { return this.call('pluginInventory/list', {}) }
+  /** Origin of the runtime this client is bound to; used for the sign-in callback. */
+  get runtimeOrigin(): URL { return this.connection.baseUrl }
+
+  /**
+   * Account state. The Host owns the OAuth exchange and never returns a token,
+   * so every account call here is safe to publish to the Webview.
+   */
+  accountState(): Promise<unknown> { return this.call('account/getState', {}, 15_000) }
+  accountProfile(client: Record<string, unknown>): Promise<unknown> {
+    return this.call('account/getProfile', { client }, 20_000)
+  }
+  accountBalance(client: Record<string, unknown>): Promise<unknown> {
+    return this.call('account/getBalance', { client }, 20_000)
+  }
+  /**
+   * Begin browser sign-in.
+   * @param client - identity DSH forwards to the Platform.
+   * @param callbackOrigin - loopback HTTP origin the Platform returns the
+   *   browser to. DSH accepts only `localhost`/`127.0.0.1` with an explicit port,
+   *   which is exactly what VS Code's forwarded URI provides for a remote runtime.
+   */
+  startAccountSignIn(
+    client: Record<string, unknown>,
+    callbackOrigin: string,
+    loginSource: 'web' | 'desktop',
+  ): Promise<unknown> {
+    return this.call('account/startSignIn', { client, callbackOrigin, loginSource }, 30_000)
+  }
+  cancelAccountSignIn(attemptId: string): Promise<unknown> {
+    return this.call('account/cancelSignIn', { attemptId }, 20_000)
+  }
+  signOutAccount(client: Record<string, unknown>): Promise<unknown> {
+    return this.call('account/signOut', { client }, 30_000)
+  }
   settings(): Promise<SettingsDescription> { return this.call('settings/describe', {}) }
   mutateSettings(ns: string, ops: SettingsMutation[], expectedRevision: number): Promise<SettingsNamespace> {
     return this.call('settings/mutate', { ns, ops, expectedRevision })

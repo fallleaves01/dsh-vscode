@@ -373,7 +373,11 @@ export class DshSessionFeed {
     }
     if (frame.type !== 'emit' || typeof frame.event !== 'string' || !Array.isArray(frame.args)) throw new Error('Invalid remote event.')
     const [id, value] = frame.args
-    if (frame.event === 'commands/change' && frame.args.length === 0) {
+    if (frame.event === 'deepseek-account/signed-out' || frame.event === 'deepseek-account/session-expired'
+      || frame.event === 'deepseek-account/model-sign-in-required' || frame.event === 'credentials/record-updated') {
+      // Account state is runtime-wide, so these carry no session identity.
+      this.host({ type: 'host/account-changed' })
+    } else if (frame.event === 'commands/change' && frame.args.length === 0) {
       this.host({ type: 'host/commands-changed' })
     } else if (frame.event === 'llm/adapters-updated' && frame.args.length === 0) {
       this.host({ type: 'host/models-changed' })

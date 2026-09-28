@@ -60,6 +60,23 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .session-archived-toggle { margin-top: 6px; padding: 6px 7px 4px; border: 0; border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 60%, transparent); border-radius: 0; color: var(--vscode-descriptionForeground); background: transparent; text-align: left; font-size: 10px; font-weight: 600; letter-spacing: .3px; }
     .session-archived-toggle:hover { color: var(--vscode-foreground); }
     .session-row.archived { grid-template-columns: minmax(0, 1fr) auto; }
+    .account-control { position: relative; display: flex; }
+    .account-trigger { position: relative; }
+    .account-dot { position: absolute; right: 3px; bottom: 3px; width: 6px; height: 6px; border-radius: 50%; background: transparent; }
+    .account-trigger.signed-in .account-dot { background: var(--vscode-charts-green, #3fb950); }
+    .account-trigger.working .account-dot { background: var(--vscode-charts-blue, #4d6bfe); }
+    .account-trigger.failed .account-dot { background: var(--vscode-errorForeground); }
+    .account-menu { position: absolute; z-index: 30; top: calc(100% + 5px); right: 0; width: min(300px, calc(100vw - 16px)); padding: 8px; display: grid; gap: 6px; border: 1px solid var(--vscode-widget-border); border-radius: 9px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 7px 24px var(--vscode-widget-shadow); }
+    .account-title { padding: 2px 4px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; letter-spacing: .3px; text-transform: uppercase; }
+    .account-line { padding: 2px 4px; color: var(--vscode-foreground); font-size: 12px; }
+    .account-line.failed { color: var(--vscode-errorForeground); }
+    .account-meta { padding: 0 4px 2px; color: var(--vscode-descriptionForeground); font-size: 11px; word-break: break-word; }
+    .account-action { min-height: 28px; padding: 4px 10px; border: 0; border-radius: 6px; color: var(--vscode-button-foreground, var(--vscode-foreground)); background: var(--vscode-button-background, var(--vscode-toolbar-hoverBackground)); text-align: left; font-size: 12px; }
+    .account-action:hover { background: var(--vscode-button-hoverBackground, var(--vscode-toolbar-hoverBackground)); }
+    .account-action.secondary { color: var(--vscode-foreground); background: transparent; }
+    .account-action.secondary:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .routable-notice { padding: 6px 12px 2px; color: var(--vscode-errorForeground); font-size: 11px; }
+    .routable-notice.hidden { display: none; }
     .session-row.session-ancestor { margin-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--vscode-widget-border) 60%, transparent); border-radius: 0; grid-template-columns: minmax(0, 1fr); }
     .session-ancestor-arrow { flex: 0 0 auto; color: var(--vscode-descriptionForeground); }
     .session-row.session-child { margin-left: 14px; position: relative; grid-template-columns: minmax(0, 1fr); }
@@ -326,6 +343,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         <button id="jobsTrigger" class="icon-button jobs-trigger" title="Background jobs" aria-label="Background jobs" aria-haspopup="menu" aria-expanded="false"><span class="jobs-dot"></span><span id="jobsCount">0</span></button>
         <div id="jobsMenu" class="jobs-menu hidden" role="menu" aria-label="Background jobs"></div>
       </div>
+      <div id="accountControl" class="account-control hidden">
+        <button id="accountTrigger" class="icon-button account-trigger" title="DeepSeek account" aria-label="DeepSeek account" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg><span class="account-dot"></span></button>
+        <div id="accountMenu" class="account-menu hidden" role="menu" aria-label="DeepSeek account"></div>
+      </div>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     </header>
     <div class="conversation-pane">
@@ -335,6 +356,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     <footer class="composer-wrap">
       <div id="queueDock" class="queue-dock hidden" aria-label="Queued messages"></div>
       <div class="composer">
+        <div id="routableNotice" class="routable-notice hidden" role="status"></div>
         <div id="modeChips" class="mode-chips hidden" aria-label="Active collaboration modes"></div>
         <div id="contextChips" class="context-chips hidden" aria-label="Editor context"></div>
         <div id="attachments" class="attachments hidden"></div>
@@ -383,6 +405,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'), usageStats: document.getElementById('usageStats'),
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
       queueDock: document.getElementById('queueDock'), dropOverlay: document.getElementById('dropOverlay'),
+      accountControl: document.getElementById('accountControl'), accountTrigger: document.getElementById('accountTrigger'), accountMenu: document.getElementById('accountMenu'),
+      routableNotice: document.getElementById('routableNotice'),
       modeChips: document.getElementById('modeChips'), contextChips: document.getElementById('contextChips'), mentionMenu: document.getElementById('mentionMenu'), commandMenu: document.getElementById('commandMenu'),
     };
     let state;
@@ -402,6 +426,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let policyMenuOpen = false;
     let usageOpen = false;
     let jobsOpen = false;
+    let accountOpen = false;
     let sessionMenuOpen = false;
     let sessionActionId;
     let archivedOpen = false;
@@ -1574,6 +1599,69 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (armedJobTimer) { clearTimeout(armedJobTimer); armedJobTimer = undefined; }
       if (jobId !== undefined) armedJobTimer = setTimeout(() => { armedJobId = undefined; armedJobTimer = undefined; renderJobs(); }, 3000);
     }
+    function renderAccount(current) {
+      const account = record(current.account);
+      // A runtime without the account controller simply shows no account UI,
+      // rather than a disabled button that explains nothing.
+      if (!account || account.available !== true) {
+        accountOpen = false;
+        elements.accountControl.classList.add('hidden');
+        elements.accountMenu.classList.add('hidden');
+        return;
+      }
+      elements.accountControl.classList.remove('hidden');
+      const phase = string(account.phase);
+      const working = phase === 'initializing' || phase === 'waiting-browser' || phase === 'exchanging' || phase === 'committing';
+      const failed = current.accountFailed === true;
+      elements.accountTrigger.classList.toggle('signed-in', account.signedIn === true);
+      elements.accountTrigger.classList.toggle('working', working);
+      elements.accountTrigger.classList.toggle('failed', failed);
+      const notice = current.accountNotice;
+      elements.accountTrigger.title = typeof notice === 'string' && notice !== '' ? notice
+        : account.signedIn === true ? 'DeepSeek account' : 'Sign in to DeepSeek';
+      elements.accountMenu.classList.toggle('hidden', !accountOpen);
+      elements.accountTrigger.setAttribute('aria-expanded', String(accountOpen));
+      if (!accountOpen) return;
+
+      elements.accountMenu.replaceChildren();
+      const title = node('div', 'account-title', account.signedIn === true ? 'DeepSeek account' : 'Sign in');
+      elements.accountMenu.append(title);
+      const profile = record(account.profile);
+      const name = profile ? (string(profile.name) || string(profile.id)) : '';
+      if (account.signedIn === true && name !== '') elements.accountMenu.append(node('div', 'account-line', name));
+      if (typeof notice === 'string' && notice !== '') {
+        elements.accountMenu.append(node('div', 'account-line' + (failed ? ' failed' : ''), notice));
+      }
+      const wallets = array(account.wallets);
+      if (account.signedIn === true && wallets.length > 0) {
+        const text = wallets.map(wallet => (string(wallet.currency) === 'CNY' ? '¥' : '$') + string(wallet.balance)).join(' · ');
+        elements.accountMenu.append(node('div', 'account-meta', 'Balance ' + text));
+      }
+
+      const addAction = (label, className, run) => {
+        const button = node('button', 'account-action' + (className ? ' ' + className : ''), label);
+        button.type = 'button'; button.setAttribute('role', 'menuitem');
+        button.addEventListener('click', () => { accountOpen = false; elements.accountMenu.classList.add('hidden'); elements.accountTrigger.setAttribute('aria-expanded', 'false'); run(); });
+        elements.accountMenu.append(button);
+      };
+      if (account.signedIn === true) {
+        const usage = string(account.usageUrl);
+        const topUp = string(account.topUpUrl);
+        if (usage !== '') addAction('Usage', 'secondary', () => vscode.postMessage({ type: 'open-link', href: usage }));
+        if (topUp !== '') addAction('Top up', 'secondary', () => vscode.postMessage({ type: 'open-link', href: topUp }));
+        addAction('Sign out', 'secondary', () => vscode.postMessage({ type: 'sign-out' }));
+        return;
+      }
+      if (working) {
+        if (typeof account.authorizeUrl === 'string' && account.authorizeUrl !== '') {
+          addAction('Open the sign-in page again', '', () => vscode.postMessage({ type: 'open-link', href: account.authorizeUrl }));
+        }
+        addAction('Cancel sign-in', 'secondary', () => vscode.postMessage({ type: 'cancel-sign-in' }));
+        return;
+      }
+      addAction('Sign in with DeepSeek', '', () => vscode.postMessage({ type: 'sign-in' }));
+    }
+
     function renderJobs() {
       const jobs = array(state && state.jobs);
       const live = jobs.filter(liveJob).length;
@@ -1676,6 +1764,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (policyChanged) renderPolicyState(current);
       if (renderedChrome.usage !== current.usage) renderUsage(current);
       if (renderedChrome.jobs !== current.jobs) renderJobs();
+      if (renderedChrome.account !== current.account || renderedChrome.accountNotice !== current.accountNotice || renderedChrome.accountFailed !== current.accountFailed) renderAccount(current);
+      renderRoutableNotice(current);
       renderConversation(current);
       const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
       elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready'; elements.sessionTrigger.disabled = current.phase !== 'ready';
@@ -1685,6 +1775,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       renderedChrome = {
         workspaceName: current.workspaceName, cwd: current.cwd, sessions: current.sessions, sessionId: current.sessionId, models: current.models,
         agentPreset: current.agentPreset, permissions: current.permissions, plan: current.plan, running: current.running,
+        account: current.account, accountNotice: current.accountNotice, accountFailed: current.accountFailed,
         phase: current.phase, usage: current.usage, jobs: current.jobs, commands: current.commands, skills: current.skills,
       };
       if (preservingHistory && current.loadingHistory !== true) {
@@ -1735,6 +1826,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         ? applyMessagesPatch(state.messages, update.messages)
         : state.messages;
       scheduleRender({ ...state, ...patch, messages });
+    }
+    function renderRoutableNotice(current) {
+      const text = current.routableNotice;
+      const show = current.phase === 'ready' && current.routable === false && typeof text === 'string' && text !== '';
+      elements.routableNotice.textContent = show ? text : '';
+      elements.routableNotice.classList.toggle('hidden', !show);
     }
     function updateSend() {
       const pendingSend = state && [...pendingDraftSends.values()].some(draft => draft.sessionId === state.sessionId);
@@ -2017,8 +2114,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     elements.policyTrigger.addEventListener('click', event => {
       event.stopPropagation(); policyMenuOpen = !policyMenuOpen; usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false'); elements.commandMenu.classList.add('hidden'); elements.mentionMenu.classList.add('hidden'); if (state) renderPolicyState(state);
     });
+    elements.accountTrigger.addEventListener('click', event => {
+      event.stopPropagation();
+      accountOpen = !accountOpen;
+      jobsOpen = false; elements.jobsMenu.classList.add('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'false');
+      if (state) renderAccount(state);
+    });
     elements.jobsTrigger.addEventListener('click', event => {
-      event.stopPropagation(); jobsOpen = !jobsOpen; elements.jobsMenu.classList.toggle('hidden', !jobsOpen); elements.jobsTrigger.setAttribute('aria-expanded', String(jobsOpen)); renderJobs();
+      event.stopPropagation(); jobsOpen = !jobsOpen; accountOpen = false; elements.accountMenu.classList.add('hidden'); elements.accountTrigger.setAttribute('aria-expanded', 'false'); elements.jobsMenu.classList.toggle('hidden', !jobsOpen); elements.jobsTrigger.setAttribute('aria-expanded', String(jobsOpen)); renderJobs();
     });
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
     elements.githubStar.addEventListener('click', () => vscode.postMessage({ type: 'open-link', href: 'https://github.com/Lixxx1/dsh-vscode' }));
@@ -2040,6 +2143,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     document.addEventListener('click', event => {
       if (policyMenuOpen && !elements.policyMenu.contains(event.target) && !elements.policyTrigger.contains(event.target)) {
         policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false');
+      }
+      if (accountOpen && !elements.accountMenu.contains(event.target) && !elements.accountTrigger.contains(event.target)) {
+        accountOpen = false; if (state) renderAccount(state);
       }
       if (usageOpen && !elements.usagePanel.contains(event.target) && !elements.usageTrigger.contains(event.target)) {
         usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false');

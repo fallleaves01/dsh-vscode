@@ -69,6 +69,16 @@ import {
   type ConversationMessagesPatch,
 } from './chat-state-patch.js'
 import { archivedSessionItems, parentIdOf, sessionItems, type SessionItem, type SessionAttention } from './session-center.js'
+import {
+  accountAttemptActive,
+  accountAttemptFailed,
+  accountClientMetadata,
+  accountStateOf,
+  accountWalletText,
+  unavailableAccountState,
+  type AccountState,
+} from './account.js'
+import { dshErrorText, dshFailure, NO_ROUTABLE_PROVIDER_TEXT } from './dsh-errors.js'
 import { wireRecord } from './dsh-streams.js'
 import type { DshConnection } from './dsh-connection.js'
 import { canRetryConnection, reconnectAttempts } from './dsh-reconnect.js'
@@ -144,6 +154,14 @@ interface ChatViewState {
    * undefined properties, so an absent key could never clear a stale owner.
    */
   parentSessionId: string | null
+  /** DeepSeek account sign-in state for this runtime; carries no credential. */
+  account: AccountState
+  /** One human line for the account row, derived from {@link account}. */
+  accountNotice: string | null
+  /** Whether {@link accountNotice} reports a failure the user must act on. */
+  accountFailed: boolean
+  /** Why the composer is unavailable, when no model can serve a request. */
+  routableNotice: string | null
   sessionId: string
   messages: ConversationMessage[]
   running: boolean
@@ -206,6 +224,10 @@ function initialState(cwd: string): ChatViewState {
     sessions: [],
     archivedSessions: [],
     parentSessionId: null,
+    account: unavailableAccountState(),
+    accountNotice: null,
+    accountFailed: false,
+    routableNotice: null,
     sessionId: '',
     messages: [],
     running: false,
@@ -257,6 +279,12 @@ export class DshChatController implements vscode.Disposable {
   private readonly reconnectSessions = new Set<string>()
   private automaticReconnects: number[] = []
   private recovery: { abort: AbortController; task: Promise<void>; failure: Error | undefined } | undefined
+  /** Refresh timer while a browser sign-in attempt is in flight. */
+  private accountPoll: NodeJS.Timeout | undefined
+  /** Attempt whose authorize URL was already handed to the browser. */
+  private openedSignInAttempt: string | undefined
+  /** Polls spent on the current attempt, so a stuck attempt cannot poll forever. */
+  private accountPollCount = 0
 
   private static readonly unreadStorageKey = 'deepseekHarness.unreadSessions'
 
@@ -270,6 +298,7 @@ export class DshChatController implements vscode.Disposable {
     private readonly diffReviews: DiffReviewManager,
     private readonly workspaceState: vscode.Memento,
     private _cwd: string,
+    private readonly extensionVersion: string,
   ) {
     this._state = initialState(_cwd)
     this.unreadSessionIds = new Set(workspaceState.get<string[]>(DshChatController.unreadStorageKey, []))
@@ -861,7 +890,7 @@ export class DshChatController implements vscode.Disposable {
   }
 
   report(error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = dshErrorText(error)
     this.output.appendLine(`[chat] ${message}`)
     this.projector.notice(`error:${String(Date.now())}`, message, true)
     this.publish({ messages: this.projectedMessages() })
@@ -870,6 +899,7 @@ export class DshChatController implements vscode.Disposable {
   dispose(): void {
     this.disposed = true
     ++this.runtimeSwitchRevision
+    this.stopAccountPoll()
     this.cancelRecovery()
     ++this.generation
     this.disconnectClient()
@@ -882,6 +912,167 @@ export class DshChatController implements vscode.Disposable {
     return this.client
   }
 
+  /**
+   * Read the account state, and refresh until an in-flight sign-in settles.
+   *
+   * DSH exposes `account/watch`, but the sidebar polls instead: a poll is
+   * bounded (it stops at a terminal phase or when the user leaves) and needs no
+   * fifth baseline stream alongside `$events`, `session/control`,
+   * `workspace/follow` and `session/follow`.
+   */
+  async refreshAccount(): Promise<void> {
+    const client = this.client
+    if (client === undefined) {
+      this.publish(this.accountPatch(unavailableAccountState()))
+      return
+    }
+    try {
+      const view = await client.accountState()
+      if (this.client !== client) return
+      const pending = accountStateOf(view)
+      let details: { profile?: unknown; balance?: unknown } = {}
+      if (pending.signedIn) {
+        // Profile and balance are separate reads whose failure only means the
+        // sidebar shows less; neither may turn into a visible error.
+        const metadata = accountClientMetadata(this.extensionVersion, vscode.env.language)
+        const [profile, balance] = await Promise.all([
+          client.accountProfile(metadata).catch(() => undefined),
+          client.accountBalance(metadata).catch(() => undefined),
+        ])
+        if (this.client !== client) return
+        details = { profile, balance }
+      }
+      const account = accountStateOf(view, details)
+      this.publish(this.accountPatch(account))
+      this.scheduleAccountPoll(account)
+      await this.openAuthorizeUrl(account)
+    } catch (error) {
+      if (this.client !== client) return
+      // A runtime without the account controller is a supported deployment; any
+      // other failure is ours, and must stay distinguishable in the log rather
+      // than hiding behind the same "unavailable" state.
+      const failure = dshFailure(error)
+      const missing = failure.message.includes('unknown method') || failure.message.includes('not found')
+      this.output.appendLine(missing
+        ? '[account] not available on this runtime'
+        : `[account] unexpected failure (${failure.code ?? 'no code'}): ${failure.message}`)
+      this.publish(this.accountPatch(unavailableAccountState()))
+      this.stopAccountPoll()
+    }
+  }
+
+  /** Render the account row for one state, so every publish site agrees. */
+  private accountPatch(account: AccountState): Pick<ChatViewState, 'account' | 'accountNotice' | 'accountFailed'> {
+    if (!account.available) return { account, accountNotice: null, accountFailed: false }
+    return { account, accountNotice: ACCOUNT_NOTICE(account), accountFailed: accountAttemptFailed(account) }
+  }
+
+  /** Start browser sign-in and hand the authorize URL to the user's browser. */
+  async signIn(): Promise<void> {
+    this.requireReady()
+    const client = this.requireClient()
+    const callbackOrigin = await this.accountCallbackOrigin(client)
+    if (callbackOrigin === undefined) {
+      throw new Error('Sign-in needs a browser-reachable loopback address. Run DeepSeek Harness on this machine, or forward its port over SSH, then try again.')
+    }
+    const metadata = accountClientMetadata(this.extensionVersion, vscode.env.language)
+    const view = await client.startAccountSignIn(metadata, callbackOrigin, 'desktop')
+    if (this.client !== client) return
+    const account = accountStateOf(view)
+    this.accountPollCount = 0
+    this.publish(this.accountPatch(account))
+    this.scheduleAccountPoll(account)
+    await this.openAuthorizeUrl(account)
+  }
+
+  /**
+   * Hand the authorize URL to the browser the first time it appears.
+   *
+   * `startSignIn` answers with phase `initializing` and no URL: the Host mints
+   * it asynchronously, so the URL arrives on a later read. Opening only what the
+   * start call returned would leave the user with a button that does nothing.
+   */
+  private async openAuthorizeUrl(account: AccountState): Promise<void> {
+    const attemptId = account.attemptId
+    if (attemptId === undefined || account.authorizeUrl === undefined) return
+    if (this.openedSignInAttempt === attemptId) return
+    this.openedSignInAttempt = attemptId
+    try {
+      await vscode.env.openExternal(vscode.Uri.parse(account.authorizeUrl))
+    } catch (error) {
+      // The URL stays in the menu for a manual open, and polling continues.
+      this.output.appendLine(`[account] could not open the sign-in page: ${dshErrorText(error)}`)
+    }
+  }
+
+  async cancelSignIn(): Promise<void> {
+    const attemptId = this._state.account.attemptId
+    if (attemptId === undefined) return
+    const client = this.requireClient()
+    const view = await client.cancelAccountSignIn(attemptId)
+    if (this.client !== client) return
+    const account = accountStateOf(view)
+    this.publish(this.accountPatch(account))
+    this.scheduleAccountPoll(account)
+  }
+
+  async signOut(): Promise<void> {
+    this.requireReady()
+    const client = this.requireClient()
+    const metadata = accountClientMetadata(this.extensionVersion, vscode.env.language)
+    const view = await client.signOutAccount(metadata)
+    if (this.client !== client) return
+    this.publish(this.accountPatch(accountStateOf(view)))
+    this.openedSignInAttempt = undefined
+    this.stopAccountPoll()
+  }
+
+  /**
+   * The loopback origin the Platform returns the browser to. DSH accepts only
+   * `http://localhost|127.0.0.1:<port>` — "for local or SSH-forwarded login" —
+   * and `asExternalUri` is what produces that form on a remote host, because it
+   * registers the runtime's port with VS Code's forwarder.
+   */
+  private async accountCallbackOrigin(client: DshClient): Promise<string | undefined> {
+    let forwarded: vscode.Uri
+    try {
+      forwarded = await vscode.env.asExternalUri(vscode.Uri.parse(client.runtimeOrigin.href))
+    } catch {
+      return undefined
+    }
+    let url: URL
+    try {
+      url = new URL(forwarded.toString(true))
+    } catch {
+      return undefined
+    }
+    if (url.protocol !== 'http:') return undefined
+    if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') return undefined
+    return url.port === '' ? undefined : url.origin
+  }
+
+  private scheduleAccountPoll(account: AccountState): void {
+    this.stopAccountPoll()
+    if (!accountAttemptActive(account)) {
+      this.accountPollCount = 0
+      return
+    }
+    // A host that never reaches a terminal phase must not poll forever; the
+    // cap is generous enough to outlast the Platform's own attempt lifetime.
+    if (this.accountPollCount >= MAX_ACCOUNT_POLLS) return
+    this.accountPollCount += 1
+    this.accountPoll = setTimeout(() => {
+      this.accountPoll = undefined
+      void this.refreshAccount()
+    }, ACCOUNT_POLL_INTERVAL_MS)
+  }
+
+  private stopAccountPoll(): void {
+    if (this.accountPoll === undefined) return
+    clearTimeout(this.accountPoll)
+    this.accountPoll = undefined
+  }
+
   /** Stage one dropped file against the live connection; see {@link DshClient.uploadFile}. */
   uploadFile(sessionId: string, data: string, name?: string): Promise<FileUploadReceipt> {
     return this.requireClient().uploadFile(sessionId, data, name)
@@ -892,6 +1083,9 @@ export class DshChatController implements vscode.Disposable {
   }
 
   private disconnectClient(): void {
+    this.stopAccountPoll()
+    this.openedSignInAttempt = undefined
+    this.publish(this.accountPatch(unavailableAccountState()))
     this.runtimeActivity.clear()
     this.jobsBySession.clear()
     ++this.sessionListGeneration
@@ -1074,6 +1268,9 @@ export class DshChatController implements vscode.Disposable {
     })
     opening.activate()
     this.hydrateImages(client, sessionId)
+    // Account state is per-runtime, not per-conversation, so the first ready
+    // conversation is what makes the account control appear at all.
+    void this.refreshAccount()
     void this.loadCommands(client, sessionId)
     void this.loadSkills(client, sessionId)
     void this.loadAgentPresets(client, sessionId)
@@ -1150,7 +1347,7 @@ export class DshChatController implements vscode.Disposable {
     void this.loadAgentPresets(this.client, sessionId)
   }
 
-  private modelPatch(models: SessionModels): Pick<ChatViewState, 'models' | 'routable'> {
+  private modelPatch(models: SessionModels): Pick<ChatViewState, 'models' | 'routable' | 'routableNotice'> {
     const options: ModelItem[] = []
     for (const group of models.groups) {
       for (const model of group.models) {
@@ -1174,6 +1371,7 @@ export class DshChatController implements vscode.Disposable {
     return {
       models: options,
       routable: models.routable,
+      routableNotice: models.routable ? null : NO_ROUTABLE_PROVIDER_TEXT,
     }
   }
 
@@ -1409,8 +1607,18 @@ export class DshChatController implements vscode.Disposable {
       return
     }
 
+    if (frame.channel === 'host' && type === 'host/account-changed') {
+      // `deepseek-account/signed-out` and `session-expired` reach us as host
+      // events; without this the sidebar would keep claiming a stale sign-in.
+      void this.refreshAccount()
+      return
+    }
+
     if (frame.channel === 'host' && type === 'host/agent-error' && sessionId === this._state.sessionId) {
-      const message = typeof payload.message === 'string' ? payload.message : 'DeepSeek Harness reported an agent error.'
+      // This channel carries text only, but DSH may prefix it with a code.
+      const message = dshErrorText(
+        typeof payload.message === 'string' ? payload.message : 'DeepSeek Harness reported an agent error.',
+      )
       this.projector.notice(`agent-error:${frame.rpcId}`, message, true)
       this.publish({ messages: this.projectedMessages(), running: false })
       return
@@ -1575,6 +1783,32 @@ export class DshChatController implements vscode.Disposable {
 type DraftImage = PromptImage & { id: string }
 /** One staged file waiting for the next prompt; its receipt is the wire handle. */
 type DraftFile = PromptFile & { id: string; name: string; bytes: number }
+
+/** How often the sidebar re-reads account state while a sign-in attempt is live. */
+const ACCOUNT_POLL_INTERVAL_MS = 1500
+/** Ceiling on polls per attempt (about ten minutes), so none can poll forever. */
+const MAX_ACCOUNT_POLLS = 400
+
+/** What each in-flight sign-in phase means to the user. */
+const ACCOUNT_PHASE_TEXT: Readonly<Record<string, string>> = {
+  initializing: 'Preparing sign-in…',
+  'waiting-browser': 'Waiting for you to finish in the browser…',
+  exchanging: 'Finishing sign-in…',
+  committing: 'Finishing sign-in…',
+  expired: 'Sign-in expired. Start again.',
+  failed: 'Sign-in failed. Try again.',
+}
+
+/** One human line for the account row; the sidebar holds all account policy. */
+function ACCOUNT_NOTICE(account: AccountState): string | null {
+  if (account.signedIn) {
+    const name = account.profile?.name ?? account.profile?.id ?? 'Signed in'
+    const wallets = account.wallets ?? []
+    return wallets.length === 0 ? name : `${name} · ${accountWalletText(wallets)}`
+  }
+  if (account.phase === undefined || account.phase === 'succeeded') return null
+  return ACCOUNT_PHASE_TEXT[account.phase] ?? 'Signing in…'
+}
 
 /** Largest dropped file this sidebar will stage; the runtime publishes no file bound. */
 const MAX_DRAFT_FILE_BYTES = 32 * 1024 * 1024
@@ -2156,6 +2390,9 @@ class DshSurface implements vscode.Disposable {
         case 'select-agent-preset':
           if (typeof value.agentPreset === 'string') await this.controller.selectAgentPreset(value.agentPreset)
           return
+        case 'sign-in': await this.controller.signIn(); return
+        case 'sign-out': await this.controller.signOut(); return
+        case 'cancel-sign-in': await this.controller.cancelSignIn(); return
         case 'attach': await this.chooseImages(); return
         case 'attach-images':
           if (typeof value.sessionId === 'string'
@@ -2493,7 +2730,8 @@ export function activate(context: vscode.ExtensionContext): void {
   }
   const cwd = workspace?.uri.fsPath ?? ''
   const diffReviews = new DiffReviewManager()
-  const controller = new DshChatController(runtime, output, new DirtyFileGuard(), diffReviews, context.workspaceState, cwd)
+  const controller = new DshChatController(runtime, output, new DirtyFileGuard(), diffReviews, context.workspaceState, cwd,
+    String(context.extension.packageJSON.version ?? ''))
   const pluginManager = new DshPluginManager(context, controller, output)
   const editorContext = new EditorContextBridge(() => controller.cwd, () => controller.state.sessionId)
   const provider = new DshViewProvider(controller, output, editorContext, context.extensionUri)
@@ -2537,6 +2775,14 @@ export function activate(context: vscode.ExtensionContext): void {
       panels.delete(entry)
     })
     await controller.start()
+  }))
+
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.signIn', async () => {
+    await controller.signIn().catch(error => { void vscode.window.showErrorMessage(dshErrorText(error)) })
+  }))
+
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.signOut', async () => {
+    await controller.signOut().catch(error => { void vscode.window.showErrorMessage(dshErrorText(error)) })
   }))
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.restart', async () => {

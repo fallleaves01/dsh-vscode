@@ -98,11 +98,16 @@ describe('DSH 0.1.2 chat transport', () => {
     for (const [event, args] of [
       ['commands/change', []], ['llm/adapters-updated', []], ['credentials/reference-updated', ['SECRET_REFERENCE']],
       ['settings/document-updated', ['llm-deepseek', 3]], ['agent-preset/selected', ['s', 'minimal']],
+      // 0.1.7-rc.2 account emissions: runtime-wide, so they carry no session id.
+      ['deepseek-account/signed-out', []], ['deepseek-account/session-expired', []],
+      ['deepseek-account/model-sign-in-required', []], ['credentials/record-updated', []],
     ]) h.push('$events', { type: 'emit', event, args })
     expect(h.frames.map(f => f.payload)).toEqual([
       { type: 'host/commands-changed' }, { type: 'host/models-changed' }, { type: 'host/credentials-changed' },
       { type: 'host/settings-changed', ns: 'llm-deepseek', revision: 3 },
       { type: 'host/session-composition-changed', sessionId: 's' },
+      { type: 'host/account-changed' }, { type: 'host/account-changed' },
+      { type: 'host/account-changed' }, { type: 'host/account-changed' },
     ])
     expect(JSON.stringify(h.frames)).not.toContain('SECRET_REFERENCE')
     expect(h.errors).toEqual([])

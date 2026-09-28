@@ -18,6 +18,8 @@ export interface Harness {
   sendState(overrides?: Record<string, unknown>): void
   send(message: Record<string, unknown>): void
   click(selector: string): void
+  /** Flush one render frame: `scheduleRender` defers the DOM to a frame. */
+  settle(): Promise<void>
   document: Document
   dispose(): void
 }
@@ -106,6 +108,12 @@ export function harness(): Harness {
     prompt.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
   }
 
+  const settle = () => new Promise<void>(resolve => {
+    const frame = (globalThis as unknown as { requestAnimationFrame?: (cb: () => void) => void }).requestAnimationFrame
+    if (typeof frame === 'function') frame(() => { resolve() })
+    else setTimeout(resolve, 0)
+  })
+
   const click = (selector: string) => {
     const element = document.querySelector(selector)
     if (element === null) throw new Error(`No element matches ${selector}`)
@@ -113,7 +121,7 @@ export function harness(): Harness {
   }
 
   return {
-    posts, drop, enter, sendState, send, click, document,
+    posts, drop, enter, sendState, send, click, settle, document,
     dispose() {
       for (const spy of spies) spy.mockRestore()
       delete globals.acquireVsCodeApi

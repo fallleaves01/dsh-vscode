@@ -50,6 +50,8 @@
     "onCommand:deepseekHarness.startManagedRuntime",
     "onCommand:deepseekHarness.managePlugins",
     "onCommand:deepseekHarness.configureApiKey",
+    "onCommand:deepseekHarness.signIn",
+    "onCommand:deepseekHarness.signOut",
     "onCommand:deepseekHarness.clearApiKey"
   ],
   "capabilities": {
@@ -133,6 +135,15 @@
         "command": "deepseekHarness.configureApiKey",
         "title": "DeepSeek Harness: Configure API Key",
         "icon": "$(key)"
+      },
+      {
+        "command": "deepseekHarness.signIn",
+        "title": "DeepSeek Harness: Sign In to DeepSeek Account",
+        "icon": "$(account)"
+      },
+      {
+        "command": "deepseekHarness.signOut",
+        "title": "DeepSeek Harness: Sign Out of DeepSeek Account"
       },
       {
         "command": "deepseekHarness.clearApiKey",

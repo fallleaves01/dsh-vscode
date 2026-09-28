@@ -20,6 +20,7 @@ vi.mock('vscode', () => ({
     dispose() { this.listeners.clear() }
   },
   Uri: { file: (fsPath: string) => ({ fsPath, scheme: 'file' }) },
+  env: { language: 'en' },
 }))
 import { DshChatController } from '../src/extension.js'
 
@@ -56,6 +57,16 @@ function testClient() {
     archiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
     unarchiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
     killJob: vi.fn(async () => ({ outcome: 'requested' as const })),
+    accountState: vi.fn(async () => ({ status: 'signed-out', attempt: null,
+      links: { usageUrl: 'https://platform.deepseek.com/usage', topUpUrl: 'https://platform.deepseek.com/top_up' } })),
+    accountProfile: vi.fn(async () => null),
+    accountBalance: vi.fn(async () => null),
+    startAccountSignIn: vi.fn(async () => ({ status: 'signed-out', attempt: { id: 'a1', phase: 'initializing' },
+      links: { usageUrl: 'https://platform.deepseek.com/usage', topUpUrl: 'https://platform.deepseek.com/top_up' } })),
+    cancelAccountSignIn: vi.fn(async () => ({ status: 'signed-out', attempt: { id: 'a1', phase: 'cancelled' },
+      links: { usageUrl: 'https://platform.deepseek.com/usage', topUpUrl: 'https://platform.deepseek.com/top_up' } })),
+    signOutAccount: vi.fn(async () => ({ status: 'signed-out', attempt: null,
+      links: { usageUrl: 'https://platform.deepseek.com/usage', topUpUrl: 'https://platform.deepseek.com/top_up' } })),
   }
   const emit = (payload: Record<string, unknown>, channel: 'host' | 'mux' = 'host', rpcId = '') => {
     for (const listener of listeners) listener({ channel, rpcId, payload })
@@ -73,13 +84,83 @@ async function harness(connection?: DshConnection) {
   const reviews = { clear: vi.fn(), rebuild: vi.fn(() => []), accept: () => false, dispose() {} }
   const controller = new DshChatController(runtime as any,
     output as any, {} as any, reviews as any,
-    { get: () => [], update: async () => {} } as any, '/workspace')
+    { get: () => [], update: async () => {} } as any, '/workspace', '0.0.11')
   controllers.push(controller)
   await controller.start()
   await vi.waitFor(() => expect(controller.state.commands).toHaveLength(1))
   const next = () => { const next = testClient(); mocks.client = next.client; return next }
   return { client, controller, output, emit, fail, runtime, reviews, next }
 }
+
+describe('account sign-in state', () => {
+  it('loads account state as soon as a conversation becomes ready', async () => {
+    // Regression: refreshAccount was only reached from the sign-in poll, so the
+    // account control never appeared until an attempt already existed.
+    const h = await harness()
+    await vi.waitFor(() => expect(h.controller.state.account.available).toBe(true))
+    expect(h.client.accountState).toHaveBeenCalled()
+    expect(h.controller.state.account.signedIn).toBe(false)
+    expect(h.controller.state.accountNotice).toBeNull()
+  })
+
+  it('stops polling an attempt the host never settles', async () => {
+    vi.useFakeTimers()
+    const h = await harness()
+    h.client.accountState.mockResolvedValue({ status: 'signed-out', attempt: { id: 'a1', phase: 'waiting-browser',
+      authorizeUrl: 'https://platform.deepseek.com/dsh/authorize?x=1' },
+      links: { usageUrl: 'u', topUpUrl: 't' } })
+    await h.controller.refreshAccount()
+    await vi.advanceTimersByTimeAsync(1500 * 500)
+    // Bounded: a host stuck in `waiting-browser` cannot poll forever.
+    expect(h.client.accountState.mock.calls.length).toBeLessThan(450)
+    vi.useRealTimers()
+  })
+
+  it('re-reads account state when the runtime reports a sign-out', async () => {
+    const h = await harness()
+    await vi.waitFor(() => expect(h.controller.state.account.available).toBe(true))
+    // The user signed out (or the session expired) elsewhere; the sidebar must
+    // not keep claiming a sign-in it can no longer prove.
+    h.client.accountState.mockClear()
+    h.client.accountState.mockResolvedValue({ status: 'signed-out', attempt: null,
+      links: { usageUrl: 'u', topUpUrl: 't' } })
+    h.emit({ type: 'host/account-changed' })
+    await vi.waitFor(() => expect(h.client.accountState).toHaveBeenCalled())
+    expect(h.controller.state.account.signedIn).toBe(false)
+  })
+
+  it('hides the account control when the runtime has no account service', async () => {
+    const h = await harness()
+    h.client.accountState.mockRejectedValue(new Error('gateway/not-found: unknown method account/getState'))
+    await h.controller.refreshAccount()
+    expect(h.controller.state.account.available).toBe(false)
+    expect(h.controller.state.accountNotice).toBeNull()
+    // A deployment without the account controller is supported, not an error.
+    expect(h.controller.state.messages.filter(message => message.role === 'notice')).toHaveLength(0)
+  })
+
+  it('renders the signed-in identity and balance for the account row', async () => {
+    const h = await harness()
+    h.client.accountState.mockResolvedValue({ status: 'credential-stored', attempt: null,
+      links: { usageUrl: 'https://platform.deepseek.com/usage', topUpUrl: 'https://platform.deepseek.com/top_up' } })
+    h.client.accountProfile.mockResolvedValue({ status: 'ready', value: { id: 'u1', name: 'Alex', contact: null } })
+    h.client.accountBalance.mockResolvedValue({ status: 'ready', value: [{ currency: 'CNY', balance: '12.50' }], bonusWallets: [] })
+    await h.controller.refreshAccount()
+    expect(h.controller.state.account.signedIn).toBe(true)
+    expect(h.controller.state.accountNotice).toBe('Alex · ¥12.50')
+  })
+
+  it('keeps a failed detail read from failing the whole account row', async () => {
+    const h = await harness()
+    h.client.accountState.mockResolvedValue({ status: 'credential-stored', attempt: null,
+      links: { usageUrl: 'u', topUpUrl: 't' } })
+    h.client.accountProfile.mockRejectedValue(new Error('boom'))
+    h.client.accountBalance.mockRejectedValue(new Error('boom'))
+    await h.controller.refreshAccount()
+    expect(h.controller.state.account.signedIn).toBe(true)
+    expect(h.controller.state.accountNotice).toBe('Signed in')
+  })
+})
 
 describe('runtime selection', () => {
   it.each(['terminal error', 'exhausted retries'])('blocks workspace and runtime switches until task state is restored after %s', async failure => {

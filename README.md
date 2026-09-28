@@ -32,6 +32,9 @@ Ask DeepSeek to inspect, change, and verify code without switching between your 
 - **Project-aware editor context.** The active file, selected code, and `@file` or `@folder` references travel with your prompt.
 - **Session controls where you need them.** Switch Permission and Plan modes, choose Model and Reasoning Effort, or steer an active task.
 - **Native review and safe revert.** Review changes in VS Code's Diff Editor, Keep or Revert edits, and stop DSH before it overwrites a file with unsaved changes.
+- **Sign in with your DeepSeek account.** Start browser sign-in from the sidebar, see your profile and balance, and sign out again — no API key needed. Works on a remote host too, by forwarding the runtime's port.
+- **Drag anything in.** Drop a file from the Explorer to reference it, an image to attach it, or any other file to upload it. Subagent sessions appear nested under the conversation that spawned them.
+- **Keyboard-first.** `Cmd/Ctrl+Alt+D` opens the sidebar, `Cmd/Ctrl+Alt+L` adds the selection, `Cmd/Ctrl+Alt+F` fixes the file you are in.
 - **Extend DSH from the sidebar.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks loaded by DSH.
 
 ## 📦 Install

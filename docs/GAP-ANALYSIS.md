@@ -201,14 +201,14 @@ settings/describe  settings/mutate  workspace/archiveSession  workspace/follow
 `settings/describe`、`pluginInventory/list`），并观测到 `host/session-added`、
 `host/archived-sessions-changed`、`session/projection`、`session/jobs` 帧正常流动。
 
-**rc.2 带来的新能力（未接入，属功能而非适配）**
+**rc.2 带来的新能力（已接入三项）**
 
-| 新增 | 说明 |
+| 新增 | 落地情况 |
 |---|---|
-| `dsh-client-shortcuts` + `dsh-client-ui-shortcuts` | 键盘快捷键面板 —— 之前 GAP 里"插件无 keybindings"的对应物 |
-| `time-context` + `schedule` | Schedule 宿主行（默认 disabled），配 `schedule/changed` 事件 |
-| `dsh-llm-deepseek` 拆成 `dsh-llm-deepseek-api-key` + `dsh-llm-deepseek-account` | 账号登录式鉴权；新增 `deepseek-account/session-expired`、`deepseek-account/model-sign-in-required` 事件 |
-| 新错误码 | `session/provider-credentials-unavailable`、`session/provider-models-unavailable` |
+| `dsh-client-shortcuts` + `dsh-client-ui-shortcuts` | ✅ 已补上插件侧的 VS Code 键位（`Cmd/Ctrl+Alt+D/E/L/F`）；DSH 那套是浏览器 UI 的，插件对应物就是 keybindings |
+| `dsh-llm-deepseek` 拆成 `dsh-llm-deepseek-api-key` + `dsh-llm-deepseek-account` | ✅ 已接入账号登录：`account/getState|getProfile|getBalance|startSignIn|cancelSignIn|signOut`，并在 `deepseek-account/signed-out|session-expired|model-sign-in-required`、`credentials/record-updated` 事件上刷新 |
+| 新错误码 | ✅ 已映射为可操作文案（`session/provider-credentials-unavailable` 等），并识别内联在文本里的 `namespace/name:` 前缀（`api-session/error` 只发文本） |
+| `time-context` + `schedule` | 未接入（Schedule 宿主行默认 disabled） |
 
 **两处语义变化（已确认不破坏，但值得记住）**
 
