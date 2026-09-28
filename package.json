@@ -221,13 +221,13 @@
       "properties": {
         "deepseekHarness.executable": {
           "type": "string",
-          "scope": "resource",
+          "scope": "machine-overridable",
           "default": "",
-          "markdownDescription": "DSH executable. Leave empty to use a source checkout when nested inside deepseek-harness, otherwise `dsh` from PATH."
+          "markdownDescription": "DSH executable. Leave empty to use a source checkout when nested inside deepseek-harness, otherwise `dsh` from PATH. This is a per-machine path, so the setting is machine-scoped and is never carried to another machine by Settings Sync; set it separately on each host."
         },
         "deepseekHarness.arguments": {
           "type": "array",
-          "scope": "resource",
+          "scope": "machine-overridable",
           "items": {
             "type": "string"
           },

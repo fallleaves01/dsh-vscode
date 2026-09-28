@@ -53,6 +53,23 @@ describe('keybindings', () => {
   })
 })
 
+describe('launch configuration scope', () => {
+  const properties = (manifest as unknown as {
+    contributes: { configuration: { properties: Record<string, { scope?: string }> } }
+  }).contributes.configuration.properties
+
+  it('keeps the executable machine-scoped so Settings Sync cannot move it', () => {
+    // Reported in the field as "spawn /opt/homebrew/bin/dsh ENOENT" on a Linux
+    // host: a `resource`-scoped setting was synced from a Mac, and nothing on
+    // the remote could use that path. Machine-scoped settings are not synced.
+    expect(properties['deepseekHarness.executable']?.scope).toBe('machine-overridable')
+  })
+
+  it('keeps launch arguments machine-scoped, since they can name local paths', () => {
+    expect(properties['deepseekHarness.arguments']?.scope).toBe('machine-overridable')
+  })
+})
+
 describe('account contributions', () => {
   it('exposes sign-in and sign-out in the palette', () => {
     expect(commandIds).toContain('deepseekHarness.signIn')

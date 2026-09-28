@@ -64,7 +64,7 @@ vi.mock('../src/process-tree.ts', () => ({
   },
 }))
 
-import { DshRuntime } from '../src/runtime.ts'
+import { DshRuntime, describeLaunchFailure } from '../src/runtime.ts'
 import type { RuntimeLaunchContributor } from '../src/runtime-launch.js'
 
 const runtimes: DshRuntime[] = []
@@ -101,6 +101,28 @@ beforeEach(() => {
 afterEach(async () => {
   await Promise.all(runtimes.splice(0).map(instance => instance.stop()))
   vi.unstubAllGlobals()
+})
+
+describe('launch failure diagnosis', () => {
+  it('explains a missing configured executable instead of echoing ENOENT', () => {
+    // The real report was "spawn /opt/homebrew/bin/dsh ENOENT" on a Linux host,
+    // because Settings Sync carried a macOS path into the remote User settings.
+    const enoent = Object.assign(new Error('spawn /opt/homebrew/bin/dsh ENOENT'), { code: 'ENOENT' })
+    const message = describeLaunchFailure({ command: '/opt/homebrew/bin/dsh', args: [], sourceCheckout: false }, enoent).message
+    expect(message).toContain('/opt/homebrew/bin/dsh')
+    expect(message).toContain(process.platform)
+    expect(message).toContain('deepseekHarness.executable')
+    expect(message).toContain('Settings Sync')
+    expect(message).not.toBe('spawn /opt/homebrew/bin/dsh ENOENT')
+  })
+
+  it('leaves every other launch failure untouched', () => {
+    const denied = Object.assign(new Error('EACCES'), { code: 'EACCES' })
+    expect(describeLaunchFailure({ command: 'dsh', args: [], sourceCheckout: false }, denied)).toBe(denied)
+    const plain = new Error('boom')
+    expect(describeLaunchFailure({ command: 'dsh', args: [], sourceCheckout: false }, plain)).toBe(plain)
+    expect(describeLaunchFailure({ command: 'dsh', args: [], sourceCheckout: false }, 'boom').message).toBe('boom')
+  })
 })
 
 describe('authenticated runtime startup', () => {

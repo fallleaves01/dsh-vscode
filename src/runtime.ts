@@ -46,6 +46,25 @@ function deferredStart(): PendingStart {
   return { resolve, reject, promise }
 }
 
+/**
+ * Turn a bare `spawn … ENOENT` into something the user can act on.
+ *
+ * `deepseekHarness.executable` is a per-machine absolute path, but VS Code
+ * Settings Sync copies User settings between machines — so a path that is
+ * correct on one operating system silently travels to another, where the spawn
+ * fails with no mention of the setting that caused it. Windows shims are spawned
+ * through a shell, so only a missing command is reported here.
+ */
+export function describeLaunchFailure(launch: LaunchCommand, error: unknown): Error {
+  const code = (error as { code?: unknown } | null)?.code
+  if (code !== 'ENOENT') return error instanceof Error ? error : new Error(String(error))
+  return new Error(
+    `DeepSeek Harness could not start: "${launch.command}" was not found on this ${process.platform} machine. `
+    + 'VS Code Settings Sync copies deepseekHarness.executable between machines, so an absolute path set for another '
+    + 'operating system breaks here. Clear the setting to use `dsh` from PATH, or point it at this machine\'s DSH.',
+  )
+}
+
 function readDshVersion(launch: LaunchCommand, cwd: string): Promise<string | undefined> {
   return new Promise(resolve => {
     let settled = false
@@ -279,7 +298,7 @@ export class DshRuntime implements vscode.Disposable {
     child.on('error', (error) => {
       if (this.child !== child) return
       if (child.pid === undefined) this.child = undefined
-      this.failStart(error, pending)
+      this.failStart(describeLaunchFailure(launch, error), pending)
     })
     child.on('exit', (code, signal) => {
       // A replaced process must not clear the new startup timer or credentials.
