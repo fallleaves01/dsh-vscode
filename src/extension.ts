@@ -162,6 +162,8 @@ interface ChatViewState {
   accountFailed: boolean
   /** Why the composer is unavailable, when no model can serve a request. */
   routableNotice: string | null
+  /** A stop was admitted and the turn has not ended yet. */
+  stopping: boolean
   sessionId: string
   messages: ConversationMessage[]
   running: boolean
@@ -228,6 +230,7 @@ function initialState(cwd: string): ChatViewState {
     accountNotice: null,
     accountFailed: false,
     routableNotice: null,
+    stopping: false,
     sessionId: '',
     messages: [],
     running: false,
@@ -281,6 +284,10 @@ export class DshChatController implements vscode.Disposable {
   private recovery: { abort: AbortController; task: Promise<void>; failure: Error | undefined } | undefined
   /** Refresh timer while a browser sign-in attempt is in flight. */
   private accountPoll: NodeJS.Timeout | undefined
+  /** Releases the stop button if a turn never reports itself finished. */
+  private stoppingDeadline: NodeJS.Timeout | undefined
+  /** Which conversation the acknowledgement belongs to, so it cannot leak. */
+  private stoppingSessionId: string | undefined
   /** Attempt whose authorize URL was already handed to the browser. */
   private openedSignInAttempt: string | undefined
   /** Polls spent on the current attempt, so a stuck attempt cannot poll forever. */
@@ -343,7 +350,7 @@ export class DshChatController implements vscode.Disposable {
       this.disconnectClient()
       for (const summary of this.summaries) summary.running = false
       this.clearLiveControls()
-      this.publish({ canReconnect: false, running: false, messages: this.resetToDurableMessages() })
+      this.publish({ canReconnect: false, ...this.runningPatch(false), messages: this.resetToDurableMessages() })
     }
     if (state.kind === 'starting') this.publish({ phase: 'loading', statusText: state.detail, setup: null })
     if (state.kind === 'failed') this.publish({
@@ -790,10 +797,70 @@ export class DshChatController implements vscode.Disposable {
     }
   }
 
+  /**
+   * Request cancellation of the active turn.
+   *
+   * DSH admits the request and the agent stops at its next interruptible point,
+   * so the acknowledgement is shown: without it a click during a long tool call
+   * looks like nothing happened. A session owned by subagent routing is stopped
+   * through its parent, because `session/cancel` refuses those.
+   */
   async cancel(): Promise<void> {
     this.requireReady()
-    if (this._state.sessionId === '') return
-    await this.requireClient().cancel(this._state.sessionId)
+    const sessionId = this._state.sessionId
+    if (sessionId === '') return
+    const client = this.requireClient()
+    const parentSessionId = this._state.parentSessionId
+    try {
+      await (parentSessionId === null
+        ? client.cancel(sessionId)
+        : client.interruptSubagent(sessionId, parentSessionId))
+    } catch (error) {
+      if (this.client === client) {
+        this.stoppingSessionId = undefined
+        this.publish({ stopping: false })
+      }
+      throw error
+    }
+    if (this.client !== client || this._state.sessionId !== sessionId) return
+    this.stoppingSessionId = sessionId
+    this.publish({ stopping: true })
+    this.armStoppingDeadline(sessionId)
+    this.output.appendLine(`[cancel] requested for ${sessionId}${parentSessionId === null ? '' : ' (subagent)'}`)
+  }
+
+  /**
+   * Stop showing the acknowledgement after a while.
+   *
+   * The request is cooperative, so a turn inside a long tool call legitimately
+   * stays running. The deadline only exists so a missed status frame cannot
+   * leave the button disabled forever.
+   */
+  private armStoppingDeadline(sessionId: string): void {
+    if (this.stoppingDeadline !== undefined) clearTimeout(this.stoppingDeadline)
+    this.stoppingDeadline = setTimeout(() => {
+      this.stoppingDeadline = undefined
+      if (this.stoppingSessionId !== sessionId) return
+      this.stoppingSessionId = undefined
+      this.output.appendLine(`[cancel] ${sessionId} still running after the acknowledgement window`)
+      this.publish({ stopping: false })
+    }, STOPPING_ACKNOWLEDGEMENT_MS)
+  }
+
+  /**
+   * Publish a turn's running state, which is also the only thing that ends a
+   * stop acknowledgement: a turn that finished cannot still be stopping.
+   */
+  private runningPatch(running: boolean, sessionId: string = this._state.sessionId): Pick<ChatViewState, 'running' | 'stopping'> {
+    // An acknowledgement belongs to the turn it was requested for: another
+    // conversation may be running, but its turn was never asked to stop.
+    const stopping = running && this.stoppingSessionId === sessionId
+    if (!stopping && this.stoppingDeadline !== undefined) {
+      clearTimeout(this.stoppingDeadline)
+      this.stoppingDeadline = undefined
+    }
+    if (!stopping) this.stoppingSessionId = undefined
+    return { running, stopping }
   }
 
   async updateQueue(sessionId: string, itemId: string, action: 'edit' | 'remove' | 'steer', text?: string): Promise<void> {
@@ -1249,7 +1316,7 @@ export class DshChatController implements vscode.Disposable {
       setup: null,
       sessionId,
       messages: this.projectedMessages(),
-      running: summary?.running ?? false,
+      ...this.runningPatch(summary?.running ?? false, sessionId),
       approval: null,
       question: null,
       commands: [],
@@ -1261,6 +1328,11 @@ export class DshChatController implements vscode.Disposable {
       plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       queue: [],
+      // The owner of a subagent conversation is derived from the selection, and
+      // nothing else republishes it: without this, opening a subagent left the
+      // previous conversation's lineage in place, so the sidebar showed the wrong
+      // owner and a stop request went to the wrong session.
+      ...this.sessionItemPatch(sessionId),
       jobs: this.jobsBySession.get(sessionId) ?? [],
       hasMoreHistory: hasMore,
       loadingHistory: false,
@@ -1591,7 +1663,7 @@ export class DshChatController implements vscode.Disposable {
         }
       }
       if (wasRunning && !running && sessionId !== this._state.sessionId) this.markUnread(sessionId)
-      if (sessionId === this._state.sessionId) this.publish({ running })
+      if (sessionId === this._state.sessionId) this.publish(this.runningPatch(running))
       this.publishSessionItems()
       return
     }
@@ -1620,7 +1692,7 @@ export class DshChatController implements vscode.Disposable {
         typeof payload.message === 'string' ? payload.message : 'DeepSeek Harness reported an agent error.',
       )
       this.projector.notice(`agent-error:${frame.rpcId}`, message, true)
-      this.publish({ messages: this.projectedMessages(), running: false })
+      this.publish({ messages: this.projectedMessages(), ...this.runningPatch(false) })
       return
     }
 
@@ -1783,6 +1855,9 @@ export class DshChatController implements vscode.Disposable {
 type DraftImage = PromptImage & { id: string }
 /** One staged file waiting for the next prompt; its receipt is the wire handle. */
 type DraftFile = PromptFile & { id: string; name: string; bytes: number }
+
+/** How long a stop acknowledgement is shown before a still-running turn may retry. */
+const STOPPING_ACKNOWLEDGEMENT_MS = 90_000
 
 /** How often the sidebar re-reads account state while a sign-in attempt is live. */
 const ACCOUNT_POLL_INTERVAL_MS = 1500

@@ -14,6 +14,10 @@ const MESSAGES: Readonly<Record<string, string>> = {
     'The selected model provider is offering no available models. Pick another model, or check that provider\'s credentials.',
   'session/model-unavailable':
     'That model is not available on this runtime. Pick another model and send again.',
+  'session/agent-busy':
+    'This is a subagent session, so it is driven through its parent conversation rather than directly.',
+  'subagent/unauthorized':
+    'That subagent is no longer owned by the conversation that started it, so it cannot be stopped from here.',
 }
 
 /** Extra context for a code whose message names the exact route that failed. */

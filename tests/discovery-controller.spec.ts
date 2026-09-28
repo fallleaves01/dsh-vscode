@@ -57,6 +57,8 @@ function testClient() {
     archiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
     unarchiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
     killJob: vi.fn(async () => ({ outcome: 'requested' as const })),
+    cancel: vi.fn(async () => ({ accepted: true as const })),
+    interruptSubagent: vi.fn(async () => ({ accepted: true as const })),
     accountState: vi.fn(async () => ({ status: 'signed-out', attempt: null,
       links: { usageUrl: 'https://platform.deepseek.com/usage', topUpUrl: 'https://platform.deepseek.com/top_up' } })),
     accountProfile: vi.fn(async () => null),
@@ -91,6 +93,97 @@ async function harness(connection?: DshConnection) {
   const next = () => { const next = testClient(); mocks.client = next.client; return next }
   return { client, controller, output, emit, fail, runtime, reviews, next }
 }
+
+describe('stopping the active turn', () => {
+  it('cancels an ordinary session through session/cancel', async () => {
+    const h = await harness()
+    h.client.cancel.mockClear()
+    h.client.interruptSubagent.mockClear()
+    await h.controller.cancel()
+    expect(h.client.cancel).toHaveBeenCalledWith('a')
+    expect(h.client.interruptSubagent).not.toHaveBeenCalled()
+  })
+
+  it('acknowledges the request so the click is visible', async () => {
+    const h = await harness()
+    expect(h.controller.state.stopping).toBe(false)
+    await h.controller.cancel()
+    // Cancellation is cooperative: the turn is still running, and the sidebar
+    // has to show that the request landed rather than appearing inert.
+    expect(h.controller.state.stopping).toBe(true)
+  })
+
+  it('stops a subagent session through its parent', async () => {
+    const h = await harness()
+    // session/cancel is refused for a session owned by subagent routing, so a
+    // child has to be interrupted by naming its parent.
+    h.emit({ type: 'host/session-added', sessionId: 'child', cwd: '/workspace', origin: 'subagent', parentSessionId: 'a' })
+    h.emit({ type: 'host/session-status', sessionId: 'child', running: true })
+    await h.controller.selectSession('child')
+    expect(h.controller.state.parentSessionId).toBe('a')
+
+    h.client.cancel.mockClear()
+    h.client.interruptSubagent.mockClear()
+    await h.controller.cancel()
+    expect(h.client.interruptSubagent).toHaveBeenCalledWith('child', 'a')
+    expect(h.client.cancel).not.toHaveBeenCalled()
+  })
+
+  it('does not carry an acknowledgement into another conversation', async () => {
+    const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.cancel()
+    expect(h.controller.state.stopping).toBe(true)
+    // 'b' is running too, but its turn was never asked to stop: showing the
+    // acknowledgement here would leave its Stop button disabled.
+    h.emit({ type: 'host/session-status', sessionId: 'b', running: true })
+    await h.controller.selectSession('b')
+    expect(h.controller.state.running).toBe(true)
+    expect(h.controller.state.stopping).toBe(false)
+  })
+
+  it('follows the owner when the open conversation changes', async () => {
+    const h = await harness()
+    // Regression: the owner was only derived while refreshing the list, so
+    // opening a subagent kept the previous conversation's lineage.
+    expect(h.controller.state.parentSessionId).toBeNull()
+    h.emit({ type: 'host/session-added', sessionId: 'child', cwd: '/workspace', origin: 'subagent', parentSessionId: 'a' })
+    await h.controller.selectSession('child')
+    expect(h.controller.state.parentSessionId).toBe('a')
+    await h.controller.selectSession('b')
+    expect(h.controller.state.parentSessionId).toBeNull()
+  })
+
+  it('clears the acknowledgement when the turn ends', async () => {
+    const h = await harness()
+    await h.controller.cancel()
+    expect(h.controller.state.stopping).toBe(true)
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: false })
+    expect(h.controller.state.stopping).toBe(false)
+    expect(h.controller.state.running).toBe(false)
+  })
+
+  it('clears the acknowledgement when the request is refused', async () => {
+    const h = await harness()
+    h.client.cancel.mockRejectedValue(new Error('session/not-found: not attached'))
+    await expect(h.controller.cancel()).rejects.toThrow('not attached')
+    // Nothing is pending, so the button must not stay disabled.
+    expect(h.controller.state.stopping).toBe(false)
+  })
+
+  it('releases the acknowledgement if the turn never reports finishing', async () => {
+    vi.useFakeTimers()
+    const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.cancel()
+    expect(h.controller.state.stopping).toBe(true)
+    await vi.advanceTimersByTimeAsync(90_000)
+    // A missed status frame must not leave the button disabled forever.
+    expect(h.controller.state.stopping).toBe(false)
+    expect(h.controller.state.running).toBe(true)
+    vi.useRealTimers()
+  })
+})
 
 describe('account sign-in state', () => {
   it('loads account state as soon as a conversation becomes ready', async () => {

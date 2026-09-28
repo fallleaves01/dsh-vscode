@@ -182,6 +182,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     code { padding: 1px 4px; border-radius: 4px; font-family: var(--vscode-editor-font-family); background: var(--vscode-textCodeBlock-background); }
     pre { max-width: 100%; margin: 7px 0; padding: 9px 10px; overflow: auto; white-space: pre; border-radius: 6px; color: var(--vscode-editor-foreground); background: var(--vscode-textCodeBlock-background); font: 12px/1.55 var(--vscode-editor-font-family); }
     pre code { padding: 0; background: transparent; }
+    .cancel-spinner { display: none; width: 12px; height: 12px; border: 2px solid var(--vscode-descriptionForeground); border-top-color: transparent; border-radius: 50%; animation: cancel-spin .8s linear infinite; }
+    .cancel.stopping .cancel-spinner { display: block; }
+    .cancel.stopping > svg { display: none; }
+    .cancel.stopping { opacity: .8; cursor: default; }
+    @keyframes cancel-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .cancel-spinner { animation-duration: 2.4s; } }
     .code-block { margin: 8px 0; border: 1px solid var(--vscode-widget-border); border-radius: 6px; overflow: hidden; background: var(--vscode-textCodeBlock-background); }
     .code-block-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 1px 4px 1px 10px; border-bottom: 1px solid var(--vscode-widget-border); }
     .code-block-language { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 11px; }
@@ -418,7 +424,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
               <button id="usageTrigger" class="icon-button usage-trigger" title="Context usage" aria-label="Context usage" aria-haspopup="dialog" aria-expanded="false"><svg viewBox="0 0 14 14"><circle class="usage-track" cx="7" cy="7" r="5.5"/><circle id="usageFill" class="usage-fill" cx="7" cy="7" r="5.5" transform="rotate(-90 7 7)"/></svg></button>
               <div id="usagePanel" class="usage-panel hidden" role="dialog" aria-label="Context usage details"></div>
             </div>
-            <button id="cancel" class="icon-button cancel hidden" title="Stop" aria-label="Stop"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg></button>
+            <button id="cancel" class="icon-button cancel hidden" title="Stop" aria-label="Stop"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg><span class="cancel-spinner"></span></button>
             <button id="send" class="icon-button send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg></button>
           </div>
         </div>
@@ -1900,7 +1906,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
       elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready'; elements.sessionTrigger.disabled = current.phase !== 'ready';
       elements.models.disabled = !enabled || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
-      elements.cancel.classList.toggle('hidden', current.running !== true); elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue();
+      const stopping = current.stopping === true && current.running === true;
+      elements.cancel.classList.toggle('hidden', current.running !== true);
+      elements.cancel.classList.toggle('stopping', stopping);
+      elements.cancel.disabled = stopping;
+      elements.cancel.title = stopping ? 'Stopping…' : 'Stop';
+      elements.cancel.setAttribute('aria-label', stopping ? 'Stopping…' : 'Stop');
+      elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue();
       if (renderedChrome.commands !== current.commands || renderedChrome.skills !== current.skills || renderedChrome.permissions !== current.permissions) renderCommandMenu();
       renderedChrome = {
         workspaceName: current.workspaceName, cwd: current.cwd, sessions: current.sessions, sessionId: current.sessionId, models: current.models,

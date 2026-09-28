@@ -289,6 +289,16 @@ export class DshClient {
   }
   respond(rpcId: string, value: unknown): Promise<RpcReceipt> { return this.feed.respond(rpcId, value) }
   cancel(sessionId: string): Promise<{ accepted: true }> { return this.api.cancel(sessionId) }
+  /**
+   * Stop a subagent by naming its parent.
+   *
+   * `session/cancel` is refused for a session owned by subagent routing
+   * (`session/agent-busy`), so a child is interrupted through `subagents/*`.
+   * `mode` is a required discriminator, not a claim about the child.
+   */
+  interruptSubagent(childSessionId: string, parentSessionId: string): Promise<{ accepted: true }> {
+    return this.call('subagents/interruptByParent', { childSessionId, parentSessionId, mode: 'continuable' })
+  }
   updateQueue(sessionId: string, itemId: string, action: QueueAction): Promise<{ accepted: true }> { return this.api.updateQueue(sessionId, itemId, action) }
   selectModel(sessionId: string, selection: ModelSelection): Promise<{ selected: ModelSelection }> {
     return this.call('session/selectModel', { request: { sessionId, ...selection } })

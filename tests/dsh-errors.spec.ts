@@ -29,8 +29,19 @@ describe('DSH failure text', () => {
   })
 
   it('leaves an unknown code alone, so new runtime failures stay readable', () => {
-    const text = dshErrorText(failure('session/agent-busy', 'session is owned by subagent routing'))
-    expect(text).toBe('session is owned by subagent routing')
+    const text = dshErrorText(failure('session/some-future-code', 'something DSH added later'))
+    expect(text).toBe('something DSH added later')
+  })
+
+  it('explains that a subagent session is driven through its parent', () => {
+    const text = dshErrorText(failure('session/agent-busy', 'session "s" is owned by subagent routing'))
+    expect(text).toContain('subagent session')
+    expect(text).not.toContain('session/agent-busy')
+  })
+
+  it('explains a subagent that outlived its owner', () => {
+    const text = dshErrorText(failure('subagent/unauthorized', 'subagent does not belong to this parent'))
+    expect(text).toContain('no longer owned')
   })
 
   it('passes through plain errors and non-errors unchanged', () => {
