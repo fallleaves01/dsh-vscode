@@ -2,6 +2,60 @@
 import { describe, expect, it } from 'vitest'
 import { createMarkdownScanState, renderMarkdown, scanMarkdownStream } from '../src/markdown.mjs'
 
+describe('fenced code blocks', () => {
+  const fence = (body: string, info = 'ts') => '```' + info + '\n' + body + '\n```'
+
+  it('highlights a known language into token spans', () => {
+    const root = renderMarkdown(fence('const answer: number = 42'))
+    const code = root.querySelector('.code-block pre code')
+    expect(code).not.toBeNull()
+    // Real highlighting, not just an escaped block.
+    expect(code!.querySelectorAll('span[class^="hljs-"]').length).toBeGreaterThan(0)
+    expect(code!.textContent).toBe('const answer: number = 42')
+  })
+
+  it('labels the block and offers a copy button that survives sanitizing', () => {
+    const root = renderMarkdown(fence('print("hi")', 'python'))
+    expect(root.querySelector('.code-block-language')?.textContent).toBe('python')
+    const button = root.querySelector('button.code-copy')
+    // DOMPurify strips anything outside its allowlist, so this asserts the
+    // button and its aria-label are actually permitted.
+    expect(button).not.toBeNull()
+    expect(button!.getAttribute('aria-label')).toBe('Copy code')
+    expect(button!.textContent).toBe('Copy')
+  })
+
+  it('resolves common fence aliases to a language', () => {
+    for (const [info, expected] of [['ts', 'typescript'], ['sh', 'bash'], ['yml', 'yaml'], ['py', 'python']]) {
+      const root = renderMarkdown(fence('x = 1', info))
+      expect(root.querySelector('code')?.getAttribute('class'), info).toContain('language-' + expected)
+    }
+  })
+
+  it('keeps an unknown language readable instead of guessing', () => {
+    const root = renderMarkdown(fence('%%% not a language %%%', 'brainfuck'))
+    const code = root.querySelector('.code-block pre code')
+    expect(code?.textContent).toBe('%%% not a language %%%')
+    expect(code?.querySelectorAll('span[class^="hljs-"]').length).toBe(0)
+    // An unlabelled fence still gets the chrome, so it can be copied.
+    expect(root.querySelector('.code-block-language')?.textContent).toBe('brainfuck')
+    expect(root.querySelector('button.code-copy')).not.toBeNull()
+  })
+
+  it('escapes model-supplied markup inside a code block', () => {
+    const root = renderMarkdown(fence('<img src=x onerror=alert(1)>', 'html'))
+    const code = root.querySelector('.code-block pre code')
+    expect(code?.querySelector('img')).toBeNull()
+    expect(code?.textContent).toContain('<img src=x onerror=alert(1)>')
+  })
+
+  it('copies the source text, not the highlighted markup', () => {
+    const root = renderMarkdown(fence('const a = 1', 'javascript'))
+    // The handler reads textContent, so what the user copies is what the model wrote.
+    expect(root.querySelector('.code-block pre code')?.textContent).toBe('const a = 1')
+  })
+})
+
 describe('Markdown rendering', () => {
   it('renders GFM tables with alignment, escaped pipes and inline formatting', () => {
     const root = renderMarkdown('| Name | Value | Status |\n| :--- | ---: | :---: |\n| **Total** | `36` | A\\|B |')

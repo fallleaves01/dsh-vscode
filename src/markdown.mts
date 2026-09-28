@@ -1,6 +1,91 @@
 import DOMPurify from 'dompurify'
+import hljs from 'highlight.js/lib/core'
+import bash from 'highlight.js/lib/languages/bash'
+import c from 'highlight.js/lib/languages/c'
+import cpp from 'highlight.js/lib/languages/cpp'
+import csharp from 'highlight.js/lib/languages/csharp'
+import css from 'highlight.js/lib/languages/css'
+import diff from 'highlight.js/lib/languages/diff'
+import dockerfile from 'highlight.js/lib/languages/dockerfile'
+import go from 'highlight.js/lib/languages/go'
+import ini from 'highlight.js/lib/languages/ini'
+import java from 'highlight.js/lib/languages/java'
+import javascript from 'highlight.js/lib/languages/javascript'
+import json from 'highlight.js/lib/languages/json'
+import kotlin from 'highlight.js/lib/languages/kotlin'
+import less from 'highlight.js/lib/languages/less'
+import lua from 'highlight.js/lib/languages/lua'
+import markdown from 'highlight.js/lib/languages/markdown'
+import perl from 'highlight.js/lib/languages/perl'
+import php from 'highlight.js/lib/languages/php'
+import python from 'highlight.js/lib/languages/python'
+import r from 'highlight.js/lib/languages/r'
+import ruby from 'highlight.js/lib/languages/ruby'
+import rust from 'highlight.js/lib/languages/rust'
+import scss from 'highlight.js/lib/languages/scss'
+import shell from 'highlight.js/lib/languages/shell'
+import sql from 'highlight.js/lib/languages/sql'
+import swift from 'highlight.js/lib/languages/swift'
+import typescript from 'highlight.js/lib/languages/typescript'
+import xml from 'highlight.js/lib/languages/xml'
+import yaml from 'highlight.js/lib/languages/yaml'
 import katex from 'katex'
 import { Marked, type TokenizerExtension } from 'marked'
+
+/**
+ * Registered explicitly rather than via `highlight.js`'s all-languages bundle:
+ * the Webview ships as one script, so each language costs real download size.
+ * Aliases keep common fences (`ts`, `sh`, `html`, `yml`) working.
+ */
+const LANGUAGES: Readonly<Record<string, unknown>> = {
+  bash, c, cpp, csharp, css, diff, dockerfile, go, ini, java, javascript, json,
+  kotlin, less, lua, markdown, perl, php, python, r, ruby, rust, scss, shell,
+  sql, swift, typescript, xml, yaml,
+}
+const ALIASES: Readonly<Record<string, string>> = {
+  js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript', node: 'javascript',
+  ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
+  py: 'python', python3: 'python', rb: 'ruby', rs: 'rust', golang: 'go',
+  sh: 'bash', shell: 'bash', zsh: 'bash', console: 'bash',
+  yml: 'yaml', toml: 'ini', conf: 'ini', cfg: 'ini', properties: 'ini',
+  html: 'xml', xhtml: 'xml', svg: 'xml', vue: 'xml',
+  'c++': 'cpp', 'c#': 'csharp', cs: 'csharp', kt: 'kotlin', md: 'markdown',
+  docker: 'dockerfile', patch: 'diff', postgres: 'sql', psql: 'sql', mysql: 'sql',
+}
+for (const [name, language] of Object.entries(LANGUAGES)) hljs.registerLanguage(name, language as never)
+
+/** Language label for a fence, or undefined when it is not one we can highlight. */
+function languageOf(info: string | undefined): string | undefined {
+  const raw = (info ?? '').trim().split(/\s+/)[0]?.toLowerCase() ?? ''
+  if (raw === '') return undefined
+  const name = ALIASES[raw] ?? raw
+  return hljs.getLanguage(name) === undefined ? undefined : name
+}
+
+/**
+ * Render one fenced block: highlighted body plus the copy affordance.
+ *
+ * Highlighting is synchronous on purpose. The Webview renders a streaming answer
+ * a block at a time, and an async highlighter would either reorder blocks or
+ * force the whole render path to become async.
+ */
+function codeBlockHtml(code: string, info: string | undefined): string {
+  const language = languageOf(info)
+  let body: string
+  try {
+    body = language === undefined ? escapeHtml(code) : hljs.highlight(code, { language, ignoreIllegals: true }).value
+  } catch {
+    body = escapeHtml(code)
+  }
+  const label = (info ?? '').trim().split(/\s+/)[0] ?? ''
+  return '<div class="code-block">'
+    + '<div class="code-block-bar">'
+    + '<span class="code-block-language">' + escapeHtml(label === '' ? 'text' : label) + '</span>'
+    + '<button class="code-copy" type="button" aria-label="Copy code">Copy</button>'
+    + '</div>'
+    + '<pre><code class="hljs' + (language === undefined ? '' : ' language-' + language) + '">' + body + '</code></pre>'
+    + '</div>'
+}
 
 interface MathExpression { raw: string; text: string; display: boolean }
 
@@ -72,6 +157,9 @@ export function renderMarkdown(text: string, hooks?: MarkdownHooks): HTMLDivElem
       html: ({ text }) => escapeHtml(text),
       // Attachments are handled separately. Never fetch model-supplied remote images.
       image: ({ text }) => escapeHtml(text),
+      // A fenced block carries its own chrome, so it is rendered whole here
+      // rather than assembled from `code` plus a surrounding `pre` elsewhere.
+      code: ({ text, lang }) => codeBlockHtml(text, lang),
     },
     extensions: [
       { ...inlineMath, renderer: token => '<span data-math="' + token.index + '"></span>' },
@@ -83,8 +171,9 @@ export function renderMarkdown(text: string, hooks?: MarkdownHooks): HTMLDivElem
   root.append(DOMPurify.sanitize(parser.parse(text) as string, {
     RETURN_DOM_FRAGMENT: true,
     ALLOWED_TAGS: ['p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'del',
-      'blockquote', 'ul', 'ol', 'li', 'pre', 'code', 'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'input', 'span', 'div'],
-    ALLOWED_ATTR: ['href', 'title', 'class', 'align', 'start', 'type', 'checked', 'disabled', 'data-math'],
+      'blockquote', 'ul', 'ol', 'li', 'pre', 'code', 'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'input',
+      'span', 'div', 'button'],
+    ALLOWED_ATTR: ['href', 'title', 'class', 'align', 'start', 'type', 'checked', 'disabled', 'data-math', 'aria-label'],
     ALLOW_DATA_ATTR: false,
   }))
 

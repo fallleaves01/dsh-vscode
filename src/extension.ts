@@ -2390,6 +2390,11 @@ class DshSurface implements vscode.Disposable {
         case 'select-agent-preset':
           if (typeof value.agentPreset === 'string') await this.controller.selectAgentPreset(value.agentPreset)
           return
+        case 'copy-text':
+          // The Webview's own clipboard access can be refused before it has
+          // focus, so the extension writes it when asked to.
+          if (typeof value.text === 'string') await vscode.env.clipboard.writeText(value.text)
+          return
         case 'sign-in': await this.controller.signIn(); return
         case 'sign-out': await this.controller.signOut(); return
         case 'cancel-sign-in': await this.controller.cancelSignIn(); return

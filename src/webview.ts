@@ -182,6 +182,44 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     code { padding: 1px 4px; border-radius: 4px; font-family: var(--vscode-editor-font-family); background: var(--vscode-textCodeBlock-background); }
     pre { max-width: 100%; margin: 7px 0; padding: 9px 10px; overflow: auto; white-space: pre; border-radius: 6px; color: var(--vscode-editor-foreground); background: var(--vscode-textCodeBlock-background); font: 12px/1.55 var(--vscode-editor-font-family); }
     pre code { padding: 0; background: transparent; }
+    .code-block { margin: 8px 0; border: 1px solid var(--vscode-widget-border); border-radius: 6px; overflow: hidden; background: var(--vscode-textCodeBlock-background); }
+    .code-block-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 1px 4px 1px 10px; border-bottom: 1px solid var(--vscode-widget-border); }
+    .code-block-language { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 11px; }
+    .code-copy { flex: none; padding: 2px 8px; border: 0; border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 11px; cursor: pointer; }
+    .code-copy:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    .code-copy.copied { color: var(--vscode-charts-green, #3fb950); }
+    .code-block pre { margin: 0; border-radius: 0; background: transparent; }
+    /* Token colours follow the default VS Code themes; the Webview body carries
+       the active theme kind as a class. */
+    .hljs-comment, .hljs-quote { color: #6a9955; font-style: italic; }
+    .hljs-keyword, .hljs-literal, .hljs-selector-tag, .hljs-doctag, .hljs-formula { color: #569cd6; }
+    .hljs-name, .hljs-section, .hljs-selector-id, .hljs-selector-class, .hljs-tag { color: #569cd6; }
+    .hljs-string, .hljs-regexp, .hljs-addition, .hljs-meta .hljs-string { color: #ce9178; }
+    .hljs-title, .hljs-title.class_, .hljs-title.function_ { color: #dcdcaa; }
+    .hljs-type, .hljs-class, .hljs-built_in, .hljs-symbol, .hljs-bullet { color: #4ec9b0; }
+    .hljs-number, .hljs-meta .hljs-number { color: #b5cea8; }
+    .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable, .hljs-property, .hljs-params { color: #9cdcfe; }
+    .hljs-meta, .hljs-meta .hljs-keyword { color: #569cd6; }
+    .hljs-operator, .hljs-punctuation { color: #d4d4d4; }
+    .hljs-subst, .hljs-link { color: inherit; }
+    .hljs-deletion { color: #f48771; }
+    .hljs-emphasis { font-style: italic; }
+    .hljs-strong { font-weight: 600; }
+    body.vscode-light .hljs-comment, body.vscode-light .hljs-quote { color: #008000; }
+    body.vscode-light .hljs-keyword, body.vscode-light .hljs-literal, body.vscode-light .hljs-selector-tag,
+    body.vscode-light .hljs-doctag, body.vscode-light .hljs-name, body.vscode-light .hljs-section,
+    body.vscode-light .hljs-selector-id, body.vscode-light .hljs-selector-class, body.vscode-light .hljs-tag { color: #0000ff; }
+    body.vscode-light .hljs-string, body.vscode-light .hljs-regexp, body.vscode-light .hljs-addition,
+    body.vscode-light .hljs-meta .hljs-string { color: #a31515; }
+    body.vscode-light .hljs-title, body.vscode-light .hljs-title.class_, body.vscode-light .hljs-title.function_ { color: #795e26; }
+    body.vscode-light .hljs-type, body.vscode-light .hljs-class, body.vscode-light .hljs-built_in,
+    body.vscode-light .hljs-symbol, body.vscode-light .hljs-bullet { color: #267f99; }
+    body.vscode-light .hljs-number, body.vscode-light .hljs-meta .hljs-number { color: #098658; }
+    body.vscode-light .hljs-attr, body.vscode-light .hljs-attribute, body.vscode-light .hljs-variable,
+    body.vscode-light .hljs-template-variable, body.vscode-light .hljs-property, body.vscode-light .hljs-params { color: #001080; }
+    body.vscode-light .hljs-meta, body.vscode-light .hljs-meta .hljs-keyword { color: #0000ff; }
+    body.vscode-light .hljs-operator, body.vscode-light .hljs-punctuation { color: #000000; }
+    body.vscode-light .hljs-deletion { color: #a31515; }
     a { color: var(--vscode-textLink-foreground); text-decoration: none; cursor: pointer; }
     a:hover { text-decoration: underline; }
     .file-link { min-width: 0; padding: 0; border: 0; color: var(--vscode-textLink-foreground); background: transparent; text-align: left; font-family: var(--vscode-editor-font-family); cursor: pointer; overflow-wrap: anywhere; }
@@ -1666,6 +1704,26 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const minutes = Math.floor(seconds / 60); if (minutes < 60) return minutes + 'm ' + (seconds % 60) + 's';
       return Math.floor(minutes / 60) + 'h ' + (minutes % 60) + 'm';
     }
+    /** Copy one code block, confirming on the button that was pressed. */
+    function copyCodeBlock(button) {
+      const code = button.closest('.code-block')?.querySelector('code');
+      if (!code) return;
+      const text = code.textContent || '';
+      const confirm = () => {
+        button.textContent = 'Copied';
+        button.classList.add('copied');
+        setTimeout(() => { if (button.isConnected) { button.textContent = 'Copy'; button.classList.remove('copied'); } }, 1500);
+      };
+      const clipboard = navigator.clipboard;
+      if (clipboard && typeof clipboard.writeText === 'function') {
+        // The extension is the fallback: the clipboard API rejects while the
+        // Webview has not been focused yet, which is common right after a render.
+        clipboard.writeText(text).then(confirm, () => { vscode.postMessage({ type: 'copy-text', text }); confirm(); });
+        return;
+      }
+      vscode.postMessage({ type: 'copy-text', text });
+      confirm();
+    }
     function armJob(jobId) {
       armedJobId = jobId;
       if (armedJobTimer) { clearTimeout(armedJobTimer); armedJobTimer = undefined; }
@@ -2185,6 +2243,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     });
     elements.policyTrigger.addEventListener('click', event => {
       event.stopPropagation(); policyMenuOpen = !policyMenuOpen; usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false'); elements.commandMenu.classList.add('hidden'); elements.mentionMenu.classList.add('hidden'); if (state) renderPolicyState(state);
+    });
+    elements.messages.addEventListener('click', event => {
+      const target = event.target;
+      const button = target instanceof Element ? target.closest('.code-copy') : null;
+      if (button) copyCodeBlock(button);
     });
     elements.accountTrigger.addEventListener('click', event => {
       event.stopPropagation();
