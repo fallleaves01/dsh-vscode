@@ -20,6 +20,7 @@ const root = new URL('../', import.meta.url);
 const entry = `
 export { DshConnection } from './src/dsh-connection.ts'
 export { DshClient } from './src/dsh-client.ts'
+export { accountStateOf, accountClientMetadata } from './src/account.ts'
 `;
 // Bundle only our own source; `ws` and friends resolve from the repo at runtime.
 // A real file (not a data URL) keeps stack traces usable.
@@ -28,13 +29,14 @@ const { outputFiles } = await build({
   bundle: true, platform: 'node', format: 'esm', write: false, logLevel: 'silent',
   packages: 'external',
 });
-// The bundle must live inside the repo so bare imports (`ws`) resolve.
-const dir = fileURLToPath(new URL('../.drift/live-compat/', import.meta.url));
+// The bundle must live inside the repo so bare imports (`ws`) resolve, and under
+// node_modules so an interrupted run cannot leave an untracked file behind.
+const dir = fileURLToPath(new URL('../node_modules/.cache/dsh-live-compat/', import.meta.url));
 await mkdir(dir, { recursive: true });
 const file = join(dir, 'entry.mjs');
 await writeFile(file, outputFiles[0].text, 'utf8');
-const { DshConnection, DshClient } = await import(pathToFileURL(file).href);
-process.on('exit', () => { void rm(dir, { recursive: true, force: true }); });
+const mod = await import(pathToFileURL(file).href);
+const { DshConnection, DshClient, accountStateOf, accountClientMetadata } = mod;
 
 const launch = new URL(raw.trim());
 const results = [];
@@ -93,6 +95,49 @@ if (sessionId !== undefined) {
   await record('workspace/unarchiveSession', async () => { const r = await client.unarchiveSession(sessionId); return `${r.archivedSessionIds.length} archived`; });
   await record('session/cancel', async () => { await client.cancel(sessionId); return 'ok'; });
 }
+
+// Account (0.1.7-rc.2). The browser round-trip needs real credentials, but
+// every client-side step around it is exercised, including the exact call the
+// sidebar makes before opening the authorize URL.
+const accountMetadata = accountClientMetadata('0.0.11', 'en');
+await record('account/getState', async () => {
+  const view = await client.accountState();
+  const parsed = accountStateOf(view);
+  return `available=${String(parsed.available)} status=${parsed.signedIn ? 'signed-in' : 'signed-out'}`;
+});
+await record('account/getProfile + getBalance', async () => {
+  const [p, b] = await Promise.all([
+    client.accountProfile(accountMetadata).catch(() => undefined),
+    client.accountBalance(accountMetadata).catch(() => undefined),
+  ]);
+  return `profile=${p === null || p === undefined ? 'null' : 'present'} balance=${b === null || b === undefined ? 'null' : 'present'}`;
+});
+let signInAttemptId;
+await record('account/startSignIn -> authorizeUrl arrives', async () => {
+  const started = accountStateOf(await client.startAccountSignIn(
+    accountMetadata, `http://127.0.0.1:${new URL(launch.origin).port}`, 'desktop'));
+  signInAttemptId = started.attemptId;
+  if (signInAttemptId === undefined) throw new Error('start did not return an attempt id');
+  // The Host mints the URL asynchronously, so the sidebar must poll for it —
+  // exactly what this loop mirrors.
+  for (let i = 0; i < 12; i++) {
+    await new Promise(resolve => setTimeout(resolve, 700));
+    const account = accountStateOf(await client.accountState());
+    if (account.authorizeUrl !== undefined) {
+      return `after ${i + 1} poll(s): phase=${String(account.phase)} url=${account.authorizeUrl.slice(0, 40)}…`;
+    }
+  }
+  throw new Error(`authorizeUrl never appeared (start phase ${String(started.phase)})`);
+});
+await record('account/cancelSignIn', async () => {
+  if (signInAttemptId === undefined) throw new Error('no attempt to cancel');
+  const parsed = accountStateOf(await client.cancelAccountSignIn(signInAttemptId));
+  return `phase=${String(parsed.phase)}`;
+});
+await record('account/signOut', async () => {
+  const parsed = accountStateOf(await client.signOutAccount(accountMetadata));
+  return `status=${parsed.signedIn ? 'signed-in' : 'signed-out'}`;
+});
 
 await record('agentPresets/list', async () => { const r = await client.listAgentPresets(); return `${r.presets.length} preset(s)`; });
 await record('settings/describe', async () => { const r = await client.settings(); return `${r.namespaces.length} namespace(s)`; });

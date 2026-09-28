@@ -33,9 +33,13 @@ node tooling/dsh-drift-audit.mjs '<launch url with token>'
   the token for debugging — **do not paste that output anywhere**.
 - The launch token expires whenever DSH restarts; re-copy the URL if auth fails.
 - These are development tools. They are excluded from the packaged extension.
-- Probes that need a scratch session should run against an isolated home
-  (`DSH_HOME=$(mktemp -d) dsh web --host 127.0.0.1 --port 0`) so they never touch
-  real conversations.
+- Probes that need a scratch session must run against an isolated home, and that
+  home must live **outside this repository**:
+  `DSH_HOME=$(mktemp -d) dsh web --host 127.0.0.1 --port 0 --no-open`.
+  A home inside the repository holds a credentials file (the cookie signing
+  secret) and session logs, and `vsce` packages everything `.vscodeignore` does
+  not list — so one left behind ships a secret inside the extension.
+  `tests/packaging.spec.ts` guards that rule.
 
 ## Typical upgrade loop
 

@@ -23,3 +23,9 @@ tsconfig.json
 vitest.config.ts
 pnpm-lock.yaml
 dist/**/*.map
+# Local runtime/probe homes: these contain credentials and session logs.
+.acct-home/**
+.audit-home/**
+.probe-home/**
+.drift/**
+.npm-cache/**

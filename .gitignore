@@ -6,3 +6,9 @@ coverage/
 *.log
 .build/
 artifacts/
+# Local runtime/probe homes created by tooling/ scripts.
+.acct-home/
+.audit-home/
+.probe-home/
+.drift/
+.npm-cache/
