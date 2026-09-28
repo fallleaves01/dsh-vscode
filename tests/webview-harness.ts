@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { expect, vi } from 'vitest'
+import { marked } from 'marked'
 import type * as vscode from 'vscode'
 import { chatHtml as createChatHtml } from '../src/webview.js'
 
@@ -50,6 +51,22 @@ export function harness(): Harness {
     getState: () => undefined,
     setState: () => undefined,
   })
+  // The markdown renderer also ships as its own bundle, which jsdom does not
+  // fetch from a `src` attribute. Stand in for it with the same library the
+  // bundle wraps, so tests exercise real markdown rather than a stub's idea of
+  // it — the alternative was a suite that could not see a formatting regression.
+  globals.dshMarkdown = {
+    renderMarkdown(text: string) {
+      const root = document.createElement('div')
+      root.className = 'markdown'
+      // Sanitising is the bundle's job and the input here is test-controlled.
+      root.innerHTML = marked.parse(String(text ?? ''), { gfm: true })
+      return root
+    },
+    // Streaming state is not exercised by these tests; a settled body is.
+    createMarkdownScanState: () => ({ scanOffset: 0 }),
+    scanMarkdownStream: () => {},
+  }
   // The scroll controller ships in a separate bundle; only its surface matters here.
   globals.dshConversationScroll = {
     createConversationScroller: () => ({

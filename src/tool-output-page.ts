@@ -41,9 +41,19 @@ function nextCursor(section: string, index: number, offset = 0, group = 0): stri
   return JSON.stringify({ section, group, index, offset })
 }
 
+/** Smallest page worth returning when backing off to a line boundary. */
+const TEXT_PAGE_FLOOR = TOOL_OUTPUT_CHAR_LIMIT / 2
+
 function textPage(value: string, section: string, cursor: Cursor): { value: string; nextCursor?: string } {
   const offset = cursor.section === section ? cursor.offset : 0
-  const end = Math.min(value.length, offset + TOOL_OUTPUT_CHAR_LIMIT)
+  let end = Math.min(value.length, offset + TOOL_OUTPUT_CHAR_LIMIT)
+  if (end < value.length) {
+    // Cutting at an arbitrary character splits a word, a table row or a code
+    // fence across two pages, and each page is rendered on its own — so prefer
+    // the last line break, as long as that still yields a reasonable page.
+    const breakAt = value.lastIndexOf('\n', end)
+    if (breakAt >= offset + TEXT_PAGE_FLOOR) end = breakAt + 1
+  }
   return {
     value: value.slice(offset, end),
     ...(end < value.length ? { nextCursor: nextCursor(section, 0, end) } : {}),
@@ -255,8 +265,11 @@ function assistantPage(message: ConversationMessage, cursor: Cursor): ToolOutput
   return {
     message: {
       ...baseMessage(message),
+      // No `resultView` here on purpose. Its `plainText` flag means "this body
+      // is opaque, render it pre-wrapped", which is true of a long tool result
+      // but never of the model's answer: flagging a long answer dropped every
+      // heading, list and code block the moment the user expanded it.
       text: page.value,
-      ...(message.text.length > TOOL_OUTPUT_CHAR_LIMIT ? { resultView: { card: 'assistant-page', plainText: true } } : {}),
     },
     ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
   }

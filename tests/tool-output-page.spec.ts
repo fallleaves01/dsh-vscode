@@ -97,13 +97,44 @@ describe('tool output pages', () => {
   it('pages long assistant and command bodies without changing their roles', () => {
     const assistant: ConversationMessage = { id: 'assistant:1', role: 'assistant', text: 'a'.repeat(TOOL_OUTPUT_CHAR_LIMIT + 3) }
     const assistantPage = pageConversationMessage(assistant)
-    expect(assistantPage.message).toMatchObject({ role: 'assistant', resultView: { card: 'assistant-page', plainText: true } })
+    expect(assistantPage.message.role).toBe('assistant')
     expect(assistantPage.message.text).toHaveLength(TOOL_OUTPUT_CHAR_LIMIT)
+    // A long answer must not be flagged plainText: the flag means "render this
+    // pre-wrapped", so setting it stripped the markdown from every expansion.
+    expect(assistantPage.message.resultView).toBeUndefined()
 
     const command: ConversationMessage = { id: 'command:1', role: 'command', text: '/compact', rawResult: 'c'.repeat(TOOL_OUTPUT_CHAR_LIMIT + 2) }
     const commandPage = pageConversationMessage(command)
     expect(commandPage.message.role).toBe('command')
     expect(((commandPage.message.resultView as { content: Array<{ text: string }> }).content[0]?.text)).toHaveLength(TOOL_OUTPUT_CHAR_LIMIT)
+  })
+
+  it('cuts long pages on a line boundary without losing or duplicating text', () => {
+    // A mid-line cut splits a word or a table row across two independently
+    // rendered pages, which shows up as a spurious break in the answer.
+    const line = 'x'.repeat(78) + '\n'
+    const text = line.repeat(600)
+    const first = pageConversationMessage({ id: 'assistant:2', role: 'assistant', text })
+    expect(first.message.text.endsWith('\n')).toBe(true)
+    expect(first.message.text.length).toBeLessThan(TOOL_OUTPUT_CHAR_LIMIT)
+    expect(first.message.text.length).toBeGreaterThan(TOOL_OUTPUT_CHAR_LIMIT / 2)
+
+    let collected = first.message.text
+    let cursor = first.nextCursor
+    while (cursor !== undefined) {
+      const next = pageConversationMessage({ id: 'assistant:2', role: 'assistant', text }, cursor)
+      collected += next.message.text
+      cursor = next.nextCursor
+    }
+    expect(collected).toBe(text)
+  })
+
+  it('still returns a full page when a single line exceeds the page size', () => {
+    // No line break to back off to: the floor must keep the page useful.
+    const text = 'y'.repeat(TOOL_OUTPUT_CHAR_LIMIT * 2)
+    const first = pageConversationMessage({ id: 'assistant:3', role: 'assistant', text })
+    expect(first.message.text).toHaveLength(TOOL_OUTPUT_CHAR_LIMIT)
+    expect(first.nextCursor).toBeDefined()
   })
 
   it('keeps generic locations in bounded pages after raw output', () => {

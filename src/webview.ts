@@ -983,13 +983,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       bubble.append(body); return bubble;
     }
     function renderAssistantPage(page) {
-      const view = record(page.resultView);
-      const body = view && view.plainText === true ? node('div', 'streaming-plain', page.text) : renderMarkdown(page.text);
+      // Always markdown: the plainText flag describes an opaque tool result,
+      // while an assistant page is the model's answer even when it arrives in pages.
+      const body = renderMarkdown(page.text);
       body.classList.add('assistant-page'); appendImages(body, page.images); return body;
     }
     function hasThinking(message) { return typeof message.reasoning === 'string' && message.reasoning !== ''; }
     function thinkingPreview(text) {
-      const flat = String(text || '').replace(/\s+/g, ' ').trim();
+      const flat = String(text || '').replace(/\\s+/g, ' ').trim();
       return flat.length > 140 ? flat.slice(0, 140) + '…' : flat;
     }
     /** Collapsed-by-default model thinking, folded above the answer. */
@@ -1267,8 +1268,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function formatTokens(value) {
       if (!Number.isFinite(value)) return '0';
       if (value < 1000) return String(Math.round(value));
-      if (value < 1000000) return (value / 1000).toFixed(value < 10000 ? 1 : 0).replace(/\.0$/, '') + 'K';
-      return (value / 1000000).toFixed(value < 10000000 ? 1 : 0).replace(/\.0$/, '') + 'M';
+      if (value < 1000000) return (value / 1000).toFixed(value < 10000 ? 1 : 0).replace(/\\.0$/, '') + 'K';
+      return (value / 1000000).toFixed(value < 10000000 ? 1 : 0).replace(/\\.0$/, '') + 'M';
     }
     function formatDuration(value) {
       if (!Number.isFinite(value) || value <= 0) return '0ms';
