@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionSummary } from '../src/dsh-client.js'
-import { archivedSessionItems, filterSessionItems, sessionItems, sessionTitle } from '../src/session-center.js'
+import { archivedSessionItems, filterSessionItems, parentIdOf, sessionItems, sessionTitle } from '../src/session-center.js'
 
 function summary(overrides: Partial<SessionSummary> & Pick<SessionSummary, 'sessionId'>): SessionSummary {
   return {
@@ -67,5 +67,164 @@ describe('session center state', () => {
 
   it('reports nothing archived when no conversation is archived', () => {
     expect(archivedSessionItems([summary({ sessionId: 'one' })], new Set(), new Set())).toEqual([])
+  })
+})
+
+describe('subagent sessions', () => {
+  const catalog = (entries: Array<{ id: string; mode: string; label?: string }>) => ({
+    values: { subagentCatalog: entries.map(entry => ({ createdAt: 1, ...entry })) },
+  })
+
+  it('nests a child directly after the parent that owns it', () => {
+    const items = sessionItems([
+      summary({ sessionId: 'parent', updatedAt: 50, projections: catalog([{ id: 'kid', mode: 'continuable', label: 'Research' }]) }),
+      summary({ sessionId: 'kid', updatedAt: 40, origin: 'subagent', parentSessionId: 'parent' }),
+      summary({ sessionId: 'other', updatedAt: 60 }),
+    ], new Set(), 'parent', new Set())
+
+    expect(items.map(item => item.id)).toEqual(['other', 'parent', 'kid'])
+    expect(items.find(item => item.id === 'parent')?.childCount).toBe(1)
+    expect(items.find(item => item.id === 'kid')).toMatchObject({
+      parentId: 'parent',
+      subagent: { mode: 'continuable', label: 'Research' },
+    })
+  })
+
+  it('prefers the child\'s own identity projection over the parent catalog label', () => {
+    const items = sessionItems([
+      summary({ sessionId: 'parent', updatedAt: 50, projections: catalog([{ id: 'kid', mode: 'one-shot', label: 'From parent' }]) }),
+      summary({ sessionId: 'kid', updatedAt: 40, origin: 'subagent', parentSessionId: 'parent',
+        projections: { values: { subagent: { mode: 'continuable', label: 'Own label', seq: 4 } } } }),
+    ], new Set(), 'parent', new Set())
+
+    expect(items.find(item => item.id === 'kid')?.subagent).toEqual({ mode: 'continuable', label: 'Own label' })
+  })
+
+  it('keeps a completed one-shot child collapsed but still lists live or selected work', () => {
+    const build = (kid: Partial<SessionSummary>) => sessionItems([
+      summary({ sessionId: 'parent', updatedAt: 50, projections: catalog([{ id: 'kid', mode: 'one-shot', label: 'Audit' }]) }),
+      summary({ sessionId: 'kid', updatedAt: 40, origin: 'subagent', parentSessionId: 'parent', ...kid }),
+    ], new Set(), 'parent', new Set())
+
+    expect(build({ blank: true }).map(item => item.id)).toEqual(['parent'])
+    expect(build({ blank: true, running: true }).map(item => item.id)).toEqual(['parent', 'kid'])
+    expect(build({ blank: false }).map(item => item.id)).toEqual(['parent', 'kid'])
+
+    const selected = sessionItems([
+      summary({ sessionId: 'parent', updatedAt: 50, projections: catalog([{ id: 'kid', mode: 'one-shot' }]) }),
+      summary({ sessionId: 'kid', updatedAt: 40, origin: 'subagent', parentSessionId: 'parent', blank: true }),
+    ], new Set(), 'kid', new Set())
+    expect(selected.map(item => item.id)).toEqual(['parent', 'kid'])
+  })
+
+  it('leaves a subagent out of the picker when its owner is not in this project', () => {
+    const items = sessionItems([
+      summary({ sessionId: 'mine', updatedAt: 10 }),
+      summary({ sessionId: 'orphan', updatedAt: 20, origin: 'subagent', parentSessionId: 'elsewhere' }),
+      summary({ sessionId: 'unowned', updatedAt: 30, origin: 'subagent' }),
+    ], new Set(), 'mine', new Set())
+
+    expect(items.map(item => item.id)).toEqual(['mine'])
+  })
+
+  it('drops an archived subagent from the active list so it cannot read as live', () => {
+    const summaries = [
+      summary({ sessionId: 'parent', updatedAt: 50, projections: catalog([{ id: 'kid', mode: 'continuable', label: 'R' }]) }),
+      summary({ sessionId: 'kid', updatedAt: 40, origin: 'subagent', parentSessionId: 'parent' }),
+    ]
+    const items = sessionItems(summaries, new Set(['kid']), 'parent', new Set())
+    expect(items.map(item => item.id)).toEqual(['parent'])
+    // ...and it stays recoverable, because the Archived section is the only way back.
+    expect(archivedSessionItems(summaries, new Set(['kid']), new Set()).map(item => item.id)).toEqual(['kid'])
+  })
+
+  it('resolves the owning conversation for the ancestor breadcrumb', () => {
+    const summaries = [
+      summary({ sessionId: 'parent', updatedAt: 50, projections: catalog([{ id: 'kid', mode: 'continuable', label: 'R' }]) }),
+      summary({ sessionId: 'kid', updatedAt: 40, origin: 'subagent' }),
+      summary({ sessionId: 'declared', updatedAt: 30, origin: 'subagent', parentSessionId: 'parent' }),
+    ]
+    expect(parentIdOf(summaries, 'kid')).toBe('parent')
+    expect(parentIdOf(summaries, 'declared')).toBe('parent')
+    expect(parentIdOf(summaries, 'parent')).toBeUndefined()
+  })
+})
+
+describe('subagent edge cases', () => {
+  const catalog = (entries: Array<{ id: string; mode: string; label?: string }>) => ({
+    values: { subagentCatalog: entries.map(entry => ({ createdAt: 1, ...entry })) },
+  })
+
+  it('treats a self-parent as no owner rather than making the session its own child', () => {
+    // Consistent with any other unresolvable owner: it stays out of the picker
+    // instead of nesting under itself.
+    const items = sessionItems([
+      summary({ sessionId: 'loop', origin: 'subagent', parentSessionId: 'loop' }),
+    ], new Set(), undefined, new Set())
+    expect(items).toEqual([])
+  })
+
+  it('keeps a blank parent visible while its child is the open conversation', () => {
+    const items = sessionItems([
+      summary({ sessionId: 'parent', updatedAt: 10, blank: true, projections: catalog([{ id: 'kid', mode: 'continuable', label: 'R' }]) }),
+      summary({ sessionId: 'kid', updatedAt: 20, origin: 'subagent', parentSessionId: 'parent' }),
+    ], new Set(), 'kid', new Set())
+    expect(items.map(item => item.id)).toEqual(['parent', 'kid'])
+  })
+})
+
+describe('lineage that must not be treated as delegation', () => {
+  const catalog = (entries: Array<{ id: string; mode: string; label?: string }>) => ({
+    values: { subagentCatalog: entries.map(entry => ({ createdAt: 1, ...entry })) },
+  })
+
+  it('keeps a fork at top level, because a fork sets parentSession but no origin', () => {
+    // DSH records parentSession for seed lineage too (session/fork); only a
+    // subagent child sets origin, and a fork is an independent conversation.
+    const fork = summary({ sessionId: 'fork', updatedAt: 40, parentSessionId: 'source' })
+    const items = sessionItems([summary({ sessionId: 'source', updatedAt: 10 }), fork], new Set(), undefined, new Set())
+
+    expect(items.map(item => item.id)).toEqual(['fork', 'source'])
+    expect(items.find(item => item.id === 'fork')?.subagent).toBeUndefined()
+    expect(items.find(item => item.id === 'fork')?.parentId).toBeUndefined()
+  })
+
+  it('keeps a fork reachable when its source is archived', () => {
+    const fork = summary({ sessionId: 'fork', updatedAt: 40, parentSessionId: 'source' })
+    const items = sessionItems([summary({ sessionId: 'source', updatedAt: 10 }), fork], new Set(['source']), undefined, new Set())
+    expect(items.map(item => item.id)).toEqual(['fork'])
+  })
+
+  it('nests a delegation chain three deep', () => {
+    const summaries = [
+      summary({ sessionId: 'root', updatedAt: 10, projections: catalog([{ id: 'mid', mode: 'continuable', label: 'Mid' }]) }),
+      summary({ sessionId: 'mid', updatedAt: 20, origin: 'subagent', parentSessionId: 'root',
+        projections: catalog([{ id: 'leaf', mode: 'one-shot', label: 'Leaf' }]) }),
+      summary({ sessionId: 'leaf', updatedAt: 30, origin: 'subagent', parentSessionId: 'mid' }),
+    ]
+    const items = sessionItems(summaries, new Set(), 'root', new Set())
+    expect(items.map(item => item.id)).toEqual(['root', 'mid', 'leaf'])
+    expect(items.map(item => item.parentId)).toEqual([undefined, 'root', 'mid'])
+    expect(items.find(item => item.id === 'root')?.childCount).toBe(1)
+    expect(items.find(item => item.id === 'mid')?.childCount).toBe(1)
+  })
+
+  it('promotes the whole ancestor chain so the open session is never orphaned', () => {
+    const summaries = [
+      summary({ sessionId: 'root', updatedAt: 10, blank: true, projections: catalog([{ id: 'mid', mode: 'continuable', label: 'Mid' }]) }),
+      summary({ sessionId: 'mid', updatedAt: 20, blank: true, origin: 'subagent', parentSessionId: 'root',
+        projections: catalog([{ id: 'leaf', mode: 'one-shot', label: 'Leaf' }]) }),
+      summary({ sessionId: 'leaf', updatedAt: 30, origin: 'subagent', parentSessionId: 'mid' }),
+    ]
+    expect(sessionItems(summaries, new Set(), 'leaf', new Set()).map(item => item.id)).toEqual(['root', 'mid', 'leaf'])
+  })
+
+  it('terminates on a parent cycle instead of recursing forever', () => {
+    const summaries = [
+      summary({ sessionId: 'a', updatedAt: 10, origin: 'subagent', parentSessionId: 'b' }),
+      summary({ sessionId: 'b', updatedAt: 20, origin: 'subagent', parentSessionId: 'a' }),
+      summary({ sessionId: 'solo', updatedAt: 30 }),
+    ]
+    expect(sessionItems(summaries, new Set(), 'solo', new Set()).map(item => item.id)).toEqual(['solo'])
   })
 })

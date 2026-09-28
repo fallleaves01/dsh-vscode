@@ -28,7 +28,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     body { color: var(--vscode-foreground); background: var(--vscode-sideBar-background); font: 13px/1.5 var(--vscode-font-family); }
     button, select, textarea, input { font: inherit; color: inherit; }
     button { cursor: pointer; }
-    #app { width: 100%; height: 100%; min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
+    #app { width: 100%; height: 100%; min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; position: relative; }
+    .drop-overlay { position: absolute; inset: 0; z-index: 40; display: grid; place-items: center; padding: 16px; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); pointer-events: none; }
+    .drop-overlay.hidden { display: none; }
+    .drop-card { padding: 12px 16px; border: 1px dashed var(--vscode-focusBorder, #4d6bfe); border-radius: 10px; background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); color: var(--vscode-foreground); font-size: 12px; font-weight: 600; box-shadow: 0 6px 20px var(--vscode-widget-shadow); }
+    .composer.drop-target { outline: 1px dashed var(--vscode-focusBorder, #4d6bfe); outline-offset: -2px; }
     .toolbar { min-width: 0; min-height: 38px; padding: 4px 8px 4px 12px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent); }
     .session-control { min-width: 0; flex: 1; position: relative; }
     .session-trigger { width: 100%; min-width: 0; height: 28px; padding: 0 6px; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; background: transparent; font-weight: 600; text-align: left; }
@@ -40,6 +44,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .session-list { min-height: 0; margin-top: 5px; overflow: auto; }
     .session-empty { padding: 18px 8px; color: var(--vscode-descriptionForeground); text-align: center; font-size: 11px; }
     .session-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 26px; align-items: center; border-radius: 6px; }
+    .session-row.with-expander { grid-template-columns: 20px minmax(0, 1fr) 26px; }
     .session-row:hover, .session-row.active { background: var(--vscode-list-hoverBackground); }
     .session-row.active { color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground)); background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground)); }
     .session-main { min-width: 0; min-height: 44px; padding: 5px 6px; display: grid; grid-template-columns: 9px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 7px; border: 0; background: transparent; text-align: left; }
@@ -55,7 +60,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .session-archived-toggle { margin-top: 6px; padding: 6px 7px 4px; border: 0; border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 60%, transparent); border-radius: 0; color: var(--vscode-descriptionForeground); background: transparent; text-align: left; font-size: 10px; font-weight: 600; letter-spacing: .3px; }
     .session-archived-toggle:hover { color: var(--vscode-foreground); }
     .session-row.archived { grid-template-columns: minmax(0, 1fr) auto; }
-    .session-row.archived .session-name { color: var(--vscode-descriptionForeground); font-weight: 500; }
+    .session-row.session-ancestor { margin-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--vscode-widget-border) 60%, transparent); border-radius: 0; grid-template-columns: minmax(0, 1fr); }
+    .session-ancestor-arrow { flex: 0 0 auto; color: var(--vscode-descriptionForeground); }
+    .session-row.session-child { margin-left: 14px; position: relative; grid-template-columns: minmax(0, 1fr); }
+    .session-row.session-child::before { content: ''; position: absolute; left: -9px; top: 50%; width: 7px; height: 1px; background: color-mix(in srgb, var(--vscode-widget-border) 90%, transparent); }
+    .session-row.session-child .session-main { min-height: 34px; padding-top: 2px; padding-bottom: 2px; }
+    .session-row.session-child .session-name { font-weight: 500; font-size: 11px; }
+    .session-subagent-badge { flex: 0 0 auto; padding: 1px 5px; border-radius: 999px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 9px; text-transform: uppercase; letter-spacing: .3px; }
+    .session-subagent-badge.continuable { background: var(--vscode-charts-blue, #4d6bfe); color: #fff; }
+    .session-subagent-badge.unknown { opacity: .6; }
+    .session-expander { width: 20px; height: 20px; min-width: 20px; margin-right: 4px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 9px; }
+    .session-expander:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }    .session-row.archived .session-name { color: var(--vscode-descriptionForeground); font-weight: 500; }
     .session-restore { margin-right: 5px; padding: 3px 8px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-foreground); background: transparent; font-size: 10px; white-space: nowrap; }
     .session-restore:hover { background: var(--vscode-toolbar-hoverBackground); }
     .session-actions { grid-column: 1 / -1; margin: 0 5px 5px 22px; padding: 3px; display: flex; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-editor-background); }
@@ -237,6 +252,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .policy-section-label { padding: 7px 8px 3px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
     .context-chips, .attachments { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
     .context-chip, .attachment-chip { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 5px; padding: 3px 5px 3px 8px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); }
+    .attachment-size { flex: 0 0 auto; color: var(--vscode-descriptionForeground); opacity: .8; font-size: 10px; }
     .context-chip.selection { color: var(--vscode-foreground); border-color: color-mix(in srgb, #4d6bfe 55%, var(--vscode-widget-border)); }
     .context-icon { flex: 0 0 auto; font-size: 12px; }
     .context-name, .attachment-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -296,6 +312,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
 </head>
 <body>
   <div id="app">
+    <div id="dropOverlay" class="drop-overlay hidden"><div class="drop-card">Drop files or folders to add them</div></div>
     <header class="toolbar">
       <button id="githubStar" class="icon-button github-star" title="Star dsh-vscode on GitHub" aria-label="Star dsh-vscode on GitHub"><svg viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2-4.6-4.4 6.3-.9z"/></svg></button>
       <div id="sessionControl" class="session-control">
@@ -358,19 +375,23 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const elements = {
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
       conversationStatus: document.getElementById('conversationStatus'), conversationHistory: document.getElementById('conversationHistory'), messages: document.getElementById('messages'), conversationTail: document.getElementById('conversationTail'),
-      githubStar: document.getElementById('githubStar'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
+      githubStar: document.getElementById('githubStar'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionAttentionCount: document.getElementById('sessionAttentionCount'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       policyTrigger: document.getElementById('policyTrigger'), policyMenu: document.getElementById('policyMenu'),
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
       usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'), usageStats: document.getElementById('usageStats'),
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
-      queueDock: document.getElementById('queueDock'),
+      queueDock: document.getElementById('queueDock'), dropOverlay: document.getElementById('dropOverlay'),
       modeChips: document.getElementById('modeChips'), contextChips: document.getElementById('contextChips'), mentionMenu: document.getElementById('mentionMenu'), commandMenu: document.getElementById('commandMenu'),
     };
     let state;
     let draftImages = [];
     const draftImagesBySession = new Map();
+    let draftFiles = [];
+    const draftFilesBySession = new Map();
+    /** Uploads handed to the extension but not yet seen settle, per session. */
+    const pendingUploadsBySession = new Map();
     let ideContext = { pinned: [] };
     let commandIndex = 0;
     let mentionIndex = 0;
@@ -384,6 +405,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let sessionMenuOpen = false;
     let sessionActionId;
     let archivedOpen = false;
+    /** Parents the user collapsed; subagents show by default so they are discoverable. */
+    const collapsedSubagents = new Set();
     let armedJobId;
     let armedJobTimer;
     let jobsTimer;
@@ -441,7 +464,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const sessions = array(current.sessions);
       const selected = sessions.find(session => session.id === current.sessionId);
       const waiting = sessions.filter(session => session.id !== current.sessionId && session.attention && (session.attention.approvals > 0 || session.attention.questions > 0)).length;
-      const attentionCount = document.getElementById('sessionAttentionCount');
+      const attentionCount = elements.sessionAttentionCount;
       attentionCount.textContent = String(waiting);
       attentionCount.classList.toggle('hidden', waiting === 0);
       attentionCount.title = waiting + ' other conversation(s) need your response';
@@ -450,21 +473,53 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.sessionTrigger.setAttribute('aria-label', waiting ? 'Project conversations — ' + attentionCount.title : 'Project conversations');
       elements.sessionList.replaceChildren();
       const query = elements.sessionSearch.value.trim().toLocaleLowerCase();
-      const visible = sessions.filter(session => !query || string(session.title).toLocaleLowerCase().includes(query));
+      // A search flattens the tree: a matching subagent is more useful than the
+      // collapsed parent it hides behind, and delegation can nest arbitrarily.
+      const matching = session => !query || string(session.title).toLocaleLowerCase().includes(query)
+        || string(session.subagent && session.subagent.label).toLocaleLowerCase().includes(query);
+      const childrenOf = session => sessions.filter(child => child.parentId === session.id);
+      const visible = query
+        ? sessions.filter(matching).sort((left, right) => right.updatedAt - left.updatedAt)
+        : sessions.filter(session => !session.parentId);
+      const nested = query ? visible : sessions.filter(session => session.parentId);
       const archived = array(current.archivedSessions).filter(session => !query || string(session.title).toLocaleLowerCase().includes(query));
-      if (!visible.length && !archived.length) {
-        elements.sessionList.append(node('div', 'session-empty', query ? 'No matching conversations' : 'No conversations yet'));
+      const parentRow = current.parentSessionId ? sessions.find(session => session.id === current.parentSessionId) : undefined;
+      if (parentRow) {
+        const row = node('div', 'session-row session-ancestor');
+        const main = node('button', 'session-main'); main.type = 'button';
+        main.title = 'Back to “' + string(parentRow.title) + '”';
+        main.append(node('span', 'session-ancestor-arrow', '↩'), node('span', 'session-name', string(parentRow.title)), node('span', 'session-meta', 'Owning conversation'));
+        main.addEventListener('click', () => {
+          closeSessionMenu(false);
+          vscode.postMessage({ type: 'select-session', sessionId: parentRow.id });
+        });
+        row.append(main);
+        elements.sessionList.append(row);
+      }
+      const anyRows = query ? visible.length > 0 : visible.length > 0 || nested.length > 0;
+      if (!anyRows && !archived.length) {
+        if (!parentRow) elements.sessionList.append(node('div', 'session-empty', query ? 'No matching conversations' : 'No conversations yet'));
         return;
       }
-      for (const session of visible) {
-        const row = node('div', 'session-row' + (session.id === current.sessionId ? ' active' : ''));
-        row.setAttribute('role', 'option'); row.setAttribute('aria-selected', String(session.id === current.sessionId));
+      const appendRow = (session, depth, ancestors) => {
+        if (ancestors.has(session.id)) return;
+        const seen = new Set(ancestors).add(session.id);
+        const isChild = depth > 0;
+        const active = session.id === current.sessionId;
+        const hasChildren = session.childCount > 0;
+        const row = node('div', 'session-row' + (active ? ' active' : '') + (isChild ? ' session-child' : '') + (hasChildren ? ' with-expander' : ''));
+        row.setAttribute('role', 'option'); row.setAttribute('aria-selected', String(active));
+        if (isChild) row.style.marginLeft = String(14 + (depth - 1) * 12) + 'px';
         const main = node('button', 'session-main'); main.type = 'button';
         const attention = session.attention;
         const waitingFor = attention && attention.approvals > 0 ? 'Awaiting approval' : attention && attention.questions > 0 ? 'Awaiting your answer' : '';
         const indicator = node('span', 'session-indicator' + (waitingFor ? ' attention' : session.running ? ' running' : session.unread ? ' unread' : ''));
         indicator.title = waitingFor || (session.running ? 'Running' : session.unread ? 'New activity' : '');
-        const title = node('span', 'session-name', string(session.title, 'New conversation'));
+        if (session.subagent) {
+          const mode = session.subagent.mode;
+          main.append(node('span', 'session-subagent-badge ' + mode, mode === 'one-shot' ? 'One-shot' : mode === 'continuable' ? 'Subagent' : 'Subagent?'));
+        }
+        const title = node('span', 'session-name', string(session.subagent && session.subagent.label) || string(session.title, 'New conversation'));
         const meta = node('span', 'session-meta', waitingFor || (session.running ? 'Running' : session.unread ? 'New activity' : relativeSessionTime(session.updatedAt)));
         main.append(indicator, title, meta);
         main.addEventListener('click', () => {
@@ -472,8 +527,34 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           closeSessionMenu(false);
           if (!state || session.id !== state.sessionId) vscode.postMessage({ type: 'select-session', sessionId: session.id });
         });
+        const children = childrenOf(session);
+        // Subagents are shown by default: hiding them behind a disclosure is
+        // what made delegated work invisible in the first place. A live or
+        // waiting child outranks a manual collapse so the active row is never
+        // the one that disappears.
+        const mustShow = children.some(child => child.id === current.sessionId
+          || child.running || (child.attention && (child.attention.approvals > 0 || child.attention.questions > 0)));
+        const expanded = hasChildren && (Boolean(query) || mustShow || !collapsedSubagents.has(session.id));
+        if (hasChildren) {
+          const toggle = node('button', 'session-expander', expanded ? '▾' : '▸');
+          toggle.type = 'button';
+          // A live or waiting child pins the list open, so the control would be
+          // inert; say why instead of accepting a click that does nothing.
+          const pinnedOpen = expanded && mustShow && !query;
+          toggle.disabled = pinnedOpen;
+          toggle.title = pinnedOpen
+            ? 'A subagent here is running or needs you, so its row stays visible'
+            : expanded ? 'Hide subagents' : 'Show ' + String(session.childCount) + ' subagent session(s)';
+          toggle.setAttribute('aria-expanded', String(expanded));
+          toggle.addEventListener('click', event => {
+            event.stopPropagation();
+            if (expanded) collapsedSubagents.add(session.id); else collapsedSubagents.delete(session.id);
+            renderSessionCenter(current);
+          });
+          row.append(toggle);
+        }
         row.append(main);
-        if (!session.blank) {
+        if (!session.blank && !isChild) {
           const more = node('button', 'session-more', '…'); more.type = 'button'; more.title = 'Conversation actions'; more.setAttribute('aria-label', 'Actions for ' + string(session.title));
           more.addEventListener('click', event => { event.stopPropagation(); sessionActionId = sessionActionId === session.id ? undefined : session.id; renderSessionCenter(current); });
           row.append(more);
@@ -487,7 +568,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           }
         }
         elements.sessionList.append(row);
-      }
+        // Delegation nests, so descend as far as the payload goes. A search
+        // shows a flat list instead, because a matching grandchild is more
+        // useful than the two collapsed ancestors it would hide behind.
+        if (!query && hasChildren && expanded) {
+          for (const child of children) appendRow(child, depth + 1, seen);
+        }
+      };
+      for (const session of visible) appendRow(session, 0, new Set());
       if (archived.length) {
         const toggle = node('button', 'session-archived-toggle', (archivedOpen ? '▾ ' : '▸ ') + 'Archived (' + archived.length + ')');
         toggle.type = 'button';
@@ -1056,13 +1144,25 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.efforts.title = efforts.length ? 'Reasoning effort' : 'This model has no reasoning effort setting';
     }
     function renderAttachments() {
-      elements.attachments.replaceChildren(); elements.attachments.classList.toggle('hidden', draftImages.length === 0);
+      elements.attachments.replaceChildren(); elements.attachments.classList.toggle('hidden', draftImages.length === 0 && draftFiles.length === 0);
       for (const image of draftImages) {
         const chip = node('div', 'attachment-chip'); chip.append(node('span', '', '▧'), node('span', 'attachment-name', image.name || 'Image'));
-        const remove = node('button', 'attachment-remove', '×'); remove.title = 'Remove attachment'; remove.addEventListener('click', () => vscode.postMessage({ type: 'remove-attachment', id: image.id }));
+        const remove = node('button', 'attachment-remove', '×'); remove.title = 'Remove attachment'; remove.addEventListener('click', () => vscode.postMessage({ type: 'remove-attachment', id: image.id, sessionId: state && state.sessionId }));
+        chip.append(remove); elements.attachments.append(chip);
+      }
+      for (const file of draftFiles) {
+        const chip = node('div', 'attachment-chip');
+        chip.append(node('span', '', '📄'), node('span', 'attachment-name', file.name), node('span', 'attachment-size', formatBytes(file.bytes)));
+        const remove = node('button', 'attachment-remove', '×'); remove.title = 'Remove attachment'; remove.addEventListener('click', () => vscode.postMessage({ type: 'remove-attachment', id: file.id, sessionId: state && state.sessionId }));
         chip.append(remove); elements.attachments.append(chip);
       }
       updateSend();
+    }
+    function formatBytes(bytes) {
+      if (!Number.isFinite(bytes) || bytes <= 0) return '';
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' KB';
+      return (Math.round((bytes / (1024 * 1024)) * 10) / 10) + ' MB';
     }
     function effectivePlanMode(plan) { return Boolean(plan && (plan.pending ? !plan.active : plan.active)); }
     function policyMenuOption(label, description, selected, disabled, onSelect) {
@@ -1248,9 +1348,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return left && right && left.path === right.path && left.startLine === right.startLine && left.endLine === right.endLine;
     }
     function contextLabel(reference) {
-      if (reference.kind !== 'selection') return reference.path;
-      const lines = reference.startLine === reference.endLine ? 'L' + reference.startLine : 'L' + reference.startLine + '–' + reference.endLine;
-      return reference.path + ' ' + lines + (reference.truncated ? ' (truncated)' : '');
+      const range = reference.startLine === undefined ? ''
+        : ' ' + (reference.startLine === reference.endLine ? 'L' + reference.startLine : 'L' + reference.startLine + '–' + reference.endLine);
+      return reference.path + range + (reference.truncated ? ' (truncated)' : '');
+    }
+    function contextTitle(reference) {
+      if (reference.kind === 'folder') return 'Folder included with this prompt';
+      if (reference.kind === 'selection') return 'Selected editor lines included with this prompt';
+      if (reference.kind === 'problem' || reference.kind === 'problems') return 'Workspace diagnostic included with this prompt';
+      return reference.startLine === undefined
+        ? 'File included with this prompt'
+        : 'Dropped editor range included with this prompt';
     }
     function renderIdeContext() {
       elements.contextChips.replaceChildren();
@@ -1262,8 +1370,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.contextChips.classList.toggle('hidden', references.length === 0);
       for (const reference of references) {
         const chip = node('div', 'context-chip' + (reference.kind === 'selection' ? ' selection' : ''));
-        chip.title = reference.kind === 'selection' ? 'Selected editor lines included with this prompt' : 'Current editor file included with this prompt';
-        chip.append(node('span', 'context-icon', reference.kind === 'selection' ? '§' : '▧'), node('span', 'context-name', contextLabel(reference)));
+        chip.title = contextTitle(reference);
+        const icon = reference.kind === 'folder' ? '🗀' : reference.kind === 'selection' ? '§' : '▧';
+        chip.append(node('span', 'context-icon', icon), node('span', 'context-name', contextLabel(reference)));
         if (reference.id) {
           const remove = node('button', 'context-remove', '×'); remove.title = 'Remove pinned context';
           remove.addEventListener('click', () => vscode.postMessage({ type: 'remove-context', id: reference.id })); chip.append(remove);
@@ -1507,7 +1616,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         if (renderedSessionId) sessionDrafts.set(renderedSessionId, elements.prompt.value);
         renderedSessionId = current.sessionId; renderedMessages.clear(); elements.messages.replaceChildren();
         elements.prompt.value = sessionDrafts.get(current.sessionId) || ''; resizePrompt();
-        draftImages = draftImagesBySession.get(current.sessionId) || []; renderAttachments();
+        draftImages = draftImagesBySession.get(current.sessionId) || [];
+        draftFiles = draftFilesBySession.get(current.sessionId) || []; renderAttachments();
         historyAnchor = undefined; conversationScroller.reset();
         renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear();
         for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
@@ -1629,14 +1739,30 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function updateSend() {
       const pendingSend = state && [...pendingDraftSends.values()].some(draft => draft.sessionId === state.sessionId);
       const pendingAttachment = state && [...pendingAttachmentRequests.values()].some(request => request.sessionId === state.sessionId);
-      elements.send.disabled = !state || state.phase !== 'ready' || pendingSend || pendingAttachment || (elements.prompt.value.trim() === '' && draftImages.length === 0);
+      const pendingUpload = state && (pendingUploadsBySession.get(state.sessionId) || 0) > 0;
+      elements.send.disabled = !state || state.phase !== 'ready' || pendingSend || pendingAttachment || pendingUpload
+        || (elements.prompt.value.trim() === '' && draftImages.length === 0 && draftFiles.length === 0);
+    }
+    function releaseUpload(sessionId) {
+      const remaining = (pendingUploadsBySession.get(sessionId) || 1) - 1;
+      if (remaining <= 0) pendingUploadsBySession.delete(sessionId);
+      else pendingUploadsBySession.set(sessionId, remaining);
+      updateSend();
     }
     function resizePrompt() { elements.prompt.style.height = 'auto'; elements.prompt.style.height = Math.min(elements.prompt.scrollHeight, 220) + 'px'; updateSend(); }
     function selectionFor(model, reasoningEffort) { return { provider: model.provider, model: model.model, ...(reasoningEffort ? { reasoningEffort } : {}) }; }
-    function send(mode) {
-      const text = elements.prompt.value.trim(); if ((!text && !draftImages.length) || !state || state.phase !== 'ready') return;
+    function canSend() {
+      if (!state || state.phase !== 'ready') return false;
       const sessionId = state.sessionId;
-      if ([...pendingAttachmentRequests.values()].some(request => request.sessionId === sessionId)) return;
+      if ([...pendingAttachmentRequests.values()].some(request => request.sessionId === sessionId)) return false;
+      // Enter must honour the same gate the button uses, or a message can leave
+      // before its file is staged and the file then rides the NEXT prompt.
+      return (pendingUploadsBySession.get(sessionId) || 0) === 0;
+    }
+    function send(mode) {
+      const text = elements.prompt.value.trim(); if (!text && !draftImages.length && !draftFiles.length) return;
+      if (!canSend()) return;
+      const sessionId = state.sessionId;
       const requestId = ++draftSendRequestId;
       pendingDraftSends.set(requestId, { sessionId, text, scrollVersion: conversationScroller.intentVersion });
       vscode.postMessage({ type: 'send', sessionId, requestId, text, mode: mode || 'queue' }); elements.prompt.value = ''; sessionDrafts.set(sessionId, ''); commandIndex = 0; resetPrompt();
@@ -1666,6 +1792,182 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (itemFiles.length) return itemFiles;
       return Array.from(clipboard.files || []).filter(file => String(file.type || '').toLowerCase().startsWith('image/'));
     }
+    // A drop carries three unrelated payloads. VS Code resources arrive as
+    // URIs this extension host can resolve on its own machine, so they become
+    // context references. Anything the OS handed over exists only as bytes in
+    // this webview, so it is read here and staged through the runtime upload.
+    const IMAGE_DROP_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+    // Deliberately excludes the generic text/uri-list: a dragged hyperlink sets
+    // it, and swallowing that would break inserting a URL into the composer.
+    const DROP_URI_TYPES = ['CodeEditors', 'ResourceURLs', 'application/vnd.code.uri-list'];
+    /** Schemes this extension host can actually resolve to a project path. */
+    const RESOURCE_SCHEMES = ['file:', 'vscode-remote:', 'vscode-vfs:'];
+    // Mirrors the extension's limit so an oversized file is refused before its
+    // bytes cross the webview boundary; the extension still re-checks.
+    const MAX_DROP_FILE_BYTES = 32 * 1024 * 1024;
+    function safeJson(text) { if (typeof text !== 'string' || text === '') return undefined; try { return JSON.parse(text); } catch { return undefined; } }
+    function selectionOf(fragment) {
+      const match = /^L?(\\d+)(?:,(\\d+))?(?:-L?(\\d+)(?:,(\\d+))?)?/.exec(String(fragment || ''));
+      if (!match) return {};
+      return { startLine: parseInt(match[1], 10), endLine: match[3] ? parseInt(match[3], 10) : parseInt(match[1], 10) };
+    }
+    function droppedResources(dataTransfer, hasOsFiles) {
+      const found = [];
+      const seen = new Set();
+      const push = (uri, selection) => {
+        const value = String(uri || '').trim();
+        if (value === '' || seen.has(value)) return;
+        if (!RESOURCE_SCHEMES.some(scheme => value.startsWith(scheme))) return;
+        seen.add(value); found.push({ uri: value, ...(selection || {}) });
+      };
+      const editors = safeJson(dataTransfer.getData('CodeEditors'));
+      if (Array.isArray(editors)) for (const entry of editors) {
+        if (!entry || typeof entry !== 'object') continue;
+        if (typeof entry.resource === 'string') push(entry.resource, selectionOf(entry.options && entry.options.selection && entry.options.selection.fragment));
+      }
+      if (found.length === 0) {
+        const resources = safeJson(dataTransfer.getData('ResourceURLs'));
+        if (Array.isArray(resources)) for (const value of resources) {
+          if (typeof value !== 'string') continue;
+          const hash = value.indexOf('#');
+          if (hash < 0) push(value);
+          else push(value.slice(0, hash), selectionOf(value.slice(hash + 1)));
+        }
+      }
+      if (found.length === 0) {
+        // The generic web URI list also carries file:// entries for an OS
+        // drag, where those paths belong to the client machine rather than this
+        // host. Only the VS Code-internal list is trusted once real files are
+        // in hand; the system files themselves take the upload path instead.
+        const mimes = hasOsFiles
+          ? ['application/vnd.code.uri-list']
+          : ['application/vnd.code.uri-list', 'text/uri-list'];
+        for (const mime of mimes) {
+          const text = dataTransfer.getData(mime);
+          if (typeof text !== 'string' || text === '') continue;
+          for (const line of text.split(/\\r?\\n/)) {
+            const value = line.trim();
+            if (value === '' || value.startsWith('#')) continue;
+            const hash = value.indexOf('#');
+            if (hash < 0) push(value);
+            else push(value.slice(0, hash), selectionOf(value.slice(hash + 1)));
+          }
+          if (found.length > 0) break;
+        }
+      }
+      return found;
+    }
+    function readDroppedFile(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.addEventListener('load', () => {
+          const result = typeof reader.result === 'string' ? reader.result : '';
+          const separator = result.indexOf(',');
+          if (separator < 0) { reject(new Error('The dropped file could not be read.')); return; }
+          resolve(result.slice(separator + 1));
+        });
+        reader.addEventListener('error', () => reject(new Error('The dropped file could not be read.')));
+        reader.readAsDataURL(file);
+      });
+    }
+    async function acceptDrop(event) {
+      if (!state || state.phase !== 'ready' || !state.sessionId) {
+        vscode.postMessage({ type: 'attachment-error', message: 'Wait for DeepSeek to reconnect before adding files.' });
+        return;
+      }
+      const dataTransfer = event.dataTransfer;
+      if (!dataTransfer) return;
+      const sessionId = state.sessionId;
+      const osFiles = Array.from(dataTransfer.files || []);
+      // Resources first: an Explorer drop carries only URIs, while an OS drop
+      // carries bytes and must not be mistaken for a workspace path.
+      const resources = droppedResources(dataTransfer, osFiles.length > 0);
+      const imageFiles = osFiles.filter(file => IMAGE_DROP_TYPES.includes(String(file.type || '').toLowerCase()));
+      const otherFiles = osFiles.filter(file => !IMAGE_DROP_TYPES.includes(String(file.type || '').toLowerCase()));
+      if (resources.length > 0) vscode.postMessage({ type: 'attach-resources', sessionId, uris: resources });
+      if (imageFiles.length > 0) {
+        const requestId = ++attachmentRequestId;
+        pendingAttachmentRequests.set(requestId, { sessionId }); updateSend();
+        try {
+          const images = (await Promise.all(imageFiles.map(clipboardImage))).filter(Boolean);
+          if (images.length === 0) {
+            pendingAttachmentRequests.delete(requestId); updateSend();
+            vscode.postMessage({ type: 'attachment-error', message: 'Paste a PNG, JPEG, WebP, or GIF image.' });
+          } else {
+            vscode.postMessage({ type: 'attach-images', sessionId, requestId, images });
+          }
+        } catch (error) {
+          pendingAttachmentRequests.delete(requestId); updateSend();
+          vscode.postMessage({ type: 'attachment-error', message: error && error.message || 'The dropped image could not be read.' });
+        }
+      }
+      if (otherFiles.length > 0) {
+        // A folder arrives as a zero-byte entry with no media type, and its
+        // bytes are unreadable here, so it must go through the Explorer route.
+        const folders = otherFiles.filter(file => file.size === 0 && !file.type);
+        // The extension owns the authoritative limit; this only avoids hauling
+        // an obviously oversized file through the webview boundary first.
+        const oversized = otherFiles.filter(file => !(file.size === 0 && !file.type) && file.size > MAX_DROP_FILE_BYTES);
+        const plain = otherFiles.filter(file => !(file.size === 0 && !file.type) && file.size <= MAX_DROP_FILE_BYTES);
+        if (folders.length > 0) {
+          vscode.postMessage({
+            type: 'attachment-error',
+            message: 'Drop folders from the Explorer so DeepSeek can read them in place.',
+          });
+        }
+        if (oversized.length > 0) {
+          vscode.postMessage({
+            type: 'attachment-error',
+            message: '“' + oversized[0].name + '” is larger than the ' + Math.round(MAX_DROP_FILE_BYTES / (1024 * 1024)) + ' MB attachment limit.',
+          });
+        }
+        if (plain.length > 0) {
+          pendingUploadsBySession.set(sessionId, (pendingUploadsBySession.get(sessionId) || 0) + 1); updateSend();
+          try {
+            const files = [];
+            for (const file of plain) files.push({ name: file.name || 'attachment', data: await readDroppedFile(file) });
+            if (files.length > 0) vscode.postMessage({ type: 'attach-files', sessionId, files });
+            else { releaseUpload(sessionId); }
+          } catch (error) {
+            releaseUpload(sessionId);
+            vscode.postMessage({ type: 'attachment-error', message: error && error.message || 'The dropped file could not be read.' });
+          }
+        }
+      }
+    }
+    const composer = elements.prompt.parentElement;
+    let dropDepth = 0;
+    function setDropActive(active) {
+      elements.dropOverlay.classList.toggle('hidden', !active);
+      if (composer) composer.classList.toggle('drop-target', active);
+    }
+    function dragCarriesPayload(event) {
+      const types = Array.from((event.dataTransfer && event.dataTransfer.types) || []);
+      return types.some(type => DROP_URI_TYPES.includes(type) || type === 'Files');
+    }
+    document.addEventListener('dragenter', event => {
+      if (!dragCarriesPayload(event)) return;
+      event.preventDefault(); dropDepth += 1; setDropActive(true);
+    });
+    document.addEventListener('dragover', event => {
+      if (!dragCarriesPayload(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    });
+    document.addEventListener('dragleave', event => {
+      if (!dragCarriesPayload(event)) return;
+      event.preventDefault();
+      // A drag that leaves the window may never deliver every matching
+      // dragleave, so a null relatedTarget ends the gesture outright.
+      if (event.relatedTarget === null) dropDepth = 0;
+      else dropDepth = Math.max(0, dropDepth - 1);
+      if (dropDepth === 0) setDropActive(false);
+    });
+    document.addEventListener('drop', event => {
+      if (!dragCarriesPayload(event)) return;
+      event.preventDefault(); dropDepth = 0; setDropActive(false);
+      void acceptDrop(event);
+    });
     elements.prompt.addEventListener('input', () => { if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); commandIndex = 0; mentionIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); requestMentions(); });
     elements.prompt.addEventListener('click', () => { policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); requestMentions(); });
     elements.prompt.addEventListener('paste', event => {
@@ -1780,6 +2082,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (event.data.type === 'draft-images' && typeof event.data.sessionId === 'string') {
         const images = event.data.images || []; draftImagesBySession.set(event.data.sessionId, images);
         if (state && event.data.sessionId === state.sessionId) { draftImages = images; renderAttachments(); }
+      }
+      if (event.data.type === 'draft-files' && typeof event.data.sessionId === 'string') {
+        const files = event.data.files || []; draftFilesBySession.set(event.data.sessionId, files);
+        // The extension reports how many uploads are still outstanding, so two
+        // concurrent drops cannot release each other's send gate early.
+        const outstanding = Math.max(0, Number(event.data.uploads) || 0);
+        if (outstanding === 0) pendingUploadsBySession.delete(event.data.sessionId);
+        else pendingUploadsBySession.set(event.data.sessionId, outstanding);
+        if (state && event.data.sessionId === state.sessionId) { draftFiles = files; renderAttachments(); } else updateSend();
       }
       if (event.data.type === 'attachments-added' && typeof event.data.requestId === 'number') {
         const pending = pendingAttachmentRequests.get(event.data.requestId);

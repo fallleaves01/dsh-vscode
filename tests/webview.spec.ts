@@ -98,9 +98,12 @@ describe('chat webview', () => {
       setAttribute(name: string, value: string) { this.attributes[name] = value }, addEventListener() {},
     })
     const badge = node('span')
-    const elements = { sessionTrigger: node('button'), sessionTriggerTitle: node('span'), sessionList: node('div'), sessionSearch: { value: '' } }
-    const render = new Function('elements', 'document', 'node', 'array', 'string', 'relativeSessionTime', 'sessionActionId', 'archivedOpen',
-      `${source}; return renderSessionCenter;`)(elements, { getElementById: () => badge }, node, (a: any) => (Array.isArray(a) ? a : []), (s: any) => s, () => 'Just now', undefined, false)
+    const elements = {
+      sessionTrigger: node('button'), sessionTriggerTitle: node('span'), sessionList: node('div'),
+      sessionSearch: { value: '' }, sessionAttentionCount: badge,
+    }
+    const render = new Function('elements', 'document', 'node', 'array', 'string', 'relativeSessionTime', 'sessionActionId', 'archivedOpen', 'expandedSubagents',
+      `${source}; return renderSessionCenter;`)(elements, { getElementById: () => badge }, node, (a: any) => (Array.isArray(a) ? a : []), (s: any) => s, () => 'Just now', undefined, false, new Set())
     const current = { sessionId: 'a', sessions: [
       { id: 'a', title: 'Current', blank: true },
       { id: 'b', title: 'Work', blank: true, running: true, attention: { approvals: 2, questions: 1 } },
@@ -141,9 +144,25 @@ describe('chat webview', () => {
 
     expect(script).toContain('const pendingAttachmentRequests = new Map()')
     expect(script).toContain('pendingAttachmentRequests.set(requestId, { sessionId })')
-    expect(script).toContain("request => request.sessionId === sessionId)) return;")
+    expect(script).toContain("if ([...pendingAttachmentRequests.values()].some(request => request.sessionId === sessionId)) return false;")
     expect(script).toContain("event.data.type === 'attachments-added'")
     expect(script).toContain('pendingAttachmentRequests.delete(event.data.requestId)')
+  })
+
+  it('holds the send gate open until a dropped file finishes uploading', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const script = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(chatHtml(webview, mark))?.[1] ?? ''
+
+    expect(script).toContain('const pendingUploadsBySession = new Map()')
+    expect(script).toContain('pendingUploadsBySession.set(sessionId, (pendingUploadsBySession.get(sessionId) || 0) + 1)')
+    expect(script).toContain("event.data.type === 'draft-files'")
+    // The extension's count is authoritative, so concurrent drops cannot
+    // release each other's gate.
+    expect(script).toContain('Number(event.data.uploads)')
+    expect(script).toContain(
+      "elements.send.disabled = !state || state.phase !== 'ready' || pendingSend || pendingAttachment || pendingUpload",
+    )
   })
 
   it('offers actionable setup states instead of a generic reconnect loop', () => {
@@ -228,7 +247,49 @@ describe('chat webview', () => {
     expect(source).toContain('archivedOpen = !archivedOpen')
     expect(source).toContain("type: 'unarchive-session'")
     expect(source).toContain("node('button', 'session-restore', 'Restore')")
-    expect(source).toContain("if (!visible.length && !archived.length)")
+    expect(source).toContain("if (!anyRows && !archived.length)")
+  })
+
+  it('nests subagent sessions under their parent and offers a way back', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const html = chatHtml(webview, mark)
+    const source = html.slice(html.indexOf('function renderSessionCenter('), html.indexOf('function record('))
+
+    expect(source).toContain("session.parentId")
+    expect(source).toContain("' session-child'")
+    expect(source).toContain("'session-subagent-badge '")
+    expect(source).toContain("'session-expander'")
+    expect(source).toContain("'session-row session-ancestor'")
+    expect(source).toContain("type: 'select-session', sessionId: parentRow.id")
+  })
+
+  it('routes dropped resources, images and other files down separate paths', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const html = chatHtml(webview, mark)
+
+    expect(html).toContain('id="dropOverlay"')
+    expect(html).toContain("getData('CodeEditors')")
+    expect(html).toContain("getData('ResourceURLs')")
+    expect(html).toContain("type: 'attach-resources'")
+    expect(html).toContain("type: 'attach-files'")
+    // An OS drop never yields a path inside a webview, so bytes are the only
+    // transport this side can offer.
+    expect(html).not.toContain('getPathForFile')
+  })
+
+  it('keeps an OS drop off the resource path so its client paths are never referenced', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const html = chatHtml(webview, mark)
+
+    // A native file drag also sets the generic web URI list, whose file:// paths
+    // belong to the client machine. Those must not be offered as workspace
+    // references once real files are in hand.
+    expect(html).toContain('function droppedResources(dataTransfer, hasOsFiles)')
+    expect(html).toContain('droppedResources(dataTransfer, osFiles.length > 0)')
+    expect(html).toContain("? ['application/vnd.code.uri-list']")
   })
 
   it('arms a job stop before it kills, so one click cannot end a background job', () => {

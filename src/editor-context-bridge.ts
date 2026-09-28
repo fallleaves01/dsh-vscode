@@ -27,6 +27,8 @@ export interface IdeContextViewState {
 interface PinnedReference {
   id: string
   reference: IdeContextReference
+  /** Conversation the pin was staged for; context never crosses conversations. */
+  sessionId: string
 }
 
 function insideWorkspace(cwd: string, filePath: string): string | undefined {
@@ -73,7 +75,7 @@ export class EditorContextBridge implements vscode.Disposable {
 
   readonly onDidChange = this.changes.event
 
-  constructor(private readonly cwd: () => string) {
+  constructor(private readonly cwd: () => string, private readonly sessionId: () => string) {
     this.disposables = [
       vscode.window.onDidChangeActiveTextEditor(() => { this.publish() }),
       vscode.window.onDidChangeTextEditorSelection(event => {
@@ -95,18 +97,26 @@ export class EditorContextBridge implements vscode.Disposable {
     return {
       ...(current.activeFile === undefined ? {} : { activeFile: withoutText(current.activeFile) }),
       ...(current.selection === undefined ? {} : { selection: withoutText(current.selection) }),
-      pinned: this.pinned.map(item => withoutText(item.reference, item.id)),
+      pinned: this.ownPinned().map(item => withoutText(item.reference, item.id)),
     }
+  }
+
+  /** Pins staged for the conversation the sidebar currently shows. */
+  private ownPinned(): PinnedReference[] {
+    const sessionId = this.sessionId()
+    return this.pinned.filter(item => item.sessionId === sessionId)
   }
 
   pinSelection(): boolean {
     const selection = this.currentReferences().selection
     if (selection === undefined) return false
-    const duplicate = this.pinned.some(item => item.reference.path === selection.path
+    const sessionId = this.sessionId()
+    const duplicate = this.pinned.some(item => item.sessionId === sessionId
+      && item.reference.path === selection.path
       && item.reference.startLine === selection.startLine
       && item.reference.endLine === selection.endLine
       && item.reference.text === selection.text)
-    if (!duplicate) this.pinned.push({ id: randomUUID(), reference: selection })
+    if (!duplicate) this.pinned.push({ id: randomUUID(), reference: selection, sessionId })
     this.publish()
     return true
   }
@@ -118,9 +128,55 @@ export class EditorContextBridge implements vscode.Disposable {
     this.publish()
   }
 
+  /**
+   * Pin one dropped resource as a context chip. The URI is resolved on this
+   * host, so a Remote SSH or WSL workspace pins the real remote path rather
+   * than a client path that no tool here could read.
+   * @param uri - dropped VS Code resource.
+   * @param cwd - session workspace root the reference must stay inside.
+   * @param selection - optional dropped line range for an editor drag.
+   * @returns whether the resource landed inside the session workspace.
+   */
+  async pinUri(
+    uri: vscode.Uri,
+    cwd: string,
+    selection?: { startLine: number; endLine: number },
+  ): Promise<boolean> {
+    const relative = insideWorkspace(cwd, uri.fsPath)
+    if (relative === undefined || relative === '') return false
+    const sessionId = this.sessionId()
+    if (this.pinned.some(item => item.sessionId === sessionId
+      && item.reference.kind !== 'selection'
+      && item.reference.path === relative
+      && item.reference.startLine === selection?.startLine)) return true
+    let isDirectory = false
+    try {
+      isDirectory = (await vscode.workspace.fs.stat(uri)).type === vscode.FileType.Directory
+    } catch {
+      return false
+    }
+    if (isDirectory && selection !== undefined) return false
+    this.pinned.push({
+      id: randomUUID(),
+      sessionId,
+      reference: {
+        kind: isDirectory ? 'folder' : 'file',
+        path: relative,
+        ...(selection === undefined ? {} : { startLine: selection.startLine, endLine: selection.endLine }),
+      },
+    })
+    this.publish()
+    return true
+  }
+
+  /** Clears only the open conversation's pins, so another session keeps its own. */
   clearPinned(): void {
-    if (this.pinned.length === 0) return
-    this.pinned.length = 0
+    const sessionId = this.sessionId()
+    const before = this.pinned.length
+    for (let index = this.pinned.length - 1; index >= 0; index -= 1) {
+      if (this.pinned[index]?.sessionId === sessionId) this.pinned.splice(index, 1)
+    }
+    if (this.pinned.length === before) return
     this.publish()
   }
 
@@ -129,7 +185,7 @@ export class EditorContextBridge implements vscode.Disposable {
     const candidates = await this.candidates()
     const problems = this.problems()
     const mentions = resolveMentionReferences(mentionedPaths(text), candidates, problems)
-    const pinned = this.pinned
+    const pinned = this.ownPinned()
       .map(item => item.reference)
       .filter(reference => current.selection === undefined
         || reference.path !== current.selection.path

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { DshConnection } from './dsh-connection.js'
-import type { PromptImage, PromptMode, QueueAction, SessionSummary } from './dsh-client.js'
+import type { PromptAttachment, PromptMode, QueueAction, SessionSummary } from './dsh-client.js'
 
 /** Named-argument contracts of the 0.1.2 Session Remotes, independent of the UI. */
 export class DshRemoteApi {
@@ -18,11 +18,19 @@ export class DshRemoteApi {
     return this.call('session/rename', { request: { sessionId, title } })
   }
 
-  prompt(sessionId: string, text: string, images: readonly PromptImage[] = [], mode: PromptMode = 'queue'): Promise<{ accepted: true }> {
-    const content: Array<PromptImage | { type: 'text'; text: string }> = images.map(image => ({
-      type: 'image', mediaType: image.mediaType, data: image.data,
-      ...(image.name === undefined ? {} : { name: image.name }),
-    }))
+  prompt(sessionId: string, text: string, attachments: readonly PromptAttachment[] = [], mode: PromptMode = 'queue'): Promise<{ accepted: true }> {
+    // Image bytes ride the prompt; files ride the receipt minted by
+    // `fileUploads/upload`. Both are the shapes the Host accepts on the wire.
+    const content: Array<PromptAttachment | { type: 'text'; text: string }> = attachments.map(attachment => (
+      attachment.type === 'image'
+        ? {
+            type: 'image' as const,
+            mediaType: attachment.mediaType,
+            data: attachment.data,
+            ...(attachment.name === undefined ? {} : { name: attachment.name }),
+          }
+        : { type: 'file' as const, receiptId: attachment.receiptId }
+    ))
     if (text !== '') content.push({ type: 'text', text })
     return this.call('session/prompt', {
       request: {

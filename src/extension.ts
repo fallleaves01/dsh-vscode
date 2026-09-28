@@ -28,9 +28,12 @@ import {
   DshClient,
   type CommandDescriptor,
   type DshFrame,
+  type FileUploadReceipt,
   type HistoryEntry,
   type ImageMediaType,
   type ModelSelection,
+  type PromptAttachment,
+  type PromptFile,
   type PromptMode,
   type PromptImage,
   type QueueAction,
@@ -65,7 +68,7 @@ import {
   messagesPatchForWebview,
   type ConversationMessagesPatch,
 } from './chat-state-patch.js'
-import { archivedSessionItems, sessionItems, type SessionItem, type SessionAttention } from './session-center.js'
+import { archivedSessionItems, parentIdOf, sessionItems, type SessionItem, type SessionAttention } from './session-center.js'
 import { wireRecord } from './dsh-streams.js'
 import type { DshConnection } from './dsh-connection.js'
 import { canRetryConnection, reconnectAttempts } from './dsh-reconnect.js'
@@ -135,6 +138,12 @@ interface ChatViewState {
   cwd: string
   sessions: SessionItem[]
   archivedSessions: SessionItem[]
+  /**
+   * Owning conversation when the active session is itself a subagent, else
+   * `null`. Never `undefined`: the Webview transport is JSON, which drops
+   * undefined properties, so an absent key could never clear a stale owner.
+   */
+  parentSessionId: string | null
   sessionId: string
   messages: ConversationMessage[]
   running: boolean
@@ -196,6 +205,7 @@ function initialState(cwd: string): ChatViewState {
     cwd,
     sessions: [],
     archivedSessions: [],
+    parentSessionId: null,
     sessionId: '',
     messages: [],
     running: false,
@@ -582,7 +592,9 @@ export class DshChatController implements vscode.Disposable {
   async archiveSession(sessionId: string): Promise<void> {
     this.requireReady()
     const summary = this.summaries.find(item => item.sessionId === sessionId)
-    if (summary === undefined || summary.blank) return
+    // A subagent belongs to its parent conversation; archiving it alone would
+    // delete the only path back to it without making it recoverable.
+    if (summary === undefined || summary.blank || summary.origin === 'subagent') return
     const client = this.requireClient()
     const result = await client.archiveSession(sessionId)
     if (this.client !== client) return
@@ -654,21 +666,26 @@ export class DshChatController implements vscode.Disposable {
 
   async send(
     text: string,
-    images: readonly PromptImage[] = [],
+    attachments: readonly PromptAttachment[] = [],
     ideContext?: IdeContextSnapshot,
     mode: PromptMode = 'queue',
   ): Promise<void> {
     this.requireReady()
     const normalized = text.trim()
-    if ((normalized === '' && images.length === 0) || this._state.sessionId === '') return
+    if ((normalized === '' && attachments.length === 0) || this._state.sessionId === '') return
     const client = this.requireClient()
     const sessionId = this._state.sessionId
     const generation = this.sessionLoadGeneration
+    const images = attachments.filter((attachment): attachment is PromptImage => attachment.type === 'image')
     const { route: slash, command } = await this.resolveInput(normalized)
     if (this.client !== client || generation !== this.sessionLoadGeneration || this._state.phase !== 'ready') throw new Error('The conversation changed. Check its history before sending again.')
     if (slash.kind === 'command') {
-      if (images.length > 0 && (command?.input?.attachments ?? command?.input?.images) !== true) {
-        throw new Error(`${slash.token} does not accept image attachments; remove them first.`)
+      if (attachments.length > 0 && (command?.input?.attachments ?? command?.input?.images) !== true) {
+        const imagesOnly = images.length === attachments.length
+        throw new Error(`${slash.token} does not accept ${imagesOnly ? 'image attachments' : 'attachments'}; remove them first.`)
+      }
+      if (images.length !== attachments.length) {
+        throw new Error(`${slash.token} cannot use file attachments; remove them first.`)
       }
       const execution = await client.executeCommand(
         sessionId,
@@ -684,7 +701,7 @@ export class DshChatController implements vscode.Disposable {
     await client.prompt(
       sessionId,
       slash.kind === 'skill' || ideContext === undefined ? normalized : withIdeContext(normalized, ideContext),
-      images,
+      attachments,
       mode,
     )
     if (this.client !== client) return
@@ -865,6 +882,11 @@ export class DshChatController implements vscode.Disposable {
     return this.client
   }
 
+  /** Stage one dropped file against the live connection; see {@link DshClient.uploadFile}. */
+  uploadFile(sessionId: string, data: string, name?: string): Promise<FileUploadReceipt> {
+    return this.requireClient().uploadFile(sessionId, data, name)
+  }
+
   private requireReady(): void {
     if (this._state.phase !== 'ready') throw new Error('DSH is not connected. Wait for the conversation to reconnect before continuing.')
   }
@@ -904,7 +926,10 @@ export class DshChatController implements vscode.Disposable {
         this.runtimeActivity.set(summary.sessionId, { running: summary.running, revision: activityRevision })
       }
     }
-    this.summaries = items.filter(summary => summary.cwd === cwd && summary.origin !== 'subagent')
+    // Subagent sessions stay in the model: they are reached through the parent
+    // conversation that owns them, and hiding them here was the whole reason
+    // delegated work used to be invisible.
+    this.summaries = items.filter(summary => summary.cwd === cwd)
       .map(summary => ({ ...summary, running: this.runtimeActivity.get(summary.sessionId)?.running ?? summary.running }))
     if (selectionGeneration !== this.sessionLoadGeneration) {
       this.publishSessionItems()
@@ -915,10 +940,13 @@ export class DshChatController implements vscode.Disposable {
       ? undefined
       : selectable.some(summary => summary.sessionId === preferredId) ? preferredId : undefined
     const currentExists = selectable.some(summary => summary.sessionId === this._state.sessionId)
+    // Only an explicit choice or the current session may land on a subagent;
+    // a fresh project should open a conversation the user actually owns.
+    const topLevel = selectable.filter(summary => summary.origin !== 'subagent')
     const selectedId = preferredExists
       ?? (currentExists ? this._state.sessionId : undefined)
-      ?? [...selectable].sort((left, right) => right.updatedAt - left.updatedAt).find(summary => !summary.blank)?.sessionId
-      ?? selectable[0]?.sessionId
+      ?? [...topLevel].sort((left, right) => right.updatedAt - left.updatedAt).find(summary => !summary.blank)?.sessionId
+      ?? topLevel[0]?.sessionId
 
     if (selectedId !== undefined && this.unreadSessionIds.delete(selectedId)) this.persistUnreadSessions()
     this.publish(this.sessionItemPatch(selectedId))
@@ -944,10 +972,14 @@ export class DshChatController implements vscode.Disposable {
     }
   }
 
-  private sessionItemPatch(selectedId: string | undefined = this._state.sessionId): Pick<ChatViewState, 'sessions' | 'archivedSessions'> {
+  private sessionItemPatch(selectedId: string | undefined = this._state.sessionId): Pick<ChatViewState, 'sessions' | 'archivedSessions' | 'parentSessionId'> {
+    const parentSessionId = selectedId === undefined ? undefined : parentIdOf(this.summaries, selectedId)
     return {
       sessions: sessionItems(this.summaries, this.archivedSessionIds, selectedId, this.unreadSessionIds, this.sessionAttention),
       archivedSessions: archivedSessionItems(this.summaries, this.archivedSessionIds, this.unreadSessionIds, this.sessionAttention),
+      // Always present, and `null` rather than `undefined`, so the JSON
+      // transport carries the change and clears a stale owner.
+      parentSessionId: parentSessionId ?? null,
     }
   }
 
@@ -1292,7 +1324,7 @@ export class DshChatController implements vscode.Disposable {
       if (summary !== undefined && typeof payload.key === 'string') {
         summary.projections = { values: { ...summary.projections?.values, [payload.key]: payload.value } }
       }
-      if (typeof payload.value === 'string' && payload.key === 'title') {
+      if ((typeof payload.value === 'string' && payload.key === 'title') || payload.key === 'subagentCatalog') {
         this.publishSessionItems()
       }
       if (payload.key === 'imageLimits' && sessionId === this._state.sessionId) {
@@ -1384,7 +1416,7 @@ export class DshChatController implements vscode.Disposable {
       return
     }
 
-    if (frame.channel === 'host' && type === 'host/session-added' && payload.cwd === this.cwd && payload.origin !== 'subagent') {
+    if (frame.channel === 'host' && type === 'host/session-added' && payload.cwd === this.cwd) {
       // Discovery must not steal focus or replace a snapshot currently loading.
       const existing = this.summaries.find(item => item.sessionId === sessionId)
       const summary: SessionSummary = { sessionId, cwd: this.cwd,
@@ -1392,7 +1424,9 @@ export class DshChatController implements vscode.Disposable {
         running: payload.running === true, blank: payload.blank === true && existing?.blank !== false,
         ...(wireRecord(payload.projections) && wireRecord(payload.projections.values)
           ? { projections: { values: payload.projections.values } } : existing?.projections ? { projections: existing.projections } : {}),
-        ...(typeof payload.agentPreset === 'string' ? { agentPreset: payload.agentPreset } : {}) }
+        ...(typeof payload.agentPreset === 'string' ? { agentPreset: payload.agentPreset } : {}),
+        ...(payload.origin === 'subagent' ? { origin: 'subagent' as const } : {}),
+        ...(typeof payload.parentSessionId === 'string' ? { parentSessionId: payload.parentSessionId } : {}) }
       if (existing === undefined) this.summaries.push(summary)
       else Object.assign(existing, summary)
       this.publishSessionItems()
@@ -1539,10 +1573,25 @@ export class DshChatController implements vscode.Disposable {
 }
 
 type DraftImage = PromptImage & { id: string }
+/** One staged file waiting for the next prompt; its receipt is the wire handle. */
+type DraftFile = PromptFile & { id: string; name: string; bytes: number }
+
+/** Largest dropped file this sidebar will stage; the runtime publishes no file bound. */
+const MAX_DRAFT_FILE_BYTES = 32 * 1024 * 1024
+/** Upper bound on staged files per message, mirroring the image batch shape. */
+const MAX_DRAFT_FILES = 8
 
 class DshSurface implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[]
   private readonly draftImagesBySession = new Map<string, DraftImage[]>()
+  private readonly draftFilesBySession = new Map<string, DraftFile[]>()
+  /**
+   * Bumped whenever a send consumes a session's drafts. An upload that lands
+   * after its own send must be discarded rather than handed to the next prompt.
+   */
+  private readonly draftGeneration = new Map<string, number>()
+  /** Uploads still in flight, so a send cannot race past an unshown attachment. */
+  private readonly pendingUploads = new Map<string, number>()
   private ready = false
   private pendingFocus = false
   private pendingPrompt: string | undefined
@@ -1748,6 +1797,116 @@ class DshSurface implements vscode.Disposable {
     return created
   }
 
+  private draftFilesFor(sessionId: string): DraftFile[] {
+    const existing = this.draftFilesBySession.get(sessionId)
+    if (existing !== undefined) return existing
+    const created: DraftFile[] = []
+    this.draftFilesBySession.set(sessionId, created)
+    return created
+  }
+
+  /**
+   * Stage files the webview handed over as bytes. This is the only path that
+   * works for anything the webview cannot address as a VS Code resource: OS
+   * drags in a remote window, and every drag in a browser-hosted window.
+   */
+  private async addEncodedFiles(sessionId: string, values: unknown): Promise<void> {
+    if (!Array.isArray(values)) return
+    const generation = this.draftGeneration.get(sessionId) ?? 0
+    this.pendingUploads.set(sessionId, (this.pendingUploads.get(sessionId) ?? 0) + 1)
+    try {
+      // The guard sits inside the try on purpose: the Webview holds its own
+      // send gate until this session answers, so returning before the finally
+      // would disable Send for that conversation until the panel reloads.
+      if (sessionId !== this.controller.state.sessionId) return
+      for (const value of values) {
+        const file = encodedFileFromWebview(value)
+        if (file === undefined) continue
+        if (file.bytes > MAX_DRAFT_FILE_BYTES) {
+          void vscode.window.showWarningMessage(`“${file.name}” is larger than the ${String(MAX_DRAFT_FILE_BYTES / (1024 * 1024))} MB attachment limit.`)
+          continue
+        }
+        if (this.draftFilesFor(sessionId).length >= MAX_DRAFT_FILES) {
+          void vscode.window.showWarningMessage(`A message can carry at most ${String(MAX_DRAFT_FILES)} files.`)
+          break
+        }
+        try {
+          const receipt = await this.controller.uploadFile(sessionId, file.data, file.name)
+          // A send that completed while this upload was in flight already
+          // carried its attachments; this receipt belongs to nobody now.
+          if ((this.draftGeneration.get(sessionId) ?? 0) !== generation) return
+          this.draftFilesFor(sessionId).push({
+            id: randomUUID(),
+            type: 'file',
+            name: receipt.file.name === '' ? file.name : receipt.file.name,
+            bytes: receipt.file.bytes,
+            receiptId: receipt.receiptId,
+          })
+        } catch (error) {
+          void vscode.window.showWarningMessage(
+            `Could not attach “${file.name}”: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
+      }
+    } finally {
+      const remaining = (this.pendingUploads.get(sessionId) ?? 1) - 1
+      if (remaining <= 0) this.pendingUploads.delete(sessionId)
+      else this.pendingUploads.set(sessionId, remaining)
+      // Publish for the owning session even if the user moved on, so the two
+      // sides cannot disagree about what is attached.
+      await this.publishDraftAttachments(sessionId)
+    }
+  }
+  /**
+   * Pin dropped workspace resources as context chips. Their URIs resolve on
+   * whichever host runs this extension, so this also works over Remote SSH.
+   */
+  private async attachResources(sessionId: string, values: unknown): Promise<void> {
+    if (sessionId !== this.controller.state.sessionId || !Array.isArray(values)) return
+    const cwd = this.controller.state.cwd
+    let pinned = 0
+    let unsupported = 0
+    for (const value of values) {
+      const entry = typeof value === 'string' ? { uri: value } : value
+      if (typeof entry !== 'object' || entry === null) continue
+      const record = entry as Record<string, unknown>
+      if (typeof record.uri !== 'string' || record.uri === '') continue
+      let uri: vscode.Uri
+      try {
+        uri = vscode.Uri.parse(record.uri, true)
+      } catch {
+        continue
+      }
+      if (uri.scheme !== 'file' && !uri.scheme.startsWith('vscode-remote') && uri.scheme !== 'vscode-vfs') {
+        unsupported += 1
+        continue
+      }
+      const startLine = typeof record.startLine === 'number' && Number.isSafeInteger(record.startLine) ? record.startLine : undefined
+      const endLine = typeof record.endLine === 'number' && Number.isSafeInteger(record.endLine) ? record.endLine : undefined
+      if (await this.editorContext.pinUri(uri, cwd, startLine === undefined ? undefined : { startLine, endLine: endLine ?? startLine })) {
+        pinned += 1
+      }
+    }
+    if (pinned > 0) return
+    // An untitled tab or an output pane has no project path at all, which is a
+    // different problem from a file that lives outside the workspace.
+    void vscode.window.showWarningMessage(unsupported > 0
+      ? 'Nothing was added: that item has no file in the DeepSeek project.'
+      : 'Nothing was added: those items are outside the DeepSeek project.')
+  }
+
+  private async publishDraftAttachments(sessionId: string): Promise<void> {
+    await this.publishDraftImages(sessionId)
+    await this.webview.postMessage({
+      type: 'draft-files',
+      sessionId,
+      files: this.draftFilesFor(sessionId).map(file => ({ id: file.id, name: file.name, bytes: file.bytes })),
+      // The Webview gates Send on this, so it must be the authoritative count
+      // rather than something it infers from its own hand-offs.
+      uploads: this.pendingUploads.get(sessionId) ?? 0,
+    })
+  }
+
   private async publishDraftImages(sessionId: string): Promise<void> {
     await this.webview.postMessage({
       type: 'draft-images',
@@ -1887,11 +2046,17 @@ class DshSurface implements vscode.Disposable {
               ? value.requestId
               : -1
             if (sessionId === '' || requestId < 0) return
+            // A staged file that has not come back yet would be attached to the
+            // wrong message, so the send waits rather than silently dropping it.
+            if ((this.pendingUploads.get(sessionId) ?? 0) > 0) {
+              void vscode.window.showWarningMessage('Wait for the attached file to finish uploading, then send again.')
+              await this.restoreDraft(sessionId, requestId, value.text)
+              return
+            }
             if (this.controller.state.sessionId !== sessionId) {
               await this.restoreDraft(sessionId, requestId, value.text)
               return
             }
-            const draftImages = this.draftImagesFor(sessionId)
             if (value.text.trim() === '/permission danger-full-access') {
               const confirmed = await vscode.window.showWarningMessage(
                 'Enable Full access?',
@@ -1921,11 +2086,22 @@ class DshSurface implements vscode.Disposable {
               return
             }
             const mode: PromptMode = value.mode === 'steer' ? 'steer' : 'queue'
+            // Everything above this point awaited: discovery, a snapshot, or a
+            // modal the user sat on. Re-read the draft so a file dropped during
+            // those awaits is either sent or reported, never silently wiped.
+            const pendingUpload = (this.pendingUploads.get(sessionId) ?? 0) > 0
+            const liveImages = this.draftImagesFor(sessionId)
+            const liveAttachments: PromptAttachment[] = [...liveImages, ...this.draftFilesFor(sessionId)]
+            if (pendingUpload) {
+              void vscode.window.showWarningMessage('Wait for the attached file to finish uploading, then send again.')
+              await this.restoreDraft(sessionId, requestId, value.text)
+              return
+            }
             // Limits can land after the picker ran, so the send is the last point
             // where the whole draft can be measured against what the runtime states.
             const rejection = rejectImageAttachments(
               [],
-              draftImages.map(candidateOf),
+              liveImages.map(candidateOf),
               this.controller.state.imageLimits,
             )
             if (rejection !== undefined) {
@@ -1938,15 +2114,18 @@ class DshSurface implements vscode.Disposable {
               return
             }
             try {
-              await this.controller.send(value.text, draftImages, ideContext, mode)
+              await this.controller.send(value.text, liveAttachments, ideContext, mode)
             } catch (error) {
               await this.restoreDraft(sessionId, requestId, value.text)
               throw error
             }
             await this.acknowledgeDraft(sessionId, requestId)
             this.draftImagesBySession.delete(sessionId)
+            this.draftFilesBySession.delete(sessionId)
+            // Any upload still in flight belongs to the message just sent.
+            this.draftGeneration.set(sessionId, (this.draftGeneration.get(sessionId) ?? 0) + 1)
             if (carriesIdeContext) this.editorContext.clearPinned()
-            await this.publishDraftImages(sessionId)
+            await this.publishDraftAttachments(sessionId)
           }
           return
         case 'select-permission':
@@ -1993,6 +2172,12 @@ class DshSurface implements vscode.Disposable {
             }
           }
           return
+        case 'attach-files':
+          if (typeof value.sessionId === 'string') await this.addEncodedFiles(value.sessionId, value.files)
+          return
+        case 'attach-resources':
+          if (typeof value.sessionId === 'string') await this.attachResources(value.sessionId, value.uris)
+          return
         case 'attachment-error':
           if (typeof value.message === 'string') await vscode.window.showWarningMessage(value.message)
           return
@@ -2013,12 +2198,17 @@ class DshSurface implements vscode.Disposable {
           return
         case 'remove-attachment':
           if (typeof value.id === 'string') {
-            const sessionId = this.controller.state.sessionId
+            // The chip carries its session: the user may have switched between
+            // the render and the click, and splicing the wrong draft loses data.
+            const sessionId = typeof value.sessionId === 'string' ? value.sessionId : this.controller.state.sessionId
             if (sessionId === '') return
             const draftImages = this.draftImagesFor(sessionId)
-            const index = draftImages.findIndex(image => image.id === value.id)
-            if (index >= 0) draftImages.splice(index, 1)
-            await this.publishDraftImages(sessionId)
+            const imageIndex = draftImages.findIndex(image => image.id === value.id)
+            if (imageIndex >= 0) draftImages.splice(imageIndex, 1)
+            const draftFiles = this.draftFilesFor(sessionId)
+            const fileIndex = draftFiles.findIndex(file => file.id === value.id)
+            if (fileIndex >= 0) draftFiles.splice(fileIndex, 1)
+            await this.publishDraftAttachments(sessionId)
           }
           return
         case 'cancel': await this.controller.cancel(); return
@@ -2160,6 +2350,26 @@ function draftImageFromWebview(value: unknown): DraftImage | undefined {
   }
 }
 
+/** Decoded size of one base64 payload, rejecting anything that is not canonical base64. */
+function canonicalBase64(value: unknown): { data: string; bytes: number } | undefined {
+  if (typeof value !== 'string' || value === '' || value.length % 4 !== 0) return undefined
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return undefined
+  return { data: value, bytes: base64Bytes(value) }
+}
+
+/** One arbitrary file dropped into the composer and read as bytes by the webview. */
+function encodedFileFromWebview(value: unknown): { name: string; data: string; bytes: number } | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const candidate = value as Record<string, unknown>
+  const encoded = canonicalBase64(candidate.data)
+  if (encoded === undefined) return undefined
+  const raw = typeof candidate.name === 'string' ? candidate.name.trim() : ''
+  // The name is a display label only; the Host also sanitizes it into the leaf
+  // name. Strip separators here so nothing path-shaped reaches it at all.
+  const name = raw === '' ? 'attachment' : path.basename(raw.replaceAll('\\', '/')).slice(0, 200)
+  return { name, data: encoded.data, bytes: encoded.bytes }
+}
+
 class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private surface: DshSurface | undefined
   private pendingPrompt: string | undefined
@@ -2285,7 +2495,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const diffReviews = new DiffReviewManager()
   const controller = new DshChatController(runtime, output, new DirtyFileGuard(), diffReviews, context.workspaceState, cwd)
   const pluginManager = new DshPluginManager(context, controller, output)
-  const editorContext = new EditorContextBridge(() => controller.cwd)
+  const editorContext = new EditorContextBridge(() => controller.cwd, () => controller.state.sessionId)
   const provider = new DshViewProvider(controller, output, editorContext, context.extensionUri)
   const panels = new Set<{ panel: vscode.WebviewPanel; surface: DshSurface }>()
 

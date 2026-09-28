@@ -15,6 +15,8 @@ export interface SessionSummary {
   blank: boolean
   cwd?: string
   origin?: 'subagent'
+  /** Owning conversation when this session was created as a subagent. */
+  parentSessionId?: string
   agentPreset?: string
   projections?: { asOfSeq?: number; values?: Record<string, unknown> }
 }
@@ -84,6 +86,24 @@ export interface ImageAttachment {
   height: number
   name?: string
 }
+
+/**
+ * One arbitrary file already staged by `fileUploads/upload`. The Host resolves
+ * the receipt back into a durable attachment, so the prompt only carries the
+ * receipt and never the bytes.
+ */
+export interface PromptFile {
+  type: 'file'
+  receiptId: string
+}
+
+/** Durable receipt for one staged file upload, scoped to the receiving Session. */
+export interface FileUploadReceipt {
+  receiptId: string
+  file: { attachmentId: string; name: string; bytes: number }
+}
+
+export type PromptAttachment = PromptImage | PromptFile
 
 export type PromptMode = 'queue' | 'steer'
 
@@ -214,14 +234,24 @@ export class DshClient {
   attachment(sessionId: string, attachmentId: string): Promise<{ attachment: ImageAttachment; data: string }> {
     return this.call('session/attachment', { request: { sessionId, attachmentId } })
   }
+  /**
+   * Stage one arbitrary file for the next prompt. Mirrors the browser client's
+   * upload fallback, so a wire caller never has to reach the HTTP route.
+   */
+  uploadFile(sessionId: string, data: string, name?: string): Promise<FileUploadReceipt> {
+    return this.call('fileUploads/upload', {
+      agentId: sessionId,
+      request: { data, ...(name === undefined || name === '' ? {} : { name }) },
+    }, 300_000)
+  }
   pluginInventory(): Promise<PluginInventorySnapshot> { return this.call('pluginInventory/list', {}) }
   settings(): Promise<SettingsDescription> { return this.call('settings/describe', {}) }
   mutateSettings(ns: string, ops: SettingsMutation[], expectedRevision: number): Promise<SettingsNamespace> {
     return this.call('settings/mutate', { ns, ops, expectedRevision })
   }
-  prompt(sessionId: string, text: string, images: readonly PromptImage[] = [], mode: PromptMode = 'queue'): Promise<{ accepted: true }> {
+  prompt(sessionId: string, text: string, attachments: readonly PromptAttachment[] = [], mode: PromptMode = 'queue'): Promise<{ accepted: true }> {
     this.feed.handleRequestsFor(sessionId)
-    return this.api.prompt(sessionId, text, images, mode)
+    return this.api.prompt(sessionId, text, attachments, mode)
   }
   respond(rpcId: string, value: unknown): Promise<RpcReceipt> { return this.feed.respond(rpcId, value) }
   cancel(sessionId: string): Promise<{ accepted: true }> { return this.api.cancel(sessionId) }

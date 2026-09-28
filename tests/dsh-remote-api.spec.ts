@@ -37,6 +37,30 @@ describe('DSH 0.1.2 Session Remotes', () => {
     expect(second.mode).toBe('queue')
   })
 
+  it('sends a staged file as its receipt, never as bytes', async () => {
+    const call = vi.fn().mockResolvedValue({ accepted: true })
+    const api = new DshRemoteApi({ call } as unknown as DshConnection)
+    // The Host resolves the receipt to a durable attachment, so the prompt must
+    // carry only the opaque handle the upload returned.
+    await api.prompt('s1', 'summarize this', [{ type: 'file', receiptId: 'r-1' }])
+    expect(call.mock.calls[0]![1].request.content).toEqual([
+      { type: 'file', receiptId: 'r-1' },
+      { type: 'text', text: 'summarize this' },
+    ])
+  })
+
+  it('keeps attachment order when images and files are mixed', async () => {
+    const call = vi.fn().mockResolvedValue({ accepted: true })
+    const api = new DshRemoteApi({ call } as unknown as DshConnection)
+    const image = { type: 'image' as const, mediaType: 'image/png' as const, data: 'YWJj' }
+    await api.prompt('s1', 'compare', [image, { type: 'file', receiptId: 'r-2' }])
+    expect(call.mock.calls[0]![1].request.content).toEqual([
+      { type: 'image', mediaType: 'image/png', data: 'YWJj' },
+      { type: 'file', receiptId: 'r-2' },
+      { type: 'text', text: 'compare' },
+    ])
+  })
+
   it('forwards the client lifetime to all session mutations', async () => {
     const call = vi.fn().mockResolvedValue({ accepted: true })
     const lifetime = new AbortController()
