@@ -150,6 +150,30 @@
         "title": "DeepSeek Harness: Clear Stored API Key"
       }
     ],
+    "keybindings": [
+      {
+        "command": "deepseekHarness.openChat",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d"
+      },
+      {
+        "command": "deepseekHarness.openInEditor",
+        "key": "ctrl+alt+e",
+        "mac": "cmd+alt+e"
+      },
+      {
+        "command": "deepseekHarness.addSelection",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
+        "when": "editorHasSelection && resourceScheme == file"
+      },
+      {
+        "command": "deepseekHarness.fixWithDeepSeek",
+        "key": "ctrl+alt+f",
+        "mac": "cmd+alt+f",
+        "when": "editorTextFocus && resourceScheme == file"
+      }
+    ],
     "menus": {
       "editor/context": [
         {
