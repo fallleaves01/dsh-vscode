@@ -79,7 +79,7 @@ Enable **DeepSeek Harness: Autonomous Debugging** in VS Code Settings and add a 
 
 DeepSeek can then start the debugger, set breakpoints, step through execution, inspect runtime values, fix the code, and verify the result directly from the sidebar.
 
-Targets DeepSeek Harness `0.1.7-rc.1` (upstream v0.0.5 targets `0.1.5-rc.1`).
+Targets DeepSeek Harness `0.1.7-rc.2`, and is wire-compatible with `0.1.7-rc.1` (upstream v0.0.5 targets `0.1.5-rc.1`).
 
 💬 Found a rough edge or have an idea for what should come next? [Open an issue](https://github.com/fallleaves01/dsh-vscode/issues).
 
