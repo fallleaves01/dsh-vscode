@@ -148,6 +148,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .thinking summary { display: flex; align-items: center; gap: 6px; min-height: 22px; padding: 1px 0; cursor: pointer; list-style: none; color: var(--vscode-descriptionForeground); }
     .thinking summary::-webkit-details-marker { display: none; }
     .thinking-icon { flex: none; font-size: 10px; opacity: .85; }
+    .thinking.live .thinking-icon { opacity: 1; animation: thinking-pulse 1.4s ease-in-out infinite; }
+    .thinking.live .thinking-title { color: var(--vscode-foreground); }
+    .thinking.live .thinking-preview { opacity: 1; }
+    @keyframes thinking-pulse { 0%, 100% { opacity: .35; transform: scale(.9); } 50% { opacity: 1; transform: scale(1.1); } }
+    @media (prefers-reduced-motion: reduce) { .thinking.live .thinking-icon { animation: none; opacity: 1; } }
     .thinking-title { flex: none; font-size: 12px; font-weight: 600; }
     .thinking-preview { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; opacity: .85; }
     .thinking-body { margin: 3px 0 2px; padding: 2px 0 2px 9px; border-left: 2px solid var(--vscode-widget-border); color: var(--vscode-descriptionForeground); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
@@ -449,6 +454,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const pendingAttachmentRequests = new Map();
     let attachmentRequestId = 0;
     const renderedMessages = new Map();
+    /** Longest tail of the newest thought line kept in the collapsed summary. */
+    const THINKING_PREVIEW_CHARS = 140;
+    /** Elapsed label refresh while the model is thinking. */
+    const THINKING_TICK_MS = 1000;
+    /** message id -> when the sidebar first saw it think, and its frozen total. */
+    const thinkingTiming = new Map();
+    let thinkingTicker;
     const expandedToolIds = new Set();
     const loadingToolRequests = new Map();
     const toolOutputErrors = new Map();
@@ -460,7 +472,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const toolOutputChunkSize = 20000;
 
     const conversationScroller = dshConversationScroll.createConversationScroller(elements.scroll, elements.conversation, document.getElementById('jumpLatest'));
-    window.addEventListener('pagehide', () => conversationScroller.dispose(), { once: true });
+    window.addEventListener('pagehide', () => { conversationScroller.dispose(); if (thinkingTicker !== undefined) { clearInterval(thinkingTicker); thinkingTicker = undefined; } }, { once: true });
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -989,31 +1001,88 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       body.classList.add('assistant-page'); appendImages(body, page.images); return body;
     }
     function hasThinking(message) { return typeof message.reasoning === 'string' && message.reasoning !== ''; }
+    /**
+     * The newest line of thinking, which is what keeps the summary moving.
+     * Showing the first characters instead made a live turn look frozen: the
+     * preview stopped changing the moment the model passed 140 characters.
+     * Long lines keep their tail, because that is where writing continues.
+     */
     function thinkingPreview(text) {
-      const flat = String(text || '').replace(/\\s+/g, ' ').trim();
-      return flat.length > 140 ? flat.slice(0, 140) + '…' : flat;
+      const lines = String(text || '').split('\\n');
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const line = lines[index].replace(/\\s+/g, ' ').trim();
+        if (line === '') continue;
+        return line.length > THINKING_PREVIEW_CHARS ? '…' + line.slice(-THINKING_PREVIEW_CHARS) : line;
+      }
+      return '';
+    }
+
+    function thinkingElapsed(message) {
+      const id = message.id;
+      const live = message.streaming === true;
+      if (id === undefined) return live ? 0 : undefined;
+      let entry = thinkingTiming.get(id);
+      if (entry === undefined) { entry = { startedAt: Date.now(), frozen: undefined }; thinkingTiming.set(id, entry); }
+      // Freeze on settle so a finished turn stops counting up.
+      if (!live && entry.frozen === undefined) entry.frozen = Date.now() - entry.startedAt;
+      return live ? Date.now() - entry.startedAt : entry.frozen;
+    }
+
+    function thinkingLabel(message) {
+      const elapsed = thinkingElapsed(message);
+      const live = message.streaming === true;
+      const title = live ? 'Thinking' : 'Thought';
+      if (elapsed === undefined || elapsed < 1000) return title;
+      const seconds = Math.floor(elapsed / 1000);
+      if (seconds < 60) return title + ' · ' + seconds + 's';
+      const minutes = Math.floor(seconds / 60);
+      return title + ' · ' + minutes + 'm ' + (seconds % 60) + 's';
+    }
+
+    /** One timer drives every live summary, and stops as soon as none is live. */
+    function syncThinkingTicker() {
+      let live = false;
+      for (const rendered of renderedMessages.values()) {
+        if (rendered.thinking !== undefined && rendered.thinking.message.streaming === true) { live = true; break; }
+      }
+      if (live && thinkingTicker === undefined) {
+        thinkingTicker = setInterval(() => {
+          for (const rendered of renderedMessages.values()) {
+            if (rendered.thinking !== undefined && rendered.thinking.message.streaming === true) syncThinking(rendered.thinking, rendered.message);
+          }
+        }, THINKING_TICK_MS);
+      } else if (!live && thinkingTicker !== undefined) {
+        clearInterval(thinkingTicker); thinkingTicker = undefined;
+      }
     }
     /** Collapsed-by-default model thinking, folded above the answer. */
     function renderThinking(message) {
       const root = document.createElement('details');
       root.className = 'thinking';
       const summary = document.createElement('summary');
-      const title = node('span', 'thinking-title', message.streaming === true ? 'Thinking' : 'Thought');
+      const title = node('span', 'thinking-title', thinkingLabel(message));
       const preview = node('span', 'thinking-preview', thinkingPreview(message.reasoning));
       summary.append(node('span', 'thinking-icon', '✦'), title, preview);
       const body = node('div', 'thinking-body');
       root.append(summary, body);
       const thinking = { root, title, preview, body, message };
+      applyThinkingState(thinking, message);
       // A collapsed body is never materialized, so long thinking stays cheap.
       root.addEventListener('toggle', () => { if (root.open) body.textContent = thinking.message.reasoning || ''; });
       if (root.open) body.textContent = message.reasoning || '';
       return thinking;
     }
-    function syncThinking(thinking, message) {
+    /** One place decides what a thinking summary shows, for render and refresh. */
+    function applyThinkingState(thinking, message) {
       thinking.message = message;
-      thinking.title.textContent = message.streaming === true ? 'Thinking' : 'Thought';
+      const live = message.streaming === true;
+      thinking.root.classList.toggle('live', live);
+      thinking.title.textContent = thinkingLabel(message);
       thinking.preview.textContent = thinkingPreview(message.reasoning);
       if (thinking.root.open) thinking.body.textContent = message.reasoning || '';
+    }
+    function syncThinking(thinking, message) {
+      applyThinkingState(thinking, message);
     }
     function renderMessage(message) {
       if (message.role === 'tool') return { message, node: renderTool(message) };
@@ -1052,6 +1121,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         if (rendered.thinking !== undefined) syncThinking(rendered.thinking, message);
         rendered.message = message;
         rendered.markdown.root.classList.toggle('streaming', message.streaming === true);
+        syncThinkingTicker();
         return rendered.node;
       }
       if (rendered) deferredOutputViews.delete(message.id);
@@ -1065,7 +1135,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     }
     function reconcileMessages(messages, current) {
       if (!messages.length) {
-        renderedMessages.clear(); elements.messages.replaceChildren(renderEmpty(current)); return;
+        renderedMessages.clear(); elements.messages.replaceChildren(renderEmpty(current)); syncThinkingTicker(); return;
       }
       const ids = new Set(messages.map(message => message.id));
       for (const [id, rendered] of renderedMessages) {
@@ -1081,6 +1151,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         else elements.messages.insertBefore(desired, cursor);
       }
       while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
+      syncThinkingTicker();
     }
     function renderStatus(current) {
       const setup = current.setup;
@@ -1703,7 +1774,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function renderConversation(current) {
       if (renderedSessionId !== current.sessionId) {
         if (renderedSessionId) sessionDrafts.set(renderedSessionId, elements.prompt.value);
-        renderedSessionId = current.sessionId; renderedMessages.clear(); elements.messages.replaceChildren();
+        renderedSessionId = current.sessionId; renderedMessages.clear(); thinkingTiming.clear(); syncThinkingTicker(); elements.messages.replaceChildren();
         elements.prompt.value = sessionDrafts.get(current.sessionId) || ''; resizePrompt();
         draftImages = draftImagesBySession.get(current.sessionId) || [];
         draftFiles = draftFilesBySession.get(current.sessionId) || []; renderAttachments();
