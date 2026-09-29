@@ -14,6 +14,26 @@ const MESSAGES: Readonly<Record<string, string>> = {
     'The selected model provider is offering no available models. Pick another model, or check that provider\'s credentials.',
   'session/model-unavailable':
     'That model is not available on this runtime. Pick another model and send again.',
+  // DSH's own UI has a dedicated string for this one: a conversation is
+  // single-writer, so a second runtime holding it is the expected cause.
+  'session/writer-held':
+    'This conversation is already in use, possibly by another running DSH instance (such as another dsh web, or the desktop app). Quit the other instance and try again.',
+  'session/not-found':
+    'This conversation is no longer on the runtime. It may have been archived or removed; refresh the conversation list.',
+  'session/projections-unavailable':
+    'The state of this conversation is unavailable right now. Reconnect and try again.',
+  'session/queue-item-not-found':
+    'That queued message is no longer pending.',
+  'session/steer-unavailable':
+    'The current turn no longer accepts steering.',
+  'session/workspace-attach-failed':
+    'The conversation was created but the project folder could not be opened. Check that the folder still exists and is readable.',
+  'session/title-invalid':
+    'The runtime did not accept that title. Try a shorter one.',
+  'subagent/parent-unavailable':
+    'The conversation that started this subagent is not running, so it cannot be continued.',
+  'subagent/not-found':
+    'This subagent is no longer available.',
   'session/agent-busy':
     'This is a subagent session, so it is driven through its parent conversation rather than directly.',
   'subagent/unauthorized':

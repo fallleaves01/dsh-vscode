@@ -90,6 +90,28 @@ describe('DSH failure text', () => {
     expect(dshErrorText(new Error('the model is unavailable'))).toBe('the model is unavailable')
   })
 
+  it('explains a conversation held by another runtime, as DSH itself does', () => {
+    const text = dshErrorText(failure('session/writer-held', 'session "s" is already owned by an active write handle'))
+    expect(text).toContain('already in use')
+    expect(text).toContain('another running DSH instance')
+    expect(text).not.toContain('write handle')
+  })
+
+  it('explains the failures a stale conversation produces', () => {
+    for (const [code, expected] of [
+      ['session/not-found', 'no longer on the runtime'],
+      ['session/projections-unavailable', 'unavailable right now'],
+      ['session/queue-item-not-found', 'no longer pending'],
+      ['session/steer-unavailable', 'no longer accepts steering'],
+      ['session/workspace-attach-failed', 'project folder could not be opened'],
+      ['session/title-invalid', 'shorter'],
+      ['subagent/parent-unavailable', 'is not running'],
+      ['subagent/not-found', 'no longer available'],
+    ]) {
+      expect(dshErrorText(failure(code, 'raw protocol text')), code).toContain(expected)
+    }
+  })
+
   it('explains an empty provider catalog rather than leaving the composer dead', () => {
     expect(NO_ROUTABLE_PROVIDER_TEXT).toContain('No DeepSeek model is available')
   })
