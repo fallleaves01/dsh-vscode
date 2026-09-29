@@ -519,7 +519,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     /** message id -> when the sidebar first saw it think, and its frozen total. */
     const thinkingTiming = new Map();
     let thinkingTicker;
-    const expandedToolIds = new Set();
+    /** What the user last chose for one tool's output, when they ever chose. */
+    const toolOpenIntent = new Map();
     const loadingToolRequests = new Map();
     const toolOutputErrors = new Map();
     const toolOutputPages = new Map();
@@ -986,12 +987,27 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       };
       deferredOutputViews.set(message.id, controller); controller.renderControls();
     }
+    /**
+     * Whether one tool's output is expanded when it is (re)rendered.
+     *
+     * A running or failed tool opens itself so its progress is visible, but that
+     * is not a choice the user made. Assigning the open property queues a toggle
+     * event that is dispatched *after* the listener below is attached, so treating
+     * every toggle as intent recorded the self-opened state as if the user had
+     * clicked: every tool stayed expanded for the rest of the conversation, and
+     * only a model slow enough to paint its running state first made it obvious.
+     */
+    function toolStartsOpen(message) {
+      const intent = toolOpenIntent.get(message.id);
+      if (intent !== undefined) return intent;
+      return message.streaming === true || message.failed === true;
+    }
     function renderTool(message) {
       const callView = record(message.callView);
       const resultView = record(message.resultView);
       const item = document.createElement('details');
       item.className = 'tool' + (message.failed ? ' failed' : '');
-      item.open = message.streaming === true || message.failed === true || expandedToolIds.has(message.id);
+      item.open = toolStartsOpen(message);
       const summary = document.createElement('summary');
       summary.append(node('span', 'tool-icon', message.streaming ? '●' : (message.failed ? '!' : '✓')));
       summary.append(node('span', 'tool-title', toolTitle(message, callView, resultView)));
@@ -1007,9 +1023,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         } else item.append(renderToolBody(message, callView, resultView));
       };
       if (item.open) initializeContent();
+      // What this code chose, so the queued echo of it is not read as a click.
+      let chosen = item.open;
       item.addEventListener('toggle', () => {
-        if (item.open) { expandedToolIds.add(message.id); initializeContent(); }
-        else expandedToolIds.delete(message.id);
+        if (item.open === chosen) return;
+        chosen = item.open;
+        toolOpenIntent.set(message.id, item.open);
+        if (item.open) initializeContent();
       });
       return item;
     }
@@ -1343,7 +1363,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const ids = new Set(messages.map(message => message.id));
       for (const [id, rendered] of renderedMessages) {
         if (!ids.has(id)) {
-          rendered.node.remove(); renderedMessages.delete(id); expandedToolIds.delete(id); resetDeferredOutput(id); pendingMessageAppends.delete(id); pendingReasoningAppends.delete(id);
+          rendered.node.remove(); renderedMessages.delete(id); toolOpenIntent.delete(id); resetDeferredOutput(id); pendingMessageAppends.delete(id); pendingReasoningAppends.delete(id);
         }
       }
       let cursor = elements.messages.firstChild;
@@ -2016,7 +2036,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         draftImages = draftImagesBySession.get(current.sessionId) || [];
         draftFiles = draftFilesBySession.get(current.sessionId) || []; renderAttachments();
         historyAnchor = undefined; conversationScroller.reset();
-        renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear();
+        renderedHistoryKey = ''; renderedTail = {}; toolOpenIntent.clear();
         for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
         loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear(); deferredOutputViews.clear(); pendingMessageAppends.clear();
       }
