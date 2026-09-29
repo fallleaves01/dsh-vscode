@@ -231,6 +231,34 @@ describe('the row under a completed turn', () => {
     expect(rows[1]!.classList.contains('always')).toBe(true)
   })
 
+  it('offers a rating, marks the one recorded, and offers a branch', async () => {
+    const h = open()
+    h.sendState({
+      sessionId: 'session-a', phase: 'ready',
+      messages: [{ id: 'm1', role: 'assistant', text: 'the answer' }],
+      messageMeta: [{ id: 'm1', seq: 42, time: Date.now(), turnEnd: true }],
+      messageFeedback: [{ messageId: 'm1', rating: 'positive', version: 3 }],
+    })
+    await h.settle()
+    const like = h.document.querySelector('.message-positive')!
+    const dislike = h.document.querySelector('.message-negative')!
+    // The recorded rating says what clicking it does, and is announced as pressed.
+    expect(like.getAttribute('aria-label')).toBe('Remove rating')
+    expect(like.getAttribute('aria-pressed')).toBe('true')
+    expect(like.classList.contains('active')).toBe(true)
+    expect(dislike.getAttribute('aria-label')).toBe('Bad response')
+    expect(dislike.getAttribute('aria-pressed')).toBe('false')
+
+    h.posts.length = 0
+    dislike.dispatchEvent(new Event('click', { bubbles: true }))
+    expect(h.posts).toContainEqual({ type: 'message-feedback', sessionId: 'session-a', messageId: 'm1', rating: 'negative' })
+
+    h.posts.length = 0
+    h.document.querySelector('.message-branch')!.dispatchEvent(new Event('click', { bubbles: true }))
+    // The branch forks at this turn's own event, which is where it closes.
+    expect(h.posts[0]).toMatchObject({ type: 'fork-conversation', sessionId: 'session-a', atSeq: 42 })
+  })
+
   it('renders no row while the turn is still open', async () => {
     const h = open()
     h.sendState(state([{ id: 'm1', time: 1 }]))

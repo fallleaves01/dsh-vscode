@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 import type { TurnTokenUsage } from './token-usage.js'
+import { DshConnectionError } from './dsh-connection.js'
+import type { MessageFeedbackItem, MessageFeedbackRating } from './dsh-client.js'
 import { ConversationProjector, turnFooters, type ConversationImage, type ConversationMessage, type DshEvent } from './conversation.js'
 import {
   agentPresetStateOf,
@@ -182,6 +184,8 @@ interface ChatViewState {
   messages: ConversationMessage[]
   /** Per-message facts for the action row, indexed by message id. */
   messageMeta: MessageMetaItem[]
+  /** Ratings already recorded for this conversation, so the row can show its choice. */
+  messageFeedback: MessageFeedbackItem[]
   running: boolean
   routable: boolean
   /** Whether any provider can route; the model picker stays usable on this. */
@@ -252,6 +256,7 @@ function initialState(cwd: string): ChatViewState {
     sessionId: '',
     messages: [],
     messageMeta: [],
+    messageFeedback: [],
     running: false,
     routable: cwd !== '',
     anyRoutable: cwd !== '',
@@ -295,6 +300,8 @@ export class DshChatController implements vscode.Disposable {
   private readonly attachmentResults = new Map<string, Pick<ConversationImage, 'data' | 'error'>>()
   private readonly attachmentLoads = new Map<string, Promise<void>>()
   private readonly jobsBySession = new Map<string, JobItem[]>()
+  /** Ratings the runtime confirmed for the open conversation, by message id. */
+  private readonly feedback = new Map<string, MessageFeedbackItem>()
   private historyEntries: HistoryEntry[] = []
   private archivedSessionIds = new Set<string>()
   private readonly unreadSessionIds: Set<string>
@@ -1389,6 +1396,7 @@ export class DshChatController implements vscode.Disposable {
       usage: usageMeterStateOf(summary?.projections?.values),
       imageLimits: imageLimitsOf(summary?.projections?.values?.imageLimits),
       permissions: permissionPresetsOf(summary?.projections?.values?.permissions),
+      messageFeedback: [],
       plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       queue: [],
@@ -1402,6 +1410,10 @@ export class DshChatController implements vscode.Disposable {
       loadingHistory: false,
       ...this.modelPatch(models),
     })
+    // Ratings belong to the conversation, and the runtime is the authority on
+    // them, so they are adopted after the conversation is shown rather than
+    // blocking it.
+    void this.loadFeedback(client, sessionId)
     opening.activate()
     this.hydrateImages(client, sessionId)
     // Account state is per-runtime, not per-conversation, so the first ready
@@ -1789,6 +1801,66 @@ export class DshChatController implements vscode.Disposable {
    * completed turn. Published beside the messages rather than inside them, since
    * the message shape is what the conversation contract and its tests pin.
    */
+  /**
+   * Record a rating, or withdraw the one that is already there.
+   *
+   * DSH guards every write with the version it expects, so the click has to be
+   * resolved against what the runtime last confirmed. A conflict answers with the
+   * authoritative item, which is exactly what to retry from, but a retry would
+   * silently overrule another window's vote — so the fresh state is shown and the
+   * click is not repeated.
+   */
+  async submitFeedback(sessionId: string, messageId: string, rating: MessageFeedbackRating): Promise<void> {
+    const client = this.client
+    if (client === undefined || sessionId !== this._state.sessionId) return
+    const current = this.feedback.get(messageId)
+    const outcome = current !== undefined && current.rating === rating
+      ? await client.deleteMessageFeedback(sessionId, messageId, current.version)
+      : await client.putMessageFeedback(sessionId, messageId, rating, current?.version ?? null)
+    if (this.client !== client || sessionId !== this._state.sessionId) return
+    if (outcome.ok) {
+      if ('absent' in outcome.value) this.feedback.delete(messageId)
+      else this.feedback.set(messageId, outcome.value)
+    } else {
+      // A conflict carries the truth; adopt it rather than guess.
+      if (outcome.error.current !== undefined) {
+        if (outcome.error.current === null) this.feedback.delete(messageId)
+        else this.feedback.set(messageId, outcome.error.current)
+      }
+      this.report(new DshConnectionError(outcome.error.code, outcome.error.message ?? outcome.error.code))
+    }
+    this.publish({ messageFeedback: [...this.feedback.values()] })
+  }
+
+  /**
+   * Copy the open conversation up to a point into a new one and open it.
+   *
+   * The child is a conversation of its own, so the list is reloaded before it is
+   * selected; otherwise the selection would be refused as unknown.
+   */
+  async forkConversation(sessionId: string, atSeq?: number): Promise<void> {
+    const client = this.client
+    if (client === undefined || sessionId !== this._state.sessionId) return
+    try {
+      const child = await client.forkSession(sessionId, typeof atSeq === 'number' ? atSeq : undefined)
+      if (this.client !== client) return
+      await this.loadSessions()
+      if (this.client !== client) return
+      await this.selectSession(child)
+    } catch (error) {
+      this.report(error)
+    }
+  }
+
+  /** Adopt the ratings the runtime holds for a conversation. */
+  private async loadFeedback(client: DshClient, sessionId: string): Promise<void> {
+    this.feedback.clear()
+    const outcome = await client.messageFeedback(sessionId)
+    if (this.client !== client || sessionId !== this._state.sessionId) return
+    if (outcome.ok) for (const item of outcome.value.items) this.feedback.set(item.messageId, item)
+    this.publish({ messageFeedback: [...this.feedback.values()] })
+  }
+
   private messageMetaPatch(): Pick<ChatViewState, 'messageMeta'> {
     const meta = this.projector.messageMeta()
     const footers = turnFooters(this.projector.messages(), meta)
@@ -2595,6 +2667,17 @@ class DshSurface implements vscode.Disposable {
               query: value.query,
               candidates,
             })
+          }
+          return
+        case 'message-feedback':
+          if (typeof value.sessionId === 'string' && typeof value.messageId === 'string'
+            && (value.rating === 'positive' || value.rating === 'negative')) {
+            void this.controller.submitFeedback(value.sessionId, value.messageId, value.rating)
+          }
+          return
+        case 'fork-conversation':
+          if (typeof value.sessionId === 'string') {
+            void this.controller.forkConversation(value.sessionId, typeof value.atSeq === 'number' ? value.atSeq : undefined)
           }
           return
         case 'remove-context':

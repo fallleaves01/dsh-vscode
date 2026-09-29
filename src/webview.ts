@@ -86,6 +86,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .message-action:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
     .message-action.usage-pill { color: var(--vscode-descriptionForeground); }
     .message-clock { color: var(--vscode-descriptionForeground); font-size: 11px; }
+    .message-action.active { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .routable-notice { padding: 6px 12px 2px; color: var(--vscode-errorForeground); font-size: 11px; }
     .routable-notice.hidden { display: none; }
     .session-row.session-ancestor { margin-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--vscode-widget-border) 60%, transparent); border-radius: 0; grid-template-columns: minmax(0, 1fr); }
@@ -1198,6 +1199,35 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       vscode.postMessage({ type: 'copy-text', text });
       confirm();
     }
+    function feedbackFor(messageId) {
+      const list = (state && state.messageFeedback) || [];
+      for (const entry of list) if (entry && entry.messageId === messageId) return entry;
+      return undefined;
+    }
+    function feedbackButton(glyph, rating, messageId, current) {
+      const active = current === rating;
+      const button = node('button', 'message-action message-' + rating + (active ? ' active' : ''), glyph);
+      button.type = 'button';
+      // The recorded rating says "Remove rating", which is what clicking it does.
+      const label = active ? 'Remove rating' : (rating === 'positive' ? 'Good response' : 'Bad response');
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      button.addEventListener('click', () => vscode.postMessage({
+        type: 'message-feedback', sessionId: state && state.sessionId, messageId, rating,
+      }));
+      return button;
+    }
+    function branchButton(meta) {
+      const button = node('button', 'message-action message-branch', '⑂');
+      button.type = 'button';
+      button.title = 'Branch into a new conversation';
+      button.setAttribute('aria-label', button.title);
+      button.addEventListener('click', () => vscode.postMessage({
+        type: 'fork-conversation', sessionId: state && state.sessionId, atSeq: meta.seq,
+      }));
+      return button;
+    }
     /**
      * The row DSH shows once per completed turn, under that turn's closing reply:
      * copy the whole message, the turn's usage, and the clock.
@@ -1212,6 +1242,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       copy.type = 'button'; copy.title = 'Copy'; copy.setAttribute('aria-label', 'Copy');
       copy.addEventListener('click', () => copyMessageText(message, copy));
       row.append(copy);
+      const current = feedbackFor(message.id);
+      const rating = current === undefined ? undefined : current.rating;
+      row.append(feedbackButton('👍', 'positive', message.id, rating));
+      row.append(feedbackButton('👎', 'negative', message.id, rating));
+      row.append(branchButton(meta));
       if (meta.turnUsage !== undefined) {
         const usage = meta.turnUsage;
         const pill = node('button', 'message-action usage-pill', 'Usage ' + compactTokens(usage.totalTokens) + ' tok');

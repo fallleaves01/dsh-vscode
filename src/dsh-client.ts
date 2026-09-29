@@ -121,6 +121,27 @@ export interface ModelOption extends ModelSelection {
   label: string
 }
 
+/** DSH's rating vocabulary for one message. */
+export type MessageFeedbackRating = 'positive' | 'negative'
+
+/** One recorded rating; `version` is the token a change or a withdrawal must quote. */
+export interface MessageFeedbackItem {
+  messageId: string
+  rating: MessageFeedbackRating
+  version: number
+  createdAt: number
+  updatedAt: number
+}
+
+/**
+ * DSH answers these calls with a result of their own, so a rejection is a value.
+ * `current` on a conflict is the authoritative item, which is what the caller
+ * needs to retry against.
+ */
+export type MessageFeedbackOutcome<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: { code: string; message?: string; current?: MessageFeedbackItem | null } }
+
 export interface SessionModels {
   current: ModelSelection
   /** Whether the *selected* provider can route — a send depends on this one. */
@@ -262,6 +283,41 @@ export class DshClient {
       request: { data, ...(name === undefined || name === '' ? {} : { name }) },
     }, 300_000)
   }
+  /**
+   * Read one session's message ratings.
+   *
+   * The business result is itself an `{ok}` union, so the outer envelope `call`
+   * unwraps is not the answer: a failure arrives as a value, not a rejection.
+   */
+  messageFeedback(sessionId: string): Promise<MessageFeedbackOutcome<{ items: MessageFeedbackItem[] }>> {
+    return this.call('messageFeedback/list', { request: { sessionId } })
+  }
+
+  /** Record a rating. `ifVersion: null` claims the message has none yet. */
+  putMessageFeedback(sessionId: string, messageId: string, rating: MessageFeedbackRating,
+    ifVersion: number | null): Promise<MessageFeedbackOutcome<MessageFeedbackItem>> {
+    return this.call('messageFeedback/put', { request: { sessionId, messageId, rating, ifVersion } })
+  }
+
+  /** Withdraw a rating, guarded by the version being withdrawn. */
+  deleteMessageFeedback(sessionId: string, messageId: string,
+    ifVersion: number): Promise<MessageFeedbackOutcome<{ absent: true }>> {
+    return this.call('messageFeedback/delete', { request: { sessionId, messageId, ifVersion } })
+  }
+
+  /**
+   * Copy the conversation up to an event seq into a new one.
+   *
+   * `atSeq` is an inclusive cut; omitting it takes the last completed turn. The
+   * child is identified only by the id returned here.
+   */
+  async forkSession(sessionId: string, atSeq?: number): Promise<string> {
+    const value = await this.call<{ sessionId: string }>('session/fork', {
+      request: { sessionId, ...(atSeq === undefined ? {} : { atSeq }) },
+    })
+    return value.sessionId
+  }
+
   async pluginInventory(): Promise<PluginInventorySnapshot> {
     const value = await this.call<PluginInventorySnapshot>('pluginInventory/list', {})
     // A runtime that renamed or dropped the array would otherwise throw a
