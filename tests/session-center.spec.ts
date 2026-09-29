@@ -225,6 +225,11 @@ describe('lineage that must not be treated as delegation', () => {
       summary({ sessionId: 'b', updatedAt: 20, origin: 'subagent', parentSessionId: 'a' }),
       summary({ sessionId: 'solo', updatedAt: 30 }),
     ]
+    // Selecting a session OUTSIDE the cycle only exercises the recursion guard.
     expect(sessionItems(summaries, new Set(), 'solo', new Set()).map(item => item.id)).toEqual(['solo'])
   })
+
+  // The cycle case where the selection is *inside* the cycle is covered by
+  // tests/session-center-cycle.spec.ts, in a child process: an in-process
+  // regression there would hang the run instead of failing it.
 })

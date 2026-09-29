@@ -15,6 +15,7 @@ import {
   planModeStateOf,
   planModeWithCommandAvailability,
   requiresFullAccessConfirmation,
+  typedCommandRequestsFullAccess,
   type PermissionPresetItem,
   type PlanModeState,
 } from './collaboration-state.js'
@@ -362,12 +363,17 @@ export class DshChatController implements vscode.Disposable {
       this.clearLiveControls()
       this.publish({ canReconnect: false, ...this.runningPatch(false), messages: this.resetToDurableMessages() })
     }
-    if (state.kind === 'starting') this.publish({ phase: 'loading', statusText: state.detail, setup: null })
-    if (state.kind === 'failed') this.publish({
-      phase: 'error',
-      statusText: state.message,
-      setup: state.reason === 'runtime-auth' ? 'runtime-auth' : setupKindFor(this.cwd, 'error', state.message),
-    })
+    if (state.kind === 'starting') this.publish({ phase: 'loading', statusText: redactDshSecrets(state.detail), setup: null })
+    if (state.kind === 'failed') {
+      // The banner is as visible as the channel, and a launch failure can quote
+      // the URL it failed on.
+      const detail = redactDshSecrets(state.message)
+      this.publish({
+        phase: 'error',
+        statusText: detail,
+        setup: state.reason === 'runtime-auth' ? 'runtime-auth' : setupKindFor(this.cwd, 'error', detail),
+      })
+    }
     if (state.kind === 'stopped') {
       this.publish({ phase: 'error', statusText: 'DeepSeek Harness stopped.', setup: null })
     }
@@ -428,7 +434,7 @@ export class DshChatController implements vscode.Disposable {
       await this.loadSessions()
     } catch (error) {
       if (generation !== this.generation) return
-      const message = error instanceof Error ? error.message : String(error)
+      const message = redactDshSecrets(error instanceof Error ? error.message : String(error))
       this.output.appendLine(`[chat] ${message}`)
       this.publish({ phase: 'error', statusText: message,
         setup: error instanceof ExistingRuntimeConnectionError ? 'runtime-auth' : setupKindFor(this.cwd, 'error', message) })
@@ -864,14 +870,18 @@ export class DshChatController implements vscode.Disposable {
    * Publish a turn's running state, which is also the only thing that ends a
    * stop acknowledgement: a turn that finished cannot still be stopping.
    */
+  /** Withdraw a pending stop acknowledgement, arming or not. */
+  private clearStoppingDeadline(): void {
+    if (this.stoppingDeadline === undefined) return
+    clearTimeout(this.stoppingDeadline)
+    this.stoppingDeadline = undefined
+  }
+
   private runningPatch(running: boolean, sessionId: string = this._state.sessionId): Pick<ChatViewState, 'running' | 'stopping'> {
     // An acknowledgement belongs to the turn it was requested for: another
     // conversation may be running, but its turn was never asked to stop.
     const stopping = running && this.stoppingSessionId === sessionId
-    if (!stopping && this.stoppingDeadline !== undefined) {
-      clearTimeout(this.stoppingDeadline)
-      this.stoppingDeadline = undefined
-    }
+    if (!stopping) this.clearStoppingDeadline()
     if (!stopping) this.stoppingSessionId = undefined
     return { running, stopping }
   }
@@ -983,6 +993,7 @@ export class DshChatController implements vscode.Disposable {
     this.disposed = true
     ++this.runtimeSwitchRevision
     this.stopAccountPoll()
+    this.clearStoppingDeadline()
     this.cancelRecovery()
     ++this.generation
     this.disconnectClient()
@@ -2384,7 +2395,8 @@ class DshSurface implements vscode.Disposable {
               await this.restoreDraft(sessionId, requestId, value.text)
               return
             }
-            if (value.text.trim() === '/permission danger-full-access') {
+            // Routing splits on whitespace, so this must too.
+            if (typedCommandRequestsFullAccess(value.text)) {
               const confirmed = await vscode.window.showWarningMessage(
                 'Enable Full access?',
                 {

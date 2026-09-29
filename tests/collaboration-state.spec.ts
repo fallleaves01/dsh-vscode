@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   effectivePlanMode,
   permissionPresetsOf,
+  typedCommandRequestsFullAccess,
   planModeCommand,
   planModeStateOf,
   planModeWithCommandAvailability,
@@ -57,6 +58,34 @@ describe('collaboration state projections', () => {
 
   it('reports nothing for a runtime that has no permissions projection', () => {
     expect(permissionPresetsOf(undefined)).toEqual([])
+  })
+
+  it('selects a pinned value even when the runtime lists a catalogue', () => {
+    // A catalogue may omit `custom`/`auto` while a profile pins one of them; with
+    // no selected row the UI showed the first preset as if it were current.
+    const presets = permissionPresetsOf({
+      currentValue: 'custom',
+      options: [
+        { value: 'read-only', name: 'read-only' },
+        { value: 'workspace-write', name: 'workspace-write' },
+        { value: 'danger-full-access', name: 'danger-full-access' },
+        { value: 'custom', name: 'custom' },
+      ],
+    })
+    expect(presets.filter(preset => preset.selected)).toEqual([
+      { value: 'custom', label: 'custom', description: 'Pinned by this profile.', selected: true },
+    ])
+  })
+
+  it('asks for confirmation however the command is spaced', () => {
+    // Routing splits on runs of whitespace, so an exact-string comparison let
+    // `/permission  danger-full-access` reach the runtime without the dialog.
+    expect(typedCommandRequestsFullAccess('/permission danger-full-access')).toBe(true)
+    expect(typedCommandRequestsFullAccess('/permission  danger-full-access')).toBe(true)
+    expect(typedCommandRequestsFullAccess('  /permission\tdanger-full-access  ')).toBe(true)
+    expect(typedCommandRequestsFullAccess('/permission workspace-write')).toBe(false)
+    expect(typedCommandRequestsFullAccess('/permission danger-full-access extra')).toBe(false)
+    expect(typedCommandRequestsFullAccess('/permissions danger-full-access')).toBe(false)
   })
 
   it('distinguishes an unavailable plan capability from normal mode', () => {

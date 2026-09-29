@@ -54,7 +54,7 @@ export function permissionPresetsOf(value: unknown): PermissionPresetItem[] {
     }
     return presets
   }
-  return select.options.flatMap((value): PermissionPresetItem[] => {
+  const items = select.options.flatMap((value): PermissionPresetItem[] => {
     if (typeof value !== 'object' || value === null) return []
     const option = value as Record<string, unknown>
     if (typeof option.value !== 'string' || option.value === 'custom') return []
@@ -66,6 +66,16 @@ export function permissionPresetsOf(value: unknown): PermissionPresetItem[] {
       selected: option.value === current,
     }]
   })
+  // A composition may pin `custom` or `auto`, which it never lists as a switch
+  // target. Without this the list has no selected row at all and the UI falls
+  // back to showing the first preset as if it were current.
+  if (current !== '' && !items.some(item => item.value === current)) {
+    items.push({
+      value: current, label: PERMISSION_LABELS[current] ?? current,
+      description: 'Pinned by this profile.', selected: true,
+    })
+  }
+  return items
 }
 
 export function planModeStateOf(value: unknown): PlanModeState {
@@ -93,4 +103,16 @@ export function planModeCommand(mode: 'normal' | 'plan'): '/plan' | '/plan off' 
 
 export function requiresFullAccessConfirmation(value: string): boolean {
   return value === 'danger-full-access'
+}
+
+/**
+ * Whether a typed line asks for full access.
+ *
+ * Routing splits a line on runs of whitespace, so the confirmation cannot be a
+ * literal comparison: `/permission  danger-full-access` with an extra space is
+ * the same command, and comparing the whole string let it skip the dialog.
+ */
+export function typedCommandRequestsFullAccess(line: string): boolean {
+  const match = /^\/permission\s+(\S+)\s*$/.exec(line.trim())
+  return match !== null && requiresFullAccessConfirmation(match[1] as string)
 }

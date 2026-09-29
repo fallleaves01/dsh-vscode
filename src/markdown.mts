@@ -253,7 +253,10 @@ export function scanMarkdownStream(state: MarkdownScanState, text: string): void
     if (character !== '\n') { state.pendingLine += character; continue }
     const line = state.pendingLine.replace(/\r$/, '')
     state.pendingLine = ''
-    const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    // Container indentation is not this scanner's business: a fence inside a
+    // list item is indented, and treating it as plain text made every blank line
+    // in it a stream cut point. The groups keep their meaning.
+    const fence = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line)
     if (state.fence) {
       if (fence && fence[1]![0] === state.fence[0] && fence[1]!.length >= state.fence.length && !fence[2]!.trim()) state.fence = ''
       continue

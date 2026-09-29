@@ -105,6 +105,30 @@ describe('diagnostics and notices', () => {
     expect(written).toContain('[redacted]')
   })
 
+  it('keeps credential-shaped text out of the runtime banner', async () => {
+    const h = await harness()
+    // The banner is as visible as the log, and a launch failure can quote the
+    // URL it failed on.
+    h.controller.observeRuntime({ kind: 'failed', message: 'connect http://127.0.0.1:3080/?token=secret-token-value failed' } as never)
+    expect(h.controller.state.phase).toBe('error')
+    expect(h.controller.state.statusText).not.toContain('secret-token-value')
+    expect(h.controller.state.statusText).toContain('[redacted]')
+  })
+
+  it('releases the stop acknowledgement when the controller is disposed', async () => {
+    vi.useFakeTimers()
+    const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.cancel()
+    h.controller.dispose()
+    h.output.appendLine.mockClear()
+    await vi.advanceTimersByTimeAsync(120_000)
+    // Nothing may run against a disposed controller: the channel can already be
+    // closed, and the timer would keep the controller alive.
+    expect(h.output.appendLine.mock.calls.map(call => String(call[0]))).toEqual([])
+    vi.useRealTimers()
+  })
+
   it('keeps credential-shaped text out of the conversation too', async () => {
     const h = await harness()
     h.controller.report(new Error('cookie: session=abcdef123456 rejected'))

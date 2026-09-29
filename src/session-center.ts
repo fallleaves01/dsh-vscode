@@ -161,8 +161,11 @@ export function sessionItems(
   // The picker must always be able to show where the open conversation sits,
   // so every ancestor of the selection stays visible even when otherwise blank.
   const keep = new Set<string>()
+  // A cycle among declared parents has no fixed point, so the walk has to
+  // remember where it has been: without this the sidebar list never returns and
+  // the extension host hangs. `emit` guards the same shape one loop below.
   for (let cursor = selectedId === undefined ? undefined : parentOf.get(selectedId);
-    cursor !== undefined;
+    cursor !== undefined && !keep.has(cursor);
     cursor = parentOf.get(cursor)) {
     keep.add(cursor)
   }

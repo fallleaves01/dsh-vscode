@@ -56,6 +56,26 @@ describe('fenced code blocks', () => {
   })
 })
 
+describe('streamed fences', () => {
+  it('does not cut a fence that is indented for a list item', () => {
+    // A fence inside a list item is indented; treating it as plain text made
+    // every blank line inside it a stream boundary, so the committed output
+    // differed from the same text rendered as history.
+    const text = '- item\n\n  - inner\n\n    ```ts\n    const a = 1\n\n    const b = 2\n    ```\n\n- next\n'
+    const state = createMarkdownScanState()
+    const boundaries: number[] = []
+    for (let index = 0; index < text.length; index += 1) {
+      scanMarkdownStream(state, text.slice(0, index + 1))
+      boundaries.push(state.safeBoundary)
+    }
+    // No boundary may fall between the opening and closing fence.
+    const open = text.indexOf('```ts')
+    const close = text.lastIndexOf('```')
+    const inside = boundaries.slice(open, close)
+    expect(inside.every(boundary => boundary <= open)).toBe(true)
+  })
+})
+
 describe('Markdown rendering', () => {
   it('renders GFM tables with alignment, escaped pipes and inline formatting', () => {
     const root = renderMarkdown('| Name | Value | Status |\n| :--- | ---: | :---: |\n| **Total** | `36` | A\\|B |')
