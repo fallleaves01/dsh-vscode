@@ -97,6 +97,8 @@ interface ReasoningEffortItem {
 
 interface ModelItem {
   provider: string
+  /** The provider's display name, so the picker can name the route it belongs to. */
+  providerLabel: string
   model: string
   label: string
   selected: boolean
@@ -1475,6 +1477,8 @@ export class DshChatController implements vscode.Disposable {
         const selected = group.id === models.current.provider && model.id === models.current.model
         options.push({
           provider: group.id,
+          // A group without a name still has an id, which names the route.
+          providerLabel: typeof group.name === 'string' && group.name !== '' ? group.name : group.id,
           model: model.id,
           label: model.name,
           selected,

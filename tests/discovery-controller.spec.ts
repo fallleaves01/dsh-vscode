@@ -1138,6 +1138,9 @@ describe('sidebar discovery notifications', () => {
     await vi.waitFor(() => expect(h.output.appendLine).toHaveBeenCalledWith(expect.stringContaining('temporary catalog failure')))
     expect(h.controller.state.phase).toBe('ready')
     expect(h.controller.state.models[0]?.model).toBe('model')
+    // The picker names the provider, so the patch has to carry its display name
+    // rather than the route id that only the runtime uses.
+    expect(h.controller.state.models[0]?.providerLabel).toBe('Provider')
     h.client.models.mockResolvedValue(models('recovered'))
     h.emit({ type: 'host/models-changed' })
     await vi.waitFor(() => expect(h.controller.state.models[0]?.model).toBe('recovered'))

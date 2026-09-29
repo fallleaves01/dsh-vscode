@@ -1901,8 +1901,31 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedChrome.sessions !== current.sessions || renderedChrome.sessionId !== current.sessionId) renderSessionCenter(current);
       if (renderedChrome.models !== current.models) {
         elements.models.replaceChildren();
-        for (const model of current.models || []) { const option = new Option(model.label, JSON.stringify({ provider: model.provider, model: model.model }), false, model.selected === true); elements.models.append(option); }
+        // Group by provider, the way DSH's own picker does: two providers can
+        // offer a model under the same name, and the provider is what decides
+        // where the request is routed.
+        const providers = new Map();
+        let currentModel;
+        for (const model of current.models || []) {
+          if (model.selected === true && currentModel === undefined) currentModel = model;
+          const named = typeof model.providerLabel === 'string' && model.providerLabel !== '';
+          let group = providers.get(model.provider);
+          if (group === undefined) {
+            group = document.createElement('optgroup');
+            group.label = named ? model.providerLabel : model.provider;
+            elements.models.append(group);
+            providers.set(model.provider, group);
+          }
+          group.append(new Option(model.label, JSON.stringify({ provider: model.provider, model: model.model }), false, model.selected === true));
+        }
         if (!elements.models.childElementCount) elements.models.append(new Option('Default model', ''));
+        // The closed picker shows only the model, so name the provider in the
+        // tooltip: it is the half of the choice that routing depends on.
+        const route = currentModel === undefined
+          ? 'Model'
+          : 'Model: ' + currentModel.label + ' — ' + (typeof currentModel.providerLabel === 'string' && currentModel.providerLabel !== '' ? currentModel.providerLabel : currentModel.provider);
+        elements.models.title = route;
+        elements.models.setAttribute('aria-label', route);
         renderEfforts((current.models || []).find(model => model.selected) || (current.models || [])[0]);
       }
       const policyChanged = renderedChrome.agentPreset !== current.agentPreset || renderedChrome.permissions !== current.permissions || renderedChrome.plan !== current.plan || renderedChrome.running !== current.running || renderedChrome.phase !== current.phase;

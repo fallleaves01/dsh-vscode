@@ -122,6 +122,49 @@ describe('the composer waits for anything still being staged', () => {
   })
 })
 
+describe('the model picker names the provider', () => {
+  const model = (provider: string, providerLabel: string, id: string, label: string, selected = false) =>
+    ({ provider, providerLabel, model: id, label, selected, reasoningEfforts: [] })
+
+  it('groups the models by provider instead of listing them flat', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models: [
+      model('deepseek-official', 'DeepSeek Official', 'v3', 'DeepSeek V3', true),
+      model('gateway', 'Local gateway', 'flash', 'Flash'),
+      model('gateway', 'Local gateway', 'pro', 'Pro'),
+    ] })
+    await h.settle()
+    const select = h.document.getElementById('models') as HTMLSelectElement
+    const groups = [...select.querySelectorAll('optgroup')]
+    expect(groups.map(group => group.label)).toEqual(['DeepSeek Official', 'Local gateway'])
+    expect([...groups[1]!.querySelectorAll('option')].map(option => option.textContent)).toEqual(['Flash', 'Pro'])
+    // The selection stays on the model it belongs to, inside its group.
+    expect(select.value).toBe(JSON.stringify({ provider: 'deepseek-official', model: 'v3' }))
+  })
+
+  it('names the provider in the closed picker too', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models: [
+      model('gateway', 'Local gateway', 'flash', 'Flash', true),
+    ] })
+    await h.settle()
+    const select = h.document.getElementById('models') as HTMLSelectElement
+    // Only the model name fits in the control, so the provider goes in the tooltip.
+    expect(select.title).toBe('Model: Flash — Local gateway')
+    expect(select.getAttribute('aria-label')).toContain('Local gateway')
+  })
+
+  it('falls back to the provider id when the runtime names no provider', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models: [
+      model('gateway', '', 'flash', 'Flash', true),
+    ] })
+    await h.settle()
+    const select = h.document.getElementById('models') as HTMLSelectElement
+    expect([...select.querySelectorAll('optgroup')].map(group => group.label)).toEqual(['gateway'])
+  })
+})
+
 describe('a dead selected model still leaves a way out', () => {
   const state = (anyRoutable: boolean) => ({
     sessionId: 'session-a', phase: 'ready', routable: false, anyRoutable,
