@@ -3,6 +3,7 @@ import type { DshFrame, SessionModels, SkillDescriptor } from '../src/dsh-client
 import { withIdeContext } from '../src/ide-context.js'
 import { DshStreamError } from '../src/dsh-streams.js'
 import { DshConnection } from '../src/dsh-connection.js'
+import { DshConnectionError } from '../src/dsh-connection.js'
 import { ExistingRuntimeConnectionError } from '../src/runtime-target.js'
 
 const mocks = vi.hoisted(() => ({ client: undefined as any }))
@@ -93,6 +94,20 @@ async function harness(connection?: DshConnection) {
   const next = () => { const next = testClient(); mocks.client = next.client; return next }
   return { client, controller, output, emit, fail, runtime, reviews, next }
 }
+
+describe('a conversation that cannot be opened', () => {
+  it('reports the failure instead of staying in the loading phase', async () => {
+    const h = await harness()
+    // Opening a conversation the runtime no longer has: the sidebar must not be
+    // left with every control disabled and no way back.
+    h.client.openSession.mockRejectedValueOnce(new DshConnectionError('session/not-found', 'session "b" not found'))
+    await h.controller.selectSession('b').catch(() => undefined)
+
+    expect(h.controller.state.phase).toBe('error')
+    expect(h.controller.state.statusText).toContain('no longer on the runtime')
+    expect(h.controller.state.sessionId).toBe('b')
+  })
+})
 
 describe('diagnostics and notices', () => {
   it('keeps credential-shaped text out of the channel', async () => {

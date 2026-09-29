@@ -1328,8 +1328,19 @@ export class DshChatController implements vscode.Disposable {
       const models = await client.models(sessionId)
       return { opening, models }
     })().catch((error: unknown) => {
-      if (this.client === client && loadGeneration === this.sessionLoadGeneration) throw error
-      return undefined
+      if (this.client !== client || loadGeneration !== this.sessionLoadGeneration) return undefined
+      // Opening a conversation can fail for good reasons — it was archived in
+      // another window, or a subagent's owner is gone. Left in `loading`, the
+      // sidebar disables send, the picker and the session list with no way back;
+      // the error phase is the one that offers recovery.
+      const message = redactDshSecrets(dshErrorText(error))
+      this.publish({
+        phase: 'error',
+        statusText: message,
+        setup: setupKindFor(this.cwd, 'error', message),
+        sessionId,
+      })
+      throw error
     })
     if (result === undefined || this.client !== client || loadGeneration !== this.sessionLoadGeneration || !result.opening.isCurrent()) return
     const { opening, models } = result
