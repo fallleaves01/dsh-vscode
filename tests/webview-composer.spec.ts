@@ -461,6 +461,18 @@ describe('a dead selected model still leaves a way out', () => {
 })
 
 describe('the row under a completed turn', () => {
+  /**
+   * Today at a fixed wall-clock time.
+   *
+   * An absolute date made these tests pass only on the day they were written:
+   * the clock shows a bare time for today and a date for anything older, so the
+   * assertion broke the next morning.
+   */
+  const todayAt = (hours: number, minutes: number): number => {
+    const at = new Date()
+    at.setHours(hours, minutes, 0, 0)
+    return at.getTime()
+  }
   const state = (meta: unknown[]) => ({
     sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true,
     messages: [{ id: 'm1', role: 'assistant', text: 'the answer' }],
@@ -469,7 +481,7 @@ describe('the row under a completed turn', () => {
 
   it('offers copy, the turn usage and the clock', async () => {
     const h = open()
-    h.sendState(state([{ id: 'm1', time: Date.parse('2026-09-29T14:39:00'), turnEnd: true,
+    h.sendState(state([{ id: 'm1', time: todayAt(14, 39), turnEnd: true,
       turnUsage: { uncachedInputTokens: 12_000, outputTokens: 300, totalTokens: 12_300, routes: [] } }]))
     await h.settle()
     const row = h.document.querySelector('.message-actions')
@@ -483,14 +495,56 @@ describe('the row under a completed turn', () => {
     expect(row!.querySelector('.message-clock')!.textContent).toMatch(/^\d{2}:\d{2}$/)
   })
 
+  it('draws its buttons with DSH’s own marks instead of emoji', async () => {
+    const h = open()
+    h.sendState(state([{ id: 'm1', time: todayAt(14, 39), turnEnd: true }]))
+    await h.settle()
+    const row = h.document.querySelector('.message-actions')!
+    for (const selector of ['.message-copy', '.message-positive', '.message-negative', '.message-branch']) {
+      const button = row.querySelector(selector)!
+      expect(button.querySelector('svg'), selector).not.toBeNull()
+      expect(button.textContent?.trim(), selector).toBe('')
+      expect(button.classList.contains('message-icon')).toBe(true)
+    }
+    // Outline while unchosen: the mark is drawn, not filled.
+    expect(row.querySelector('.message-positive path')!.getAttribute('fill')).toBe('none')
+    expect(row.querySelector('.message-positive path')!.getAttribute('stroke')).toBe('currentColor')
+  })
+
+  it('fills the mark of the rating that is recorded', async () => {
+    const h = open()
+    h.sendState({
+      sessionId: 'session-a', phase: 'ready',
+      messages: [{ id: 'm1', role: 'assistant', text: 'the answer' }],
+      messageMeta: [{ id: 'm1', seq: 42, time: Date.now(), turnEnd: true }],
+      messageFeedback: [{ messageId: 'm1', rating: 'negative', version: 1 }],
+    })
+    await h.settle()
+    // DSH swaps the artwork rather than tinting the button: filled means chosen.
+    expect(h.document.querySelector('.message-negative path')!.getAttribute('fill')).toBe('currentColor')
+    expect(h.document.querySelector('.message-positive path')!.getAttribute('fill')).toBe('none')
+  })
+
+  it('confirms a copy without losing the mark it replaces', async () => {
+    const h = open()
+    h.sendState(state([{ id: 'm1', time: todayAt(14, 39), turnEnd: true }]))
+    await h.settle()
+    const copy = h.document.querySelector('.message-copy') as HTMLButtonElement
+    copy.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    // The check is drawn by the stylesheet, so the icon has to survive the swap.
+    expect(copy.classList.contains('copied')).toBe(true)
+    expect(copy.querySelector('svg')).not.toBeNull()
+    expect(copy.getAttribute('aria-label')).toBe('Copied')
+  })
+
   it('reports how long the turn took, and stays quiet about a sub-second one', async () => {
     const h = open()
     h.sendState({
       sessionId: 'session-a', phase: 'ready',
       messages: [{ id: 'm1', role: 'assistant', text: 'first answer' }, { id: 'm2', role: 'assistant', text: 'second answer' }],
       messageMeta: [
-        { id: 'm1', time: Date.parse('2026-09-29T14:39:00'), turnEnd: true, turnDurationMs: 65_000 },
-        { id: 'm2', time: Date.parse('2026-09-29T14:40:00'), turnEnd: true, turnDurationMs: 400 },
+        { id: 'm1', time: todayAt(14, 39), turnEnd: true, turnDurationMs: 65_000 },
+        { id: 'm2', time: todayAt(14, 40), turnEnd: true, turnDurationMs: 400 },
       ],
     })
     await h.settle()

@@ -81,6 +81,30 @@ describe('thinking summary follows the newest line', () => {
     expect(preview(h)).toBe('The last real line.')
   })
 
+  it('sweeps the summary only while the model is still writing it', async () => {
+    const h = open()
+    await show(h, 'Still thinking.', true)
+    const preview = h.document.querySelector('.thinking-preview')!
+    expect(preview.classList.contains('shimmer')).toBe(true)
+
+    await show(h, 'Still thinking.\nDone.', false)
+    // A settled thought is history, not activity. The node is rebuilt when the
+    // message settles, so the check reads the element that is on screen now.
+    expect(h.document.querySelector('.thinking-preview')!.classList.contains('shimmer')).toBe(false)
+  })
+
+  it('draws DSH’s thinking mark rather than a star glyph', async () => {
+    const h = open()
+    await show(h, 'Checking the picker.', true)
+    const glyph = h.document.querySelector('.thinking-icon')!
+    // DSH's mark: two stroked rings with a filled centre dot between them.
+    expect(glyph.querySelectorAll('path')).toHaveLength(3)
+    expect(glyph.textContent).toBe('')
+    const paths = [...glyph.querySelectorAll('path')]
+    expect(paths.filter(path => path.getAttribute('fill') === 'currentColor')).toHaveLength(1)
+    expect(paths.filter(path => path.getAttribute('stroke') === 'currentColor')).toHaveLength(2)
+  })
+
   it('does not materialize the collapsed body until it is opened', async () => {
     const h = open()
     await show(h, 'Private reasoning that should stay collapsed.')

@@ -17,6 +17,20 @@ const gitignore = readFileSync(join(root, '.gitignore'), 'utf8')
 /** Directories tooling/ and the test suites create at the repository root. */
 const TRANSIENT = ['.acct-home', '.audit-home', '.probe-home', '.drift', '.npm-cache']
 
+describe('the running-tail asset', () => {
+  const png = readFileSync(join(root, 'media/deepseek-tail.png'))
+
+  it('ships DSH’s animated tail rather than a single frame', () => {
+    // An APNG is a PNG with fcTL chunks, one per frame; a flattened export keeps
+    // the filename and loses the animation, which no other test here would see.
+    expect(png.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    expect(png.subarray(12, 16).toString('ascii')).toBe('IHDR')
+    expect(png.readUInt32BE(16)).toBe(28)
+    expect(png.readUInt32BE(20)).toBe(28)
+    expect(png.toString('latin1').split('fcTL').length - 1).toBeGreaterThan(1)
+  })
+})
+
 describe('packaging rules', () => {
   it.each(TRANSIENT)('keeps %s out of the published extension', directory => {
     expect(vscodeignore).toContain(`${directory}/**`)

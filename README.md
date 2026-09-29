@@ -89,3 +89,8 @@ Targets DeepSeek Harness `0.2.0-rc.2`, and is wire-compatible with `0.1.7-rc.1` 
 ## License
 
 [MIT](LICENSE)
+
+The DeepSeek mark in `media/deepseek.svg` and the animated tail in
+`media/deepseek-tail.png` come from
+[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
+(MIT), adapted to the VS Code theme colours.

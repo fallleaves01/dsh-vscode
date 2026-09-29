@@ -2149,6 +2149,7 @@ class DshSurface implements vscode.Disposable {
       script: webview.asWebviewUri(vscode.Uri.joinPath(renderRoot, 'markdown.js')),
       style: webview.asWebviewUri(vscode.Uri.joinPath(renderRoot, 'katex.min.css')),
       scroll: webview.asWebviewUri(vscode.Uri.joinPath(renderRoot, 'scroll.js')),
+      tail: webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'deepseek-tail.png')),
     })
     this.disposables = [
       controller.onDidChangeState(state => { this.queueState(state) }),

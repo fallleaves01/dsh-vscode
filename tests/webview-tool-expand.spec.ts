@@ -71,6 +71,16 @@ describe('tool output disclosure', () => {
     expect(tool(h).open).toBe(false)
   })
 
+  it('sweeps the title of a tool that is still running', async () => {
+    const h = open()
+    await show(h, runningTool())
+    expect(tool(h).querySelector('.tool-title')!.classList.contains('shimmer')).toBe(true)
+
+    await show(h, finishedTool())
+    // A finished tool stopped being activity.
+    expect(tool(h).querySelector('.tool-title')!.classList.contains('shimmer')).toBe(false)
+  })
+
   it('keeps a tool the user opened open across re-renders', async () => {
     const h = open()
     await show(h, finishedTool())

@@ -11,9 +11,10 @@ function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
-export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, markdownAssets: { script: vscode.Uri; style: vscode.Uri; scroll: vscode.Uri }): string {
+export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, markdownAssets: { script: vscode.Uri; style: vscode.Uri; scroll: vscode.Uri; tail: vscode.Uri }): string {
   const token = nonce()
   const mark = escapeHtml(deepseekMarkUri.toString(true))
+  const tail = escapeHtml(markdownAssets.tail.toString(true))
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -85,9 +86,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .message-action { display: flex; align-items: center; min-height: 28px; padding: 2px 6px; border: none; border-radius: 4px; background: transparent; color: var(--vscode-descriptionForeground); font-size: 11px; cursor: pointer; }
     .message-action:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
     .message-action.usage-pill { color: var(--vscode-descriptionForeground); }
-    .message-clock { color: var(--vscode-descriptionForeground); font-size: 11px; }
-    .message-duration { color: var(--vscode-descriptionForeground); font-size: 11px; }
-    .message-action.active { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    .message-clock { color: var(--vscode-descriptionForeground); font-size: 11px; font-variant-numeric: tabular-nums; }
+    .message-duration { color: var(--vscode-descriptionForeground); font-size: 11px; font-variant-numeric: tabular-nums; }
+    /* The icon buttons carry DSH's own artwork at DSH's own size, so the row reads
+       as one control group instead of emoji next to text. */
+    .message-action.message-icon { width: 28px; min-width: 28px; padding: 6px; justify-content: center; }
+    .message-action.message-icon svg { width: 15px; height: 15px; }
+    /* A recorded rating shows the filled mark, as DSH's row does, and keeps the
+       quiet colour: the fill is the state, not a highlight. */
+    .message-action.active { color: var(--vscode-descriptionForeground); background: transparent; }
+    .message-action.active:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    .message-copy.copied svg { display: none; }
+    .message-copy.copied::after { content: '✓'; font-size: 12px; }
+    .message-copy.copied { color: var(--vscode-charts-green, #3fb950); }
     .message.user .message-actions { justify-content: flex-end; margin-left: 0; }
     .routable-notice { padding: 6px 12px 2px; color: var(--vscode-errorForeground); font-size: 11px; }
     .routable-notice.hidden { display: none; }
@@ -161,8 +172,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .thinking { margin: 0 0 8px; padding-left: 29px; }
     .thinking summary { display: flex; align-items: center; gap: 6px; min-height: 22px; padding: 1px 0; cursor: pointer; list-style: none; color: var(--vscode-descriptionForeground); }
     .thinking summary::-webkit-details-marker { display: none; }
-    .thinking-icon { flex: none; font-size: 10px; opacity: .85; }
-    .thinking.live .thinking-icon { opacity: 1; animation: thinking-pulse 1.4s ease-in-out infinite; }
+    .thinking-icon { flex: none; width: 14px; height: 14px; display: inline-flex; color: var(--vscode-descriptionForeground); }
+    .thinking-icon svg { width: 100%; height: 100%; }
+    .thinking.live .thinking-icon { color: var(--vscode-foreground); animation: thinking-pulse 1.4s ease-in-out infinite; }
     .thinking.live .thinking-title { color: var(--vscode-foreground); }
     .thinking.live .thinking-preview { opacity: 1; }
     @keyframes thinking-pulse { 0%, 100% { opacity: .35; transform: scale(.9); } 50% { opacity: 1; transform: scale(1.1); } }
@@ -171,11 +183,47 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .thinking-preview { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; opacity: .85; }
     .thinking-body { margin: 3px 0 2px; padding: 2px 0 2px 9px; border-left: 2px solid var(--vscode-widget-border); color: var(--vscode-descriptionForeground); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
     .live-status { display: flex; align-items: center; gap: 6px; margin: 6px 0 3px; padding-left: 29px; color: var(--vscode-descriptionForeground); font-size: 12px; }
-    .live-status-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--vscode-charts-blue, #4d6bfe); animation: live-pulse 1.6s ease-in-out infinite; }
-    .live-status.stopping .live-status-dot { background: var(--vscode-descriptionForeground); }
+    .live-status-mark { position: relative; flex: none; width: 14px; height: 14px; display: inline-flex; color: var(--vscode-charts-blue, #4d6bfe); }
+    .live-status-mark svg { display: block; width: 100%; height: 100%; }
+    /**
+     * DSH's own swimming tail: a 28px APNG it uses as a mask, so the animation
+     * paints in the theme's colour instead of whatever colour the asset carries.
+     * The still outline underneath is the fallback: if the asset cannot load, the
+     * mark is a stationary tail rather than nothing.
+     */
+    .live-status-swim { position: absolute; inset: 0; background-color: currentColor; -webkit-mask: url("${tail}") 50% / 100% 100% no-repeat; mask: url("${tail}") 50% / 100% 100% no-repeat; }
+    .live-status.stopping .live-status-mark { color: var(--vscode-descriptionForeground); }
     .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
-    @keyframes live-pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
-    @media (prefers-reduced-motion: reduce) { .live-status-dot { animation: none; opacity: 1; } }
+    /* DSH keeps the numbers from jittering as the clock ticks. */
+    .live-status-text { font-variant-numeric: tabular-nums; }
+    /**
+     * DSH's streaming highlight: the live words are painted once, with a moving
+     * gradient standing in for their colour, so a brighter band crosses the line
+     * while every glyph stays exactly where it was.
+     *
+     * DSH gets the same effect from a masked second copy of the text plus a
+     * counter-transform that holds the copy in place. One copy and a gradient is
+     * the same picture with nothing left that can drift out of alignment, which is
+     * the failure worth designing out: a copy that moves shows doubled glyphs.
+     */
+    .shimmer {
+      --shimmer-base: var(--vscode-descriptionForeground);
+      /* Tiled, because a non-repeating gradient leaves the box uncovered at the
+         ends of its travel, and an unpainted background here means invisible
+         text: the glyphs are filled by this image. */
+      background-image: linear-gradient(100deg, var(--shimmer-base) 0 40%, var(--vscode-foreground) 46% 54%, var(--shimmer-base) 60% 100%);
+      background-size: 200% 100%;
+      background-clip: text;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: shimmer-sweep 1.5s steps(48, end) .3s infinite;
+    }
+    .tool-title.shimmer { --shimmer-base: var(--vscode-foreground); }
+    @keyframes shimmer-sweep { 0% { background-position: 0 0; } 100% { background-position: -200% 0; } }
+    @media (prefers-reduced-motion: reduce) {
+      .live-status-swim { display: none; }
+      .shimmer { animation: none; background-image: none; -webkit-text-fill-color: inherit; }
+    }
     .message-image-status { padding: 8px 10px; border: 1px dashed var(--vscode-widget-border); border-radius: 7px; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .message-image-status.failed { color: var(--vscode-errorForeground); }
     .pending-steering { opacity: .82; }
@@ -1063,7 +1111,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       item.open = toolStartsOpen(message);
       const summary = document.createElement('summary');
       summary.append(node('span', 'tool-icon', message.streaming ? '●' : (message.failed ? '!' : '✓')));
-      summary.append(node('span', 'tool-title', toolTitle(message, callView, resultView)));
+      const title = message.streaming === true
+        ? shimmerNode('tool-title', toolTitle(message, callView, resultView))
+        : node('span', 'tool-title', toolTitle(message, callView, resultView));
+      summary.append(title);
       summary.append(node('span', 'tool-detail', message.detail || ''));
       summary.addEventListener('click', () => { if (!item.open) conversationScroller.pause(); });
       item.append(summary);
@@ -1206,7 +1257,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // rewrites itself every second, and a live region would read all of it.
       const announced = node('span', 'sr-only', current.stopping === true ? 'Stopping' : 'Deep diving');
       announced.setAttribute('role', 'status');
-      box.append(node('span', 'live-status-dot'), node('span', 'live-status-text', liveStatusText(current)), announced);
+      const mark = node('span', 'live-status-mark');
+      mark.append(icon([{ tag: 'path', attrs: { d: TAIL_PATH } }], false), node('span', 'live-status-swim'));
+      box.append(mark, shimmerNode('live-status-text', liveStatusText(current)), announced);
       return box;
     }
     /** Refresh the live text in place; the ticking clock must not rebuild the DOM. */
@@ -1250,8 +1303,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       root.className = 'thinking';
       const summary = document.createElement('summary');
       const title = node('span', 'thinking-title', thinkingLabel(message));
-      const preview = node('span', 'thinking-preview', thinkingPreview(message.reasoning));
-      summary.append(node('span', 'thinking-icon', '✦'), title, preview);
+      const preview = shimmerNode('thinking-preview', thinkingPreview(message.reasoning));
+      const glyph = node('span', 'thinking-icon');
+      glyph.append(icon(THINK_SHAPES, false));
+      summary.append(glyph, title, preview);
       const body = node('div', 'thinking-body');
       root.append(summary, body);
       const thinking = { root, title, preview, body, message };
@@ -1267,6 +1322,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const live = message.streaming === true;
       thinking.root.classList.toggle('live', live);
       thinking.title.textContent = thinkingLabel(message);
+      // DSH highlights the summary while the model is still writing it.
+      thinking.preview.classList.toggle('shimmer', live);
       thinking.preview.textContent = thinkingPreview(message.reasoning);
       if (thinking.root.open) thinking.body.textContent = message.reasoning || '';
     }
@@ -1326,10 +1383,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function copyMessageText(message, button) {
       const text = typeof message.text === 'string' ? message.text : '';
       const restore = () => window.setTimeout(() => {
-        button.textContent = '⧉'; button.title = 'Copy'; button.setAttribute('aria-label', 'Copy');
+        button.classList.remove('copied'); button.title = 'Copy'; button.setAttribute('aria-label', 'Copy');
       }, 1000);
       const confirm = () => {
-        button.textContent = '✓'; button.title = 'Copied'; button.setAttribute('aria-label', 'Copied');
+        button.classList.add('copied'); button.title = 'Copied'; button.setAttribute('aria-label', 'Copied');
         restore();
       };
       if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -1344,10 +1401,68 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       for (const entry of list) if (entry && entry.messageId === messageId) return entry;
       return undefined;
     }
-    function feedbackButton(glyph, rating, messageId, current) {
+    /**
+     * The marks DSH's own action row draws, from the icon set its client
+     * primitives use (16px viewBox, one-pixel stroke). Emoji rendered in whatever
+     * font and size the platform chose, which is what made the rating buttons look
+     * like they belonged to a different row.
+     */
+    /**
+     * DSH's running mark: the tail alone, which is what its own chat row draws
+     * (the still frame of its animated asset) rather than the whole brand mark.
+     */
+    const TAIL_PATH = 'M8.844 13.742C8.967 12.328 8.45 10.4 8.45 9.65C8.45 8.94 8.88 8.43 9.6 8.43C11.285 8.43 12.106 8.281 12.685 8.104C13.71 7.791 14.585 6.768 15.055 5.945C15.137 5.803 14.99 5.641 14.829 5.671C13.829 5.86 12.828 5.376 11.827 4.978C10.659 4.514 9.491 4.707 8.935 4.876C8.805 4.915 8.658 4.819 8.636 4.686C8.468 3.643 7.405 2.615 5.498 2.238C4.54 2.048 3.748 1.574 3.347 1.202C3.252 1.113 3.088 1.125 3.03 1.242C2.628 2.059 2.168 3.82 5.248 6.115C5.82 6.494 6.31 6.785 6.574 7.637C6.72 8.104 6.157 9.168 6.061 9.368C5.157 11.27 5.089 12.19 4.926 13.742';
+    /** DSH's thinking mark: two crossed rings and a centre dot. */
+    const THINK_SHAPES = [
+      { tag: 'path', attrs: { d: 'M10.2854 5.71481C12.9673 8.39663 14.1182 11.5938 12.8562 12.8559C11.5942 14.1179 8.39706 12.9669 5.71518 10.2851C3.03333 7.60323 1.88236 4.40608 3.14441 3.14403C4.40644 1.882 7.6036 3.03297 10.2854 5.71481Z' } },
+      { tag: 'path', attrs: { d: 'M10.2854 10.2851C7.6036 12.9669 4.40644 14.1179 3.14441 12.8559C1.88236 11.5938 3.03333 8.39663 5.71518 5.71481C8.39706 3.03297 11.5942 1.882 12.8562 3.14403C14.1182 4.40608 12.9673 7.60323 10.2854 10.2851Z' } },
+      { tag: 'path', attrs: { d: 'M8.86291 8.0002C8.86291 8.47549 8.47762 8.86087 8.00224 8.86087C7.52694 8.86087 7.1416 8.47549 7.1416 8.0002C7.1416 7.52485 7.52694 7.13953 8.00224 7.13953C8.47762 7.13953 8.86291 7.52485 8.86291 8.0002Z' }, fill: 'currentColor', stroke: false },
+    ];
+    const LIKE_PATH = 'M13.537 8.12098L12.3983 12.8455C12.1818 13.7438 11.378 14.3769 10.454 14.3769L9.35595 14.3769H7.43799H5.16577C3.50892 14.3769 2.16577 13.0337 2.16577 11.3769V7.88668C2.16577 7.33439 2.61349 6.88668 3.16577 6.88668H4.02665C5.84943 6.88668 7.38083 3.28711 7.67689 2.54578C7.71259 2.45639 7.73501 2.36373 7.77922 2.27824C7.86506 2.11221 8.08228 1.87578 8.59039 2.07775C10.3291 2.76886 9.23144 6.04071 8.96955 6.75058C8.94502 6.81707 8.99495 6.88668 9.06581 6.88668H12.5648C13.2119 6.88668 13.6886 7.49192 13.537 8.12098Z';
+    const DISLIKE_PATH = 'M2.46302 8.06749L3.60171 3.34299C3.81822 2.44467 4.62196 1.81162 5.546 1.8116L6.64406 1.81158L8.56202 1.81158L10.8342 1.81158C12.4911 1.81158 13.8342 3.15473 13.8342 4.81158L13.8342 8.3018C13.8342 8.85408 13.3865 9.3018 12.8342 9.3018L11.9734 9.3018C10.1506 9.3018 8.61918 12.9014 8.32311 13.6427C8.28741 13.7321 8.26499 13.8247 8.22078 13.9102C8.13494 14.0763 7.91772 14.3127 7.40961 14.1107C5.67089 13.4196 6.76856 10.1478 7.03045 9.43789C7.05498 9.37141 7.00505 9.3018 6.93419 9.3018L3.43519 9.3018C2.78811 9.3018 2.31141 8.69656 2.46302 8.06749Z';
+    const COPY_SHAPES = [
+      { tag: 'rect', attrs: { x: '1.52075', y: '4.07373', width: '10.3932', height: '10.3932', rx: '2' } },
+      { tag: 'path', attrs: { d: 'M11.9792 1.53296C13.36 1.53296 14.4792 2.65225 14.4792 4.03296V9.42847C14.4792 10.3756 13.9521 11.1987 13.1755 11.6228V10.3298C13.3652 10.0787 13.4792 9.7674 13.4792 9.42847V4.03296C13.4792 3.20453 12.8077 2.53296 11.9792 2.53296H6.58374C6.27966 2.53301 5.99684 2.6235 5.7605 2.77905H4.42358C4.85652 2.03463 5.66056 1.53304 6.58374 1.53296H11.9792Z' } },
+    ];
+    const BRANCH_SHAPES = [
+      { tag: 'path', attrs: { d: 'M1.01503 8.0001L5.6964 8.0001C6.41913 8.0001 6.78049 8.0001 7.12115 7.91951C7.4232 7.84804 7.71233 7.73014 7.97821 7.57C8.27809 7.38939 8.5364 7.13669 9.05303 6.63129L11.3281 4.40564' } },
+      { tag: 'path', attrs: { d: 'M1.01221 7.9999L5.6964 7.9999C6.41913 7.9999 6.78049 7.9999 7.12115 8.08049C7.4232 8.15196 7.71233 8.26986 7.97821 8.43C8.27809 8.61061 8.5364 8.86331 9.05303 9.36871L11.3281 11.5944' } },
+      { tag: 'circle', attrs: { cx: '12.4502', cy: '3.3079', r: '1.56962' } },
+      { tag: 'circle', attrs: { cx: '12.4502', cy: '12.6921', r: '1.56962' } },
+    ];
+    /**
+     * Build one icon: stroked, or filled as well when it marks a chosen state.
+     *
+     * A shape may ask for its own fill or no stroke, because DSH's artwork mixes
+     * them: the think icon's rings are stroked and its centre dot is filled.
+     */
+    function icon(shapes, filled) {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 16 16');
+      svg.setAttribute('fill', 'none');
+      svg.setAttribute('aria-hidden', 'true');
+      for (const shape of shapes) {
+        const element = document.createElementNS('http://www.w3.org/2000/svg', shape.tag);
+        for (const [name, value] of Object.entries(shape.attrs)) element.setAttribute(name, value);
+        const shapeFill = shape.fill === undefined ? (filled === true ? 'currentColor' : 'none') : shape.fill;
+        element.setAttribute('fill', shapeFill);
+        if (shape.stroke !== false) {
+          element.setAttribute('stroke', 'currentColor');
+          element.setAttribute('stroke-width', '1');
+        }
+        svg.append(element);
+      }
+      return svg;
+    }
+    /** Text that carries the streaming highlight while it keeps changing. */
+    function shimmerNode(className, text) {
+      return node('span', 'shimmer ' + className, text);
+    }
+    function feedbackButton(rating, messageId, current) {
       const active = current === rating;
-      const button = node('button', 'message-action message-' + rating + (active ? ' active' : ''), glyph);
+      const button = node('button', 'message-action message-icon message-' + rating + (active ? ' active' : ''));
       button.type = 'button';
+      button.append(icon([{ tag: 'path', attrs: { d: rating === 'positive' ? LIKE_PATH : DISLIKE_PATH } }], active));
       // The recorded rating says "Remove rating", which is what clicking it does.
       const label = active ? 'Remove rating' : (rating === 'positive' ? 'Good response' : 'Bad response');
       button.title = label;
@@ -1359,8 +1474,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return button;
     }
     function branchButton(meta) {
-      const button = node('button', 'message-action message-branch', '⑂');
+      const button = node('button', 'message-action message-icon message-branch');
       button.type = 'button';
+      button.append(icon(BRANCH_SHAPES, false));
       button.title = 'Branch into a new conversation';
       button.setAttribute('aria-label', button.title);
       button.addEventListener('click', () => vscode.postMessage({
@@ -1378,8 +1494,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (list.length > 0 && list[list.length - 1].id === message.id) row.classList.add('always');
       const clock = formatMessageClock(meta.time);
       if (clock !== '') row.append(node('span', 'message-clock', clock));
-      const copy = node('button', 'message-action message-copy', '⧉');
+      const copy = node('button', 'message-action message-icon message-copy');
       copy.type = 'button'; copy.title = 'Copy'; copy.setAttribute('aria-label', 'Copy');
+      copy.append(icon(COPY_SHAPES, false));
       copy.addEventListener('click', () => copyMessageText(message, copy));
       row.append(copy);
       return row;
@@ -1545,14 +1662,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // Only the newest turn's row stays visible; the rest reveal on hover, as
       // DSH does, so a long transcript is not a wall of buttons.
       if (list.length > 0 && list[list.length - 1].id === message.id) row.classList.add('always');
-      const copy = node('button', 'message-action message-copy', '⧉');
+      const copy = node('button', 'message-action message-icon message-copy');
       copy.type = 'button'; copy.title = 'Copy'; copy.setAttribute('aria-label', 'Copy');
+      copy.append(icon(COPY_SHAPES, false));
       copy.addEventListener('click', () => copyMessageText(message, copy));
       row.append(copy);
       const current = feedbackFor(message.id);
       const rating = current === undefined ? undefined : current.rating;
-      row.append(feedbackButton('👍', 'positive', message.id, rating));
-      row.append(feedbackButton('👎', 'negative', message.id, rating));
+      row.append(feedbackButton('positive', message.id, rating));
+      row.append(feedbackButton('negative', message.id, rating));
       row.append(branchButton(meta));
       if (meta.turnUsage !== undefined) {
         const usage = meta.turnUsage;

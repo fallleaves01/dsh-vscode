@@ -20,16 +20,19 @@ const candidates = [process.env.DSH_TEST_BROWSER,
 const browser = candidates.find(path => path && existsSync(path))
 assert.ok(browser, 'Set DSH_TEST_BROWSER to a Chrome/Chromium executable.')
 const root = new URL('../', import.meta.url)
-const [{ outputFiles }, markdown, scrollBundle] = await Promise.all([
+const [{ outputFiles }, markdown, scrollBundle, tailPng] = await Promise.all([
   build({ entryPoints: [fileURLToPath(new URL('src/webview.ts', root))], bundle: true, platform: 'node', format: 'cjs', write: false }),
   readFile(new URL('dist/webview/markdown.js', root), 'utf8'),
   readFile(new URL('dist/webview/scroll.js', root), 'utf8'),
+  readFile(new URL('media/deepseek-tail.png', root)),
 ])
 const module = { exports: {} }
 new Function('module', 'exports', outputFiles[0].text)(module, module.exports)
 const uri = name => ({ toString: () => `https://assets.invalid/${name}` })
 const html = module.exports.chatHtml({ cspSource: 'https://assets.invalid' }, uri('mark.svg'), {
   script: uri('markdown.js'), style: uri('katex.css'), scroll: uri('scroll.js'),
+  // The real asset, inline: the point of this one is that it animates.
+  tail: { toString: () => 'data:image/png;base64,' + tailPng.toString('base64') },
 })
 const inline = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(html)[1]
 // Load the same built scripts explicitly; no external network or VS Code API.
@@ -231,6 +234,67 @@ try {
   assert.deepEqual(selected.chosen, ['m4'])
   assert.equal(selected.closed, true)
   console.log('PASS: the model picker searches a long catalog inside a narrow sidebar')
+
+  // The running mark and the streaming sweep are CSS: jsdom cannot see either,
+  // and reduced motion has to switch both off.
+  await evaluate(`showState({...baseline, running: true, turnStartedAt: Date.now() - 12000, turnActivityAt: Date.now()});`)
+  await evaluate('tick()')
+  const motion = await evaluate(`(() => {
+    const text = document.querySelector('.live-status-text');
+    const mark = document.querySelector('.live-status-mark');
+    const sweep = getComputedStyle(text);
+    const markStyle = getComputedStyle(mark);
+    const tail = mark.querySelector('path');
+    return { animation: sweep.animationName, duration: sweep.animationDuration, timing: sweep.animationTimingFunction,
+      clip: sweep.webkitBackgroundClip || sweep.backgroundClip, fill: sweep.webkitTextFillColor,
+      position: sweep.backgroundPosition, tail: tail === null ? null : tail.getAttribute('d')?.slice(0, 6),
+      stroke: tail === null ? null : tail.getAttribute('stroke'), color: markStyle.color,
+      swim: getComputedStyle(mark.querySelector('.live-status-swim')).webkitMaskImage, label: text.textContent };
+  })()`)
+  assert.equal(motion.animation, 'shimmer-sweep')
+  assert.equal(motion.duration, '1.5s')
+  // Chromium reports the default step position without its keyword.
+  assert.match(motion.timing, /^steps\(48(, end)?\)$/)
+  assert.match(motion.label, /^Deep diving for 1[0-9]s$/)
+  // The words are painted once, so the sweep can never show misaligned glyphs.
+  assert.equal(motion.clip, 'text')
+  assert.notEqual(motion.fill, 'rgb(204, 204, 204)')
+  // The gradient has to cover the box at every step of its travel: the glyphs
+  // are filled by it, so a gap would render invisible text.
+  const covered = await evaluate(`(() => {
+    const text = document.querySelector('.live-status-text');
+    const before = getComputedStyle(text).backgroundPosition;
+    return { repeat: getComputedStyle(text).backgroundRepeat, size: getComputedStyle(text).backgroundSize, before };
+  })()`)
+  assert.equal(covered.repeat, 'repeat')
+  assert.equal(covered.size, '200% 100%')
+  // DSH's own running mark: its animated tail masked over the accent colour,
+  // with the still outline underneath as the fallback.
+  assert.equal(motion.tail, 'M8.844')
+  assert.equal(motion.stroke, 'currentColor')
+  // The mask is the shipped PNG (read from media/ and inlined here): a PNG magic
+  // in the URL means the asset reached the layer, and the packaging test checks
+  // that this PNG really is DSH's multi-frame tail.
+  assert.match(String(motion.swim), /url\("?data:image\/png;base64,iVBORw0KGgo/)
+  // The tail is DSH's own APNG: prove it moves, rather than that a file loaded.
+  const markBox = await evaluate(`(() => { const r = document.querySelector('.live-status-mark').getBoundingClientRect(); return { x: Math.round(r.left) - 2, y: Math.round(r.top) - 2, width: Math.round(r.width) + 4, height: Math.round(r.height) + 4, scale: 4 }; })()`)
+  const markShot = async () => Buffer.from((await page('Page.captureScreenshot', { format: 'png', clip: markBox })).data, 'base64')
+  const tailFirst = await markShot()
+  await evaluate('tick(260)')
+  const tailSecond = await markShot()
+  assert.equal(tailFirst.equals(tailSecond), false, 'the swimming tail must move between frames')
+
+  await page('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] })
+  await evaluate('tick()')
+  const reduced = await evaluate(`({ sweep: getComputedStyle(document.querySelector('.live-status-text')).animationName, swim: getComputedStyle(document.querySelector('.live-status-swim')).display })`)
+  assert.equal(reduced.sweep, 'none')
+  assert.equal(reduced.swim, 'none')
+  const stillFirst = await markShot()
+  await evaluate('tick(260)')
+  const stillSecond = await markShot()
+  assert.equal(stillFirst.equals(stillSecond), true, 'reduced motion must freeze the tail')
+  await page('Emulation.setEmulatedMedia', { features: [] })
+  console.log('PASS: the running mark and the streaming sweep animate, and stop for reduced motion')
 
   if (process.env.DSH_SCROLL_SCREENSHOT) {
     const { data } = await page('Page.captureScreenshot', { format: 'png' })

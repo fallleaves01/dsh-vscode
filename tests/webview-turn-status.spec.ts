@@ -87,6 +87,24 @@ describe('the live turn status', () => {
     expect(h.document.querySelector('.live-status')).toBeNull()
   })
 
+  it('highlights a running turn the way DSH does: a mark and a moving sweep', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'Date'] })
+    const h = open()
+    const now = Date.now()
+    await show(h, { running: true, turnStartedAt: now, turnActivityAt: now })
+    const text = h.document.querySelector('.live-status-text')!
+    expect(text.classList.contains('shimmer')).toBe(true)
+    const mark = h.document.querySelector('.live-status-mark')!
+    // DSH's running mark is the tail alone, stroked in the accent colour.
+    expect(mark.querySelectorAll('path')).toHaveLength(1)
+    expect(mark.querySelector('path')!.getAttribute('d')!.startsWith('M8.844')).toBe(true)
+    expect(mark.querySelector('path')!.getAttribute('stroke')).toBe('currentColor')
+
+    await vi.advanceTimersByTimeAsync(9000)
+    // One painted copy of the words: the clock cannot drift from its highlight.
+    expect(text.textContent).toBe('Deep diving for 9s')
+  })
+
   it('says so when the runtime reported no start time at all', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'Date'] })
     const h = open()

@@ -7,6 +7,7 @@ function chatHtml(webview: vscode.Webview, mark: vscode.Uri): string {
     script: { toString: () => 'vscode-resource:/dist/webview/markdown.js' } as vscode.Uri,
     style: { toString: () => 'vscode-resource:/dist/webview/katex.min.css' } as vscode.Uri,
     scroll: { toString: () => 'vscode-resource:/dist/webview/scroll.js' } as vscode.Uri,
+    tail: { toString: () => 'vscode-resource:/media/deepseek-tail.png' } as vscode.Uri,
   })
 }
 

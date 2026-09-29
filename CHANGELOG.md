@@ -28,6 +28,13 @@ The first release of the fork as an independent extension, on DSH 0.2.0-rc.2.
 - A searchable model picker: type to filter a long catalog, with the arrow keys
   and Enter to choose, and the provider named in each group.
 - The elapsed time a completed turn took, next to its usage and timestamp.
+- The action row is drawn with DSH's own icon set — copy, like, dislike, branch —
+  and a recorded rating shows the filled mark, as DSH's row does.
+- DSH's streaming highlight: while a turn runs, the turn clock, a streaming
+  thought and a running tool's title carry a sweep across the words, next to the
+  swimming tail DSH's own running row shows.
+- The thinking row draws DSH's thinking mark, and every animation stops for
+  `prefers-reduced-motion`.
 - A setting for the runtime's web search base URL, for hosts that cannot reach
   the public API.
 - Default keyboard shortcuts for the sidebar commands.
