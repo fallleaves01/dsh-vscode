@@ -75,6 +75,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .account-action:hover { background: var(--vscode-button-hoverBackground, var(--vscode-toolbar-hoverBackground)); }
     .account-action.secondary { color: var(--vscode-foreground); background: transparent; }
     .account-action.secondary:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .subagent-bar { display: flex; align-items: center; gap: 6px; padding: 5px 12px 0; font-size: 11px; }
+    .subagent-bar.hidden { display: none; }
+    .subagent-bar-label { flex: none; color: var(--vscode-descriptionForeground); }
+    .subagent-bar-back { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 1px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; cursor: pointer; }
+    .subagent-bar-back:hover { background: var(--vscode-toolbar-hoverBackground); }
     .routable-notice { padding: 6px 12px 2px; color: var(--vscode-errorForeground); font-size: 11px; }
     .routable-notice.hidden { display: none; }
     .session-row.session-ancestor { margin-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--vscode-widget-border) 60%, transparent); border-radius: 0; grid-template-columns: minmax(0, 1fr); }
@@ -405,6 +410,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     <footer class="composer-wrap">
       <div id="queueDock" class="queue-dock hidden" aria-label="Queued messages"></div>
       <div class="composer">
+        <div id="subagentBar" class="subagent-bar hidden" role="status"></div>
         <div id="routableNotice" class="routable-notice hidden" role="status"></div>
         <div id="modeChips" class="mode-chips hidden" aria-label="Active collaboration modes"></div>
         <div id="contextChips" class="context-chips hidden" aria-label="Editor context"></div>
@@ -455,7 +461,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
       queueDock: document.getElementById('queueDock'), dropOverlay: document.getElementById('dropOverlay'),
       accountControl: document.getElementById('accountControl'), accountTrigger: document.getElementById('accountTrigger'), accountMenu: document.getElementById('accountMenu'),
-      routableNotice: document.getElementById('routableNotice'),
+      routableNotice: document.getElementById('routableNotice'), subagentBar: document.getElementById('subagentBar'),
       modeChips: document.getElementById('modeChips'), contextChips: document.getElementById('contextChips'), mentionMenu: document.getElementById('mentionMenu'), commandMenu: document.getElementById('commandMenu'),
     };
     let state;
@@ -1896,6 +1902,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedChrome.usage !== current.usage) renderUsage(current);
       if (renderedChrome.jobs !== current.jobs) renderJobs();
       if (renderedChrome.account !== current.account || renderedChrome.accountNotice !== current.accountNotice || renderedChrome.accountFailed !== current.accountFailed) renderAccount(current);
+      if (renderedChrome.parentSessionId !== current.parentSessionId) renderSubagentBar(current);
       renderRoutableNotice(current);
       renderConversation(current);
       const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
@@ -1913,6 +1920,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         workspaceName: current.workspaceName, cwd: current.cwd, sessions: current.sessions, sessionId: current.sessionId, models: current.models,
         agentPreset: current.agentPreset, permissions: current.permissions, plan: current.plan, running: current.running,
         account: current.account, accountNotice: current.accountNotice, accountFailed: current.accountFailed,
+        parentSessionId: current.parentSessionId,
         phase: current.phase, usage: current.usage, jobs: current.jobs, commands: current.commands, skills: current.skills,
       };
       if (preservingHistory && current.loadingHistory !== true) {
@@ -1963,6 +1971,28 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         ? applyMessagesPatch(state.messages, update.messages)
         : state.messages;
       scheduleRender({ ...state, ...patch, messages });
+    }
+    /**
+     * Show whose subagent this conversation is, and offer the way back.
+     * Opening a child is otherwise a one-way door: the owner is only reachable
+     * from the session picker.
+     */
+    function renderSubagentBar(current) {
+      const parentId = current.parentSessionId;
+      if (typeof parentId !== 'string' || parentId === '') {
+        elements.subagentBar.classList.add('hidden');
+        elements.subagentBar.replaceChildren();
+        return;
+      }
+      const parent = array(current.sessions).find(session => session.id === parentId);
+      const title = parent === undefined ? '' : string(parent.title);
+      elements.subagentBar.classList.remove('hidden');
+      const back = node('button', 'subagent-bar-back', '↩ ' + (title || 'Owning conversation'));
+      back.type = 'button';
+      back.title = 'Back to the conversation that started this subagent';
+      back.setAttribute('aria-label', back.title);
+      back.addEventListener('click', () => vscode.postMessage({ type: 'select-session', sessionId: parentId }));
+      elements.subagentBar.replaceChildren(node('span', 'subagent-bar-label', 'Subagent of'), back);
     }
     function renderRoutableNotice(current) {
       const text = current.routableNotice;

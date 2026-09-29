@@ -83,3 +83,39 @@ describe('the permission control', () => {
     expect(h.document.getElementById('policyMenu')!.textContent).not.toContain('Normal')
   })
 })
+
+describe('leaving a subagent conversation', () => {
+  it('names the owning conversation and goes back to it', async () => {
+    const h = open()
+    await show(h, {
+      parentSessionId: 'parent',
+      sessions: [{ id: 'parent', title: 'Fix the renderer', childCount: 0, running: false, blank: false, unread: false }],
+    })
+    const bar = h.document.getElementById('subagentBar')!
+    expect(bar.classList.contains('hidden')).toBe(false)
+    expect(bar.textContent).toContain('Subagent of')
+    expect(bar.textContent).toContain('Fix the renderer')
+
+    h.posts.length = 0
+    bar.querySelector('button')!.dispatchEvent(new Event('click', { bubbles: true }))
+    expect(h.posts).toContainEqual({ type: 'select-session', sessionId: 'parent' })
+  })
+
+  it('stays usable when the owner is not in the list', async () => {
+    const h = open()
+    // The parent can be filtered out of the picker; the way back must survive.
+    await show(h, { parentSessionId: 'gone', sessions: [] })
+    const bar = h.document.getElementById('subagentBar')!
+    expect(bar.classList.contains('hidden')).toBe(false)
+    expect(bar.textContent).toContain('Owning conversation')
+    h.posts.length = 0
+    bar.querySelector('button')!.dispatchEvent(new Event('click', { bubbles: true }))
+    expect(h.posts).toContainEqual({ type: 'select-session', sessionId: 'gone' })
+  })
+
+  it('disappears in an ordinary conversation', async () => {
+    const h = open()
+    await show(h, { parentSessionId: null })
+    expect(h.document.getElementById('subagentBar')!.classList.contains('hidden')).toBe(true)
+  })
+})
