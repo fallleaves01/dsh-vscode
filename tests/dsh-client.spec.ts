@@ -4,6 +4,7 @@ import { DshClient, type DshFrame } from '../src/dsh-client.js'
 import type { DshConnection } from '../src/dsh-connection.js'
 import { DshConnectionError } from '../src/dsh-connection.js'
 import { decodeHistory } from '../src/dsh-history.js'
+import { dshErrorText } from '../src/dsh-errors.js'
 import { ConversationProjector } from '../src/conversation.js'
 
 const clients: DshClient[] = []
@@ -72,6 +73,41 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
 }
 
 describe('DSH 0.1.2 chat transport', () => {
+  it('keeps the feed alive when one conversation subscription fails', async () => {
+    const h = harness(false)
+    await h.client.startStreams()
+    const opening = h.client.openSession('s').then(() => undefined, (error: unknown) => error)
+    await Promise.resolve()
+    await Promise.resolve()
+    const follow = h.outgoing.find(entry => entry.endpoint === 'session/follow')!
+    // The runtime refuses this conversation: archived elsewhere, or a subagent
+    // whose parent is gone.
+    // The harness's `receive` builds `item` frames, so the error envelope is
+    // emitted directly — that envelope is what the supervisor parses.
+    const errorFrame = (streamId: string, error: unknown): void => {
+      h.socket.emit('message', Buffer.from(JSON.stringify({ type: 'error', streamId, error })), false)
+    }
+    errorFrame(follow.streamId, { code: 'session/not-found', message: 'session "s" not found' })
+
+    const error = await opening
+    // The code survives, so the sidebar can explain the failure itself instead of
+    // reporting that the whole event stream was lost.
+    expect((error as { code?: string }).code).toBe('session/not-found')
+    expect(dshErrorText(error)).toContain('no longer on the runtime')
+    // Every other subscription is still live.
+    expect(h.socket.readyState).toBe(1)
+    expect(h.errors).toEqual([])
+  })
+
+  it('still tears the feed down when a runtime-wide subscription fails', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    const control = h.outgoing.find(entry => entry.endpoint === 'session/control')!
+    h.socket.emit('message', Buffer.from(JSON.stringify({ type: 'error', streamId: control.streamId, error: { code: 'gateway/internal' } })), false)
+    expect(h.errors).toHaveLength(1)
+    expect(h.socket.readyState).toBe(3)
+  })
+
   it('publishes every session’s baseline jobs before opening any conversation', async () => {
     const job = { id: 'job', status: 'running', kind: 'bash', label: 'Server', startedAt: 1 }
     const h = harness(true, { s: [job], foreign: [job] })

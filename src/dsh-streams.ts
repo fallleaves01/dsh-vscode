@@ -3,10 +3,23 @@ import WebSocket from 'ws'
 import type { DshConnection } from './dsh-connection.js'
 
 export class DshStreamError extends Error {
-  constructor(message: string, readonly retryable = false) {
+  constructor(message: string, readonly retryable = false, readonly code?: string) {
     super(message)
     this.name = 'DshStreamError'
   }
+}
+
+/**
+ * The `namespace/name` code carried by an error frame, if it has one.
+ *
+ * Only a code that looks like a code is taken, so the runtime's own wording —
+ * which can quote a request — stays out of a message that reaches the log. The
+ * code is what lets the sidebar explain the failure with its own sentence.
+ */
+function errorCodeOf(value: unknown): string | undefined {
+  if (!wireRecord(value)) return undefined
+  const code = value.code
+  return typeof code === 'string' && /^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*$/.test(code) ? code : undefined
 }
 
 export function wireRecord(value: unknown): value is Record<string, unknown> {
@@ -73,8 +86,13 @@ export class DshStreams {
         if (frame.type === 'item') stream.item(frame.value)
         else if (frame.type === 'end' || frame.type === 'error') {
           this.streams.delete(frame.streamId)
-          // Do not put arbitrary remote error text (or credentials) in logs.
-          const error = new DshStreamError(`DSH ${stream.endpoint} subscription ended. Reconnect to refresh its snapshot.`)
+          // Do not put arbitrary remote error text (or credentials) in logs; the
+          // code is safe and is what the sidebar maps to its own sentence.
+          const error = new DshStreamError(
+            `DSH ${stream.endpoint} subscription ended. Reconnect to refresh its snapshot.`,
+            false,
+            errorCodeOf(frame.error),
+          )
           stream.fail(error)
           // A runtime that does not serve an optional stream must not lose the feed.
           if (!stream.optional) this.abort(error)

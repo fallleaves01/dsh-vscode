@@ -213,7 +213,10 @@ export class DshSessionFeed {
           this.acceptQueuedMessage(state, entry)
           assistant.durable(entry)
         }
-      }, error => { state.reject(error) })
+      // A conversation-scoped subscription must not take the runtime feed with it:
+      // a conversation archived elsewhere, or a subagent whose parent is gone,
+      // fails this stream alone. Its code is what the sidebar explains.
+      }, error => { if (this.follow === state) this.closeFollow(error); else state.reject(error) }, true)
     })
   }
 
