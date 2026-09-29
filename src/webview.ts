@@ -86,6 +86,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .message-action:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
     .message-action.usage-pill { color: var(--vscode-descriptionForeground); }
     .message-clock { color: var(--vscode-descriptionForeground); font-size: 11px; }
+    .message-duration { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .message-action.active { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .message.user .message-actions { justify-content: flex-end; margin-left: 0; }
     .routable-notice { padding: 6px 12px 2px; color: var(--vscode-errorForeground); font-size: 11px; }
@@ -354,7 +355,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .plan-chip-close:hover { background: var(--vscode-toolbar-hoverBackground); }
     textarea { width: 100%; min-height: 72px; max-height: 220px; resize: none; display: block; padding: 11px 12px 4px; border: 0; outline: 0; background: transparent; color: var(--vscode-input-foreground); }
     textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
-    .composer-row { width: 100%; min-width: 0; min-height: 39px; padding: 4px 6px 6px; display: grid; grid-template-columns: 28px 28px minmax(28px, .5fr) minmax(0, 1.2fr) minmax(46px, .55fr) auto; align-items: center; gap: 5px; }
+    .composer-row { width: 100%; min-width: 0; min-height: 39px; padding: 4px 6px 6px; display: grid; grid-template-columns: 28px auto minmax(28px, .5fr) minmax(0, 1.2fr) minmax(46px, .55fr) auto; align-items: center; gap: 5px; }
+    /* Every control keeps its own column even when one of them is hidden, and the
+       permission column collapses to nothing when the runtime has no presets:
+       auto-placement used to shift the model picker into the 20px project column. */
+    .composer-row > #attach { grid-column: 1; }
+    .composer-row > #policyTrigger { grid-column: 2; }
+    .composer-row > #project { grid-column: 3; }
+    .composer-row > #modelControl { grid-column: 4; }
+    .composer-row > #efforts { grid-column: 5; }
+    .composer-row > .run-actions { grid-column: 6; }
     .run-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
     .usage-control { position: relative; flex: 0 0 auto; }
     .usage-trigger { color: var(--vscode-descriptionForeground); }
@@ -383,7 +393,21 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .project:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .project span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .project svg { width: 15px; height: 15px; flex: 0 0 auto; }
-    .model-select, .effort-select { width: 100%; min-width: 0; max-width: 100%; border: 0; outline: 0; color: var(--vscode-descriptionForeground); background: transparent; text-overflow: ellipsis; }
+    .effort-select { width: 100%; min-width: 0; max-width: 100%; border: 0; outline: 0; color: var(--vscode-descriptionForeground); background: transparent; text-overflow: ellipsis; }
+    .model-control { min-width: 0; }
+    .model-trigger { width: 100%; min-width: 0; height: 28px; padding: 0 4px; overflow: hidden; display: flex; align-items: center; gap: 3px; border: 0; border-radius: 6px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 12px; text-align: left; }
+    .model-trigger:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    .model-trigger span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .model-trigger svg { width: 13px; height: 13px; flex: 0 0 auto; opacity: .8; }
+    .model-menu { max-height: min(300px, 52vh); overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    .model-search { width: 100%; height: 27px; padding: 0 8px; border: 1px solid var(--vscode-input-border, transparent); border-radius: 5px; outline: 0; color: var(--vscode-input-foreground); background: var(--vscode-input-background); font-size: 12px; }
+    .model-list { min-height: 0; margin-top: 5px; overflow: auto; }
+    .model-group-label { padding: 7px 7px 3px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+    .model-option { width: 100%; min-width: 0; padding: 6px 7px; display: flex; align-items: baseline; gap: 6px; border: 0; border-radius: 6px; color: var(--vscode-foreground); background: transparent; text-align: left; font-size: 12px; }
+    .model-option:hover, .model-option.selected { color: var(--vscode-list-activeSelectionForeground); background: var(--vscode-list-activeSelectionBackground); }
+    .model-option-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .model-option-current { margin-left: auto; padding: 1px 5px; border-radius: 999px; color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); font-size: 10px; }
+    .model-empty { padding: 14px 8px; color: var(--vscode-descriptionForeground); text-align: center; font-size: 11px; }
     .policy-trigger.active { color: #4d6bfe; background: color-mix(in srgb, #4d6bfe 12%, transparent); }
     .policy-trigger.full-access { color: var(--vscode-editorWarning-foreground); }
     .send { border-radius: 8px; color: white; background: #4d6bfe; }
@@ -392,7 +416,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .cancel:hover { background: var(--vscode-toolbar-hoverBackground); }
     .send:disabled, textarea:disabled, button:disabled { opacity: .55; cursor: default; }
     .hidden { display: none !important; }
-    @media (max-width: 330px) { .conversation { padding-inline: 10px; } .composer-row { grid-template-columns: 28px 28px 20px minmax(0, 1fr) minmax(40px, .5fr) auto; } .project span { display: none; } }
+    @media (max-width: 330px) { .conversation { padding-inline: 10px; } .composer-row { grid-template-columns: 28px auto 20px minmax(0, 1fr) minmax(40px, .5fr) auto; } .project span { display: none; } }
   </style>
 </head>
 <body>
@@ -431,13 +455,21 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         <div id="attachments" class="attachments hidden"></div>
         <div id="mentionMenu" class="command-menu hidden" role="listbox" aria-label="Files and folders"></div>
         <div id="commandMenu" class="command-menu hidden" role="listbox" aria-label="DeepSeek commands"></div>
+        <div id="modelMenu" class="command-menu model-menu hidden" aria-label="Choose a model">
+          <input id="modelSearch" class="model-search" type="text" placeholder="Search models" aria-label="Search models" role="combobox" aria-expanded="false" aria-controls="modelList" aria-autocomplete="list" autocomplete="off" spellcheck="false" />
+          <div id="modelList" class="model-list" role="listbox" aria-label="Models"></div>
+        </div>
         <div id="policyMenu" class="command-menu policy-menu hidden" role="menu" aria-label="Permissions"></div>
         <textarea id="prompt" rows="3" placeholder="Ask DeepSeek about this project" aria-label="Message DeepSeek"></textarea>
         <div class="composer-row">
           <button id="attach" class="icon-button" title="Attach image" aria-label="Attach image"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
           <button id="policyTrigger" class="icon-button policy-trigger hidden" title="Permissions" aria-label="Permissions" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.7 2.8 8 7 10 4.2-2 7-5.3 7-10V6z"/><path d="m9.5 12 1.6 1.6 3.5-3.6"/></svg></button>
           <button id="project" class="project" title="Choose DeepSeek project" aria-label="Choose DeepSeek project"><svg viewBox="0 0 24 24"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h5"/></svg><span id="workspace">Workspace</span></button>
-          <select id="models" class="model-select" aria-label="Model"></select>
+          <div id="modelControl" class="model-control">
+            <button id="modelTrigger" class="model-trigger" type="button" title="Model" aria-label="Model" aria-haspopup="listbox" aria-expanded="false" disabled><span id="modelTriggerLabel">Model</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9.5 5 5 5-5"/></svg></button>
+            <!-- Value holder only: the trigger and its menu are what the user drives. -->
+            <select id="models" class="sr-only" aria-label="Model" tabindex="-1" aria-hidden="true"></select>
+          </div>
           <select id="efforts" class="effort-select" aria-label="Reasoning effort"></select>
           <div class="run-actions">
             <div id="usageControl" class="usage-control hidden">
@@ -469,6 +501,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       githubStar: document.getElementById('githubStar'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionAttentionCount: document.getElementById('sessionAttentionCount'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
+      modelControl: document.getElementById('modelControl'), modelTrigger: document.getElementById('modelTrigger'),
+      modelTriggerLabel: document.getElementById('modelTriggerLabel'), modelMenu: document.getElementById('modelMenu'),
+      modelSearch: document.getElementById('modelSearch'), modelList: document.getElementById('modelList'),
       policyTrigger: document.getElementById('policyTrigger'), policyMenu: document.getElementById('policyMenu'),
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
       usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'), usageStats: document.getElementById('usageStats'),
@@ -493,6 +528,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let queueEditing = null;
     let queueRenderSignature = '';
     let policyMenuOpen = false;
+    let modelMenuOpen = false;
+    /** The filtered models the menu is showing, in the order it shows them. */
+    let modelChoices = [];
+    /** Which of {@link modelChoices} the keyboard is on. */
+    let modelIndex = 0;
     let usageOpen = false;
     let jobsOpen = false;
     let accountOpen = false;
@@ -1345,6 +1385,157 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return row;
     }
     /**
+     * Whether one term matches a field, the way DSH's picker does it: every
+     * character of the term has to appear in order, so "fsh" finds "Flash"
+     * while "hsf" does not.
+     */
+    function fuzzyMatch(haystack, term) {
+      let index = 0;
+      for (const character of term) {
+        index = haystack.indexOf(character, index);
+        if (index === -1) return false;
+        index += 1;
+      }
+      return true;
+    }
+    /**
+     * The models the search box admits, in the provider order DSH sorts them in.
+     *
+     * Each term has to match one field on its own rather than a joined haystack:
+     * joined fields let a term span two of them through a provider id, so an
+     * unrelated model matched on letters that were never adjacent, and the query
+     * stopped meaning anything.
+     */
+    function modelMatches(query) {
+      const models = (state && state.models) || [];
+      const terms = String(query || '').toLowerCase().split(/\\s+/).filter(term => term !== '');
+      if (terms.length === 0) return models.slice();
+      return models.filter(model => {
+        const fields = [model.label, model.providerLabel, model.provider, model.model]
+          .filter(value => typeof value === 'string').map(value => value.toLowerCase());
+        return terms.every(term => fields.some(field => fuzzyMatch(field, term)));
+      });
+    }
+    function modelChoiceLabel(model) {
+      return typeof model.label === 'string' && model.label !== '' ? model.label : model.model;
+    }
+    function modelChoiceProvider(model) {
+      return typeof model.providerLabel === 'string' && model.providerLabel !== '' ? model.providerLabel : model.provider;
+    }
+    /** The value the hidden select carries for one model, built in one place. */
+    function modelValue(model) {
+      return JSON.stringify({ provider: model.provider, model: model.model });
+    }
+    function highlightModel() {
+      const options = [...elements.modelList.querySelectorAll('.model-option')];
+      for (const [index, option] of options.entries()) option.classList.toggle('selected', index === modelIndex);
+      const current = options[modelIndex];
+      // The focus stays in the search box, so the highlighted option has to be
+      // named for a screen reader rather than moved to.
+      if (current === undefined) elements.modelSearch.removeAttribute('aria-activedescendant');
+      else elements.modelSearch.setAttribute('aria-activedescendant', current.id);
+      if (current !== undefined && typeof current.scrollIntoView === 'function') current.scrollIntoView({ block: 'nearest' });
+    }
+    /** The provider groups, filtered by the search box and marked with the current choice. */
+    function renderModelMenu() {
+      // A catalog change can arrive while the menu is open; keep the highlight on
+      // the model the user put it on rather than on whatever lands in that slot.
+      const highlighted = modelChoices[modelIndex];
+      elements.modelList.replaceChildren();
+      modelChoices = modelMatches(elements.modelSearch.value);
+      const moved = highlighted === undefined ? -1 : modelChoices.indexOf(highlighted);
+      modelIndex = moved === -1 ? 0 : moved;
+      const groups = new Map();
+      for (const [choiceIndex, model] of modelChoices.entries()) {
+        const provider = model.provider;
+        let section = groups.get(provider);
+        if (section === undefined) {
+          section = node('div', 'model-group');
+          section.setAttribute('role', 'group');
+          section.setAttribute('aria-label', modelChoiceProvider(model));
+          const heading = node('div', 'model-group-label', modelChoiceProvider(model));
+          heading.setAttribute('role', 'presentation');
+          section.append(heading);
+          elements.modelList.append(section);
+          groups.set(provider, section);
+        }
+        const option = node('button', 'model-option');
+        option.type = 'button';
+        option.id = 'model-option-' + String(choiceIndex);
+        option.setAttribute('role', 'option');
+        // The search box keeps the focus and names the highlight, so an option
+        // must not be a tab stop: one Tab would land on it and kill the arrows.
+        option.tabIndex = -1;
+        option.append(node('span', 'model-option-label', modelChoiceLabel(model)));
+        if (model.selected === true) {
+          option.setAttribute('aria-selected', 'true');
+          const badge = node('span', 'model-option-current', 'Current');
+          // The option's own label already says it is selected.
+          badge.setAttribute('aria-hidden', 'true');
+          option.append(badge);
+        }
+        option.addEventListener('click', () => chooseModel(model));
+        option.addEventListener('mousemove', () => {
+          if (choiceIndex === modelIndex) return;
+          modelIndex = choiceIndex; highlightModel();
+        });
+        section.append(option);
+      }
+      if (modelChoices.length === 0) {
+        const empty = node('div', 'model-empty', 'No model matches');
+        // A listbox may only hold options, so the empty state says so as one.
+        empty.setAttribute('role', 'option');
+        empty.setAttribute('aria-disabled', 'true');
+        elements.modelList.append(empty);
+      }
+      if (modelIndex >= modelChoices.length) modelIndex = 0;
+      highlightModel();
+    }
+    function openModelMenu() {
+      if (elements.models.disabled) return;
+      policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false');
+      elements.commandMenu.classList.add('hidden'); elements.mentionMenu.classList.add('hidden');
+      modelMenuOpen = true; modelIndex = 0; modelChoices = []; elements.modelSearch.value = '';
+      elements.modelMenu.classList.remove('hidden');
+      elements.modelTrigger.setAttribute('aria-expanded', 'true');
+      elements.modelSearch.setAttribute('aria-expanded', 'true');
+      renderModelMenu();
+      elements.modelSearch.focus();
+    }
+    function closeModelMenu(focusTrigger) {
+      if (!modelMenuOpen) return;
+      modelMenuOpen = false;
+      elements.modelMenu.classList.add('hidden');
+      elements.modelTrigger.setAttribute('aria-expanded', 'false');
+      elements.modelSearch.setAttribute('aria-expanded', 'false');
+      if (focusTrigger) elements.modelTrigger.focus();
+    }
+    /** Pick one model, then let the effort picker follow it, exactly as the select did. */
+    function chooseModel(model) {
+      closeModelMenu(true);
+      const value = modelValue(model);
+      // Re-picking the model that is already chosen must not undo an effort the
+      // user set afterwards, which is what a native select did by staying silent.
+      if (value === elements.models.value) return;
+      applyModelSelection(value);
+    }
+    function applyModelSelection(value) {
+      if (!value) return;
+      const selected = JSON.parse(value);
+      const model = ((state && state.models) || []).find(item => item.provider === selected.provider && item.model === selected.model);
+      if (model === undefined) return;
+      // The hidden select stays the value holder, and the effort control reads it
+      // to know which model it is setting an effort for: a choice made from the
+      // menu has to land there too, or the next effort change would name the
+      // previous model.
+      elements.models.value = value;
+      renderEfforts(model);
+      const effort = model.defaultReasoningEffort || (model.reasoningEfforts && model.reasoningEfforts[0] && model.reasoningEfforts[0].id);
+      if (effort) elements.efforts.value = effort;
+      elements.efforts.disabled = !model.reasoningEfforts || !model.reasoningEfforts.length;
+      vscode.postMessage({ type: 'select-model', selection: selectionFor(model, effort) });
+    }
+    /**
      * The row DSH shows once per completed turn, under that turn's closing reply:
      * copy the whole message, the turn's usage, and the clock.
      */
@@ -1370,6 +1561,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const detail = usageLines(usage).join('\\n');
         pill.title = detail; pill.setAttribute('aria-label', 'Turn usage: ' + detail);
         row.append(pill);
+      }
+      // What DSH's turn process row calls "Took 2m 3s": the wait the user sat
+      // through, measured from the prompt that opened the turn.
+      if (typeof meta.turnDurationMs === 'number' && meta.turnDurationMs >= 1000) {
+        row.append(node('span', 'message-duration', 'Took ' + formatLiveDuration(meta.turnDurationMs)));
       }
       const clock = formatMessageClock(meta.time);
       if (clock !== '') row.append(node('span', 'message-clock', clock));
@@ -2103,6 +2299,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         // the only thing that makes one reachable (menuCandidates never reads the
         // mention list), so hiding it is what has to happen here.
         elements.mentionMenu.classList.add('hidden'); elements.commandMenu.classList.add('hidden');
+        // The catalog is runtime-wide, but the menu belongs to the conversation
+        // the user was in; leaving it open carries a filter across the switch.
+        closeModelMenu(false);
         elements.prompt.value = sessionDrafts.get(current.sessionId) || ''; resizePrompt();
         draftImages = draftImagesBySession.get(current.sessionId) || [];
         draftFiles = draftFilesBySession.get(current.sessionId) || []; renderAttachments();
@@ -2193,16 +2392,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
             elements.models.append(group);
             providers.set(model.provider, group);
           }
-          group.append(new Option(model.label, JSON.stringify({ provider: model.provider, model: model.model }), false, model.selected === true));
+          group.append(new Option(model.label, modelValue(model), false, model.selected === true));
         }
         if (!elements.models.childElementCount) elements.models.append(new Option('Default model', ''));
         // The closed picker shows only the model, so name the provider in the
         // tooltip: it is the half of the choice that routing depends on.
         const route = currentModel === undefined
           ? 'Model'
-          : 'Model: ' + currentModel.label + ' — ' + (typeof currentModel.providerLabel === 'string' && currentModel.providerLabel !== '' ? currentModel.providerLabel : currentModel.provider);
+          : 'Model: ' + modelChoiceLabel(currentModel) + ' — ' + modelChoiceProvider(currentModel);
         elements.models.title = route;
         elements.models.setAttribute('aria-label', route);
+        // The trigger is what the user reads: the model alone, with the provider
+        // in the tooltip, because the provider is what routing depends on.
+        elements.modelTriggerLabel.textContent = currentModel === undefined ? 'Default model' : modelChoiceLabel(currentModel);
+        elements.modelTrigger.title = route;
+        elements.modelTrigger.setAttribute('aria-label', route);
+        if (modelMenuOpen) renderModelMenu();
         renderEfforts((current.models || []).find(model => model.selected) || (current.models || [])[0]);
       }
       const policyChanged = renderedChrome.agentPreset !== current.agentPreset || renderedChrome.permissions !== current.permissions || renderedChrome.plan !== current.plan || renderedChrome.running !== current.running || renderedChrome.phase !== current.phase;
@@ -2221,7 +2426,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // the picker would leave the user with no way back: they cannot send and
       // cannot switch. So it follows "any provider", not "this one".
       const canPickModel = current.phase === 'ready' && current.anyRoutable !== false && Boolean(current.sessionId);
-      elements.models.disabled = !canPickModel || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
+      elements.models.disabled = !canPickModel || !(current.models || []).length;
+      elements.modelTrigger.disabled = elements.models.disabled;
+      if (elements.models.disabled && modelMenuOpen) {
+        // The menu is about to disappear under the focused search box; the prompt
+        // is the next thing the user would type into.
+        const focused = document.activeElement === elements.modelSearch;
+        closeModelMenu(false);
+        if (focused && !elements.prompt.disabled) elements.prompt.focus();
+      }
+      elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
       const stopping = current.stopping === true && current.running === true;
       elements.cancel.classList.toggle('hidden', current.running !== true);
       elements.cancel.classList.toggle('stopping', stopping);
@@ -2643,16 +2857,36 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     elements.sessionSearch.addEventListener('input', () => { sessionActionId = undefined; if (state) renderSessionCenter(state); });
     elements.sessionMenu.addEventListener('click', event => event.stopPropagation());
     elements.newSession.addEventListener('click', () => { if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value); closeSessionMenu(false); vscode.postMessage({ type: 'new-session' }); });
-    elements.models.addEventListener('change', () => {
-      if (!elements.models.value) return; const selected = JSON.parse(elements.models.value); const model = (state.models || []).find(item => item.provider === selected.provider && item.model === selected.model); if (!model) return;
-      renderEfforts(model); const effort = model.defaultReasoningEffort || (model.reasoningEfforts && model.reasoningEfforts[0] && model.reasoningEfforts[0].id); if (effort) elements.efforts.value = effort;
-      elements.efforts.disabled = !model.reasoningEfforts || !model.reasoningEfforts.length; vscode.postMessage({ type: 'select-model', selection: selectionFor(model, effort) });
+    elements.models.addEventListener('change', () => { applyModelSelection(elements.models.value); });
+    elements.modelTrigger.addEventListener('click', event => {
+      event.stopPropagation();
+      if (modelMenuOpen) closeModelMenu(false); else openModelMenu();
+    });
+    elements.modelMenu.addEventListener('click', event => event.stopPropagation());
+    elements.modelSearch.addEventListener('input', () => { modelIndex = 0; renderModelMenu(); });
+    elements.modelSearch.addEventListener('keydown', event => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (modelChoices.length === 0) return;
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        modelIndex = (modelIndex + step + modelChoices.length) % modelChoices.length;
+        highlightModel();
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        const chosen = modelChoices[modelIndex];
+        if (chosen !== undefined) chooseModel(chosen);
+        return;
+      }
+      if (event.key === 'Escape') { event.preventDefault(); closeModelMenu(true); }
     });
     elements.efforts.addEventListener('change', () => { if (!elements.models.value) return; const selected = JSON.parse(elements.models.value); const model = (state.models || []).find(item => item.provider === selected.provider && item.model === selected.model); if (model) vscode.postMessage({ type: 'select-model', selection: selectionFor(model, elements.efforts.value) }); });
     document.addEventListener('click', event => {
       if (policyMenuOpen && !elements.policyMenu.contains(event.target) && !elements.policyTrigger.contains(event.target)) {
         policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false');
       }
+      if (modelMenuOpen && !elements.modelControl.contains(event.target) && !elements.modelMenu.contains(event.target)) closeModelMenu(false);
       if (accountOpen && !elements.accountMenu.contains(event.target) && !elements.accountTrigger.contains(event.target)) {
         accountOpen = false; if (state) renderAccount(state);
       }
@@ -2667,6 +2901,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     document.addEventListener('keydown', event => {
       if (event.key === 'Escape' && sessionMenuOpen) {
         event.preventDefault(); closeSessionMenu(true);
+      } else if (event.key === 'Escape' && modelMenuOpen) {
+        event.preventDefault(); closeModelMenu(true);
       } else if (event.key === 'Escape' && usageOpen) {
         usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false'); elements.usageTrigger.focus();
       }

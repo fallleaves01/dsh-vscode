@@ -52,7 +52,7 @@ settings/describe  settings/mutate  workspace/archiveSession  workspace/follow
 | `plan` | `collaboration-state.ts` `planModeStateOf` / `effectivePlanMode` |
 | `permission-presets` | `collaboration-state.ts` `permissionPresetsOf` |
 | `agent-preset`（选择部分） | `agent-presets.ts` + `agentPresets/list\|select` |
-| `model-selection` | 模型 + 推理强度选择器 |
+| `model-selection` | 模型 + 推理强度选择器；模型多时可搜索（0.2.0 对齐：子序列匹配 + 上下键 + Enter） |
 | `jobs`（列表 + 终止） | `job/list` 会话头面板 + 0.0.10 接入的 `job/kill`（两次点击确认） |
 | `conversation` 的 queue | 本次接入 `inbox` 投影 |
 | `commands` / `input-trigger` | `/` 命令菜单、`@` 引用菜单 |

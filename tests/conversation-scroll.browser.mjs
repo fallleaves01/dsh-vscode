@@ -198,6 +198,40 @@ try {
   assert.equal(await evaluate('document.querySelector(".live-status") === null'), true)
   console.log('PASS: the live turn clock ticks without losing a reader at the bottom')
 
+  // The model picker: DSH's picker searches a long catalog, and this one has to
+  // stay visible and in bounds in the narrowest sidebar the layout supports.
+  await evaluate(`(() => {
+    const names = ['Flash Preview','Pro','Mini','Base','Turbo','Lite','Plus','Edge','Core','Nano','Max','Ultra'];
+    const models = names.map((label, index) => ({ provider: 'gateway', providerLabel: 'Local gateway', model: 'm' + String(index), label, selected: index === 0, reasoningEfforts: [] }));
+    showState({...baseline, models});
+  })()`)
+  await evaluate('tick()')
+  const labelWidth = await evaluate(`Math.round(document.getElementById('modelTriggerLabel').getBoundingClientRect().width)`)
+  await evaluate(`document.getElementById('modelTrigger').click()`)
+  await evaluate('tick()')
+  const opened = await evaluate(`(() => {
+    const list = document.querySelector('.model-list');
+    const menu = document.getElementById('modelMenu').getBoundingClientRect();
+    const app = document.getElementById('app').getBoundingClientRect();
+    return { options: document.querySelectorAll('.model-option').length, scrollHeight: list.scrollHeight, clientHeight: list.clientHeight,
+      menuHeight: Math.round(menu.height), menuTop: Math.round(menu.top), menuBottom: Math.round(menu.bottom),
+      appTop: Math.round(app.top), appBottom: Math.round(app.bottom), focused: document.activeElement.id };
+  })()`)
+  assert.ok(labelWidth > 40, `the model control must show its model, got ${labelWidth}px`)
+  assert.equal(opened.focused, 'modelSearch')
+  assert.equal(opened.options, 12)
+  assert.ok(opened.scrollHeight > opened.clientHeight, `the list must scroll, got ${opened.scrollHeight}/${opened.clientHeight}`)
+  assert.ok(opened.menuTop >= opened.appTop && opened.menuBottom <= opened.appBottom, 'the menu must stay inside the sidebar')
+  await evaluate(`(() => { const search = document.getElementById('modelSearch'); search.value = 'tbo'; search.dispatchEvent(new Event('input', { bubbles: true })); })()`)
+  await evaluate('tick()')
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.model-option-label')].map(node => node.textContent)`), ['Turbo'])
+  await evaluate(`document.getElementById('modelSearch').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))`)
+  await evaluate('tick()')
+  const selected = await evaluate(`({ chosen: window.sent.filter(message => message.type === 'select-model').map(message => message.selection.model), closed: document.getElementById('modelMenu').classList.contains('hidden') })`)
+  assert.deepEqual(selected.chosen, ['m4'])
+  assert.equal(selected.closed, true)
+  console.log('PASS: the model picker searches a long catalog inside a narrow sidebar')
+
   if (process.env.DSH_SCROLL_SCREENSHOT) {
     const { data } = await page('Page.captureScreenshot', { format: 'png' })
     await writeFile(process.env.DSH_SCROLL_SCREENSHOT, Buffer.from(data, 'base64'))

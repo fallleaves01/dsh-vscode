@@ -12,20 +12,63 @@ describe('turn footers', () => {
   ])
 
   it('anchors the row to a turn that finished', () => {
-    const footers = turnFooters([{ id: 'm1', role: 'assistant', text: 'x' }], meta({ inputTokens: 10, outputTokens: 5 }))
+    const footers = turnFooters([{ id: 'm1', role: 'assistant', text: 'x' }], meta({ inputTokens: 10, outputTokens: 5 }), new Map())
     expect(footers.get('m1')?.turnEnd).toBe(true)
     expect(footers.get('m1')?.turnUsage?.totalTokens).toBe(15)
   })
 
   it('writes no row for a turn whose reply is still streaming', () => {
-    const footers = turnFooters([{ id: 'm1', role: 'assistant', text: 'x', streaming: true }], meta({ inputTokens: 10, outputTokens: 5 }))
+    const footers = turnFooters([{ id: 'm1', role: 'assistant', text: 'x', streaming: true }], meta({ inputTokens: 10, outputTokens: 5 }), new Map())
     expect(footers.size).toBe(0)
+  })
+
+  it('measures the turn from the event that opened it', () => {
+    const projector = new ConversationProjector()
+    projector.reset([
+      { type: 'turn/start', seq: 1, time: 1_000, data: { turn: 1 } },
+      { type: 'user/message', seq: 2, time: 1_100, data: { id: 'u1', source: { kind: 'user' }, content: [{ type: 'text', text: 'go' }] } },
+      { type: 'assistant/message', seq: 3, time: 66_000, data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'x' }] } } },
+    ])
+    const footers = turnFooters(projector.messages(), projector.messageMeta(), projector.turnStartTimes())
+    // 65s of waiting, which the prompt's own timestamp cannot express: DSH puts
+    // no turn number on a user message at all.
+    expect(footers.get('assistant:1:1')?.turnDurationMs).toBe(65_000)
+  })
+
+  it('reports no duration when the turn start is not in the loaded window', () => {
+    const projector = new ConversationProjector()
+    projector.reset([
+      { type: 'assistant/message', seq: 3, time: 66_000, data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'x' }] } } },
+    ])
+    const footers = turnFooters(projector.messages(), projector.messageMeta(), projector.turnStartTimes())
+    // Measuring from the assistant step would report a shorter turn than the
+    // user waited for, so there is no duration rather than a wrong one.
+    expect(footers.get('assistant:1:1')?.turnEnd).toBe(true)
+    expect(footers.get('assistant:1:1')?.turnDurationMs).toBeUndefined()
+  })
+
+  it('waits for the whole turn before showing its row, and times all of it', () => {
+    const projector = new ConversationProjector()
+    projector.reset([
+      { type: 'turn/start', seq: 1, time: 1_000, data: { turn: 1 } },
+      { type: 'assistant/message', seq: 2, time: 5_000, data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'first' }] } } },
+      { type: 'assistant/chunk', seq: 3, time: 6_000, data: { turn: 1, step: 2, chunk: { type: 'text-delta', text: 'second' } } },
+    ])
+    const midTurn = turnFooters(projector.messages(), projector.messageMeta(), projector.turnStartTimes())
+    // A row anchored to step 1 would move, and its duration would change, when
+    // step 2 settles.
+    expect(midTurn.size).toBe(0)
+
+    projector.apply({ type: 'assistant/message', seq: 4, time: 9_000, data: { turn: 1, step: 2, message: { content: [{ type: 'text', text: 'second' }] } } })
+    const settled = turnFooters(projector.messages(), projector.messageMeta(), projector.turnStartTimes())
+    expect([...settled.keys()]).toEqual(['assistant:1:2'])
+    expect(settled.get('assistant:1:2')?.turnDurationMs).toBe(8_000)
   })
 
   it('names no route rather than inventing one', () => {
     // The projection does not carry the model that served each call, so a route
     // would have to be made up — and the usage panel would print it.
-    const footers = turnFooters([{ id: 'm1', role: 'assistant', text: 'x' }], meta({ inputTokens: 10, outputTokens: 5 }))
+    const footers = turnFooters([{ id: 'm1', role: 'assistant', text: 'x' }], meta({ inputTokens: 10, outputTokens: 5 }), new Map())
     expect(footers.get('m1')?.turnUsage?.routes).toEqual([])
   })
 })

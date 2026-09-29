@@ -116,6 +116,8 @@ interface MessageMetaItem {
   /** Set on the message that carries its turn's action row. */
   turnEnd?: true
   turnUsage?: TurnTokenUsage
+  /** Wall time the completed turn took, in milliseconds; absent when unknown. */
+  turnDurationMs?: number
 }
 
 interface ApprovalItem {
@@ -1929,7 +1931,7 @@ export class DshChatController implements vscode.Disposable {
 
   private messageMetaPatch(): Pick<ChatViewState, 'messageMeta'> {
     const meta = this.projector.messageMeta()
-    const footers = turnFooters(this.projector.messages(), meta)
+    const footers = turnFooters(this.projector.messages(), meta, this.projector.turnStartTimes())
     const messageMeta: MessageMetaItem[] = []
     for (const [id, value] of meta) {
       messageMeta.push({ id, time: value.time, ...(footers.get(id) ?? {}) })

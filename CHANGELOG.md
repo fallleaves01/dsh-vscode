@@ -25,7 +25,9 @@ The first release of the fork as an independent extension, on DSH 0.2.0-rc.2.
 - The thinking summary follows the newest line and counts up while the model
   thinks.
 - Syntax highlighting for code blocks, with a copy button on each one.
-- The model picker names the provider, which is what routing depends on.
+- A searchable model picker: type to filter a long catalog, with the arrow keys
+  and Enter to choose, and the provider named in each group.
+- The elapsed time a completed turn took, next to its usage and timestamp.
 - A setting for the runtime's web search base URL, for hosts that cannot reach
   the public API.
 - Default keyboard shortcuts for the sidebar commands.

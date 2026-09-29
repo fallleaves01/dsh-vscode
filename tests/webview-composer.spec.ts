@@ -126,42 +126,308 @@ describe('the model picker names the provider', () => {
   const model = (provider: string, providerLabel: string, id: string, label: string, selected = false) =>
     ({ provider, providerLabel, model: id, label, selected, reasoningEfforts: [] })
 
-  it('groups the models by provider instead of listing them flat', async () => {
+  const catalog = [
+    model('deepseek-official', 'DeepSeek Official', 'v3', 'DeepSeek V3', true),
+    model('gateway', 'Local gateway', 'flash', 'Flash'),
+    model('gateway', 'Local gateway', 'pro', 'Pro'),
+  ]
+  const openPicker = async (models = catalog) => {
     const h = open()
-    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models: [
-      model('deepseek-official', 'DeepSeek Official', 'v3', 'DeepSeek V3', true),
-      model('gateway', 'Local gateway', 'flash', 'Flash'),
-      model('gateway', 'Local gateway', 'pro', 'Pro'),
-    ] })
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models })
     await h.settle()
-    const select = h.document.getElementById('models') as HTMLSelectElement
-    const groups = [...select.querySelectorAll('optgroup')]
-    expect(groups.map(group => group.label)).toEqual(['DeepSeek Official', 'Local gateway'])
-    expect([...groups[1]!.querySelectorAll('option')].map(option => option.textContent)).toEqual(['Flash', 'Pro'])
+    h.click('#modelTrigger')
+    await h.settle()
+    return h
+  }
+
+  it('groups the menu by provider instead of listing the models flat', async () => {
+    const h = await openPicker()
+    const groups = [...h.document.querySelectorAll('.model-group-label')].map(node => node.textContent)
+    expect(groups).toEqual(['DeepSeek Official', 'Local gateway'])
+    const options = [...h.document.querySelectorAll('.model-option')]
+    expect(options.map(option => option.querySelector('.model-option-label')!.textContent)).toEqual(['DeepSeek V3', 'Flash', 'Pro'])
     // The selection stays on the model it belongs to, inside its group.
-    expect(select.value).toBe(JSON.stringify({ provider: 'deepseek-official', model: 'v3' }))
+    expect(options[0]!.getAttribute('aria-selected')).toBe('true')
+    expect(options[0]!.querySelector('.model-option-current')!.textContent).toBe('Current')
   })
 
-  it('names the provider in the closed picker too', async () => {
+  it('names the provider in the control and keeps only the model on it', async () => {
     const h = open()
     h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models: [
       model('gateway', 'Local gateway', 'flash', 'Flash', true),
     ] })
     await h.settle()
-    const select = h.document.getElementById('models') as HTMLSelectElement
     // Only the model name fits in the control, so the provider goes in the tooltip.
-    expect(select.title).toBe('Model: Flash — Local gateway')
-    expect(select.getAttribute('aria-label')).toContain('Local gateway')
+    expect(h.document.getElementById('modelTriggerLabel')!.textContent).toBe('Flash')
+    expect(h.document.getElementById('modelTrigger')!.getAttribute('title')).toBe('Model: Flash — Local gateway')
+    expect(h.document.getElementById('modelTrigger')!.getAttribute('aria-label')).toContain('Local gateway')
   })
 
   it('falls back to the provider id when the runtime names no provider', async () => {
+    const h = await openPicker([model('gateway', '', 'flash', 'Flash', true)])
+    expect([...h.document.querySelectorAll('.model-group-label')].map(node => node.textContent)).toEqual(['gateway'])
+  })
+})
+
+describe('the model picker is searchable and driven by the keyboard', () => {
+  const model = (provider: string, providerLabel: string, id: string, label: string, selected = false) =>
+    ({ provider, providerLabel, model: id, label, selected, reasoningEfforts: [] })
+  const catalog = [
+    model('gateway', 'Local gateway', 'flash', 'Flash', true),
+    model('gateway', 'Local gateway', 'pro', 'Pro'),
+    model('gateway', 'Local gateway', 'mini', 'Mini'),
+    model('deepseek-official', 'DeepSeek Official', 'v3', 'DeepSeek V3'),
+  ]
+
+  const openPicker = async () => {
     const h = open()
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models: catalog })
+    await h.settle()
+    h.click('#modelTrigger')
+    await h.settle()
+    return h
+  }
+  const search = (h: Harness) => h.document.getElementById('modelSearch') as HTMLInputElement
+  const type = async (h: Harness, text: string) => {
+    search(h).value = text
+    search(h).dispatchEvent(new Event('input', { bubbles: true }))
+    await h.settle()
+  }
+  const press = (h: Harness, key: string) => {
+    search(h).dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+  }
+  const labels = (h: Harness) => [...h.document.querySelectorAll('.model-option-label')].map(node => node.textContent)
+  /** Click the option whose label reads like this; nth-of-type counts buttons. */
+  const choose = async (h: Harness, text: string) => {
+    const option = [...h.document.querySelectorAll('.model-option')].find(node => node.textContent?.includes(text))
+    if (option === undefined) throw new Error(`no model option ${text}`)
+    option.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await h.settle()
+  }
+
+  it('opens on the search box with every model listed', async () => {
+    const h = await openPicker()
+    expect(search(h).value).toBe('')
+    expect(labels(h)).toEqual(['Flash', 'Pro', 'Mini', 'DeepSeek V3'])
+  })
+
+  it('matches a subsequence, not just a prefix', async () => {
+    const h = await openPicker()
+    await type(h, 'fsh')
+    // Every character in order, so an abbreviated query finds the model no
+    // prefix search would.
+    expect(labels(h)).toEqual(['Flash'])
+
+    await type(h, 'deep')
+    expect(labels(h)).toEqual(['DeepSeek V3'])
+
+    await type(h, 'hsf')
+    // Order still matters, or the query would match almost anything.
+    expect(labels(h)).toEqual([])
+
+    await type(h, 'nothing here')
+    expect(labels(h)).toEqual([])
+    expect(h.document.querySelector('.model-empty')!.textContent).toBe('No model matches')
+  })
+
+  it('filters by provider as well as by model', async () => {
+    const h = await openPicker()
+    await type(h, 'gateway')
+    expect(labels(h)).toEqual(['Flash', 'Pro', 'Mini'])
+  })
+
+  it('selects the highlighted model with the arrow keys and Enter', async () => {
+    const h = await openPicker()
+    await type(h, 'gateway')
+    press(h, 'ArrowDown')
+    press(h, 'Enter')
+    await h.settle()
+    expect(h.posts.filter(post => post.type === 'select-model')).toEqual([
+      { type: 'select-model', selection: { provider: 'gateway', model: 'pro' } },
+    ])
+    expect(h.document.getElementById('modelMenu')!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('wraps the keyboard selection in both directions', async () => {
+    const h = await openPicker()
+    await type(h, 'gateway')
+    press(h, 'ArrowUp')
+    press(h, 'Enter')
+    await h.settle()
+    // Up from the first entry is the last one, not nothing.
+    expect(h.posts.filter(post => post.type === 'select-model')).toEqual([
+      { type: 'select-model', selection: { provider: 'gateway', model: 'mini' } },
+    ])
+  })
+
+  it('names the highlighted model for a screen reader', async () => {
+    const h = await openPicker()
+    const highlighted = () => h.document.getElementById('modelSearch')!.getAttribute('aria-activedescendant')
+    // Focus never leaves the search box, so the arrow keys have to say where
+    // they are by naming the option.
+    expect(highlighted()).toBe('model-option-0')
+    press(h, 'ArrowDown')
+    expect(highlighted()).toBe('model-option-1')
+    expect(h.document.getElementById(highlighted()!)!.textContent).toContain('Pro')
+
+    await type(h, 'nothing here')
+    expect(highlighted()).toBeNull()
+  })
+
+  it('keeps the arrows working after one Tab, and never tabs into an option', async () => {
+    const h = await openPicker()
+    const options = [...h.document.querySelectorAll('.model-option')] as HTMLElement[]
+    // The search box owns the focus and names the highlight, so no option may be
+    // a tab stop: one Tab would land on an option and the arrows would go dead.
+    expect(options.every(option => option.tabIndex === -1)).toBe(true)
+    press(h, 'ArrowDown')
+    expect(h.document.activeElement?.id).toBe('modelSearch')
+    expect(h.document.getElementById('modelSearch')!.getAttribute('aria-activedescendant')).toBe('model-option-1')
+  })
+
+  it('closes on a click inside itself only because the guard knows the menu', async () => {
+    const h = await openPicker()
+    // The menu is not inside #modelControl, so the outside-click guard has to
+    // accept the menu too rather than rely on a stopPropagation listener.
+    h.document.getElementById('modelList')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await h.settle()
+    expect(h.document.getElementById('modelMenu')!.classList.contains('hidden')).toBe(false)
+  })
+
+  it('moves the focus out of a picker that became unusable', async () => {
+    const h = await openPicker()
+    expect(h.document.activeElement?.id).toBe('modelSearch')
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: false, models: [] })
+    await h.settle()
+    expect(h.document.getElementById('modelMenu')!.classList.contains('hidden')).toBe(true)
+    expect((h.document.getElementById('modelTrigger') as HTMLButtonElement).disabled).toBe(true)
+    expect(h.document.activeElement?.id).not.toBe('modelSearch')
+  })
+
+  it('does not leave the command menu open behind it', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models: catalog,
+      commands: [{ name: 'plan', description: 'Plan mode' }] })
+    await h.settle()
+    const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+    prompt.value = '/'
+    prompt.dispatchEvent(new Event('input', { bubbles: true }))
+    await h.settle()
+    expect(h.document.getElementById('commandMenu')!.classList.contains('hidden')).toBe(false)
+    h.click('#modelTrigger')
+    await h.settle()
+    // Two panels above one composer is one too many.
+    expect(h.document.getElementById('commandMenu')!.classList.contains('hidden')).toBe(true)
+    expect(h.document.getElementById('modelMenu')!.classList.contains('hidden')).toBe(false)
+  })
+
+  it('closes on Escape and gives the focus back to the control', async () => {
+    const h = await openPicker()
+    press(h, 'Escape')
+    await h.settle()
+    expect(h.document.getElementById('modelMenu')!.classList.contains('hidden')).toBe(true)
+    expect(h.document.activeElement?.id).toBe('modelTrigger')
+    expect(h.posts.filter(post => post.type === 'select-model')).toHaveLength(0)
+  })
+
+  it('carries the chosen model’s reasoning effort into the selection', async () => {
+    const h = open()
+    const efforts = [{ id: 'low', label: 'Low' }, { id: 'high', label: 'High', selected: true }]
     h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models: [
-      model('gateway', '', 'flash', 'Flash', true),
+      { provider: 'gateway', providerLabel: 'Local gateway', model: 'flash', label: 'Flash', selected: true, reasoningEfforts: [] },
+      { provider: 'gateway', providerLabel: 'Local gateway', model: 'pro', label: 'Pro', selected: false, reasoningEfforts: efforts, defaultReasoningEffort: 'high' },
     ] })
     await h.settle()
-    const select = h.document.getElementById('models') as HTMLSelectElement
-    expect([...select.querySelectorAll('optgroup')].map(group => group.label)).toEqual(['gateway'])
+    h.click('#modelTrigger'); await h.settle()
+    await choose(h, 'Pro')
+    // The model is not the whole choice: the runtime also needs the effort, and
+    // the picker is what has to supply the new model's default.
+    expect(h.posts.filter(post => post.type === 'select-model')).toEqual([
+      { type: 'select-model', selection: { provider: 'gateway', model: 'pro', reasoningEffort: 'high' } },
+    ])
+    const select = h.document.getElementById('efforts') as HTMLSelectElement
+    expect(select.disabled).toBe(false)
+    expect(select.value).toBe('high')
+  })
+
+  it('sends no effort for a model that has none, and disables the effort control', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models: [
+      { provider: 'gateway', providerLabel: 'Local gateway', model: 'flash', label: 'Flash', selected: true, reasoningEfforts: [{ id: 'low', label: 'Low' }] },
+      { provider: 'gateway', providerLabel: 'Local gateway', model: 'plain', label: 'Plain', selected: false, reasoningEfforts: [] },
+    ] })
+    await h.settle()
+    h.click('#modelTrigger'); await h.settle()
+    await choose(h, 'Plain')
+    expect(h.posts.filter(post => post.type === 'select-model')).toEqual([
+      { type: 'select-model', selection: { provider: 'gateway', model: 'plain' } },
+    ])
+    const select = h.document.getElementById('efforts') as HTMLSelectElement
+    expect(select.disabled).toBe(true)
+    expect(select.options[0]!.textContent).toBe('Default')
+  })
+
+  it('re-sends the current model when only the effort changes', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models: [
+      { provider: 'gateway', providerLabel: 'Local gateway', model: 'flash', label: 'Flash', selected: true,
+        reasoningEfforts: [{ id: 'low', label: 'Low' }, { id: 'high', label: 'High' }], defaultReasoningEffort: 'low' },
+    ] })
+    await h.settle()
+    const select = h.document.getElementById('efforts') as HTMLSelectElement
+    select.value = 'high'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await h.settle()
+    expect(h.posts.filter(post => post.type === 'select-model')).toEqual([
+      { type: 'select-model', selection: { provider: 'gateway', model: 'flash', reasoningEffort: 'high' } },
+    ])
+  })
+
+  it('keeps the chosen model when only the effort changes next', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models: [
+      { provider: 'gateway', providerLabel: 'Local gateway', model: 'flash', label: 'Flash', selected: true, reasoningEfforts: [] },
+      { provider: 'gateway', providerLabel: 'Local gateway', model: 'pro', label: 'Pro', selected: false,
+        reasoningEfforts: [{ id: 'low', label: 'Low' }, { id: 'high', label: 'High' }], defaultReasoningEffort: 'low' },
+    ] })
+    await h.settle()
+    h.click('#modelTrigger'); await h.settle()
+    await choose(h, 'Pro')
+    const select = h.document.getElementById('efforts') as HTMLSelectElement
+    select.value = 'high'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await h.settle()
+    // The effort control reads the picker's value, so the menu's choice must be
+    // recorded there or this second post would name the model it replaced.
+    expect(h.posts.filter(post => post.type === 'select-model')).toEqual([
+      { type: 'select-model', selection: { provider: 'gateway', model: 'pro', reasoningEffort: 'low' } },
+      { type: 'select-model', selection: { provider: 'gateway', model: 'pro', reasoningEffort: 'high' } },
+    ])
+  })
+
+  it('leaves an effort alone when the model it belongs to is picked again', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, models: [
+      { provider: 'gateway', providerLabel: 'Local gateway', model: 'pro', label: 'Pro', selected: true,
+        reasoningEfforts: [{ id: 'low', label: 'Low' }, { id: 'high', label: 'High' }], defaultReasoningEffort: 'low' },
+    ] })
+    await h.settle()
+    const select = h.document.getElementById('efforts') as HTMLSelectElement
+    select.value = 'high'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await h.settle()
+    h.click('#modelTrigger'); await h.settle()
+    await choose(h, 'Pro')
+    expect(select.value).toBe('high')
+    // One post for the effort change, and nothing for re-picking the same model.
+    expect(h.posts.filter(post => post.type === 'select-model')).toHaveLength(1)
+  })
+
+  it('closes when the click lands anywhere else', async () => {
+    const h = await openPicker()
+    h.document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await h.settle()
+    expect(h.document.getElementById('modelMenu')!.classList.contains('hidden')).toBe(true)
   })
 })
 
@@ -180,6 +446,7 @@ describe('a dead selected model still leaves a way out', () => {
     expect((h.document.getElementById('prompt') as HTMLTextAreaElement).disabled).toBe(true)
     // …but the picker is how the user recovers, so it must not be.
     expect((h.document.getElementById('models') as HTMLButtonElement).disabled).toBe(false)
+    expect((h.document.getElementById('modelTrigger') as HTMLButtonElement).disabled).toBe(false)
     expect(h.document.getElementById('routableNotice')!.textContent).toContain('Choose another model')
   })
 
@@ -188,6 +455,7 @@ describe('a dead selected model still leaves a way out', () => {
     h.sendState(state(false))
     await h.settle()
     expect((h.document.getElementById('models') as HTMLButtonElement).disabled).toBe(true)
+    expect((h.document.getElementById('modelTrigger') as HTMLButtonElement).disabled).toBe(true)
     expect((h.document.getElementById('prompt') as HTMLTextAreaElement).disabled).toBe(true)
   })
 })
@@ -213,6 +481,24 @@ describe('the row under a completed turn', () => {
     expect(detail).toContain('Uncached input: 12,000')
     expect(detail).toContain('Output: 300')
     expect(row!.querySelector('.message-clock')!.textContent).toMatch(/^\d{2}:\d{2}$/)
+  })
+
+  it('reports how long the turn took, and stays quiet about a sub-second one', async () => {
+    const h = open()
+    h.sendState({
+      sessionId: 'session-a', phase: 'ready',
+      messages: [{ id: 'm1', role: 'assistant', text: 'first answer' }, { id: 'm2', role: 'assistant', text: 'second answer' }],
+      messageMeta: [
+        { id: 'm1', time: Date.parse('2026-09-29T14:39:00'), turnEnd: true, turnDurationMs: 65_000 },
+        { id: 'm2', time: Date.parse('2026-09-29T14:40:00'), turnEnd: true, turnDurationMs: 400 },
+      ],
+    })
+    await h.settle()
+    const rows = [...h.document.querySelectorAll('.message-actions')]
+    expect(rows).toHaveLength(2)
+    expect(rows[0]!.querySelector('.message-duration')!.textContent).toBe('Took 1m 5s')
+    // Under a second the label would be noise rather than information.
+    expect(rows[1]!.querySelector('.message-duration')).toBeNull()
   })
 
   it('shows the row on the newest turn and hides it elsewhere', async () => {

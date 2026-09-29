@@ -20,6 +20,16 @@ export interface MessageMeta {
 export interface TurnFooter {
   turnEnd: true
   turnUsage?: TurnTokenUsage
+  /**
+   * Wall time the turn took, in milliseconds, from the `turn/start` event that
+   * opened it to the reply that closed it.
+   *
+   * Absent when no `turn/start` is in the loaded window, because DSH shows no
+   * duration rather than a wrong one. Measuring from the first assistant message
+   * would do exactly that: it drops the prompt latency and the first step's model
+   * time, and on a single-step turn it measures zero.
+   */
+  turnDurationMs?: number
 }
 
 /**
@@ -27,11 +37,16 @@ export interface TurnFooter {
  *
  * DSH renders the row once per *completed* turn on that turn's closing assistant
  * message and shows the turn's aggregate usage there, so the fold belongs here
- * rather than on each step. A turn whose last reply is still streaming has no row.
+ * rather than on each step. A turn with any step still streaming has no row: a
+ * row shown mid-turn would move, and its duration would change under the reader.
+ *
+ * `turnStarts` is the projector's record of `turn/start` times by turn number,
+ * which is the only event that says when the turn actually began.
  */
 export function turnFooters(
   messages: readonly ConversationMessage[],
   meta: ReadonlyMap<string, MessageMeta>,
+  turnStarts: ReadonlyMap<number, number>,
 ): Map<string, TurnFooter> {
   const turns = new Map<number, ConversationMessage[]>()
   for (const message of messages) {
@@ -42,8 +57,9 @@ export function turnFooters(
     else group.push(message)
   }
   const footers = new Map<string, TurnFooter>()
-  for (const group of turns.values()) {
-    const closing = [...group].reverse().find(message => message.streaming !== true)
+  for (const [turn, group] of turns) {
+    if (group.some(message => message.streaming === true)) continue
+    const closing = group[group.length - 1]
     if (closing === undefined) continue
     const usages = group.map(message => meta.get(message.id)?.usage)
     // No routes: attributing a turn to a provider needs the model that served
@@ -51,7 +67,16 @@ export function turnFooters(
     // would put a nonsense first line in the usage panel, and the panel omits the
     // line when there is no route.
     const turnUsage = turnUsageOf(usages, [])
-    footers.set(closing.id, { turnEnd: true, ...(turnUsage === undefined ? {} : { turnUsage }) })
+    const startedAt = turnStarts.get(turn)
+    const closedAt = meta.get(closing.id)?.time
+    const turnDurationMs = startedAt === undefined || closedAt === undefined || !Number.isFinite(closedAt)
+      ? undefined
+      : closedAt - startedAt
+    footers.set(closing.id, {
+      turnEnd: true,
+      ...(turnUsage === undefined ? {} : { turnUsage }),
+      ...(turnDurationMs === undefined || turnDurationMs <= 0 ? {} : { turnDurationMs }),
+    })
   }
   return footers
 }
@@ -217,6 +242,8 @@ export class ConversationProjector {
    * footer needs timing and cost, not content.
    */
   private readonly meta = new Map<string, MessageMeta>()
+  /** When each turn opened, from its `turn/start` event: the only start there is. */
+  private readonly turnStarts = new Map<number, number>()
   private readonly hiddenCommandIds = new Set<string>()
   private liveAttempt: (AssistantAttempt & { message?: ConversationMessage }) | undefined
 
@@ -226,6 +253,7 @@ export class ConversationProjector {
     this.orderedIds.length = 0
     this.byId.clear()
     this.meta.clear()
+    this.turnStarts.clear()
     this.hiddenCommandIds.clear()
     for (const entry of entries) {
       if ('event' in entry) this.apply(entry.event, entry.view)
@@ -261,6 +289,12 @@ export class ConversationProjector {
   apply(event: DshEvent, view?: unknown): void {
     const data = record(event.data)
     if (data === undefined) return
+    // The turn's own start is the durable record of when the user's wait began:
+    // neither the prompt nor an assistant message carries it.
+    if (event.type === 'turn/start') {
+      if (typeof data.turn === 'number' && Number.isFinite(event.time)) this.turnStarts.set(data.turn, event.time)
+      return
+    }
     if ((event.type === 'assistant/message' || event.type === 'assistant/attempt')
       && this.liveAttempt?.turn === data.turn && this.liveAttempt?.step === data.step
       && (event.type === 'assistant/attempt' || event.surfaceOp === 'append')) this.liveAttempt = undefined
@@ -294,6 +328,7 @@ export class ConversationProjector {
         }
         inheritAssistantStream(current, next)
         this.set(id, next)
+        this.noteStreaming(id, event, data)
         return
       }
       if ((chunk?.type !== 'text-delta' && chunk?.type !== 'reasoning-delta') || typeof chunk.text !== 'string') return
@@ -309,6 +344,7 @@ export class ConversationProjector {
       if (reasoning === '') appendAssistantStream(current, next, chunk.text)
       else inheritAssistantStream(current, next)
       this.set(id, next)
+      this.noteStreaming(id, event, data)
       return
     }
 
@@ -425,9 +461,30 @@ export class ConversationProjector {
     this.set(id, { id, role: 'notice', text, failed })
   }
 
+  /**
+   * Note a step that is still being written.
+   *
+   * The turn fold needs to see it: leaving streaming steps out of the meta made
+   * a multi-step turn look finished after its first step, so its action row
+   * appeared mid-turn and its duration then changed. The settled
+   * `assistant/message` that follows replaces this entry, usage and all.
+   */
+  private noteStreaming(id: string, event: DshEvent, data: Record<string, unknown>): void {
+    this.meta.set(id, {
+      seq: event.seq, time: event.time,
+      ...(typeof data.turn === 'number' ? { turn: data.turn } : {}),
+      ...(typeof data.step === 'number' ? { step: data.step } : {}),
+    })
+  }
+
   /** The sidecar facts for the messages currently held, keyed by message id. */
   messageMeta(): Map<string, MessageMeta> {
     return new Map(this.meta)
+  }
+
+  /** When each held turn opened, in epoch ms, keyed by turn number. */
+  turnStartTimes(): Map<number, number> {
+    return new Map(this.turnStarts)
   }
 
   messages(): ConversationMessage[] {
