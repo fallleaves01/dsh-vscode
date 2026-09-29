@@ -246,8 +246,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     /* DSH separates the label from its summary with a 2px dot, not a dash. */
     .thinking-sep { flex: none; width: 2px; height: 2px; margin: 0 8px; border-radius: 1px; background: color-mix(in srgb, var(--vscode-foreground) 45%, transparent); }
     .thinking-sep[hidden] { display: none; }
-    /* DSH sets a duration apart in the code face with tabular figures. */
-    .thinking-duration { flex: none; font-family: var(--dsh-code-font); font-variant-numeric: tabular-nums; font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsh-line); color: inherit; }
+    /* DSH sets a duration apart in the code face with tabular figures. The 4px
+       keeps "Thought" and "42s" from reading as one word: the label is a span of
+       its own now, so it carries no trailing space. */
+    .thinking-duration { flex: none; margin-left: 4px; font-family: var(--dsh-code-font); font-variant-numeric: tabular-nums; font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsh-line); color: inherit; }
     .thinking-duration[hidden] { display: none; }
     .thinking-preview { min-width: 0; flex: auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsh-line-secondary); }
     .thinking-body { margin: 0; padding: 4px 0 4px 22px; border: 0; color: var(--vscode-descriptionForeground); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--dsh-content-font-size-secondary); line-height: calc(20px + var(--dsh-content-font-delta-secondary)); }
@@ -482,6 +484,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .queue-row { min-width: 0; min-height: 30px; display: flex; align-items: center; gap: 6px; }
     .queue-row + .queue-row { border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 55%, transparent); }
     .queue-preview { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    /* DSH's own wording for a row the runtime has not listed yet. */
+    .queue-sending { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-size: 10px; font-style: italic; }
     .queue-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 3px; }
     .queue-action { min-height: 23px; padding: 1px 5px; border: 0; border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 10px; }
     .queue-action:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
@@ -703,6 +707,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let mentionCandidates = [];
     let queueEditing = null;
     let queueRenderSignature = '';
+    /**
+     * Messages the user has queued but the runtime has not listed yet.
+     *
+     * The row we draw comes from the runtime's own queue projection, and reaching
+     * it costs a round trip: the composer's own await chain, the prompt POST, the
+     * durable inbox splice, the projection broadcast. DSH covers exactly this
+     * window with a local row that says it is still sending, so a queued message
+     * is never invisible while the agent is busy with a tool call.
+     */
+    let pendingQueueSends = new Map();
     let policyMenuOpen = false;
     let modelMenuOpen = false;
     /** The filtered models the menu is showing, in the order it shows them. */
@@ -2434,15 +2448,46 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (!state || state.phase !== 'ready' || state.sessionId !== sessionId) return;
       vscode.postMessage({ type: 'queue-action', sessionId, itemId, action, ...(text === undefined ? {} : { text }) });
     }
+    /**
+     * Drop the local rows the runtime has caught up with.
+     *
+     * Matched by the text the user typed, because the two sides name the message
+     * differently: the composer counts its own drafts, and the runtime answers
+     * with the message it admitted. A row leaves as soon as one host row carries
+     * its text.
+     */
+    function reconcilePendingQueue(sessionId, queue) {
+      let changed = false;
+      for (const [requestId, pending] of pendingQueueSends) {
+        if (pending.sessionId !== sessionId) { pendingQueueSends.delete(requestId); changed = true; continue; }
+        if (queue.some(item => (item.text ?? item.preview ?? '') === pending.text)) { pendingQueueSends.delete(requestId); changed = true; }
+      }
+      return changed;
+    }
+    function pendingQueueRows(sessionId) {
+      const rows = [];
+      for (const [requestId, pending] of pendingQueueSends) {
+        if (pending.sessionId === sessionId) rows.push({ requestId, preview: pending.preview });
+      }
+      return rows;
+    }
     function renderQueue(force) {
       const sessionId = state && state.sessionId;
       const queue = (state && state.phase === 'ready' && state.queue || []).filter(item => item.placement === 'queued');
+      if (reconcilePendingQueue(sessionId, queue)) queueRenderSignature = '';
+      const pending = pendingQueueRows(sessionId);
+      const total = queue.length + pending.length;
       if (queueEditing && (queueEditing.sessionId !== sessionId || !queue.some(item => item.id === queueEditing.id))) queueEditing = null;
-      const signature = JSON.stringify({ sessionId, queue, running: state && state.running, editing: queueEditing });
+      const signature = JSON.stringify({ sessionId, queue, pending, running: state && state.running, editing: queueEditing });
       if (!force && signature === queueRenderSignature) return;
-      queueRenderSignature = signature; elements.queueDock.replaceChildren(); elements.queueDock.classList.toggle('hidden', queue.length === 0);
-      if (!queue.length) return;
-      const head = node('div', 'queue-head'); head.append(node('span', '', '≡'), node('span', 'queue-title', queue.length === 1 ? '1 queued message' : queue.length + ' queued messages')); elements.queueDock.append(head);
+      queueRenderSignature = signature; elements.queueDock.replaceChildren(); elements.queueDock.classList.toggle('hidden', total === 0);
+      if (total === 0) return;
+      const head = node('div', 'queue-head'); head.append(node('span', '', '≡'), node('span', 'queue-title', total === 1 ? '1 queued message' : total + ' queued messages')); elements.queueDock.append(head);
+      for (const item of pending) {
+        const row = node('div', 'queue-row pending');
+        row.append(node('span', 'queue-preview', item.preview || 'Queued message'), node('span', 'queue-sending', 'Sending…'));
+        elements.queueDock.append(row);
+      }
       for (const item of queue) {
         const row = node('div', 'queue-row');
         if (queueEditing && queueEditing.id === item.id) {
@@ -2887,6 +2932,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const sessionId = state.sessionId;
       const requestId = ++draftSendRequestId;
       pendingDraftSends.set(requestId, { sessionId, text, scrollVersion: conversationScroller.intentVersion });
+      // Show it as queued from this keystroke, not from the runtime's answer.
+      if ((mode || 'queue') === 'queue') {
+        pendingQueueSends.set(requestId, { sessionId, text, preview: text.length > 200 ? text.slice(0, 200) + '…' : text });
+        renderQueue(true);
+      }
       vscode.postMessage({ type: 'send', sessionId, requestId, text, mode: mode || 'queue' }); elements.prompt.value = ''; sessionDrafts.set(sessionId, ''); commandIndex = 0; resetPrompt();
     }
     function clipboardImage(file, index) {
@@ -3276,6 +3326,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         if (event.data.type === 'draft-sent' && state && state.sessionId === pending.sessionId
           && renderedSessionId === pending.sessionId && conversationScroller.intentVersion === pending.scrollVersion) conversationScroller.resume();
         if (event.data.type === 'restore-draft') {
+          // The runtime never took it, so the composer holds it again: the local
+          // queue row must go, or the same text would look queued and drafted.
+          if (pendingQueueSends.delete(event.data.requestId)) renderQueue(true);
           const existing = sessionDrafts.get(pending.sessionId) || '';
           const restored = existing === '' || existing === pending.text ? pending.text : pending.text + '\\n' + existing;
           sessionDrafts.set(pending.sessionId, restored);

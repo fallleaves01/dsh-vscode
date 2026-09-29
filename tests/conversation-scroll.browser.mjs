@@ -303,6 +303,16 @@ try {
       toolGlyphMargin: metric('.tool-icon', 'marginRight'),
       toolTitleSize: metric('.tool-title', 'fontSize'),
       thoughtRow: round(document.querySelector('.thinking summary').getBoundingClientRect().height),
+      // The label is its own span, so the wait needs a gap of its own; without
+      // the margin the row reads "Thought7s". The text is forced because the
+      // clock only starts counting once the row exists.
+      thinkingGap: (() => {
+        const duration = document.querySelector('.thinking-duration');
+        const title = document.querySelector('.thinking-title');
+        ensure(duration && title, 'no thinking row to measure');
+        duration.hidden = false; duration.textContent = '7s';
+        return round(duration.getBoundingClientRect().left - title.getBoundingClientRect().right);
+      })(),
       actionsHeight: round(document.querySelector('.message-actions.end').getBoundingClientRect().height),
       actionsGap: metric('.message-actions.end', 'gap'),
       actionsTop: metric('.message-actions.end', 'marginTop'),
@@ -336,7 +346,7 @@ try {
     bubbleRadius: 20, bubblePad: 10, bubbleInset: 16,
     flowWork: 6, flowAnswer: 16, userRowGap: 6,
     toolRow: 24, toolLeading: 16, toolGlyphMargin: 6, toolTitleSize: 14,
-    thoughtRow: 24,
+    thoughtRow: 24, thinkingGap: 4,
     actionsHeight: 28, actionsGap: 8, actionsTop: 16, actionsLeft: -6,
     actionIcon: 16, pillRadius: 999, pillPad: 8, pillIcon: 14, clockSize: 12,
     dockCentered: true, dockGap: 12, dockSize: 12, dockPills: 2, dockAboveComposer: true,

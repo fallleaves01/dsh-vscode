@@ -482,6 +482,64 @@ describe('a dead selected model still leaves a way out', () => {
   })
 })
 
+describe('a queued message is visible before the runtime answers', () => {
+  const running = {
+    sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true, running: true,
+    messages: [{ id: 'm1', role: 'assistant', text: 'working' }],
+  }
+
+  it('shows the row from the keystroke, not from the queue projection', async () => {
+    const h = open()
+    h.sendState(running)
+    await h.settle()
+    type(h, 'also check the docs')
+    await h.settle()
+    sendButton(h).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await h.settle()
+    const dock = h.document.getElementById('queueDock')!
+    // Nothing has come back from the runtime yet: the local row is the only one.
+    expect(dock.classList.contains('hidden')).toBe(false)
+    expect(dock.querySelectorAll('.queue-row')).toHaveLength(1)
+    expect(dock.querySelector('.queue-preview')?.textContent).toBe('also check the docs')
+    expect(dock.querySelector('.queue-sending')?.textContent).toBe('Sending…')
+    expect(dock.querySelector('.queue-title')?.textContent).toBe('1 queued message')
+    // A local row cannot be edited or steered: the runtime does not hold it yet.
+    expect(dock.querySelectorAll('.queue-action')).toHaveLength(0)
+  })
+
+  it('hands the row over to the runtime’s own row when it arrives', async () => {
+    const h = open()
+    h.sendState(running)
+    await h.settle()
+    type(h, 'also check the docs')
+    await h.settle()
+    sendButton(h).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await h.settle()
+    h.sendState({ ...running, queue: [{ id: 'q1', placement: 'queued', preview: 'also check the docs', text: 'also check the docs' }] })
+    await h.settle()
+    const dock = h.document.getElementById('queueDock')!
+    // One row, and it is the runtime's: the local one is gone, actions are back.
+    expect(dock.querySelectorAll('.queue-row')).toHaveLength(1)
+    expect(dock.querySelector('.queue-sending')).toBeNull()
+    expect([...dock.querySelectorAll('.queue-action')].map(button => button.textContent)).toEqual(['Edit', 'Delete', 'Steer'])
+  })
+
+  it('takes the row back when the send is rejected', async () => {
+    const h = open()
+    h.sendState(running)
+    await h.settle()
+    type(h, 'also check the docs')
+    await h.settle()
+    sendButton(h).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await h.settle()
+    const requestId = (h.posts.findLast(post => post.type === 'send') as { requestId: number }).requestId
+    h.send({ type: 'restore-draft', requestId, sessionId: 'session-a' })
+    await h.settle()
+    expect(h.document.getElementById('queueDock')!.classList.contains('hidden')).toBe(true)
+    expect((h.document.getElementById('prompt') as HTMLTextAreaElement).value).toBe('also check the docs')
+  })
+})
+
 describe('the row under a completed turn', () => {
   /**
    * Today at a fixed wall-clock time.
