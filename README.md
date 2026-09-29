@@ -62,7 +62,7 @@ pnpm install --frozen-lockfile
 pnpm run package
 ```
 
-In VS Code, run **Extensions: Install from VSIX...** from the Command Palette and select `dsh-vscode.vsix`. Development builds move faster and may be less stable; pull the latest changes and rebuild the VSIX to update.
+In VS Code, run **Extensions: Install from VSIX...** from the Command Palette and select `dsh-vscode.vsix`. Development builds move faster and may be less stable; pull the latest changes and rebuild the VSIX to update. The Extensions view shows the version you have installed, and `CHANGELOG.md` records what each release changed.
 
 Requires VS Code 1.100 or newer and Node.js `^22.19` or `>=24`.
 

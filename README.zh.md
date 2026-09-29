@@ -58,7 +58,7 @@ pnpm install --frozen-lockfile
 pnpm run package
 ```
 
-然后在 VS Code 命令面板中运行 **Extensions: Install from VSIX...**，选择生成的 `dsh-vscode.vsix`。开发版更新更快，稳定性可能不如 Marketplace 版本；之后拉取最新代码并重新构建 VSIX 即可更新。
+然后在 VS Code 命令面板中运行 **Extensions: Install from VSIX...**，选择生成的 `dsh-vscode.vsix`。开发版更新更快，稳定性可能不如 Marketplace 版本；之后拉取最新代码并重新构建 VSIX 即可更新。扩展视图会显示当前装的是哪个版本，`CHANGELOG.md` 记录了每个版本改了什么。
 
 需要 VS Code 1.100 或更新版本，以及 Node.js `^22.19` 或 `>=24`。
 
