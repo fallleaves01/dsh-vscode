@@ -1792,10 +1792,25 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         elements.commandMenu.append(option);
       });
     }
+    /**
+     * Send a slash command the user picked.
+     *
+     * A command never reaches a model, so the composer's routability gate does not
+     * apply to it. It does need the session and request ids, though: without them
+     * the extension's send path drops the message without a word, which is what
+     * made every command from the menu look dead.
+     */
+    function sendPickedCommand(text) {
+      if (!state || state.phase !== 'ready' || !state.sessionId) return;
+      const sessionId = state.sessionId;
+      const requestId = ++draftSendRequestId;
+      pendingDraftSends.set(requestId, { sessionId, text, scrollVersion: conversationScroller.intentVersion });
+      vscode.postMessage({ type: 'send', sessionId, requestId, text, mode: 'queue' });
+      elements.prompt.value = ''; sessionDrafts.set(sessionId, ''); commandIndex = 0; resetPrompt();
+    }
     function pickCandidate(candidate) {
       if (candidate.kind === 'permission') {
-        vscode.postMessage({ type: 'send', text: '/permission ' + candidate.permission.value });
-        elements.prompt.value = ''; commandIndex = 0; resetPrompt(); return;
+        sendPickedCommand('/permission ' + candidate.permission.value); return;
       }
       if (candidate.kind === 'skill') {
         elements.prompt.value = '/' + candidate.skill.name + ' ';
@@ -1810,8 +1825,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         elements.prompt.placeholder = command.input.hint || 'Command arguments';
         commandIndex = 0; resizePrompt(); renderCommandMenu(); elements.prompt.focus(); return;
       }
-      vscode.postMessage({ type: 'send', text: '/' + command.name });
-      elements.prompt.value = ''; commandIndex = 0; resetPrompt();
+      sendPickedCommand('/' + command.name);
     }
     function resetPrompt() { elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); renderMentionMenu(); }
     function postQueueAction(sessionId, itemId, action, text) {

@@ -285,6 +285,43 @@ describe('the row under a completed turn', () => {
   })
 })
 
+describe('picking a command from the menu', () => {
+  it('sends it with the session and request the extension requires', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true,
+      commands: [{ name: 'compact', description: 'Compact the conversation' }], skills: [] })
+    await h.settle()
+    type(h, '/comp')
+    await h.settle()
+
+    h.posts.length = 0
+    // The menu acts on mousedown, as its options do.
+    h.document.querySelector('#commandMenu .command-option')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+    const sent = h.posts.filter(post => post.type === 'send')
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ type: 'send', sessionId: 'session-a', text: '/compact' })
+    // Without an id the extension drops the message silently: every command from
+    // the menu looked dead.
+    expect(typeof sent[0]?.requestId).toBe('number')
+  })
+
+  it('sends a permission preset the same way', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true,
+      permissions: [{ value: 'read-only', label: 'Read Only', description: 'Read only.', selected: true }] })
+    await h.settle()
+    type(h, '/permission ')
+    await h.settle()
+    h.posts.length = 0
+    const option = h.document.querySelector('#commandMenu .command-option')!
+    option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+    const sent = h.posts.filter(post => post.type === 'send')
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ sessionId: 'session-a', text: '/permission read-only' })
+    expect(typeof sent[0]?.requestId).toBe('number')
+  })
+})
+
 describe('candidate lists belong to the prompt that asked for them', () => {
   it('closes a stale mention listbox when the conversation changes', async () => {
     const h = open()
