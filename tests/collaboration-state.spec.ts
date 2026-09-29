@@ -25,6 +25,40 @@ describe('collaboration state projections', () => {
     ])
   })
 
+  it('offers the shipped presets when the projection carries no catalogue', () => {
+    // The exact shape a live 0.1.7-rc.2 runtime returns: DSH publishes only the
+    // current value and leaves the catalogue to the client, so requiring
+    // `options` left the sidebar with no permissions to show at all.
+    expect(permissionPresetsOf({ currentValue: 'workspace-write' })).toEqual([
+      { value: 'read-only', label: 'Read Only', description: 'Read files and run read-only commands.', selected: false },
+      { value: 'workspace-write', label: 'Workspace', description: 'Edit files inside this project.', selected: true },
+      { value: 'danger-full-access', label: 'Full Access', description: 'Run anything, including outside the project, with no approval prompts.', selected: false },
+    ])
+  })
+
+  it('still prefers a catalogue when the runtime sends one', () => {
+    const presets = permissionPresetsOf({
+      currentValue: 'read-only',
+      options: [{ value: 'read-only', name: 'Locked down', description: 'Custom wording.' }],
+    })
+    expect(presets).toEqual([{ value: 'read-only', label: 'Read Only', description: 'Custom wording.', selected: true }])
+  })
+
+  it('shows a profile-pinned value without offering it as a choice', () => {
+    // `custom` and `auto` are never switch targets, but the current state must
+    // not be invisible just because the profile pinned it.
+    const presets = permissionPresetsOf({ currentValue: 'custom' })
+    expect(presets).toHaveLength(4)
+    expect(presets.at(-1)).toEqual({
+      value: 'custom', label: 'custom', description: 'Pinned by this profile.', selected: true,
+    })
+    expect(presets.filter(preset => preset.selected)).toHaveLength(1)
+  })
+
+  it('reports nothing for a runtime that has no permissions projection', () => {
+    expect(permissionPresetsOf(undefined)).toEqual([])
+  })
+
   it('distinguishes an unavailable plan capability from normal mode', () => {
     expect(planModeStateOf(undefined)).toEqual({ available: false, active: false, pending: false })
     expect(planModeStateOf({ active: false, pending: false })).toEqual({ available: true, active: false, pending: false })

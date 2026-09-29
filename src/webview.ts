@@ -411,11 +411,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         <div id="attachments" class="attachments hidden"></div>
         <div id="mentionMenu" class="command-menu hidden" role="listbox" aria-label="Files and folders"></div>
         <div id="commandMenu" class="command-menu hidden" role="listbox" aria-label="DeepSeek commands"></div>
-        <div id="policyMenu" class="command-menu policy-menu hidden" role="menu" aria-label="Mode and permissions"></div>
+        <div id="policyMenu" class="command-menu policy-menu hidden" role="menu" aria-label="Permissions"></div>
         <textarea id="prompt" rows="3" placeholder="Ask DeepSeek about this project" aria-label="Message DeepSeek"></textarea>
         <div class="composer-row">
           <button id="attach" class="icon-button" title="Attach image" aria-label="Attach image"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
-          <button id="policyTrigger" class="icon-button policy-trigger hidden" title="Mode and permissions" aria-label="Mode and permissions" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.7 2.8 8 7 10 4.2-2 7-5.3 7-10V6z"/><path d="m9.5 12 1.6 1.6 3.5-3.6"/></svg></button>
+          <button id="policyTrigger" class="icon-button policy-trigger hidden" title="Permissions" aria-label="Permissions" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.7 2.8 8 7 10 4.2-2 7-5.3 7-10V6z"/><path d="m9.5 12 1.6 1.6 3.5-3.6"/></svg></button>
           <button id="project" class="project" title="Choose DeepSeek project" aria-label="Choose DeepSeek project"><svg viewBox="0 0 24 24"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h5"/></svg><span id="workspace">Workspace</span></button>
           <select id="models" class="model-select" aria-label="Model"></select>
           <select id="efforts" class="effort-select" aria-label="Reasoning effort"></select>
@@ -1320,7 +1320,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const planActive = effectivePlanMode(plan);
       const permissions = current.permissions || [];
       const selectedPermission = permissions.find(permission => permission.selected) || permissions[0];
-      const available = plan.available === true || permissions.length > 0;
+      // Permission presets are the safety-relevant choice, so they keep the
+      // control. Plan mode is entered and left with the slash command, as in DSH.
+      const available = permissions.length > 0;
       elements.modeChips.replaceChildren();
       const preset = current.agentPreset || { available: false, current: '', locked: true, busy: false, options: [] };
       if (preset.available && preset.options.length) {
@@ -1349,22 +1351,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       elements.modeChips.classList.toggle('hidden', elements.modeChips.childElementCount === 0);
       elements.policyTrigger.classList.toggle('hidden', !available);
-      elements.policyTrigger.classList.toggle('active', planActive);
-      elements.policyTrigger.classList.toggle('full-access', selectedPermission && selectedPermission.value === 'danger-full-access');
+      elements.policyTrigger.classList.remove('active');
+      elements.policyTrigger.classList.toggle('full-access', selectedPermission !== undefined && selectedPermission.value === 'danger-full-access');
       elements.policyTrigger.disabled = current.phase !== 'ready';
-      const status = (plan.available === true ? (planActive ? 'Plan' : 'Normal') : '') + (selectedPermission ? (plan.available === true ? ' · ' : '') + selectedPermission.label : '');
-      elements.policyTrigger.title = status ? 'Mode and permissions: ' + status : 'Mode and permissions';
+      const status = selectedPermission === undefined ? '' : selectedPermission.label;
+      elements.policyTrigger.title = status === '' ? 'Permissions' : 'Permissions: ' + status;
       elements.policyTrigger.setAttribute('aria-label', elements.policyTrigger.title);
       elements.policyTrigger.setAttribute('aria-expanded', String(policyMenuOpen && available));
 
       elements.policyMenu.replaceChildren();
-      if (plan.available === true) {
-        elements.policyMenu.append(node('div', 'policy-section-label', 'Mode'));
-        elements.policyMenu.append(
-          policyMenuOption('Normal', 'Work normally with the selected permission.', !planActive, current.running === true || plan.pending === true, () => vscode.postMessage({ type: 'select-mode', mode: 'normal' })),
-          policyMenuOption('Plan', 'Research and plan before making changes.', planActive, current.running === true || plan.pending === true, () => vscode.postMessage({ type: 'select-mode', mode: 'plan' })),
-        );
-      }
       if (permissions.length > 0) {
         elements.policyMenu.append(node('div', 'policy-section-label', 'Permissions'));
         for (const permission of permissions) {
