@@ -378,6 +378,12 @@ export class DshClient {
   private invalidateDiscovery(frame: DshFrame): void {
     const payload = frame.payload
     if (payload.type === 'host/commands-changed') for (const read of this.commands.values()) read.invalidate()
+    // A removed session keeps neither its cached catalogs nor its entries: both
+    // are re-read if that conversation is opened again.
+    if (payload.type === 'host/session-removed' && typeof payload.sessionId === 'string') {
+      this.commands.delete(payload.sessionId)
+      this.skills.delete(payload.sessionId)
+    }
     // `host/account-changed` is how a committed credential arrives: signing in or
     // out changes which providers can route, so the catalog has to be re-read or
     // the composer stays disabled (and, after sign-out, stays wrongly enabled).

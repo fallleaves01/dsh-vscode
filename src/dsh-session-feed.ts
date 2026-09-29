@@ -442,6 +442,13 @@ export class DshSessionFeed {
         this.jobs.delete(id)
         this.projections.delete(id)
         this.projectionFloors.delete(id)
+        // Everything below is derived from events, so the durable session list
+        // and any later event restore it. Without this each session ever made
+        // live stayed in memory for the life of the window — `addedSessions`
+        // holding a full summary each.
+        this.addedSessions.delete(id)
+        this.activity.delete(id)
+        this.nonBlankSessions.delete(id)
         for (const [eventId, question] of this.questions) if (question.sessionId === id) this.dismissQuestion(eventId)
         this.mux({ type: 'session/queue', sessionId: id, items: [] })
         this.publishJobs(id, [])

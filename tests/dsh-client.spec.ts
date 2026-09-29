@@ -255,6 +255,19 @@ describe('DSH 0.1.2 chat transport', () => {
     expect(h.client.currentModels('s')).toMatchObject({ current: { provider: 'new', model: 'new' } })
   })
 
+  it('drops a removed session’s cached catalogs', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    await h.client.listCommands('s')
+    const reads = h.requests.filter(request => request.endpoint === 'commands/list').length
+
+    // The live instance was disposed: keeping its catalogs would keep one entry
+    // per session ever opened, for the life of the window.
+    h.push('$events', { type: 'emit', event: 'api-session/removed', args: ['s', {}] })
+    await h.client.listCommands('s')
+    expect(h.requests.filter(request => request.endpoint === 'commands/list').length).toBe(reads + 1)
+  })
+
   it('reopening a session refetches its command and skill catalogs', async () => {
     const h = harness()
     await h.client.startStreams()
