@@ -51,8 +51,11 @@ const checks = [
   ['settings/describe', {}],
   ['commands/list', { agentId: sessionId }],
   ['skills/list', { request: { sessionId } }],
-  ['session/page', { request: { address: { kind: 'session', sessionId }, throughSeq: 1e9, beforeSeq: 1e9, maxMessages: 100 } }],
 ];
+
+// `session/page` is checked from the follow snapshot below: 0.2.0 rejects a
+// `throughSeq` past the session cursor (`gateway/bad-request`), and the cursor is
+// exactly what the extension passes there.
 
 console.log('=== HTTP RPC endpoints ===');
 for (const [endpoint, args] of checks) {
@@ -94,8 +97,21 @@ socket.on('open', () => {
     }
     return `workspace(${f.type})`;
   });
-  subscribe('session/follow', { request: { address: { kind: 'session', sessionId }, maxMessages: 100, assistantStream: true } }, f => `follow(${f.type})`);
+  subscribe('session/follow', { request: { address: { kind: 'session', sessionId }, maxMessages: 100, assistantStream: true } }, f => {
+    if (f.type === 'snapshot' && Number.isSafeInteger(f.cursor)) void checkPage(f.cursor);
+    return `follow(${f.type})`;
+  });
 });
+
+// Mirrors DshSessionFeed.page(): the snapshot cursor is the `throughSeq`, and
+// `beforeSeq` walks backwards from the oldest message already held.
+let pageChecked = false;
+async function checkPage(cursor) {
+  if (pageChecked) return;
+  pageChecked = true;
+  const r = await rpc('session/page', { request: { address: { kind: 'session', sessionId }, throughSeq: cursor, beforeSeq: cursor, maxMessages: 100 } });
+  console.log(`  ${'session/page'.padEnd(20)} ${r.ok ? `ok — throughSeq=cursor(${cursor}), records=${Array.isArray(r.value?.records) ? r.value.records.length : '?'}` : `FAIL ${r.why}`}`);
+}
 
 socket.on('message', data => {
   let frame; try { frame = JSON.parse(data.toString()); } catch { return; }

@@ -68,7 +68,7 @@ if (fails.length > 0) {
 }
 
 // ---- 3. real auth handshake (extension: authenticate) ----
-console.log('\n[3] 真实认证握手 (GET 期望 303 + location: /)');
+console.log('\n[3] 真实认证握手 (GET 期望 303 + location: / 或 ./)');
 let res;
 try {
   res = await fetch(url, { method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(10000) });
@@ -78,7 +78,11 @@ try {
   process.exit(1);
 }
 console.log(`  HTTP ${res.status}  location=${res.headers.get('location') ?? '(none)'}`);
-if (res.status === 303 && res.headers.get('location') === '/') pass('收到 303 重定向');
+// DSH <= 0.1.5 answers with `Location: /`; newer releases use the equivalent
+// relative `./`. The extension accepts both (src/dsh-connection.ts), so this
+// check must too, or every upgrade reports a phantom authentication failure.
+const location = res.headers.get('location');
+if (res.status === 303 && (location === '/' || location === './')) pass('收到 303 重定向');
 else if (res.status === 401 || res.status === 403) fail('token 被拒绝', `HTTP ${res.status} —— token 已过期（DSH 重启过就会这样），需重新取启动 URL`);
 else fail('未按预期返回 303', `HTTP ${res.status}`);
 
