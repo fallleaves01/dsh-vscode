@@ -2257,9 +2257,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.dropOverlay.classList.toggle('hidden', !active);
       if (composer) composer.classList.toggle('drop-target', active);
     }
+    // Chromium lowercases the type strings a drag exposes (the HTML standard
+    // requires ASCII lowercase), so the ResourceURLs type VS Code sets arrives
+    // as resourceurls and an exact comparison never matched: neither dragenter
+    // nor dragover called preventDefault, and an Explorer drop was never
+    // handled at all. Compare without case, which also accepts the Files
+    // spelling the platform uses for a drag from the file manager.
+    const DROP_URI_TYPES_LOWER = DROP_URI_TYPES.map(type => type.toLowerCase());
     function dragCarriesPayload(event) {
-      const types = Array.from((event.dataTransfer && event.dataTransfer.types) || []);
-      return types.some(type => DROP_URI_TYPES.includes(type) || type === 'Files');
+      const types = Array.from((event.dataTransfer && event.dataTransfer.types) || [])
+        .map(type => String(type).toLowerCase());
+      return types.some(type => DROP_URI_TYPES_LOWER.includes(type) || type === 'files');
     }
     document.addEventListener('dragenter', event => {
       if (!dragCarriesPayload(event)) return;

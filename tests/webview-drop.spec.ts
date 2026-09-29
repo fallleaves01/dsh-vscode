@@ -27,7 +27,7 @@ describe('webview drag and drop', () => {
   it('turns an Explorer file drop into a context reference', async () => {
     const h = open()
     h.drop({
-      types: ['ResourceURLs'],
+      types: ['resourceurls'],
       data: { ResourceURLs: JSON.stringify(['file:///workspace/src/app.ts', 'file:///workspace/src/util.ts#L4-L9']) },
     })
     await vi.waitFor(() => expect(first(h, 'attach-resources')).toBeDefined())
@@ -42,7 +42,7 @@ describe('webview drag and drop', () => {
 
   it('reads an editor tab drop as a resource with its selection range', async () => {
     const h = open()
-    h.drop({ types: ['CodeEditors'], data: { CodeEditors: JSON.stringify([{ resource: 'file:///workspace/a.ts', options: { selection: { fragment: 'L12' } } }]) } })
+    h.drop({ types: ['codeeditors'], data: { CodeEditors: JSON.stringify([{ resource: 'file:///workspace/a.ts', options: { selection: { fragment: 'L12' } } }]) } })
     await vi.waitFor(() => expect(first(h, 'attach-resources')).toBeDefined())
     expect(first(h, 'attach-resources')?.uris).toEqual([{ uri: 'file:///workspace/a.ts', startLine: 12, endLine: 12 }])
   })
