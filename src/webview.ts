@@ -447,8 +447,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .changed-action:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .changed-action.danger { color: var(--vscode-errorForeground); }
     .failed, .error-text { color: var(--vscode-errorForeground); }
-    .streaming::after { content: ''; display: inline-block; width: 6px; height: 13px; margin-left: 2px; vertical-align: -2px; background: var(--vscode-foreground); animation: blink 1s steps(2) infinite; }
-    @keyframes blink { 50% { opacity: 0; } }
+    /**
+     * No typing caret while a reply streams.
+     *
+     * There used to be a blinking block after the last word, which said the same
+     * thing as the swimming tail in the live row two lines below it — and said it
+     * worse, because a caret reads as "your text goes here". DSH shows the tail
+     * alone, so the tail is the single answer to "is it still working".
+     */
     .status, .interaction { margin: 10px 0; padding: 11px; border: 1px solid var(--vscode-widget-border); border-radius: var(--dsh-radius-md); overflow-wrap: anywhere; background: var(--vscode-editor-background); }
     /* A runtime note is a line of the transcript, not a card in it. */
     .status { margin: 6px 0; padding: 0; color: var(--vscode-descriptionForeground); border: 0; border-radius: 0; background: none; font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsh-line-secondary); }
@@ -1868,7 +1874,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         ? message.deferredBody === true ? node('div', 'markdown') : (markdown ? markdown.root : renderMarkdown(message.text))
         : node('div', '', message.text);
       body.classList.add('message-body');
-      if (message.streaming) body.classList.add('streaming');
       if (message.deferredBody === true) attachDeferredOutput(message, body, renderAssistantPage, false, 'Show full response' + (message.bodyLength ? ' · ' + String(message.bodyLength) + ' characters' : ''));
       else appendImages(body, message.images);
       if (thinking) item.append(thinking.root);
@@ -1892,7 +1897,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         appendMarkdownStream(rendered.markdown, appended, message.streaming === true);
         if (rendered.thinking !== undefined) syncThinking(rendered.thinking, message);
         rendered.message = message;
-        rendered.markdown.root.classList.toggle('streaming', message.streaming === true);
         syncThinkingTicker();
         return rendered.node;
       }

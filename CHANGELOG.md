@@ -59,6 +59,9 @@ The first release of the fork as an independent extension, on DSH 0.2.0-rc.2.
   answer, with the bill and the clock grouped at its end as "12.3K tok" and
   "Completed in 2m 3s" — DSH's own wording, with the duration in DSH's tabular
   code face.
+- A streaming reply no longer ends in a blinking block: the swimming tail in the
+  live row already says the turn is working, and a caret in an answer you cannot
+  type into read as an invitation to type.
 - Adapt to DSH 0.2.0-rc.2; 0.1.7 runtimes stay supported.
 - Collaboration modes are controlled by slash commands, as in DSH; permissions
   are the part that gets its own UI.

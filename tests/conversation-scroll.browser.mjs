@@ -417,6 +417,21 @@ try {
   await page('Emulation.setEmulatedMedia', { features: [] })
   console.log('PASS: the running mark and the streaming sweep animate, and stop for reduced motion')
 
+  // The tail is the only answer to "is it still working": the streaming reply
+  // used to end in a blinking block, which said the same thing twice and read as
+  // a text caret in an answer the user cannot type into.
+  const caret = await evaluate(`(() => {
+    const body = document.querySelector('.message.assistant .message-body');
+    ensure(body, 'no assistant body on screen');
+    const after = getComputedStyle(body, '::after');
+    return { content: after.content, animation: after.animationName,
+      tail: getComputedStyle(document.querySelector('.live-status-swim')).display };
+  })()`)
+  assert.equal(caret.content, 'none', `a streaming reply must draw no caret, saw ${caret.content}`)
+  assert.equal(caret.animation, 'none')
+  assert.notEqual(caret.tail, 'none')
+  console.log('PASS: no caret under a streaming reply — the swimming tail is the only live mark')
+
   if (process.env.DSH_SCROLL_SCREENSHOT) {
     const { data } = await page('Page.captureScreenshot', { format: 'png' })
     await writeFile(process.env.DSH_SCROLL_SCREENSHOT, Buffer.from(data, 'base64'))
