@@ -49,6 +49,41 @@ describe('DSH 0.1.2 Session Remotes', () => {
     ])
   })
 
+  it('delivers a subagent message through subagents/prompt', async () => {
+    const call = vi.fn().mockResolvedValue({ accepted: true })
+    const api = new DshRemoteApi({ call } as unknown as DshConnection)
+    const image = { type: 'image' as const, mediaType: 'image/png' as const, data: 'YWJj' }
+    await api.prompt('child', 'continue', [image], 'steer', 'parent')
+    // DSH refuses `session/prompt` for a session owned by subagent routing, so
+    // the child is addressed by parent and carries the delivery discriminator.
+    expect(call.mock.calls[0]![0]).toBe('subagents/prompt')
+    expect(call.mock.calls[0]![1]).toEqual({
+      request: {
+        requestId: expect.any(String), parentSessionId: 'parent', childSessionId: 'child',
+        mode: 'continuable', delivery: 'steer', content: [image, { type: 'text', text: 'continue' }],
+        clientTimeZone: expect.any(String),
+      },
+    })
+  })
+
+  it('refuses a file attachment for a subagent before it reaches the Host', async () => {
+    const call = vi.fn().mockResolvedValue({ accepted: true })
+    const api = new DshRemoteApi({ call } as unknown as DshConnection)
+    // The Host admits only the parts it can verify, and a receipt minted for the
+    // parent is not one of them — so the refusal happens while the composer
+    // still holds the message.
+    await expect(api.prompt('child', 'see file', [{ type: 'file', receiptId: 'r-1' }], 'queue', 'parent'))
+      .rejects.toThrow('cannot receive file attachments')
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('keeps an ordinary conversation on session/prompt', async () => {
+    const call = vi.fn().mockResolvedValue({ accepted: true })
+    const api = new DshRemoteApi({ call } as unknown as DshConnection)
+    await api.prompt('s1', 'hello')
+    expect(call.mock.calls[0]![0]).toBe('session/prompt')
+  })
+
   it('keeps attachment order when images and files are mixed', async () => {
     const call = vi.fn().mockResolvedValue({ accepted: true })
     const api = new DshRemoteApi({ call } as unknown as DshConnection)

@@ -17,7 +17,13 @@ const MESSAGES: Readonly<Record<string, string>> = {
   'session/agent-busy':
     'This is a subagent session, so it is driven through its parent conversation rather than directly.',
   'subagent/unauthorized':
-    'That subagent is no longer owned by the conversation that started it, so it cannot be stopped from here.',
+    'That subagent is no longer owned by the conversation that started it, so it cannot be controlled from here.',
+  'subagent/attachment-invalid':
+    'A subagent conversation cannot take that attachment. Files are not delivered to a subagent, and images need a model that accepts them.',
+  'subagent/not-resumable':
+    'This subagent has already finished, so it cannot be continued. Its work is part of the conversation that started it.',
+  'subagent/delivery-unavailable':
+    'This subagent cannot accept a follow-up right now. Try again in a moment.',
 }
 
 /**

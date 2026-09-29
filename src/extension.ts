@@ -739,6 +739,9 @@ export class DshChatController implements vscode.Disposable {
       slash.kind === 'skill' || ideContext === undefined ? normalized : withIdeContext(normalized, ideContext),
       attachments,
       mode,
+      // A subagent child is delivered through its parent; the session list is
+      // the only place that lineage is known, and it is refreshed on load.
+      this._state.parentSessionId ?? undefined,
     )
     if (this.client !== client) return
     const summary = this.summaries.find(item => item.sessionId === sessionId)

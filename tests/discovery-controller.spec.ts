@@ -94,6 +94,25 @@ async function harness(connection?: DshConnection) {
   return { client, controller, output, emit, fail, runtime, reviews, next }
 }
 
+describe('sending in a subagent conversation', () => {
+  it('delivers the message through the owning conversation', async () => {
+    const h = await harness()
+    h.emit({ type: 'host/session-added', sessionId: 'child', cwd: '/workspace', origin: 'subagent', parentSessionId: 'a' })
+    await h.controller.selectSession('child')
+    h.client.prompt.mockClear()
+    await h.controller.send('continue please')
+    // session/prompt is refused for a session owned by subagent routing.
+    expect(h.client.prompt).toHaveBeenCalledWith('child', 'continue please', [], 'queue', 'a')
+  })
+
+  it('keeps an ordinary conversation free of a parent', async () => {
+    const h = await harness()
+    h.client.prompt.mockClear()
+    await h.controller.send('hello')
+    expect(h.client.prompt).toHaveBeenCalledWith('a', 'hello', [], 'queue', undefined)
+  })
+})
+
 describe('stopping the active turn', () => {
   it('cancels an ordinary session through session/cancel', async () => {
     const h = await harness()
@@ -1072,17 +1091,17 @@ describe('sidebar discovery notifications', () => {
     const h = await harness()
     h.client.listCommands.mockResolvedValue([])
     await h.controller.send('/plan is plain text now')
-    expect(h.client.prompt).toHaveBeenCalledWith('a', '/plan is plain text now', [], 'queue')
+    expect(h.client.prompt).toHaveBeenCalledWith('a', '/plan is plain text now', [], 'queue', undefined)
     expect(h.client.executeCommand).not.toHaveBeenCalled()
     h.client.listSkills.mockResolvedValue([{ name: 'review', description: '', modelInvocable: true }])
     const context = { activeFile: { kind: 'file' as const, path: 'code.ts' }, mentions: [], pinned: [] }
     await h.controller.send('/review code', [], context)
-    expect(h.client.prompt).toHaveBeenLastCalledWith('a', '/review code', [], 'queue')
+    expect(h.client.prompt).toHaveBeenLastCalledWith('a', '/review code', [], 'queue', undefined)
     h.client.listCommands.mockRejectedValue(new Error('catalog unavailable'))
     await expect(h.controller.send('/unknown')).rejects.toThrow('catalog unavailable')
     expect(h.client.prompt).toHaveBeenCalledTimes(2)
     await h.controller.send('hello')
-    expect(h.client.prompt).toHaveBeenLastCalledWith('a', 'hello', [], 'queue')
+    expect(h.client.prompt).toHaveBeenLastCalledWith('a', 'hello', [], 'queue', undefined)
   })
 
   it('does not dispatch a slash input after the conversation changed during discovery', async () => {

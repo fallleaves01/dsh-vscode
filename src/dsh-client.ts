@@ -288,9 +288,15 @@ export class DshClient {
   mutateSettings(ns: string, ops: SettingsMutation[], expectedRevision: number): Promise<SettingsNamespace> {
     return this.call('settings/mutate', { ns, ops, expectedRevision })
   }
-  prompt(sessionId: string, text: string, attachments: readonly PromptAttachment[] = [], mode: PromptMode = 'queue'): Promise<{ accepted: true }> {
+  prompt(
+    sessionId: string,
+    text: string,
+    attachments: readonly PromptAttachment[] = [],
+    mode: PromptMode = 'queue',
+    parentSessionId?: string,
+  ): Promise<{ accepted: true }> {
     this.feed.handleRequestsFor(sessionId)
-    return this.api.prompt(sessionId, text, attachments, mode)
+    return this.api.prompt(sessionId, text, attachments, mode, parentSessionId)
   }
   respond(rpcId: string, value: unknown): Promise<RpcReceipt> { return this.feed.respond(rpcId, value) }
   cancel(sessionId: string): Promise<{ accepted: true }> { return this.api.cancel(sessionId) }
