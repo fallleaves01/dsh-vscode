@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
-import { findSourceRoot, parseDshWebUrl, resolveLaunch, webArgsForDshVersion } from '../src/launch.ts'
+import { findSourceRoot, parseDshWebUrl, resolveLaunch, searchEnvironment, webArgsForDshVersion } from '../src/launch.ts'
 
 describe('DSH launch resolution', () => {
   it('recognizes only the official web URL announcement', () => {
@@ -381,4 +381,20 @@ describe('DSH launch resolution', () => {
       sourceCheckout: false,
     })
   })
+  it('provides the search base URL only from the launcher, and never empty', () => {
+    // DSH refuses this variable in a `.env` file, so the launching process — this
+    // extension — has to pass it. An empty value must contribute nothing at all:
+    // injecting one would replace the runtime's default with a base that points
+    // nowhere.
+    expect(searchEnvironment('https://internal.example/anthropic/v1')).toEqual({
+      DEEPSEEK_SEARCH_BASE_URL: 'https://internal.example/anthropic/v1',
+    })
+    expect(searchEnvironment('  https://internal.example/anthropic/v1  ')).toEqual({
+      DEEPSEEK_SEARCH_BASE_URL: 'https://internal.example/anthropic/v1',
+    })
+    expect(searchEnvironment('')).toEqual({})
+    expect(searchEnvironment('   ')).toEqual({})
+    expect(Object.keys(searchEnvironment(''))).toEqual([])
+  })
+
 })

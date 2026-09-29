@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import * as vscode from 'vscode'
 import { DEEPSEEK_API_KEY_SECRET } from './credentials.js'
-import { findSourceRoot, parseDshWebUrl, resolveLaunch, type LaunchCommand, webArgsForDshVersion } from './launch.js'
+import { findSourceRoot, parseDshWebUrl, resolveLaunch, searchEnvironment, type LaunchCommand, webArgsForDshVersion } from './launch.js'
 import {
   DEFAULT_DSH_SERVER_URL,
   DEFAULT_DSH_WEB_ARGS,
@@ -178,6 +178,9 @@ export class DshRuntime implements vscode.Disposable {
     const config = vscode.workspace.getConfiguration('deepseekHarness', workspace)
     const configuredExecutable = config.get<string>('executable', '')
     const configuredArgs = config.get<string[]>('arguments', [...DEFAULT_DSH_WEB_ARGS])
+    // DSH refuses this one in a `.env`: it decides how the runtime reaches the
+    // network, so only its launcher may set it.
+    const searchEnv = searchEnvironment(config.get<string>('searchBaseUrl', ''))
     const inspectedArgs = config.inspect<string[]>('arguments')
     const hasCustomArguments = inspectedArgs?.globalValue !== undefined
       || inspectedArgs?.workspaceValue !== undefined
@@ -272,6 +275,7 @@ export class DshRuntime implements vscode.Disposable {
           ...process.env,
           NO_COLOR: '1',
           ...(storedApiKey === undefined ? {} : { DEEPSEEK_API_KEY: storedApiKey }),
+          ...searchEnv,
           ...launch.env,
           ...this.launchPreparation?.environment,
         },

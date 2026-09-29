@@ -3,6 +3,20 @@ import { createRequire } from 'node:module'
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+/**
+ * The environment DSH accepts only from the process that launches it.
+ *
+ * A variable that decides how the runtime reaches the network cannot come from
+ * its `.env` — DSH refuses to start when one is there — so this extension, which
+ * spawns the runtime, has to provide it. An empty setting contributes nothing:
+ * injecting an empty value would replace the runtime's own default with a base
+ * URL that points nowhere.
+ */
+export function searchEnvironment(searchBaseUrl: string): Record<string, string> {
+  const value = searchBaseUrl.trim()
+  return value === '' ? {} : { DEEPSEEK_SEARCH_BASE_URL: value }
+}
+
 export interface LaunchCommand {
   command: string
   args: string[]

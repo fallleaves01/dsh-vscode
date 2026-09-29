@@ -264,6 +264,12 @@
           "minimum": 1000,
           "maximum": 300000,
           "description": "Milliseconds to wait for DSH to report its local Web URL."
+        },
+        "deepseekHarness.searchBaseUrl": {
+          "type": "string",
+          "scope": "machine-overridable",
+          "default": "",
+          "markdownDescription": "Base URL for the runtime's web search, for a host that cannot reach the public API. Include the version path — the search plugin appends `/messages` — for example `https://host/anthropic/v1`. Left empty, the runtime keeps its own default. DSH only accepts this variable from the process that launches it, so it cannot be set in the runtime's `.env`; this extension provides it. Per-machine, so Settings Sync never carries it to another host."
         }
       }
     }
