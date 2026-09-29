@@ -41,16 +41,24 @@ async function rpc(endpoint, args) {
 const list = await rpc('session/list', { _request: {} });
 if (!list.ok) { console.error('session/list failed:', list.why); process.exit(1); }
 const sessions = list.value.items ?? [];
-const sessionId = sessions[0]?.id ?? sessions[0]?.sessionId;
-console.log(`baseline: session/list OK, ${sessions.length} sessions, sample id=${sessionId}\n`);
+// Pick a Session the generic API can route. A subagent child is owned by
+// subagent routing and refuses these calls by design (`session/agent-busy`), so
+// probing the first row of a busy list reported that design as drift.
+const routable = sessions.filter(session => session.origin !== 'subagent' && session.parentSessionId === undefined);
+const sample = routable.find(session => session.running !== true) ?? routable[0];
+const sessionId = sample?.sessionId ?? sample?.id;
+console.log(`baseline: session/list OK, ${sessions.length} sessions (${routable.length} routable), sample id=${sessionId}\n`);
 
+// The third field marks a check that needs a session: an isolated home has none,
+// which is the documented way to run this, and those checks then report a missing
+// argument rather than drift.
 const checks = [
-  ['session/modelCatalog', {}],
-  ['agentPresets/list', {}],
-  ['pluginInventory/list', {}],
-  ['settings/describe', {}],
-  ['commands/list', { agentId: sessionId }],
-  ['skills/list', { request: { sessionId } }],
+  ['session/modelCatalog', {}, false],
+  ['agentPresets/list', {}, false],
+  ['pluginInventory/list', {}, false],
+  ['settings/describe', {}, false],
+  ['commands/list', { agentId: sessionId }, true],
+  ['skills/list', { request: { sessionId } }, true],
 ];
 
 // `session/page` is checked from the follow snapshot below: 0.2.0 rejects a
@@ -58,7 +66,11 @@ const checks = [
 // exactly what the extension passes there.
 
 console.log('=== HTTP RPC endpoints ===');
-for (const [endpoint, args] of checks) {
+for (const [endpoint, args, needsSession] of checks) {
+  if (needsSession && sessionId === undefined) {
+    console.log(`  SKIP ${endpoint.padEnd(24)} needs a session, and this runtime has none`);
+    continue;
+  }
   const r = await rpc(endpoint, args);
   const shape = r.ok ? Object.keys(r.value ?? {}).slice(0, 5).join(',') : '';
   console.log(`  ${r.ok ? 'OK  ' : 'FAIL'} ${endpoint.padEnd(24)} ${r.ok ? `keys=[${shape}]` : r.why}`);
@@ -97,7 +109,8 @@ socket.on('open', () => {
     }
     return `workspace(${f.type})`;
   });
-  subscribe('session/follow', { request: { address: { kind: 'session', sessionId }, maxMessages: 100, assistantStream: true } }, f => {
+  if (sessionId === undefined) console.log(`  ${'session/follow'.padEnd(20)} skipped — this runtime has no session yet`);
+  else subscribe('session/follow', { request: { address: { kind: 'session', sessionId }, maxMessages: 100, assistantStream: true } }, f => {
     if (f.type === 'snapshot' && Number.isSafeInteger(f.cursor)) void checkPage(f.cursor);
     return `follow(${f.type})`;
   });
@@ -109,6 +122,12 @@ let pageChecked = false;
 async function checkPage(cursor) {
   if (pageChecked) return;
   pageChecked = true;
+  // A fresh runtime has no session to page, which is the documented way to run
+  // this probe; say so instead of reporting the missing id as drift.
+  if (sessionId === undefined) {
+    console.log(`  ${'session/page'.padEnd(20)} skipped — this runtime has no session yet`);
+    return;
+  }
   const r = await rpc('session/page', { request: { address: { kind: 'session', sessionId }, throughSeq: cursor, beforeSeq: cursor, maxMessages: 100 } });
   console.log(`  ${'session/page'.padEnd(20)} ${r.ok ? `ok — throughSeq=cursor(${cursor}), records=${Array.isArray(r.value?.records) ? r.value.records.length : '?'}` : `FAIL ${r.why}`}`);
 }
