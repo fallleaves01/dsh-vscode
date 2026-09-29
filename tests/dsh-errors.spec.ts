@@ -72,6 +72,24 @@ describe('DSH failure text', () => {
     expect(dshErrorText('Note: the run finished')).toBe('Note: the run finished')
   })
 
+  it('describes a missing file without pasting an absolute path', () => {
+    // A model can name a file that does not exist; DSH reports the raw Node
+    // error, which is not something to show in a conversation.
+    const text = dshErrorText(failure('ENOENT', "ENOENT: no such file or directory, stat '/home/user/project/bucket.hpp'"))
+    expect(text).toContain('bucket.hpp')
+    expect(text).not.toContain('/home/user')
+    expect(text).not.toContain('ENOENT')
+  })
+
+  it('recognises the wording VS Code uses for the same condition', () => {
+    const text = dshErrorText(new Error('No such file or directory, stat'))
+    expect(text).toContain('not available on this machine')
+  })
+
+  it('leaves unrelated failures alone', () => {
+    expect(dshErrorText(new Error('the model is unavailable'))).toBe('the model is unavailable')
+  })
+
   it('explains an empty provider catalog rather than leaving the composer dead', () => {
     expect(NO_ROUTABLE_PROVIDER_TEXT).toContain('No DeepSeek model is available')
   })

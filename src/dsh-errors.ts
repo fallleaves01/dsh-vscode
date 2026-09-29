@@ -20,6 +20,23 @@ const MESSAGES: Readonly<Record<string, string>> = {
     'That subagent is no longer owned by the conversation that started it, so it cannot be stopped from here.',
 }
 
+/**
+ * A path that is not on this machine.
+ *
+ * Both layers word this differently — a Node stat reports
+ * `ENOENT: no such file or directory, stat '/abs/path'`, while VS Code's file
+ * system reports `No such file or directory, stat` — and neither is worth
+ * showing a user verbatim. A model can name a file that does not exist, and the
+ * absolute path belongs in the log rather than in a notice.
+ */
+function missingFileText(message: string): string | undefined {
+  if (!/ENOENT|no such file or directory/i.test(message)) return undefined
+  const name = /'([^']+)'/.exec(message)?.[1]?.split(/[\\/]/).pop()
+  return name === undefined || name === ''
+    ? 'That file is not available on this machine. It may have been moved or deleted.'
+    : '`' + name + '` is not available on this machine. It may have been moved or deleted.'
+}
+
 /** Extra context for a code whose message names the exact route that failed. */
 function detailOf(error: { code: string; message: string }): string {
   if (error.code !== 'session/model-unavailable' && error.code !== 'session/provider-models-unavailable') return ''
@@ -64,6 +81,10 @@ function leadingCode(message: string): string | undefined {
  */
 export function dshErrorText(error: unknown): string {
   const failure = dshFailure(error)
+  if (failure.code !== 'session/provider-credentials-unavailable') {
+    const missing = missingFileText(failure.message)
+    if (missing !== undefined) return missing
+  }
   const code = failure.code ?? leadingCode(failure.message)
   const known = code === undefined ? undefined : MESSAGES[code]
   if (known === undefined || code === undefined) return failure.message

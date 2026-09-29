@@ -958,7 +958,10 @@ export class DshChatController implements vscode.Disposable {
 
   report(error: unknown): void {
     const message = dshErrorText(error)
-    this.output.appendLine(`[chat] ${message}`)
+    // The notice is what the user reads; the channel keeps the original text,
+    // which is where an absolute path or a provider's wording belongs.
+    const raw = dshFailure(error).message
+    this.output.appendLine(`[chat] ${raw === message ? message : `${message} (${raw})`}`)
     this.projector.notice(`error:${String(Date.now())}`, message, true)
     this.publish({ messages: this.projectedMessages() })
   }
