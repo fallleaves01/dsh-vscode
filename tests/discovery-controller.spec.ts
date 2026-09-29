@@ -94,6 +94,25 @@ async function harness(connection?: DshConnection) {
   return { client, controller, output, emit, fail, runtime, reviews, next }
 }
 
+describe('diagnostics and notices', () => {
+  it('keeps credential-shaped text out of the channel', async () => {
+    const h = await harness()
+    // A DSH failure can quote the request it failed on, and the channel is the
+    // first thing anyone pastes into an issue.
+    h.controller.report(new Error('request to http://127.0.0.1:3080/api/session?token=secret-token-value failed'))
+    const written = h.output.appendLine.mock.calls.map(call => String(call[0])).join('\n')
+    expect(written).not.toContain('secret-token-value')
+    expect(written).toContain('[redacted]')
+  })
+
+  it('keeps credential-shaped text out of the conversation too', async () => {
+    const h = await harness()
+    h.controller.report(new Error('cookie: session=abcdef123456 rejected'))
+    const notices = h.controller.state.messages.filter(message => message.role === 'notice')
+    expect(JSON.stringify(notices)).not.toContain('abcdef123456')
+  })
+})
+
 describe('sending in a subagent conversation', () => {
   it('delivers the message through the owning conversation', async () => {
     const h = await harness()

@@ -22,6 +22,7 @@ import { configureApiKey, clearApiKey, watchDebugConfiguration } from './runtime
 import { DiffReviewManager, type ChangedFileGroup } from './diff-review.js'
 import { DebugRuntimeContribution } from './debug-runtime-contribution.js'
 import { DebugSessionManager } from './debug-session-manager.js'
+import { redactDshSecrets } from './runtime-output.js'
 import { DirtyFileGuard } from './dirty-file-guard.js'
 import { EditorContextBridge } from './editor-context-bridge.js'
 import {
@@ -298,15 +299,24 @@ export class DshChatController implements vscode.Disposable {
   readonly onDidChangeState = this.changes.event
   readonly onDidChangeRuntimeSettings = this.settingsChanges.event
 
+  /**
+   * Channel for diagnostics. DSH text can quote a request URL, an
+   * `Authorization` header or a `Cookie`, so every line is redacted where it is
+   * written — the same boundary rule the runtime output follows — instead of
+   * relying on each of the call sites to remember.
+   */
+  private readonly output: Pick<vscode.OutputChannel, 'appendLine'>
+
   constructor(
     private readonly runtime: DshRuntime,
-    private readonly output: vscode.OutputChannel,
+    output: vscode.OutputChannel,
     private readonly dirtyFiles: DirtyFileGuard,
     private readonly diffReviews: DiffReviewManager,
     private readonly workspaceState: vscode.Memento,
     private _cwd: string,
     private readonly extensionVersion: string,
   ) {
+    this.output = { appendLine: line => { output.appendLine(redactDshSecrets(line)) } }
     this._state = initialState(_cwd)
     this.unreadSessionIds = new Set(workspaceState.get<string[]>(DshChatController.unreadStorageKey, []))
   }
@@ -960,10 +970,10 @@ export class DshChatController implements vscode.Disposable {
   }
 
   report(error: unknown): void {
-    const message = dshErrorText(error)
+    const message = redactDshSecrets(dshErrorText(error))
     // The notice is what the user reads; the channel keeps the original text,
     // which is where an absolute path or a provider's wording belongs.
-    const raw = dshFailure(error).message
+    const raw = redactDshSecrets(dshFailure(error).message)
     this.output.appendLine(`[chat] ${raw === message ? message : `${message} (${raw})`}`)
     this.projector.notice(`error:${String(Date.now())}`, message, true)
     this.publish({ messages: this.projectedMessages() })
@@ -1696,9 +1706,9 @@ export class DshChatController implements vscode.Disposable {
 
     if (frame.channel === 'host' && type === 'host/agent-error' && sessionId === this._state.sessionId) {
       // This channel carries text only, but DSH may prefix it with a code.
-      const message = dshErrorText(
+      const message = redactDshSecrets(dshErrorText(
         typeof payload.message === 'string' ? payload.message : 'DeepSeek Harness reported an agent error.',
-      )
+      ))
       this.projector.notice(`agent-error:${frame.rpcId}`, message, true)
       this.publish({ messages: this.projectedMessages(), ...this.runningPatch(false) })
       return
