@@ -87,6 +87,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .message-action.usage-pill { color: var(--vscode-descriptionForeground); }
     .message-clock { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .message-action.active { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    .message.user .message-actions { justify-content: flex-end; margin-left: 0; }
     .routable-notice { padding: 6px 12px 2px; color: var(--vscode-errorForeground); font-size: 11px; }
     .routable-notice.hidden { display: none; }
     .session-row.session-ancestor { margin-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--vscode-widget-border) 60%, transparent); border-radius: 0; grid-template-columns: minmax(0, 1fr); }
@@ -1237,6 +1238,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return button;
     }
     /**
+     * A user message's row: the clock and a copy, with the clock first, and no
+     * rating or branch — DSH gives those to the reply only.
+     */
+    function renderUserActions(message, meta) {
+      const row = node('div', 'message-actions user-actions');
+      const list = (state && state.messages) || [];
+      if (list.length > 0 && list[list.length - 1].id === message.id) row.classList.add('always');
+      const clock = formatMessageClock(meta.time);
+      if (clock !== '') row.append(node('span', 'message-clock', clock));
+      const copy = node('button', 'message-action message-copy', '⧉');
+      copy.type = 'button'; copy.title = 'Copy'; copy.setAttribute('aria-label', 'Copy');
+      copy.addEventListener('click', () => copyMessageText(message, copy));
+      row.append(copy);
+      return row;
+    }
+    /**
      * The row DSH shows once per completed turn, under that turn's closing reply:
      * copy the whole message, the turn's usage, and the clock.
      */
@@ -1288,7 +1305,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (thinking) item.append(thinking.root);
       item.append(body);
       const meta = messageMetaFor(message.id);
-      if (meta !== undefined && meta.turnEnd === true && message.role === 'assistant') item.append(renderMessageActions(message, meta));
+      if (meta !== undefined && message.role === 'assistant' && meta.turnEnd === true) item.append(renderMessageActions(message, meta));
+      else if (meta !== undefined && message.role === 'user') item.append(renderUserActions(message, meta));
       return { message, node: item, ...(markdown ? { markdown } : {}), ...(thinking ? { thinking } : {}) };
     }
     function messageNode(message) {

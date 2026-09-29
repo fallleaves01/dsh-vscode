@@ -258,6 +258,25 @@ describe('the row under a completed turn', () => {
     expect(h.posts[0]).toMatchObject({ type: 'fork-conversation', sessionId: 'session-a', atSeq: 42 })
   })
 
+  it('gives the user’s own message a clock and a copy, and nothing else', async () => {
+    const h = open()
+    h.sendState({
+      sessionId: 'session-a', phase: 'ready',
+      messages: [{ id: 'u1', role: 'user', text: 'my question' }],
+      messageMeta: [{ id: 'u1', seq: 1, time: Date.now() }],
+    })
+    await h.settle()
+    const row = h.document.querySelector('.message-actions.user-actions')
+    expect(row).not.toBeNull()
+    expect(row!.querySelector('.message-clock')).not.toBeNull()
+    expect(row!.querySelector('.message-copy')).not.toBeNull()
+    // A user message is not rated or branched.
+    expect(row!.querySelector('.message-positive')).toBeNull()
+    expect(row!.querySelector('.message-branch')).toBeNull()
+    // The clock comes first, as DSH orders a user row.
+    expect(row!.children[0]!.classList.contains('message-clock')).toBe(true)
+  })
+
   it('renders no row while the turn is still open', async () => {
     const h = open()
     h.sendState(state([{ id: 'm1', time: 1 }]))
