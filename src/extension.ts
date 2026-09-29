@@ -384,6 +384,11 @@ export class DshChatController implements vscode.Disposable {
 
   async start(target?: RuntimeTarget): Promise<void> {
     if (this.disposed) return
+    // Starting again — a restart, or the view being re-created — must not move
+    // the user to a different conversation. The id is captured before the reset
+    // below clears it, because clearing it is what made the reload fall through
+    // to "newest conversation".
+    const previousSessionId = this._state.sessionId
     ++this.runtimeSwitchRevision
     this.cancelRecovery()
     this.reconnectSessions.clear()
@@ -435,7 +440,7 @@ export class DshChatController implements vscode.Disposable {
       this.publish({ canReconnect: true })
       await client.startStreams()
       if (generation !== this.generation || this.client !== client) return
-      await this.loadSessions()
+      await this.loadSessions(previousSessionId === '' ? undefined : previousSessionId)
     } catch (error) {
       if (generation !== this.generation) return
       const message = redactDshSecrets(error instanceof Error ? error.message : String(error))

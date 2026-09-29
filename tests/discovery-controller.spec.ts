@@ -572,6 +572,19 @@ describe('runtime selection', () => {
   })
 })
 
+describe('starting again', () => {
+  it('keeps the conversation the user was reading', async () => {
+    const h = await harness()
+    await h.controller.selectSession('b')
+    expect(h.controller.state.sessionId).toBe('b')
+
+    // A restart, or the view being re-created, calls start() again. The session
+    // list is reloaded from scratch, and the selection has to survive it.
+    await h.controller.start()
+    expect(h.controller.state.sessionId).toBe('b')
+  })
+})
+
 describe('sidebar reconnect', () => {
   it.each(['healthy', 'disconnected'])('manually reconnects a %s tokenless runtime without authenticating or resending', async state => {
     const connection = new DshConnection(new URL('http://127.0.0.1:3080'))
