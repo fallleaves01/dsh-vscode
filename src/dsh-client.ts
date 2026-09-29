@@ -356,8 +356,14 @@ export class DshClient {
   private invalidateDiscovery(frame: DshFrame): void {
     const payload = frame.payload
     if (payload.type === 'host/commands-changed') for (const read of this.commands.values()) read.invalidate()
-    if (payload.type === 'host/models-changed' || payload.type === 'host/settings-changed' || payload.type === 'host/credentials-changed') this.catalog.invalidate()
-    if (payload.type === 'host/settings-changed' && payload.ns === 'agent-presets') this.presets.invalidate()
+    // `host/account-changed` is how a committed credential arrives: signing in or
+    // out changes which providers can route, so the catalog has to be re-read or
+    // the composer stays disabled (and, after sign-out, stays wrongly enabled).
+    if (payload.type === 'host/models-changed' || payload.type === 'host/settings-changed'
+      || payload.type === 'host/credentials-changed' || payload.type === 'host/account-changed') this.catalog.invalidate()
+    // The roster lives in the `agent-preset-registry` entry, which is the id DSH
+    // reports for its settings section.
+    if (payload.type === 'host/settings-changed' && payload.ns === 'agent-preset-registry') this.presets.invalidate()
     if ((payload.type === 'host/session-composition-changed'
       || (payload.type === 'session/projection' && payload.key === 'agentPreset')) && typeof payload.sessionId === 'string') {
       this.invalidateSessionDiscovery(payload.sessionId)

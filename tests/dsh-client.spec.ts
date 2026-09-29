@@ -119,6 +119,21 @@ describe('DSH 0.1.2 chat transport', () => {
       kind: 'subagent', parentSessionId: 'parent', childSessionId: 'child', mode: 'unknown' } } })
   })
 
+  it('re-reads the model catalog when the account changes', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    h.results['session/modelCatalog'] = { default: { provider: 'p', model: 'm' }, routableProviders: [], groups: [], failures: [] }
+    expect((await h.client.models('s')).routable).toBe(false)
+
+    // Signing in commits a credential; without re-reading, the composer stays
+    // disabled and the sidebar says no model is available.
+    h.results['session/modelCatalog'] = { default: { provider: 'p', model: 'm' }, routableProviders: ['p'], groups: [], failures: [] }
+    h.push('$events', { type: 'emit', event: 'credentials/record-updated', args: [] })
+    // `currentModels` reports the cached catalog; the invalidation shows up on
+    // the next read, which is what the sidebar's refresh path performs.
+    expect((await h.client.models('s')).routable).toBe(true)
+  })
+
   it('forwards the actual discovery events and does not publish credential references', async () => {
     const h = harness()
     await h.client.startStreams()
@@ -156,7 +171,9 @@ describe('DSH 0.1.2 chat transport', () => {
     h.push('$events', { type: 'emit', event: 'agent-preset/selected', args: ['a', 'minimal'] })
     await h.client.listSkills('a'); await h.client.listSkills('b')
     expect(count('skills/list')).toBe(3)
-    h.push('$events', { type: 'emit', event: 'settings/document-updated', args: ['agent-presets', 1] })
+    // `agent-preset-registry` is the loader entry id DSH reports for the roster;
+    // this test used to pin the wrong one, so the roster was never re-read.
+    h.push('$events', { type: 'emit', event: 'settings/document-updated', args: ['agent-preset-registry', 1] })
     await h.client.listAgentPresets()
     expect(count('agentPresets/list')).toBe(2)
   })
