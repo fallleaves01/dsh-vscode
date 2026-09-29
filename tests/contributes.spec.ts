@@ -62,11 +62,14 @@ describe('launch configuration scope', () => {
     // Reported in the field as "spawn /opt/homebrew/bin/dsh ENOENT" on a Linux
     // host: a `resource`-scoped setting was synced from a Mac, and nothing on
     // the remote could use that path. Machine-scoped settings are not synced.
-    expect(properties['deepseekHarness.executable']?.scope).toBe('machine-overridable')
+    // `machine-overridable` is also machine-specific, but it can additionally be
+    // overridden by workspace or folder settings — a repository could then name
+    // the binary this extension runs.
+    expect(properties['deepseekHarness.executable']?.scope).toBe('machine')
   })
 
   it('keeps launch arguments machine-scoped, since they can name local paths', () => {
-    expect(properties['deepseekHarness.arguments']?.scope).toBe('machine-overridable')
+    expect(properties['deepseekHarness.arguments']?.scope).toBe('machine')
   })
 })
 
@@ -80,4 +83,15 @@ describe('account contributions', () => {
     expect(manifest.activationEvents).toContain('onCommand:deepseekHarness.signIn')
     expect(manifest.activationEvents).toContain('onCommand:deepseekHarness.signOut')
   })
+  it('keeps the settings a repository could abuse out of workspace reach', () => {
+    // A workspace may ship a `.vscode/settings.json`, so anything that names a
+    // binary this extension runs, the arguments it passes, or an endpoint that
+    // will receive the user's key must be machine-scoped: a repository must not be
+    // able to redirect them.
+    const properties = manifest.contributes.configuration.properties
+    for (const key of ['deepseekHarness.executable', 'deepseekHarness.arguments', 'deepseekHarness.searchBaseUrl']) {
+      expect(properties[key]?.scope, key).toBe('machine')
+    }
+  })
+
 })

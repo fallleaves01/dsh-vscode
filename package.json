@@ -221,13 +221,13 @@
       "properties": {
         "deepseekHarness.executable": {
           "type": "string",
-          "scope": "machine-overridable",
+          "scope": "machine",
           "default": "",
-          "markdownDescription": "DSH executable. Leave empty to use a source checkout when nested inside deepseek-harness, otherwise `dsh` from PATH. This is a per-machine path, so the setting is machine-scoped and is never carried to another machine by Settings Sync; set it separately on each host."
+          "markdownDescription": "DSH executable. Leave empty to use a source checkout when nested inside deepseek-harness, otherwise `dsh` from PATH. This is a per-machine path, so the setting is machine-scoped: Settings Sync never carries it to another host, and — unlike a workspace-overridable setting — a repository cannot redirect it by shipping a `.vscode/settings.json`. Set it separately on each host."
         },
         "deepseekHarness.arguments": {
           "type": "array",
-          "scope": "machine-overridable",
+          "scope": "machine",
           "items": {
             "type": "string"
           },
@@ -267,7 +267,7 @@
         },
         "deepseekHarness.searchBaseUrl": {
           "type": "string",
-          "scope": "machine-overridable",
+          "scope": "machine",
           "default": "",
           "markdownDescription": "Base URL for the runtime's web search, for a host that cannot reach the public API. Include the version path — the search plugin appends `/messages` — for example `https://host/anthropic/v1`. Left empty, the runtime keeps its own default. DSH only accepts this variable from the process that launches it, so it cannot be set in the runtime's `.env`; this extension provides it. Per-machine, so Settings Sync never carries it to another host."
         }
