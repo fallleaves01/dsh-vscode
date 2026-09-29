@@ -39,6 +39,8 @@ export interface TurnFooter {
  * message and shows the turn's aggregate usage there, so the fold belongs here
  * rather than on each step. A turn with any step still streaming has no row: a
  * row shown mid-turn would move, and its duration would change under the reader.
+ * A stopped turn still closes, because the runtime settles an interrupted step
+ * with its own `assistant/message`.
  *
  * `turnStarts` is the projector's record of `turn/start` times by turn number,
  * which is the only event that says when the turn actually began.
@@ -468,8 +470,13 @@ export class ConversationProjector {
    * a multi-step turn look finished after its first step, so its action row
    * appeared mid-turn and its duration then changed. The settled
    * `assistant/message` that follows replaces this entry, usage and all.
+   *
+   * An entry that already carries usage is left alone: a chunk that arrives after
+   * its step settled — a late block-end, for instance — must not erase the tokens
+   * the turn's bill is computed from.
    */
   private noteStreaming(id: string, event: DshEvent, data: Record<string, unknown>): void {
+    if (this.meta.get(id)?.usage !== undefined) return
     this.meta.set(id, {
       seq: event.seq, time: event.time,
       ...(typeof data.turn === 'number' ? { turn: data.turn } : {}),

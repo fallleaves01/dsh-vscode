@@ -70,6 +70,8 @@ The first release of the fork as an independent extension, on DSH 0.2.0-rc.2.
 ### Fixed
 
 - Every slash command picked from the command menu did nothing.
+- Enter that commits an input-method candidate — a Chinese, Japanese or dead-key
+  composition — in the model search no longer switches the model by itself.
 - A drag from the Explorer never reached the composer.
 - Your own message had no timestamp and no copy button.
 - The stop button now acknowledges the request, and works on subagents.

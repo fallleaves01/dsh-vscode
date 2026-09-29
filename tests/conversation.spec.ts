@@ -65,6 +65,20 @@ describe('turn footers', () => {
     expect(settled.get('assistant:1:2')?.turnDurationMs).toBe(8_000)
   })
 
+  it('keeps a settled step’s usage when a later chunk arrives for it', () => {
+    const projector = new ConversationProjector()
+    projector.reset([
+      { type: 'turn/start', seq: 1, time: 1_000, data: { turn: 1 } },
+      { type: 'assistant/message', seq: 2, time: 5_000, data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'first' }] }, usage: { inputTokens: 10, outputTokens: 5 } } },
+    ])
+    expect(projector.messageMeta().get('assistant:1:1')?.usage).toEqual({ inputTokens: 10, outputTokens: 5 })
+
+    // A chunk for a step that already settled must not erase the tokens its bill
+    // is computed from: the pill would quietly under-report the turn.
+    projector.apply({ type: 'assistant/chunk', seq: 3, time: 6_000, data: { turn: 1, step: 1, chunk: { type: 'text-delta', text: ' more' } } })
+    expect(projector.messageMeta().get('assistant:1:1')?.usage).toEqual({ inputTokens: 10, outputTokens: 5 })
+  })
+
   it('names no route rather than inventing one', () => {
     // The projection does not carry the model that served each call, so a route
     // would have to be made up — and the usage panel would print it.

@@ -248,6 +248,28 @@ describe('the model picker is searchable and driven by the keyboard', () => {
     expect(h.document.getElementById('modelMenu')!.classList.contains('hidden')).toBe(true)
   })
 
+  it('lets an input method commit its own composition with Enter', async () => {
+    const h = await openPicker()
+    await type(h, 'gateway')
+    // Move off the current model, so a wrong commit would be visible as a post.
+    press(h, 'ArrowDown')
+    await h.settle()
+    // An Enter that commits an IME candidate belongs to the input method. Acting
+    // on it chose the highlighted model and closed the menu, so a search typed in
+    // Chinese, Japanese or with dead keys switched the model by itself.
+    search(h).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true }))
+    await h.settle()
+    expect(h.posts.filter(post => post.type === 'select-model')).toEqual([])
+    expect(h.document.getElementById('modelMenu')!.classList.contains('hidden')).toBe(false)
+
+    // The same key once the composition is over still chooses.
+    press(h, 'Enter')
+    await h.settle()
+    expect(h.posts.filter(post => post.type === 'select-model')).toEqual([
+      { type: 'select-model', selection: { provider: 'gateway', model: 'pro' } },
+    ])
+  })
+
   it('wraps the keyboard selection in both directions', async () => {
     const h = await openPicker()
     await type(h, 'gateway')

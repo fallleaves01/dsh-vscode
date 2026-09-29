@@ -549,13 +549,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
      * DSH's composer dock: the session's own statistics, as pills, centred above
      * the input. They report what the session has done and what it has cost, and
      * appear only once there is something to report.
+     *
+     * DSH's compact dock draws these as plain spans, without the dialog the
+     * detailed one opens, so there are deliberately no interactive rules here.
      */
     .composer-dock { max-width: 100%; margin: 0 auto; padding-top: 4px; display: flex; align-items: center; justify-content: center; gap: 12px; font-size: calc(var(--dsh-content-font-size-secondary) - 1px); line-height: var(--dsh-line-secondary); }
     .composer-dock.hidden { display: none; }
     .stat-pill { max-width: 100%; padding: 1px 8px; display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 999px; color: var(--vscode-descriptionForeground); background: transparent; font: inherit; line-height: inherit; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .stat-pill svg { flex: none; width: 14px; height: 14px; }
-    button.stat-pill { cursor: pointer; }
-    button.stat-pill:hover, button.stat-pill[aria-expanded='true'] { color: var(--vscode-foreground); background: var(--dsh-hover); }
     .stat-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .stat-sep { margin: 0 6px; color: color-mix(in srgb, currentColor 55%, transparent); }
     .project { width: 100%; min-width: 0; height: 28px; padding: 0 4px; overflow: hidden; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; color: var(--vscode-descriptionForeground); background: transparent; }
@@ -3175,6 +3176,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     elements.modelMenu.addEventListener('click', event => event.stopPropagation());
     elements.modelSearch.addEventListener('input', () => { modelIndex = 0; renderModelMenu(); });
     elements.modelSearch.addEventListener('keydown', event => {
+      // A composing Enter commits an IME candidate, not the highlighted model:
+      // without this guard, searching in a CJK or accented input method picked a
+      // model the moment the user accepted a character.
+      if (event.isComposing) return;
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
         if (modelChoices.length === 0) return;
