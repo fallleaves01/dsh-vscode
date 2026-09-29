@@ -93,6 +93,36 @@ describe('DiffReviewManager', () => {
     expect(manager.changedFiles('early')[0]?.files[0]?.canRevert).toBe(true)
   })
 
+  it('still offers a later change to the same file in the same turn after a Keep', () => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
+    const manager = new DiffReviewManager()
+    const change = (seq: number, callId: string, before: string, after: string) => {
+      const args = { file_path: 'app.ts', old_string: before.trim(), new_string: after.trim() }
+      return {
+        call: event('tool/call', seq, { turn: 5, callId, name: 'edit', arguments: JSON.stringify(args) }),
+        result: event('tool/result', seq + 1, { turn: 5,
+          meta: { diffs: appliedHunks(before, after)?.map(diff => ({ path: 'app.ts', ...diff })) },
+          message: { source: { kind: 'tool', callId }, content: [{ type: 'tool-result', toolCallId: callId,
+            content: [{ type: 'text', text: 'The file app.ts has been updated successfully.' }] }] },
+        }),
+      }
+    }
+
+    fs.writeFileSync(file, 'one\n')
+    const first = change(50, 'c1', 'one\n', 'two\n')
+    manager.accept('s', cwd, first.call); fs.writeFileSync(file, 'two\n'); manager.accept('s', cwd, first.result)
+    expect(manager.changedFiles('s')[0]?.files).toHaveLength(1)
+    // The user keeps it. The agent then keeps working in the same turn.
+    expect(manager.keepFile('s', cwd, 'app.ts', 5)).toEqual([])
+
+    fs.writeFileSync(file, 'three\n')
+    const second = change(60, 'c2', 'two\n', 'three\n')
+    manager.accept('s', cwd, second.call); fs.writeFileSync(file, 'three\n'); manager.accept('s', cwd, second.result)
+    // Keying the dismissal on `turn:path` hid this edit entirely: it was neither
+    // shown nor revertable, although the file on disk had changed again.
+    expect(manager.changedFiles('s')[0]?.files).toHaveLength(1)
+  })
+
   it('does not invent a reversible full file from replayed hunks or a late snapshot', () => {
     const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
     const { call, result } = modernEvents('edit', { file_path: 'app.ts', old_string: 'old', new_string: 'new' }, 'old\n', 'new\n')

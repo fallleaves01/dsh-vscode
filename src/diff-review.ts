@@ -399,7 +399,10 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   }
 
   private record(sessionId: string, incoming: ReviewFile): void {
-    if (this.dismissed.get(sessionId)?.has(this.reviewKey(incoming))) return
+    // Only skip when *every* change this review stands for was dismissed: a
+    // later edit in the same turn is a change the user has not seen yet.
+    const dismissed = this.dismissed.get(sessionId)
+    if (dismissed !== undefined && this.changeKeys(incoming).every(key => dismissed.has(key))) return
     let turns = this.reviews.get(sessionId)
     if (turns === undefined) this.reviews.set(sessionId, turns = new Map())
     let files = turns.get(incoming.turn)
@@ -452,7 +455,26 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   private markDismissed(sessionId: string, review: ReviewFile): void {
     let dismissed = this.dismissed.get(sessionId)
     if (dismissed === undefined) this.dismissed.set(sessionId, dismissed = new Set())
-    dismissed.add(this.reviewKey(review))
+    for (const key of this.changeKeys(review)) dismissed.add(key)
+  }
+
+  /**
+   * Identities of the individual changes a review stands for.
+   *
+   * A file edited twice in one turn produces two changes under one row, and the
+   * user may dismiss the first. Keying the dismissal on the row (`turn:path`)
+   * therefore hid the second edit entirely — it was neither shown nor revertable.
+   * The event sequence identifies the change, so dismissing one leaves the next
+   * one to be reported. A review with no sequence numbers can only be named as a
+   * whole, which is what the row key is for.
+   */
+  private changeKeys(review: ReviewFile): string[] {
+    const path = comparableFilePath(review.absolutePath)
+    const keys: string[] = []
+    for (const snapshot of review.snapshots) {
+      if (typeof snapshot.eventSeq === 'number') keys.push(`${String(review.turn)}:${path}:${String(snapshot.eventSeq)}`)
+    }
+    return keys.length > 0 ? keys : [this.reviewKey(review)]
   }
 
   private dismiss(sessionId: string, review: ReviewFile): void {
