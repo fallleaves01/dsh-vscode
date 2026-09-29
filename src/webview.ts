@@ -1141,10 +1141,18 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function syncThinking(thinking, message) {
       applyThinkingState(thinking, message);
     }
+    // Indexed once per published batch: a conversation with a thousand messages
+    // would otherwise scan the whole table for every message on every render,
+    // and renders happen on every streamed chunk.
+    let metaIndex = { source: null, byId: new Map() };
     function messageMetaFor(id) {
       const list = (state && state.messageMeta) || [];
-      for (const entry of list) if (entry && entry.id === id) return entry;
-      return undefined;
+      if (metaIndex.source !== list) {
+        const byId = new Map();
+        for (const entry of list) if (entry && typeof entry.id === 'string') byId.set(entry.id, entry);
+        metaIndex = { source: list, byId };
+      }
+      return metaIndex.byId.get(id);
     }
     /** The clock DSH shows: time alone on the same day, date above it otherwise. */
     function formatMessageClock(time) {

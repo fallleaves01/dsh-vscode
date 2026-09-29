@@ -202,7 +202,7 @@ describe('the row under a completed turn', () => {
   it('offers copy, the turn usage and the clock', async () => {
     const h = open()
     h.sendState(state([{ id: 'm1', time: Date.parse('2026-09-29T14:39:00'), turnEnd: true,
-      turnUsage: { uncachedInputTokens: 12_000, outputTokens: 300, totalTokens: 12_300, routes: ['p/m'] } }]))
+      turnUsage: { uncachedInputTokens: 12_000, outputTokens: 300, totalTokens: 12_300, routes: [] } }]))
     await h.settle()
     const row = h.document.querySelector('.message-actions')
     expect(row).not.toBeNull()
@@ -210,7 +210,6 @@ describe('the row under a completed turn', () => {
     expect(row!.querySelector('.usage-pill')!.textContent).toBe('Usage 12.3K tok')
     // The pill names the fields DSH's panel names, in its order.
     const detail = row!.querySelector('.usage-pill')!.getAttribute('aria-label')!
-    expect(detail).toContain('Provider / model: p/m')
     expect(detail).toContain('Uncached input: 12,000')
     expect(detail).toContain('Output: 300')
     expect(row!.querySelector('.message-clock')!.textContent).toMatch(/^\d{2}:\d{2}$/)

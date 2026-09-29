@@ -1846,7 +1846,11 @@ export class DshChatController implements vscode.Disposable {
       if (this.client !== client) return
       await this.loadSessions()
       if (this.client !== client) return
-      await this.selectSession(child)
+      // `selectSession` refuses a conversation the list does not know, and the
+      // refreshed list may not carry the child yet. Opening it directly keeps the
+      // click from doing nothing visible.
+      if (this.summaries.some(summary => summary.sessionId === child)) await this.selectSession(child)
+      else await this.loadSession(child)
     } catch (error) {
       this.report(error)
     }
@@ -1854,10 +1858,13 @@ export class DshChatController implements vscode.Disposable {
 
   /** Adopt the ratings the runtime holds for a conversation. */
   private async loadFeedback(client: DshClient, sessionId: string): Promise<void> {
-    this.feedback.clear()
     const outcome = await client.messageFeedback(sessionId)
     if (this.client !== client || sessionId !== this._state.sessionId) return
-    if (outcome.ok) for (const item of outcome.value.items) this.feedback.set(item.messageId, item)
+    // A failed read keeps whatever is shown: wiping the ratings on a transient
+    // error would tell the user their votes are gone.
+    if (!outcome.ok) return
+    this.feedback.clear()
+    for (const item of outcome.value.items) this.feedback.set(item.messageId, item)
     this.publish({ messageFeedback: [...this.feedback.values()] })
   }
 

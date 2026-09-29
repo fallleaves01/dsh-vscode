@@ -1,10 +1,34 @@
 import { describe, expect, it } from 'vitest'
-import { ConversationProjector, type DshEvent } from '../src/conversation.js'
+import { ConversationProjector, turnFooters, type DshEvent, type MessageMeta } from '../src/conversation.js'
 import { withIdeContext } from '../src/ide-context.js'
 
 function event(type: string, seq: number, data: unknown): DshEvent {
   return { type, seq, time: seq, data }
 }
+
+describe('turn footers', () => {
+  const meta = (usage: unknown): Map<string, MessageMeta> => new Map([
+    ['m1', { seq: 4, time: 4, turn: 1, step: 1, usage } as MessageMeta],
+  ])
+
+  it('anchors the row to a turn that finished', () => {
+    const footers = turnFooters([{ id: 'm1', role: 'assistant', text: 'x' }], meta({ inputTokens: 10, outputTokens: 5 }))
+    expect(footers.get('m1')?.turnEnd).toBe(true)
+    expect(footers.get('m1')?.turnUsage?.totalTokens).toBe(15)
+  })
+
+  it('writes no row for a turn whose reply is still streaming', () => {
+    const footers = turnFooters([{ id: 'm1', role: 'assistant', text: 'x', streaming: true }], meta({ inputTokens: 10, outputTokens: 5 }))
+    expect(footers.size).toBe(0)
+  })
+
+  it('names no route rather than inventing one', () => {
+    // The projection does not carry the model that served each call, so a route
+    // would have to be made up — and the usage panel would print it.
+    const footers = turnFooters([{ id: 'm1', role: 'assistant', text: 'x' }], meta({ inputTokens: 10, outputTokens: 5 }))
+    expect(footers.get('m1')?.turnUsage?.routes).toEqual([])
+  })
+})
 
 describe('ConversationProjector', () => {
   it('keeps human prompts and final assistant text while excluding injected plugin context', () => {

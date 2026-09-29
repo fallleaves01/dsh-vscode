@@ -46,11 +46,11 @@ export function turnFooters(
     const closing = [...group].reverse().find(message => message.streaming !== true)
     if (closing === undefined) continue
     const usages = group.map(message => meta.get(message.id)?.usage)
-    const routes = group.map(message => {
-      const step = meta.get(message.id)?.step
-      return step === undefined ? '' : String(message.id)
-    })
-    const turnUsage = turnUsageOf(usages, routes)
+    // No routes: attributing a turn to a provider needs the model that served
+    // each call, which the projection does not carry. Naming the message id here
+    // would put a nonsense first line in the usage panel, and the panel omits the
+    // line when there is no route.
+    const turnUsage = turnUsageOf(usages, [])
     footers.set(closing.id, { turnEnd: true, ...(turnUsage === undefined ? {} : { turnUsage }) })
   }
   return footers

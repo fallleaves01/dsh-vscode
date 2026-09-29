@@ -53,6 +53,10 @@ function testClient() {
     listAgentPresets: vi.fn(async () => ({ presets: [{ id: 'standard', trust: 'system', isDefault: true }, { id: 'minimal', trust: 'system', isDefault: false }] })),
     selectModel: vi.fn(async () => ({})), settings: vi.fn(), mutateSettings: vi.fn(), pluginInventory: vi.fn(), attachment: vi.fn(),
     selectAgentPreset: vi.fn(), prompt: vi.fn(async () => ({})),
+    messageFeedback: vi.fn(async () => ({ ok: true, value: { items: [] } })),
+    putMessageFeedback: vi.fn(async () => ({ ok: true, value: { messageId: 'm1', rating: 'positive', version: 1, createdAt: 1, updatedAt: 1 } })),
+    deleteMessageFeedback: vi.fn(async () => ({ ok: true, value: { absent: true } })),
+    forkSession: vi.fn(async () => 'child'),
     updateQueue: vi.fn(async () => ({ accepted: true })),
     executeCommand: vi.fn(async () => ({ result: { kind: 'success' } })),
     archiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
@@ -94,6 +98,78 @@ async function harness(connection?: DshConnection) {
   const next = () => { const next = testClient(); mocks.client = next.client; return next }
   return { client, controller, output, emit, fail, runtime, reviews, next }
 }
+
+describe('rating a response', () => {
+  const opening = { events: [], hasMore: false, projections: { values: {} }, isCurrent: () => true, activate() {} }
+
+  it('records a first rating without claiming a version', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    await h.controller.submitFeedback('a', 'm1', 'positive')
+    // No rating exists yet, so the write must claim exactly that.
+    expect(h.client.putMessageFeedback).toHaveBeenCalledWith('a', 'm1', 'positive', null)
+    expect(h.controller.state.messageFeedback).toEqual([expect.objectContaining({ messageId: 'm1', rating: 'positive' })])
+  })
+
+  it('withdraws the rating that is already recorded', async () => {
+    const h = await harness()
+    h.client.messageFeedback.mockResolvedValue({ ok: true, value: { items: [{ messageId: 'm1', rating: 'positive', version: 7, createdAt: 1, updatedAt: 1 }] } })
+    await h.controller.selectSession('a')
+    await vi.waitFor(() => expect(h.controller.state.messageFeedback).toHaveLength(1))
+
+    await h.controller.submitFeedback('a', 'm1', 'positive')
+    expect(h.client.deleteMessageFeedback).toHaveBeenCalledWith('a', 'm1', 7)
+    expect(h.controller.state.messageFeedback).toEqual([])
+  })
+
+  it('replaces a rating by quoting its version', async () => {
+    const h = await harness()
+    h.client.messageFeedback.mockResolvedValue({ ok: true, value: { items: [{ messageId: 'm1', rating: 'positive', version: 7, createdAt: 1, updatedAt: 1 }] } })
+    await h.controller.selectSession('a')
+    await vi.waitFor(() => expect(h.controller.state.messageFeedback).toHaveLength(1))
+
+    await h.controller.submitFeedback('a', 'm1', 'negative')
+    expect(h.client.putMessageFeedback).toHaveBeenCalledWith('a', 'm1', 'negative', 7)
+  })
+
+  it('adopts the authoritative rating on a conflict instead of retrying', async () => {
+    const h = await harness()
+    h.client.messageFeedback.mockResolvedValue({ ok: true, value: { items: [{ messageId: 'm1', rating: 'positive', version: 7, createdAt: 1, updatedAt: 1 }] } })
+    await h.controller.selectSession('a')
+    await vi.waitFor(() => expect(h.controller.state.messageFeedback).toHaveLength(1))
+
+    // Another window voted in between. Retrying here would silently overrule it,
+    // so the runtime's item becomes the state.
+    h.client.putMessageFeedback.mockResolvedValueOnce({ ok: false, error: { code: 'version-conflict', current: { messageId: 'm1', rating: 'negative', version: 9, createdAt: 2, updatedAt: 2 } } })
+    await h.controller.submitFeedback('a', 'm1', 'negative')
+    expect(h.controller.state.messageFeedback).toEqual([expect.objectContaining({ rating: 'negative', version: 9 })])
+  })
+
+  it('clears a rating another window removed', async () => {
+    const h = await harness()
+    h.client.messageFeedback.mockResolvedValue({ ok: true, value: { items: [{ messageId: 'm1', rating: 'positive', version: 7, createdAt: 1, updatedAt: 1 }] } })
+    await h.controller.selectSession('a')
+    await vi.waitFor(() => expect(h.controller.state.messageFeedback).toHaveLength(1))
+
+    h.client.deleteMessageFeedback.mockResolvedValueOnce({ ok: false, error: { code: 'version-conflict', current: null } })
+    await h.controller.submitFeedback('a', 'm1', 'positive')
+    expect(h.controller.state.messageFeedback).toEqual([])
+  })
+})
+
+describe('branching a conversation', () => {
+  it('forks at the given event and opens the child', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    await h.controller.forkConversation('a', 42)
+    expect(h.client.forkSession).toHaveBeenCalledWith('a', 42)
+    // The list this test serves does not contain the child — the runtime may not
+    // have published it yet — and the click must still open it rather than do
+    // nothing visible.
+    expect(h.client.openSession).toHaveBeenCalledWith('child', undefined)
+    expect(h.controller.state.sessionId).toBe('child')
+  })
+})
 
 describe('a conversation that cannot be opened', () => {
   it('reports the failure instead of staying in the loading phase', async () => {
