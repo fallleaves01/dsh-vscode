@@ -73,6 +73,21 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
 }
 
 describe('DSH 0.1.2 chat transport', () => {
+  it('separates "this model cannot route" from "nothing can route"', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    // The session's selection names a provider that is gone, while another can
+    // still route: sending cannot work, but the picker is the way out.
+    h.results['session/modelCatalog'] = {
+      default: { provider: 'missing', model: 'm' }, routableProviders: ['other'], groups: [], failures: [],
+    }
+    h.push('session/control', { type: 'projection', sessionId: 's', key: 'modelSelection', seq: 8, value: { lastUsed: { provider: 'missing', model: 'm' }, next: null } })
+    const models = await h.client.models('s')
+    expect(models.current.provider).toBe('missing')
+    expect(models.routable).toBe(false)
+    expect(models.anyRoutable).toBe(true)
+  })
+
   it('keeps the feed alive when one conversation subscription fails', async () => {
     const h = harness(false)
     await h.client.startStreams()
@@ -170,6 +185,7 @@ describe('DSH 0.1.2 chat transport', () => {
     await h.client.startStreams()
     h.results['session/modelCatalog'] = { default: { provider: 'p', model: 'm' }, routableProviders: [], groups: [], failures: [] }
     expect((await h.client.models('s')).routable).toBe(false)
+    expect((await h.client.models('s')).anyRoutable).toBe(false)
 
     // Signing in commits a credential; without re-reading, the composer stays
     // disabled and the sidebar says no model is available.

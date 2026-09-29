@@ -122,6 +122,33 @@ describe('the composer waits for anything still being staged', () => {
   })
 })
 
+describe('a dead selected model still leaves a way out', () => {
+  const state = (anyRoutable: boolean) => ({
+    sessionId: 'session-a', phase: 'ready', routable: false, anyRoutable,
+    models: [{ provider: 'p', model: 'm', label: 'M', selected: true }],
+    routableNotice: anyRoutable ? 'The selected model is not available on this runtime. Choose another model to continue.' : 'No model.',
+  })
+
+  it('keeps the model picker usable while another provider can route', async () => {
+    const h = open()
+    h.sendState(state(true))
+    await h.settle()
+    // Sending genuinely cannot work, so the composer stays closed…
+    expect((h.document.getElementById('prompt') as HTMLTextAreaElement).disabled).toBe(true)
+    // …but the picker is how the user recovers, so it must not be.
+    expect((h.document.getElementById('models') as HTMLButtonElement).disabled).toBe(false)
+    expect(h.document.getElementById('routableNotice')!.textContent).toContain('Choose another model')
+  })
+
+  it('disables it when no provider can route at all', async () => {
+    const h = open()
+    h.sendState(state(false))
+    await h.settle()
+    expect((h.document.getElementById('models') as HTMLButtonElement).disabled).toBe(true)
+    expect((h.document.getElementById('prompt') as HTMLTextAreaElement).disabled).toBe(true)
+  })
+})
+
 describe('candidate lists belong to the prompt that asked for them', () => {
   it('closes a stale mention listbox when the conversation changes', async () => {
     const h = open()

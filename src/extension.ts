@@ -80,7 +80,7 @@ import {
   unavailableAccountState,
   type AccountState,
 } from './account.js'
-import { dshErrorText, dshFailure, NO_ROUTABLE_PROVIDER_TEXT } from './dsh-errors.js'
+import { dshErrorText, dshFailure, NO_ROUTABLE_PROVIDER_TEXT, SELECTED_MODEL_UNAVAILABLE_TEXT } from './dsh-errors.js'
 import { wireRecord } from './dsh-streams.js'
 import type { DshConnection } from './dsh-connection.js'
 import { canRetryConnection, reconnectAttempts } from './dsh-reconnect.js'
@@ -170,6 +170,8 @@ interface ChatViewState {
   messages: ConversationMessage[]
   running: boolean
   routable: boolean
+  /** Whether any provider can route; the model picker stays usable on this. */
+  anyRoutable: boolean
   models: ModelItem[]
   approval: ApprovalItem | null
   question: QuestionRequest | null
@@ -237,6 +239,7 @@ function initialState(cwd: string): ChatViewState {
     messages: [],
     running: false,
     routable: cwd !== '',
+    anyRoutable: cwd !== '',
     models: [],
     approval: null,
     question: null,
@@ -406,6 +409,7 @@ export class DshChatController implements vscode.Disposable {
       sessionId: '',
       running: false,
       routable: this.cwd !== '',
+      anyRoutable: this.cwd !== '',
       models: [],
       approval: null,
       question: null,
@@ -1448,7 +1452,7 @@ export class DshChatController implements vscode.Disposable {
     void this.loadAgentPresets(this.client, sessionId)
   }
 
-  private modelPatch(models: SessionModels): Pick<ChatViewState, 'models' | 'routable' | 'routableNotice'> {
+  private modelPatch(models: SessionModels): Pick<ChatViewState, 'models' | 'routable' | 'anyRoutable' | 'routableNotice'> {
     const options: ModelItem[] = []
     for (const group of models.groups) {
       for (const model of group.models) {
@@ -1472,7 +1476,12 @@ export class DshChatController implements vscode.Disposable {
     return {
       models: options,
       routable: models.routable,
-      routableNotice: models.routable ? null : NO_ROUTABLE_PROVIDER_TEXT,
+      anyRoutable: models.anyRoutable,
+      // Naming the way out matters when one exists: with another provider
+      // routable, the picker is the fix, not a sign-in.
+      routableNotice: models.routable
+        ? null
+        : (models.anyRoutable ? SELECTED_MODEL_UNAVAILABLE_TEXT : NO_ROUTABLE_PROVIDER_TEXT),
     }
   }
 

@@ -126,3 +126,6 @@ export function dshErrorText(error: unknown): string {
  */
 export const NO_ROUTABLE_PROVIDER_TEXT =
   'No DeepSeek model is available on this runtime. Sign in, or configure an API key, to start a conversation.'
+/** The selected model went away while others remain; the picker is the way out. */
+export const SELECTED_MODEL_UNAVAILABLE_TEXT =
+  'The selected model is not available on this runtime. Choose another model to continue.'

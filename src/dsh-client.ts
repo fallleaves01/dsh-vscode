@@ -123,7 +123,14 @@ export interface ModelOption extends ModelSelection {
 
 export interface SessionModels {
   current: ModelSelection
+  /** Whether the *selected* provider can route — a send depends on this one. */
   routable: boolean
+  /**
+   * Whether *any* provider can route. Separate from `routable` because the two
+   * answer different questions: a conversation whose selected model went away
+   * cannot send, but the model picker must stay usable so the user can switch.
+   */
+  anyRoutable: boolean
   groups: Array<{
     id: string
     name: string
@@ -233,7 +240,13 @@ export class DshClient {
     const current: ModelSelection = wireRecord(candidate) && typeof candidate.provider === 'string' && typeof candidate.model === 'string'
       ? { provider: candidate.provider, model: candidate.model, ...(typeof candidate.reasoningEffort === 'string' ? { reasoningEffort: candidate.reasoningEffort } : {}) }
       : catalog.default
-    return { current, routable: catalog.routableProviders.includes(current.provider), groups: catalog.groups, failures: catalog.failures }
+    return {
+      current,
+      routable: catalog.routableProviders.includes(current.provider),
+      anyRoutable: catalog.routableProviders.length > 0,
+      groups: catalog.groups,
+      failures: catalog.failures,
+    }
   }
 
   attachment(sessionId: string, attachmentId: string): Promise<{ attachment: ImageAttachment; data: string }> {

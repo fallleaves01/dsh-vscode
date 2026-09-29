@@ -1916,7 +1916,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       renderConversation(current);
       const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
       elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready'; elements.sessionTrigger.disabled = current.phase !== 'ready';
-      elements.models.disabled = !enabled || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
+      // The picker answers a different question from the composer. When the
+      // selected model is unavailable but another provider can route, disabling
+      // the picker would leave the user with no way back: they cannot send and
+      // cannot switch. So it follows "any provider", not "this one".
+      const canPickModel = current.phase === 'ready' && current.anyRoutable !== false && Boolean(current.sessionId);
+      elements.models.disabled = !canPickModel || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
       const stopping = current.stopping === true && current.running === true;
       elements.cancel.classList.toggle('hidden', current.running !== true);
       elements.cancel.classList.toggle('stopping', stopping);
