@@ -165,6 +165,12 @@ function fragmentSnapshot(diffs: readonly FileDiff[], contextualHunks = false): 
 export class DiffReviewManager implements vscode.TextDocumentContentProvider, vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<vscode.Uri>()
   private readonly content = new Map<string, string>()
+  /**
+   * Preview URIs per review, so re-opening a diff (or dismissing it) releases the
+   * file text it showed. Without this every open left up to two orphans holding
+   * the full before/after content until the runtime restarted.
+   */
+  private readonly previewUris = new Map<string, string[]>()
   private readonly pending = new Map<string, Map<string, PendingFile>>()
   private readonly reviews = new Map<string, Map<number, Map<string, ReviewFile>>>()
   private readonly dismissed = new Map<string, Set<string>>()
@@ -177,6 +183,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
 
   dispose(): void {
     this.changed.dispose()
+    this.previewUris.clear()
     this.content.clear()
     this.pending.clear()
     this.reviews.clear()
@@ -184,6 +191,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   }
 
   clear(): void {
+    this.previewUris.clear()
     this.content.clear()
     this.pending.clear()
     this.reviews.clear()
@@ -344,13 +352,13 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   async reviewFile(sessionId: string, cwd: string, value: string, turn?: number): Promise<void> {
     const review = this.findReview(sessionId, cwd, value, turn)
     if (review === undefined) throw new Error(`No completed DeepSeek change is available for ${value}.`)
-    await this.openReview(review, true)
+    await this.openReview(review, true, sessionId)
   }
 
   async reviewAll(sessionId: string): Promise<void> {
     const reviews = this.allReviews(sessionId)
     if (reviews.length === 0) throw new Error('No completed DeepSeek changes are available to review.')
-    for (const review of reviews.slice(0, 20)) await this.openReview(review, false)
+    for (const review of reviews.slice(0, 20)) await this.openReview(review, false, sessionId)
     if (reviews.length > 20) void vscode.window.showInformationMessage('Opened the first 20 changed files.')
   }
 
@@ -394,6 +402,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   }
 
   private clearSession(sessionId: string): void {
+    this.forgetPreviews(undefined, `${sessionId}:`)
     this.reviews.delete(sessionId)
     for (const key of this.pending.keys()) if (key.startsWith(`${sessionId}:`)) this.pending.delete(key)
   }
@@ -478,6 +487,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   }
 
   private dismiss(sessionId: string, review: ReviewFile): void {
+    this.forgetPreviews(this.previewKey(sessionId, review))
     this.markDismissed(sessionId, review)
     const turns = this.reviews.get(sessionId)
     const files = turns?.get(review.turn)
@@ -542,7 +552,24 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     fs.writeFileSync(review.absolutePath, before, 'utf8')
   }
 
-  private async openReview(review: ReviewFile, preview: boolean): Promise<void> {
+  private previewKey(sessionId: string, review: ReviewFile): string {
+    return `${sessionId}:${String(review.turn)}:${comparableFilePath(review.absolutePath)}`
+  }
+
+  /** Release the text behind whatever this review was last shown with. */
+  private forgetPreviews(key: string | undefined, prefix?: string): void {
+    for (const [existing, uris] of this.previewUris) {
+      if (key !== undefined && existing !== key) continue
+      if (prefix !== undefined && !existing.startsWith(prefix)) continue
+      for (const uri of uris) this.content.delete(uri)
+      this.previewUris.delete(existing)
+      if (key !== undefined) break
+    }
+  }
+
+  private async openReview(review: ReviewFile, preview: boolean, sessionId: string): Promise<void> {
+    const key = this.previewKey(sessionId, review)
+    this.forgetPreviews(key)
     const id = randomUUID()
     const name = path.basename(review.absolutePath)
     const beforeUri = vscode.Uri.from({ scheme: 'dsh-diff', authority: 'before', path: `/${id}/${name}` })
@@ -550,6 +577,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     const content = this.reviewContent(review)
     this.content.set(beforeUri.toString(), content.before ?? '')
     this.content.set(afterUri.toString(), content.after ?? '')
+    this.previewUris.set(key, [beforeUri.toString(), afterUri.toString()])
     await vscode.commands.executeCommand(
       'vscode.diff',
       beforeUri,

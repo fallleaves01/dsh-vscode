@@ -93,6 +93,29 @@ describe('DiffReviewManager', () => {
     expect(manager.changedFiles('early')[0]?.files[0]?.canRevert).toBe(true)
   })
 
+  it('releases the text of a diff that was opened again', async () => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
+    const { call, result } = modernEvents('edit', { file_path: 'app.ts', old_string: 'old', new_string: 'new' }, 'old\n', 'new\n')
+    const manager = new DiffReviewManager()
+    fs.writeFileSync(file, 'old\n')
+    manager.accept('modern', cwd, call)
+    fs.writeFileSync(file, 'new\n')
+    manager.accept('modern', cwd, result)
+
+    await manager.reviewFile('modern', cwd, 'app.ts', 1)
+    const [, firstBefore] = mocks.executeCommand.mock.calls.at(-1)!
+    expect(manager.provideTextDocumentContent(firstBefore)).toBe('old\n')
+
+    // Re-opening the same diff must not leave the previous pair behind: each
+    // open used to keep up to two full snapshots until the runtime restarted.
+    await manager.reviewFile('modern', cwd, 'app.ts', 1)
+    const [, secondBefore, secondAfter] = mocks.executeCommand.mock.calls.at(-1)!
+    expect(secondBefore.toString()).not.toBe(firstBefore.toString())
+    expect(manager.provideTextDocumentContent(firstBefore)).toBe('')
+    expect(manager.provideTextDocumentContent(secondBefore)).toBe('old\n')
+    expect(manager.provideTextDocumentContent(secondAfter)).toBe('new\n')
+  })
+
   it('still offers a later change to the same file in the same turn after a Keep', () => {
     const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
     const manager = new DiffReviewManager()
