@@ -1,5 +1,5 @@
 /**
- * Account sign-in state for the sidebar (DSH 0.1.7-rc.2).
+ * Account sign-in state for the sidebar (DSH 0.2.0-rc.2).
  *
  * The Host owns the whole OAuth exchange; this module only interprets the
  * credential-free `AccountView` it publishes and derives what the sidebar shows.

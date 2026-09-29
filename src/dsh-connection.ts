@@ -93,7 +93,7 @@ export class DshConnection {
       })
       try {
         // DSH <= 0.1.5 answers the launch token with `Location: /`, while newer
-        // releases (observed on 0.1.7-rc.1 and 0.1.7-rc.2) use the equivalent relative form
+        // releases (observed on 0.1.7-rc.1, 0.1.7-rc.2 and 0.2.0-rc.2) use the equivalent relative form
         // `Location: ./`. Both resolve to the site root, so accept either.
         const location = response.headers.get('location')
         if (response.status !== 303 || (location !== '/' && location !== './')) {

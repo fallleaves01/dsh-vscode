@@ -9,7 +9,7 @@ VSIX — see the README for installing one.
 
 ## [0.1.0] - 2026-09-29
 
-The first release of the fork as an independent extension, on DSH 0.1.7-rc.2.
+The first release of the fork as an independent extension, on DSH 0.2.0-rc.2.
 
 ### Added
 
@@ -32,7 +32,7 @@ The first release of the fork as an independent extension, on DSH 0.1.7-rc.2.
 
 ### Changed
 
-- Adapt to DSH 0.1.7-rc.2.
+- Adapt to DSH 0.2.0-rc.2; 0.1.7 runtimes stay supported.
 - Collaboration modes are controlled by slash commands, as in DSH; permissions
   are the part that gets its own UI.
 - A tool's output opens itself while the tool runs and folds again when it

@@ -39,6 +39,7 @@ describe('DSH launch resolution', () => {
     expect(webArgsForDshVersion(args, '0.1.1-rc.2')).toEqual([...args, '--no-open'])
     expect(webArgsForDshVersion(args, '0.1.1')).toEqual([...args, '--no-open'])
     expect(webArgsForDshVersion(args, '0.2.0-rc.1')).toEqual([...args, '--no-open'])
+    expect(webArgsForDshVersion(args, '0.2.0-rc.2')).toEqual([...args, '--no-open'])
     expect(webArgsForDshVersion(args, '1.0.0')).toEqual([...args, '--no-open'])
   })
 

@@ -223,6 +223,9 @@ export class DshSessionFeed {
   async page(sessionId: string, beforeSeq: number): Promise<{ events: HistoryEntry[]; hasMore: boolean }> {
     const state = this.follow
     if (state?.sessionId !== sessionId || state.cursor < 0) throw new Error('Open the session before loading older history.')
+    // `throughSeq` is the snapshot cursor on purpose: 0.2.0 rejects a value past
+    // the session's cursor with `gateway/bad-request`, so paging must walk
+    // backwards from a real one.
     const result = await this.connection.call<{ records: unknown; hasMore: boolean }>('session/page', {
       request: { address: state.address, throughSeq: state.cursor, beforeSeq, maxMessages: 100 },
     })

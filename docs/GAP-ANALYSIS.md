@@ -1,7 +1,7 @@
 # DSH web ↔ VS Code 插件 功能对照分析
 
-- **对照基线**：DSH `0.1.7-rc.2`；插件 = 本目录的补丁版 `0.0.9`
-- **rc.1 → rc.2 漂移审计**：见本文档第六节（结论：无破坏性变更）
+- **对照基线**：DSH `0.1.7-rc.2`（本文正文即该基线）；**当前支持基线**：DSH `0.2.0-rc.2`（复核见第六节）；插件 = 本目录的补丁版 `0.0.9`
+- **rc.1 → rc.2 漂移审计**：见本文档第五节；**rc.2 → 0.2.0-rc.2** 见第六节（均无破坏性变更）
 - **插件上游**：[Lixxx1/dsh-vscode](https://github.com/Lixxx1/dsh-vscode)
 - **方法**
   - DSH 侧：解析 `dsh-api-*/lib/typert.host.js` 的 manifest，并**实机探测**（临时起一个 `dsh web` 随机端口实例，对 73 个候选接口用空参数调用，按错误码区分"接口不存在"=HTTP 404 / "参数不对但接口存在"=各种 `*-invalid`）
@@ -217,11 +217,49 @@ settings/describe  settings/mutate  workspace/archiveSession  workspace/follow
    只有某 provider 真的零模型时才会禁用输入框（这比 rc.1 更正确）。
 2. `session/selectModel` 改为**后台**持久化默认模型，返回值不再等待落盘。本插件只用返回的规范化选择。
 
-## 六、下一步怎么走
+## 六、rc.2 → 0.2.0-rc.2 漂移审计（结论：无破坏性变更，无需改代码）
+
+同样的两件工具，外加对**真实运行环境**的只读探测：
+
+```sh
+node tooling/dsh-contract-diff.mjs 0.1.7-rc.2 0.2.0-rc.2        # 只读 npm registry
+node tooling/dsh-drift-audit.mjs '<用户真机 0.2.0-rc.2 的 URL>'    # 只读，未做任何变更调用
+node tooling/dsh-live-compat.mjs '<隔离 HOME 起的 0.2.0-rc.2>'   # 会建会话/上传/登出，必须在隔离 HOME 跑
+```
+
+**契约层**：`dsh-api-session-controller` 的 4 个 result schema 各新增一个投影
+`userQuestions`，**没有删除、没有改名**；其余 8 个包（jobs / workspace / settings /
+file-upload / subagent / agent-presets / commands / plugin-inventory）完全一致。
+
+**`userQuestions` 是否需要适配：不需要。** `dsh-tool-ask-user` 的 `Config.mode` 默认
+`legacy`，届时 `userQuestions` 恒为空视图；只有显式配置 `mode: timed` 的运行时才会产生
+`open` / `continued` 状态的问题，而那种状态下客户端的应答路径从 waterfall 事件换成
+`userQuestions/answer`、并用 `userQuestions/attachWait` 重新挂wait。用户真机未启用该模式
+（`~/.dsh/profiles` 里没有相关配置），所以本插件现有的 waterfall 应答路径就是 0.2.0 的默认路径。
+若将来要支持 timed 模式，需要：读 `userQuestions` 投影 + 接这两个 Remote 方法 + 呈现
+`intent.kind === 'plan-review'`。
+
+**行为层（审计工具发现的真实校验变化）**：`session/page` 现在会**拒绝**超过会话 cursor 的
+`throughSeq`（`gateway/bad-request: session page through seq … is past cursor …`）。本插件
+`DshSessionFeed.page()` 传的正是 follow 快照的 cursor，因此不受影响 —— 已在注释与测试里钉住。
+
+**实测结果**（用户真机 0.2.0-rc.2，322 个已存会话）：
+
+- HTTP 接口 7/7 OK：`session/modelCatalog`、`agentPresets/list`、`pluginInventory/list`、
+  `settings/describe`、`commands/list`、`skills/list`、`session/page`
+- mux 流 4/4 OK：`$events` ready、`session/control` baseline、`workspace/follow` baseline、
+  `session/follow` snapshot（`projections.asOfSeq === cursor`）
+- `dsh-live-compat.mjs`（本插件真实客户端代码）**24/24 touchpoints OK**，观察到的帧类型
+  `host/session-added`、`host/settings-changed`、`mux:session/jobs`、`mux:session/projection`
+  都在 `acceptFrame` 的处理范围内
+- 顺带修掉两个**工具自身的假失败**：`dsh-url-check.mjs` 只认 `Location: /`（0.2.0 回 `./`，
+  客户端两者都收），`dsh-drift-audit.mjs` 用 `throughSeq: 1e9` 探测分页（现被合法拒绝）
+
+## 七、下一步怎么走
 
 ```sh
 # 1. DSH 升级后先跑漂移审计
-node tools/dsh-drift-audit.mjs '<launch url>'
+node tooling/dsh-drift-audit.mjs '<launch url>'
 
 # 2. 改 dsh-vscode/src/ 下对应文件
 # 3. 重新构建
