@@ -80,6 +80,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .subagent-bar-label { flex: none; color: var(--vscode-descriptionForeground); }
     .subagent-bar-back { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 1px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; cursor: pointer; }
     .subagent-bar-back:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .message-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; margin-left: -6px; opacity: 0; transition: opacity 80ms; }
+    .message:hover .message-actions, .message:focus-within .message-actions, .message-actions.always { opacity: 1; }
+    .message-action { display: flex; align-items: center; min-height: 28px; padding: 2px 6px; border: none; border-radius: 4px; background: transparent; color: var(--vscode-descriptionForeground); font-size: 11px; cursor: pointer; }
+    .message-action:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
+    .message-action.usage-pill { color: var(--vscode-descriptionForeground); }
+    .message-clock { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .routable-notice { padding: 6px 12px 2px; color: var(--vscode-errorForeground); font-size: 11px; }
     .routable-notice.hidden { display: none; }
     .session-row.session-ancestor { margin-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--vscode-widget-border) 60%, transparent); border-radius: 0; grid-template-columns: minmax(0, 1fr); }
@@ -1134,6 +1140,90 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function syncThinking(thinking, message) {
       applyThinkingState(thinking, message);
     }
+    function messageMetaFor(id) {
+      const list = (state && state.messageMeta) || [];
+      for (const entry of list) if (entry && entry.id === id) return entry;
+      return undefined;
+    }
+    /** The clock DSH shows: time alone on the same day, date above it otherwise. */
+    function formatMessageClock(time) {
+      if (typeof time !== 'number' || !Number.isFinite(time)) return '';
+      const at = new Date(time);
+      if (Number.isNaN(at.getTime())) return '';
+      const pad = value => (value < 10 ? '0' : '') + String(value);
+      const clock = pad(at.getHours()) + ':' + pad(at.getMinutes());
+      const now = new Date();
+      if (at.toDateString() === now.toDateString()) return clock;
+      if (at.getFullYear() === now.getFullYear()) return (at.getMonth() + 1) + '/' + at.getDate() + ' ' + clock;
+      return at.getFullYear() + '-' + (at.getMonth() + 1) + '-' + at.getDate() + ' ' + clock;
+    }
+    function compactTokens(count) {
+      if (typeof count !== 'number' || !Number.isFinite(count)) return '0';
+      if (count < 1000) return String(count);
+      const scaled = count < 1000000 ? count / 1000 : count / 1000000;
+      const rounded = scaled >= 100 ? Math.round(scaled) : Math.round(scaled * 10) / 10;
+      return String(rounded) + (count < 1000000 ? 'K' : 'M');
+    }
+    function exactTokens(count) { return Number(count || 0).toLocaleString('en-US'); }
+    /** The fields the usage panel lists, in DSH's order. */
+    function usageLines(turnUsage) {
+      const lines = [];
+      if (turnUsage.routes && turnUsage.routes.length) lines.push('Provider / model: ' + turnUsage.routes.join(', '));
+      const cached = turnUsage.cacheReadTokens;
+      const uncached = Number(turnUsage.uncachedInputTokens || 0);
+      if (cached !== undefined) {
+        const input = cached + uncached;
+        lines.push('Cache hit: ' + (input > 0 ? String(Math.round((cached / input) * 100)) : '0') + '%');
+      }
+      lines.push('Uncached input: ' + exactTokens(uncached));
+      if (cached !== undefined) lines.push('Cached input: ' + exactTokens(cached));
+      if (turnUsage.cacheWriteTokens !== undefined) lines.push('Cache write: ' + exactTokens(turnUsage.cacheWriteTokens));
+      lines.push('Output: ' + exactTokens(turnUsage.outputTokens)
+        + (turnUsage.reasoningTokens === undefined ? '' : ' (' + exactTokens(turnUsage.reasoningTokens) + ' reasoning)'));
+      return lines;
+    }
+    function copyMessageText(message, button) {
+      const text = typeof message.text === 'string' ? message.text : '';
+      const restore = () => window.setTimeout(() => {
+        button.textContent = '⧉'; button.title = 'Copy'; button.setAttribute('aria-label', 'Copy');
+      }, 1000);
+      const confirm = () => {
+        button.textContent = '✓'; button.title = 'Copied'; button.setAttribute('aria-label', 'Copied');
+        restore();
+      };
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        navigator.clipboard.writeText(text).then(confirm, () => { vscode.postMessage({ type: 'copy-text', text }); confirm(); });
+        return;
+      }
+      vscode.postMessage({ type: 'copy-text', text });
+      confirm();
+    }
+    /**
+     * The row DSH shows once per completed turn, under that turn's closing reply:
+     * copy the whole message, the turn's usage, and the clock.
+     */
+    function renderMessageActions(message, meta) {
+      const row = node('div', 'message-actions');
+      const list = (state && state.messages) || [];
+      // Only the newest turn's row stays visible; the rest reveal on hover, as
+      // DSH does, so a long transcript is not a wall of buttons.
+      if (list.length > 0 && list[list.length - 1].id === message.id) row.classList.add('always');
+      const copy = node('button', 'message-action message-copy', '⧉');
+      copy.type = 'button'; copy.title = 'Copy'; copy.setAttribute('aria-label', 'Copy');
+      copy.addEventListener('click', () => copyMessageText(message, copy));
+      row.append(copy);
+      if (meta.turnUsage !== undefined) {
+        const usage = meta.turnUsage;
+        const pill = node('button', 'message-action usage-pill', 'Usage ' + compactTokens(usage.totalTokens) + ' tok');
+        pill.type = 'button';
+        const detail = usageLines(usage).join('\\n');
+        pill.title = detail; pill.setAttribute('aria-label', 'Turn usage: ' + detail);
+        row.append(pill);
+      }
+      const clock = formatMessageClock(meta.time);
+      if (clock !== '') row.append(node('span', 'message-clock', clock));
+      return row;
+    }
     function renderMessage(message) {
       if (message.role === 'tool') return { message, node: renderTool(message) };
       if (message.role === 'command') return { message, node: renderCommand(message) };
@@ -1154,6 +1244,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       item.append(head);
       if (thinking) item.append(thinking.root);
       item.append(body);
+      const meta = messageMetaFor(message.id);
+      if (meta !== undefined && meta.turnEnd === true && message.role === 'assistant') item.append(renderMessageActions(message, meta));
       return { message, node: item, ...(markdown ? { markdown } : {}), ...(thinking ? { thinking } : {}) };
     }
     function messageNode(message) {

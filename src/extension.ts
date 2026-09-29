@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
-import { ConversationProjector, type ConversationImage, type ConversationMessage, type DshEvent } from './conversation.js'
+import type { TurnTokenUsage } from './token-usage.js'
+import { ConversationProjector, turnFooters, type ConversationImage, type ConversationMessage, type DshEvent } from './conversation.js'
 import {
   agentPresetStateOf,
   lockAgentPresetState,
@@ -106,6 +107,15 @@ interface ModelItem {
   defaultReasoningEffort?: string
 }
 
+interface MessageMetaItem {
+  id: string
+  /** Unix epoch milliseconds, from the event that produced the message. */
+  time: number
+  /** Set on the message that carries its turn's action row. */
+  turnEnd?: true
+  turnUsage?: TurnTokenUsage
+}
+
 interface ApprovalItem {
   rpcId: string
   approvalId: string
@@ -170,6 +180,8 @@ interface ChatViewState {
   stopping: boolean
   sessionId: string
   messages: ConversationMessage[]
+  /** Per-message facts for the action row, indexed by message id. */
+  messageMeta: MessageMetaItem[]
   running: boolean
   routable: boolean
   /** Whether any provider can route; the model picker stays usable on this. */
@@ -239,6 +251,7 @@ function initialState(cwd: string): ChatViewState {
     stopping: false,
     sessionId: '',
     messages: [],
+    messageMeta: [],
     running: false,
     routable: cwd !== '',
     anyRoutable: cwd !== '',
@@ -712,7 +725,7 @@ export class DshChatController implements vscode.Disposable {
       this.historyEntries = mergeHistoryEntries(this.historyEntries, unseenEntries)
       this.projector.reset(this.historyEntries, true)
       this.publish({
-        messages: this.projectedMessages(),
+        messages: this.projectedMessages(), ...this.messageMetaPatch(),
         changedFiles: this.diffReviews.prependHistory(sessionId, this.cwd, unseenEntries),
         hasMoreHistory: page.hasMore,
         loadingHistory: false,
@@ -997,7 +1010,7 @@ export class DshChatController implements vscode.Disposable {
     const raw = redactDshSecrets(dshFailure(error).message)
     this.output.appendLine(`[chat] ${raw === message ? message : `${message} (${raw})`}`)
     this.projector.notice(`error:${String(Date.now())}`, message, true)
-    this.publish({ messages: this.projectedMessages() })
+    this.publish({ messages: this.projectedMessages(), ...this.messageMetaPatch() })
   }
 
   dispose(): void {
@@ -1366,7 +1379,7 @@ export class DshChatController implements vscode.Disposable {
       statusText: '',
       setup: null,
       sessionId,
-      messages: this.projectedMessages(),
+      messages: this.projectedMessages(), ...this.messageMetaPatch(),
       ...this.runningPatch(summary?.running ?? false, sessionId),
       approval: null,
       question: null,
@@ -1527,7 +1540,7 @@ export class DshChatController implements vscode.Disposable {
 
     if (frame.channel === 'mux' && type === 'session/assistant-stream' && sessionId === this._state.sessionId) {
       this.projector.applyStream(payload.update as AssistantStreamUpdate)
-      this.publish({ messages: this.projectedMessages() })
+      this.publish({ messages: this.projectedMessages(), ...this.messageMetaPatch() })
       return
     }
 
@@ -1560,7 +1573,7 @@ export class DshChatController implements vscode.Disposable {
           )
         }
         this.publish({
-          messages: this.projectedMessages(),
+          messages: this.projectedMessages(), ...this.messageMetaPatch(),
           ...(changed ? { changedFiles: this.diffReviews.changedFiles(sessionId) } : {}),
         })
         this.hydrateImages(this.requireClient(), sessionId)
@@ -1750,7 +1763,7 @@ export class DshChatController implements vscode.Disposable {
         typeof payload.message === 'string' ? payload.message : 'DeepSeek Harness reported an agent error.',
       ))
       this.projector.notice(`agent-error:${frame.rpcId}`, message, true)
-      this.publish({ messages: this.projectedMessages(), ...this.runningPatch(false) })
+      this.publish({ messages: this.projectedMessages(), ...this.messageMetaPatch(), ...this.runningPatch(false) })
       return
     }
 
@@ -1769,6 +1782,21 @@ export class DshChatController implements vscode.Disposable {
       else Object.assign(existing, summary)
       this.publishSessionItems()
     }
+  }
+
+  /**
+   * The action row's data: timing for every message, and the turn fold once per
+   * completed turn. Published beside the messages rather than inside them, since
+   * the message shape is what the conversation contract and its tests pin.
+   */
+  private messageMetaPatch(): Pick<ChatViewState, 'messageMeta'> {
+    const meta = this.projector.messageMeta()
+    const footers = turnFooters(this.projector.messages(), meta)
+    const messageMeta: MessageMetaItem[] = []
+    for (const [id, value] of meta) {
+      messageMeta.push({ id, time: value.time, ...(footers.get(id) ?? {}) })
+    }
+    return { messageMeta }
   }
 
   private projectedMessages(): ConversationMessage[] {
@@ -1807,7 +1835,7 @@ export class DshChatController implements vscode.Disposable {
           if (this.attachmentLoads.get(key) !== load) return
           this.attachmentLoads.delete(key)
           if (this.client === client && this._state.sessionId === sessionId) {
-            this.publish({ messages: this.projectedMessages() })
+            this.publish({ messages: this.projectedMessages(), ...this.messageMetaPatch() })
           }
         })
       this.attachmentLoads.set(key, load)

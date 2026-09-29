@@ -1,9 +1,60 @@
 import { withoutIdeContext } from './ide-context.js'
+import { tokenUsageOf, turnUsageOf, type TokenUsage, type TurnTokenUsage } from './token-usage.js'
 import type { ImageMediaType } from './dsh-client.js'
 import { presentToolCall, presentToolResult } from './tool-presentation.js'
 import type { AssistantAttempt, AssistantStreamUpdate } from './dsh-assistant-stream.js'
 
 export type ConversationRole = 'user' | 'assistant' | 'tool' | 'command' | 'notice'
+
+/** What the action row shows under a message; never part of the message text. */
+export interface MessageMeta {
+  seq: number
+  /** Unix epoch milliseconds, as every DSH event carries it. */
+  time: number
+  turn?: number
+  step?: number
+  usage?: TokenUsage
+}
+
+/** The row DSH shows once per completed turn, anchored to that turn's closing reply. */
+export interface TurnFooter {
+  turnEnd: true
+  turnUsage?: TurnTokenUsage
+}
+
+/**
+ * Decide which message carries a turn's action row, and what the turn cost.
+ *
+ * DSH renders the row once per *completed* turn on that turn's closing assistant
+ * message and shows the turn's aggregate usage there, so the fold belongs here
+ * rather than on each step. A turn whose last reply is still streaming has no row.
+ */
+export function turnFooters(
+  messages: readonly ConversationMessage[],
+  meta: ReadonlyMap<string, MessageMeta>,
+): Map<string, TurnFooter> {
+  const turns = new Map<number, ConversationMessage[]>()
+  for (const message of messages) {
+    const turn = meta.get(message.id)?.turn
+    if (turn === undefined || message.role !== 'assistant') continue
+    const group = turns.get(turn)
+    if (group === undefined) turns.set(turn, [message])
+    else group.push(message)
+  }
+  const footers = new Map<string, TurnFooter>()
+  for (const group of turns.values()) {
+    const closing = [...group].reverse().find(message => message.streaming !== true)
+    if (closing === undefined) continue
+    const usages = group.map(message => meta.get(message.id)?.usage)
+    const routes = group.map(message => {
+      const step = meta.get(message.id)?.step
+      return step === undefined ? '' : String(message.id)
+    })
+    const turnUsage = turnUsageOf(usages, routes)
+    footers.set(closing.id, { turnEnd: true, ...(turnUsage === undefined ? {} : { turnUsage }) })
+  }
+  return footers
+}
 
 export interface ConversationMessage {
   id: string
@@ -160,6 +211,12 @@ function toolView(value: unknown, expected: 'call' | 'result'): unknown {
 export class ConversationProjector {
   private readonly orderedIds: string[] = []
   private readonly byId = new Map<string, ConversationMessage>()
+  /**
+   * Per-message facts the action row needs, kept beside the content rather than
+   * on it: the message shape is a contract that consumers and tests pin, and a
+   * footer needs timing and cost, not content.
+   */
+  private readonly meta = new Map<string, MessageMeta>()
   private readonly hiddenCommandIds = new Set<string>()
   private liveAttempt: (AssistantAttempt & { message?: ConversationMessage }) | undefined
 
@@ -168,6 +225,7 @@ export class ConversationProjector {
     this.liveAttempt = undefined
     this.orderedIds.length = 0
     this.byId.clear()
+    this.meta.clear()
     this.hiddenCommandIds.clear()
     for (const entry of entries) {
       if ('event' in entry) this.apply(entry.event, entry.view)
@@ -213,7 +271,10 @@ export class ConversationProjector {
       const id = typeof data.id === 'string' ? data.id : `user:${String(event.seq)}`
       const text = withoutIdeContext(textContent(data.content))
       const images = imageContent(data.content)
-      if (text !== '' || images.length > 0) this.set(id, { id, role: 'user', text, ...(images.length > 0 ? { images } : {}) })
+      if (text !== '' || images.length > 0) {
+        this.set(id, { id, role: 'user', text, ...(images.length > 0 ? { images } : {}) })
+        this.meta.set(id, { seq: event.seq, time: event.time, ...(typeof data.turn === 'number' ? { turn: data.turn } : {}) })
+      }
       return
     }
 
@@ -266,6 +327,13 @@ export class ConversationProjector {
         }
         if (current !== undefined && text === current.text) inheritAssistantStream(current, next)
         this.set(id, next)
+        const usage = tokenUsageOf(data.usage)
+        this.meta.set(id, {
+          seq: event.seq, time: event.time,
+          ...(typeof data.turn === 'number' ? { turn: data.turn } : {}),
+          ...(typeof data.step === 'number' ? { step: data.step } : {}),
+          ...(usage === undefined ? {} : { usage }),
+        })
       }
       return
     }
@@ -355,6 +423,11 @@ export class ConversationProjector {
 
   notice(id: string, text: string, failed = false): void {
     this.set(id, { id, role: 'notice', text, failed })
+  }
+
+  /** The sidecar facts for the messages currently held, keyed by message id. */
+  messageMeta(): Map<string, MessageMeta> {
+    return new Map(this.meta)
   }
 
   messages(): ConversationMessage[] {

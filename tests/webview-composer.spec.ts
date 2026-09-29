@@ -192,6 +192,53 @@ describe('a dead selected model still leaves a way out', () => {
   })
 })
 
+describe('the row under a completed turn', () => {
+  const state = (meta: unknown[]) => ({
+    sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true,
+    messages: [{ id: 'm1', role: 'assistant', text: 'the answer' }],
+    messageMeta: meta,
+  })
+
+  it('offers copy, the turn usage and the clock', async () => {
+    const h = open()
+    h.sendState(state([{ id: 'm1', time: Date.parse('2026-09-29T14:39:00'), turnEnd: true,
+      turnUsage: { uncachedInputTokens: 12_000, outputTokens: 300, totalTokens: 12_300, routes: ['p/m'] } }]))
+    await h.settle()
+    const row = h.document.querySelector('.message-actions')
+    expect(row).not.toBeNull()
+    expect(row!.querySelector('.message-copy')!.getAttribute('aria-label')).toBe('Copy')
+    expect(row!.querySelector('.usage-pill')!.textContent).toBe('Usage 12.3K tok')
+    // The pill names the fields DSH's panel names, in its order.
+    const detail = row!.querySelector('.usage-pill')!.getAttribute('aria-label')!
+    expect(detail).toContain('Provider / model: p/m')
+    expect(detail).toContain('Uncached input: 12,000')
+    expect(detail).toContain('Output: 300')
+    expect(row!.querySelector('.message-clock')!.textContent).toMatch(/^\d{2}:\d{2}$/)
+  })
+
+  it('shows the row on the newest turn and hides it elsewhere', async () => {
+    const h = open()
+    h.sendState({
+      sessionId: 'session-a', phase: 'ready',
+      messages: [{ id: 'm1', role: 'assistant', text: 'first' }, { id: 'm2', role: 'user', text: 'again' }, { id: 'm3', role: 'assistant', text: 'second' }],
+      messageMeta: [{ id: 'm1', time: 1, turnEnd: true }, { id: 'm3', time: 2, turnEnd: true }],
+    })
+    await h.settle()
+    const rows = [...h.document.querySelectorAll('.message-actions')]
+    expect(rows).toHaveLength(2)
+    // Only the newest stays visible without hovering.
+    expect(rows[0]!.classList.contains('always')).toBe(false)
+    expect(rows[1]!.classList.contains('always')).toBe(true)
+  })
+
+  it('renders no row while the turn is still open', async () => {
+    const h = open()
+    h.sendState(state([{ id: 'm1', time: 1 }]))
+    await h.settle()
+    expect(h.document.querySelector('.message-actions')).toBeNull()
+  })
+})
+
 describe('candidate lists belong to the prompt that asked for them', () => {
   it('closes a stale mention listbox when the conversation changes', async () => {
     const h = open()
