@@ -1603,8 +1603,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function renderCommandMenu() {
       const candidates = menuCandidates();
       elements.commandMenu.replaceChildren();
-      if (!candidates.length) { elements.commandMenu.classList.add('hidden'); return; }
-      elements.mentionMenu.classList.add('hidden');
+      // Hide the mention listbox whenever the command menu is empty: the two
+      // share this function, and returning first left a stale list open.
+      if (!candidates.length) { elements.commandMenu.classList.add('hidden'); elements.mentionMenu.classList.add('hidden'); return; }
       commandIndex = Math.min(commandIndex, candidates.length - 1);
       elements.commandMenu.classList.remove('hidden');
       let section = '';
@@ -1840,6 +1841,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedSessionId !== current.sessionId) {
         if (renderedSessionId) sessionDrafts.set(renderedSessionId, elements.prompt.value);
         renderedSessionId = current.sessionId; renderedMessages.clear(); thinkingTiming.clear(); syncThinkingTicker(); elements.messages.replaceChildren();
+        // A candidate list belongs to the prompt that asked for it. The menu is
+        // the only thing that makes one reachable (menuCandidates never reads the
+        // mention list), so hiding it is what has to happen here.
+        elements.mentionMenu.classList.add('hidden'); elements.commandMenu.classList.add('hidden');
         elements.prompt.value = sessionDrafts.get(current.sessionId) || ''; resizePrompt();
         draftImages = draftImagesBySession.get(current.sessionId) || [];
         draftFiles = draftFilesBySession.get(current.sessionId) || []; renderAttachments();
@@ -1856,6 +1861,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       if (current.phase !== 'ready') {
         elements.conversationHistory.replaceChildren(); elements.messages.replaceChildren(); elements.conversationTail.replaceChildren();
+        // The message nodes are gone, so the thinking ticker must not keep
+        // writing into them; it only stops when no live entry remains.
+        renderedMessages.clear(); thinkingTiming.clear(); syncThinkingTicker();
         renderedHistoryKey = ''; renderedTail = {};
         return;
       }
@@ -1902,7 +1910,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedChrome.usage !== current.usage) renderUsage(current);
       if (renderedChrome.jobs !== current.jobs) renderJobs();
       if (renderedChrome.account !== current.account || renderedChrome.accountNotice !== current.accountNotice || renderedChrome.accountFailed !== current.accountFailed) renderAccount(current);
-      if (renderedChrome.parentSessionId !== current.parentSessionId) renderSubagentBar(current);
+      if (renderedChrome.parentSessionId !== current.parentSessionId
+        || renderedChrome.subagentOwnerTitle !== subagentOwnerTitle(current)) renderSubagentBar(current);
       renderRoutableNotice(current);
       renderConversation(current);
       const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
@@ -1920,7 +1929,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         workspaceName: current.workspaceName, cwd: current.cwd, sessions: current.sessions, sessionId: current.sessionId, models: current.models,
         agentPreset: current.agentPreset, permissions: current.permissions, plan: current.plan, running: current.running,
         account: current.account, accountNotice: current.accountNotice, accountFailed: current.accountFailed,
-        parentSessionId: current.parentSessionId,
+        parentSessionId: current.parentSessionId, subagentOwnerTitle: subagentOwnerTitle(current),
         phase: current.phase, usage: current.usage, jobs: current.jobs, commands: current.commands, skills: current.skills,
       };
       if (preservingHistory && current.loadingHistory !== true) {
@@ -1977,6 +1986,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
      * Opening a child is otherwise a one-way door: the owner is only reachable
      * from the session picker.
      */
+    /** Title the subagent bar shows for its owner, or '' when it has none. */
+    function subagentOwnerTitle(current) {
+      const parentId = current.parentSessionId;
+      if (typeof parentId !== 'string' || parentId === '') return '';
+      const parent = array(current.sessions).find(session => session.id === parentId);
+      return parent === undefined ? '' : string(parent.title);
+    }
     function renderSubagentBar(current) {
       const parentId = current.parentSessionId;
       if (typeof parentId !== 'string' || parentId === '') {
@@ -2000,11 +2016,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.routableNotice.textContent = show ? text : '';
       elements.routableNotice.classList.toggle('hidden', !show);
     }
+    /**
+     * Whether the composer may submit at all. The button and Enter must agree:
+     * an unroutable conversation disables typing, so it must also refuse to
+     * send a draft that was typed before it became unroutable.
+     */
+    function composerReady() {
+      return Boolean(state) && state.phase === 'ready' && state.routable !== false;
+    }
     function updateSend() {
       const pendingSend = state && [...pendingDraftSends.values()].some(draft => draft.sessionId === state.sessionId);
       const pendingAttachment = state && [...pendingAttachmentRequests.values()].some(request => request.sessionId === state.sessionId);
       const pendingUpload = state && (pendingUploadsBySession.get(state.sessionId) || 0) > 0;
-      elements.send.disabled = !state || state.phase !== 'ready' || pendingSend || pendingAttachment || pendingUpload
+      elements.send.disabled = !composerReady() || pendingSend || pendingAttachment || pendingUpload
         || (elements.prompt.value.trim() === '' && draftImages.length === 0 && draftFiles.length === 0);
     }
     function releaseUpload(sessionId) {
@@ -2016,7 +2040,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function resizePrompt() { elements.prompt.style.height = 'auto'; elements.prompt.style.height = Math.min(elements.prompt.scrollHeight, 220) + 'px'; updateSend(); }
     function selectionFor(model, reasoningEffort) { return { provider: model.provider, model: model.model, ...(reasoningEffort ? { reasoningEffort } : {}) }; }
     function canSend() {
-      if (!state || state.phase !== 'ready') return false;
+      if (!composerReady()) return false;
       const sessionId = state.sessionId;
       if ([...pendingAttachmentRequests.values()].some(request => request.sessionId === sessionId)) return false;
       // Enter must honour the same gate the button uses, or a message can leave

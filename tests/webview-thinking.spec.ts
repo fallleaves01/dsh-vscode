@@ -115,6 +115,24 @@ describe('thinking summary shows that a turn is live', () => {
     expect(title(h)).toBe('Thought · 7s')
   })
 
+  it('stops its timer when the conversation leaves the ready phase', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'Date'] })
+    const h = open()
+    h.sendState({ sessionId: 'session-a', messages: [thinking('Working on it.', true)] })
+    await flush()
+    const title = h.document.querySelector('.thinking-title')!
+    const before = title.textContent
+
+    // The runtime dies, or a restart reloads: every message node is detached.
+    h.sendState({ phase: 'error', sessionId: 'session-a', statusText: 'lost', messages: [] })
+    await flush()
+    expect(h.document.querySelector('.thinking')).toBeNull()
+
+    await vi.advanceTimersByTimeAsync(4000)
+    // Nothing may keep counting against a node that is no longer displayed.
+    expect(title.textContent).toBe(before)
+  })
+
   it('stops its timer when the conversation is replaced', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'Date'] })
     const h = open()

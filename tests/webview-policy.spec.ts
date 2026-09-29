@@ -101,6 +101,27 @@ describe('leaving a subagent conversation', () => {
     expect(h.posts).toContainEqual({ type: 'select-session', sessionId: 'parent' })
   })
 
+  it('follows the owner being titled after the subagent was opened', async () => {
+    const h = open()
+    const owner = (title: string) => ({ id: 'parent', title, childCount: 0, running: false, blank: false, unread: false })
+    await show(h, { parentSessionId: 'parent', sessions: [owner('New conversation')] })
+    expect(h.document.getElementById('subagentBar')!.textContent).toContain('New conversation')
+
+    // The owner is titled later; the id is unchanged, so only the label moves.
+    await show(h, { parentSessionId: 'parent', sessions: [owner('Fix the parser')] })
+    expect(h.document.getElementById('subagentBar')!.textContent).toContain('Fix the parser')
+  })
+
+  it('falls back once the owner leaves the list', async () => {
+    const h = open()
+    await show(h, {
+      parentSessionId: 'parent',
+      sessions: [{ id: 'parent', title: 'Fix the parser', childCount: 0, running: false, blank: false, unread: false }],
+    })
+    await show(h, { parentSessionId: 'parent', sessions: [] })
+    expect(h.document.getElementById('subagentBar')!.textContent).toContain('Owning conversation')
+  })
+
   it('stays usable when the owner is not in the list', async () => {
     const h = open()
     // The parent can be filtered out of the picker; the way back must survive.

@@ -1,0 +1,161 @@
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it } from 'vitest'
+import { harness, type Harness } from './webview-harness.js'
+
+/**
+ * The composer has two independent gates: what the runtime can route (a
+ * conversation with no available model accepts nothing) and what the Webview is
+ * still waiting for (an upload, an attachment). The button and Enter share them,
+ * and both must follow a conversation change.
+ */
+
+const live: Harness[] = []
+afterEach(() => {
+  live.splice(0).forEach(instance => instance.dispose())
+  document.body.replaceChildren()
+})
+
+function open(): Harness {
+  const instance = harness()
+  live.push(instance)
+  return instance
+}
+
+function type(h: Harness, text: string): HTMLTextAreaElement {
+  const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+  prompt.value = text
+  prompt.dispatchEvent(new Event('input', { bubbles: true }))
+  return prompt
+}
+
+const sendButton = (h: Harness) => h.document.getElementById('send') as HTMLButtonElement
+
+describe('the composer refuses what the runtime cannot route', () => {
+  it('disables Send for a draft typed before routing was lost', async () => {
+    const h = open()
+    h.sendState({ phase: 'ready', sessionId: 'session-a', routable: true, sessions: [] })
+    await h.settle()
+    type(h, 'hello')
+    await h.settle()
+    expect(sendButton(h).disabled).toBe(false)
+
+    // The provider catalog went empty while the draft sat in the box.
+    h.sendState({ routable: false, routableNotice: 'No model is available.' })
+    await h.settle()
+    const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+    expect(prompt.disabled).toBe(true)
+    expect(sendButton(h).disabled).toBe(true)
+  })
+
+  it('refuses Enter for the same draft', async () => {
+    const h = open()
+    h.sendState({ phase: 'ready', sessionId: 'session-a', routable: true, sessions: [] })
+    await h.settle()
+    type(h, 'hello')
+    h.sendState({ routable: false })
+    await h.settle()
+    h.posts.length = 0
+    const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+    prompt.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    expect(h.posts.filter(post => post.type === 'send')).toHaveLength(0)
+  })
+
+  it('sends normally when a provider is routable', async () => {
+    const h = open()
+    h.sendState({ phase: 'ready', sessionId: 'session-a', routable: true, sessions: [] })
+    await h.settle()
+    type(h, 'hello')
+    await h.settle()
+    h.posts.length = 0
+    sendButton(h).dispatchEvent(new Event('click', { bubbles: true }))
+    expect(h.posts.filter(post => post.type === 'send')).toHaveLength(1)
+  })
+})
+
+describe('the composer waits for anything still being staged', () => {
+  it('keeps the gate closed until the last upload finishes', async () => {
+    const h = open()
+    h.sendState({ phase: 'ready', sessionId: 'session-a', routable: true, sessions: [] })
+    await h.settle()
+    type(h, 'see attached')
+    await h.settle()
+    expect(sendButton(h).disabled).toBe(false)
+
+    h.send({ type: 'draft-files', sessionId: 'session-a', files: [{ name: 'a.txt' }], uploads: 1 })
+    await h.settle()
+    expect(sendButton(h).disabled).toBe(true)
+
+    h.send({ type: 'draft-files', sessionId: 'session-a', files: [{ name: 'a.txt' }], uploads: 0 })
+    await h.settle()
+    expect(sendButton(h).disabled).toBe(false)
+  })
+
+  it('does not let two concurrent drops release each other', async () => {
+    const h = open()
+    h.sendState({ phase: 'ready', sessionId: 'session-a', routable: true, sessions: [] })
+    await h.settle()
+    type(h, 'two files')
+    await h.settle()
+    h.send({ type: 'draft-files', sessionId: 'session-a', files: [{ name: 'a.txt' }], uploads: 2 })
+    await h.settle()
+    // The extension's count is authoritative: one drop finishing leaves one
+    // outstanding, so the gate stays closed.
+    h.send({ type: 'draft-files', sessionId: 'session-a', files: [{ name: 'a.txt' }, { name: 'b.txt' }], uploads: 1 })
+    await h.settle()
+    expect(sendButton(h).disabled).toBe(true)
+    h.send({ type: 'draft-files', sessionId: 'session-a', files: [{ name: 'a.txt' }, { name: 'b.txt' }], uploads: 0 })
+    await h.settle()
+    expect(sendButton(h).disabled).toBe(false)
+  })
+
+  it('refuses Enter while an upload is outstanding', async () => {
+    const h = open()
+    h.sendState({ phase: 'ready', sessionId: 'session-a', routable: true, sessions: [] })
+    await h.settle()
+    type(h, 'see attached')
+    h.send({ type: 'draft-files', sessionId: 'session-a', files: [{ name: 'a.txt' }], uploads: 1 })
+    await h.settle()
+    h.posts.length = 0
+    const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+    prompt.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    expect(h.posts.filter(post => post.type === 'send')).toHaveLength(0)
+  })
+})
+
+describe('candidate lists belong to the prompt that asked for them', () => {
+  it('closes a stale mention listbox when the conversation changes', async () => {
+    const h = open()
+    h.sendState({ phase: 'ready', sessionId: 'session-a', sessions: [] })
+    await h.settle()
+    type(h, '@src')
+    const request = h.posts.filter(post => post.type === 'request-mentions').at(-1)!
+    h.send({ type: 'mention-suggestions', requestId: request.requestId, query: 'src', candidates: [{ path: 'src/index.ts', kind: 'file' }] })
+    await h.settle()
+    expect(h.document.getElementById('mentionMenu')!.classList.contains('hidden')).toBe(false)
+
+    h.sendState({ phase: 'ready', sessionId: 'session-b', sessions: [] })
+    await h.settle()
+    expect(h.document.getElementById('mentionMenu')!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('does not let the stale list swallow Enter in the new conversation', async () => {
+    const h = open()
+    h.sendState({ phase: 'ready', sessionId: 'session-a', routable: true, sessions: [] })
+    await h.settle()
+    type(h, '@src')
+    const request = h.posts.filter(post => post.type === 'request-mentions').at(-1)!
+    h.send({ type: 'mention-suggestions', requestId: request.requestId, query: 'src', candidates: [{ path: 'src/index.ts', kind: 'file' }] })
+    await h.settle()
+    h.sendState({ sessionId: 'session-b' })
+    await h.settle()
+    type(h, 'unrelated message')
+    h.posts.length = 0
+    const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+    prompt.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    // The message is sent as typed: before the list was cleared, Enter was
+    // consumed by a candidate from the previous conversation and nothing left.
+    const sent = h.posts.filter(post => post.type === 'send')
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.text).toBe('unrelated message')
+  })
+})

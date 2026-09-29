@@ -160,9 +160,8 @@ describe('chat webview', () => {
     // The extension's count is authoritative, so concurrent drops cannot
     // release each other's gate.
     expect(script).toContain('Number(event.data.uploads)')
-    expect(script).toContain(
-      "elements.send.disabled = !state || state.phase !== 'ready' || pendingSend || pendingAttachment || pendingUpload",
-    )
+    // The gate itself is asserted behaviourally in tests/webview-composer.spec.ts:
+    // matching the expression's text cannot show that the gate closes.
   })
 
   it('offers actionable setup states instead of a generic reconnect loop', () => {
