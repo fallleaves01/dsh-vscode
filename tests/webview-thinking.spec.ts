@@ -37,6 +37,10 @@ async function show(h: Harness, reasoning: string, streaming = false): Promise<v
 
 const preview = (h: Harness) => h.document.querySelector('.thinking-preview')?.textContent ?? ''
 const title = (h: Harness) => h.document.querySelector('.thinking-title')?.textContent ?? ''
+const duration = (h: Harness) => {
+  const node = h.document.querySelector<HTMLElement>('.thinking-duration')
+  return node === null || node.hidden ? '' : node.textContent ?? ''
+}
 const root = (h: Harness) => h.document.querySelector('.thinking')
 
 describe('thinking summary follows the newest line', () => {
@@ -81,6 +85,20 @@ describe('thinking summary follows the newest line', () => {
     expect(preview(h)).toBe('The last real line.')
   })
 
+  it('withholds the dot and the summary together when there is nothing to preview', async () => {
+    const h = open()
+    await show(h, '   \n  ', true)
+    const separator = h.document.querySelector<HTMLElement>('.thinking-sep')!
+    // DSH hides both rather than leaving a dot hanging off the label.
+    expect(separator.hidden).toBe(true)
+    expect(h.document.querySelector<HTMLElement>('.thinking-preview')!.hidden).toBe(true)
+    expect(title(h)).toBe('Thinking')
+
+    await show(h, 'Now there is something to say.', true)
+    expect(h.document.querySelector<HTMLElement>('.thinking-sep')!.hidden).toBe(false)
+    expect(h.document.querySelector<HTMLElement>('.thinking-preview')!.hidden).toBe(false)
+  })
+
   it('sweeps the summary only while the model is still writing it', async () => {
     const h = open()
     await show(h, 'Still thinking.', true)
@@ -123,20 +141,25 @@ describe('thinking summary shows that a turn is live', () => {
     await flush()
     expect(root(h)?.classList.contains('live')).toBe(true)
     expect(title(h)).toBe('Thinking')
+    // DSH keeps the wait out of the label, in its own span beside it.
+    expect(duration(h)).toBe('')
 
     await vi.advanceTimersByTimeAsync(7000)
-    expect(title(h)).toBe('Thinking · 7s')
+    expect(title(h)).toBe('Thinking')
+    expect(duration(h)).toBe('7s')
 
     // Settling must stop the clock rather than leave it running.
     h.sendState({ sessionId: 'session-a', messages: [thinking('Working on it.\nDone.', false)] })
     await flush()
     expect(root(h)?.classList.contains('live')).toBe(false)
-    expect(title(h)).toBe('Thought · 7s')
+    expect(title(h)).toBe('Thought')
+    expect(duration(h)).toBe('7s')
 
     await vi.advanceTimersByTimeAsync(20000)
     h.sendState({ sessionId: 'session-a', messages: [thinking('Working on it.\nDone.', false)] })
     await flush()
-    expect(title(h)).toBe('Thought · 7s')
+    expect(title(h)).toBe('Thought')
+    expect(duration(h)).toBe('7s')
   })
 
   it('stops its timer when the conversation leaves the ready phase', async () => {

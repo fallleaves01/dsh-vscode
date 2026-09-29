@@ -235,6 +235,127 @@ try {
   assert.equal(selected.closed, true)
   console.log('PASS: the model picker searches a long catalog inside a narrow sidebar')
 
+  // DSH's typography and its post-turn row are a set of measurements, and jsdom
+  // cannot resolve a single one of them. They are asserted here against real
+  // layout, because "it reads like DSH" is exactly a claim about numbers.
+  // Twice the device pixels: DSH's hairlines are 0.5px, and a 1x device cannot
+  // report one back.
+  await page('Emulation.setDeviceMetricsOverride', { width: 410, height: 720, deviceScaleFactor: 2, mobile: false })
+  await evaluate(`showState({...baseline, sessionId:'typography', running:false,
+    usage:{available:true,percent:12,usedTokens:1000,contextWindow:8000,
+      sessionStats:{turns:2,steps:5,llmMs:30000,toolMs:4000,ttftSteps:5,ttftMs:5000,decodeMs:10000,decodeTokens:240},
+      tokenUsage:{uncachedInputTokens:1000,cacheReadTokens:9000,cacheWriteTokens:0,outputTokens:500}},
+    messages:[
+      {id:'q1',role:'user',text:'Lay this out the way DSH does.'},
+      {id:'t1',role:'tool',text:'Read src/webview.ts',detail:'412 lines'},
+      {id:'t2',role:'tool',text:'Ran the suite',detail:'exit 0'},
+      {id:'r1',role:'assistant',reasoning:'Measuring the transcript against DSH.',text:'# Heading one\\n\\n## Heading two\\n\\nA paragraph with \`inline code\` in it.\\n\\n- first item\\n- second item\\n\\n> a quoted line\\n\\n\`\`\`ts\\nconst answer = 42\\n\`\`\`\\n\\n| Name | Value |\\n| --- | --- |\\n| a | b |\\n\\n| One | Two | Three | Four |\\n| --- | --- | --- | --- |\\n| 1 | 2 | 3 | 4 |\\n'}
+    ],
+    messageMeta:[
+      {id:'q1',seq:1,time:Date.now()},
+      {id:'r1',seq:2,time:Date.now(),turnEnd:true,turnDurationMs:65000,turnUsage:{uncachedInputTokens:12000,outputTokens:300,totalTokens:12300,routes:[]}}
+    ]});`)
+  await evaluate('tick()')
+  const type = await evaluate(`(() => {
+    const round = value => Math.round(parseFloat(value) * 100) / 100;
+    const metric = (selector, property) => { const node = document.querySelector(selector); ensure(node, 'missing ' + selector); return round(getComputedStyle(node)[property]); };
+    const rows = [...document.querySelectorAll('#messages > *')];
+    const tools = [...document.querySelectorAll('#messages > .tool')];
+    ensure(tools.length === 2, 'expected two tool rows, got ' + tools.length);
+    const answer = document.querySelector('#messages > .message.assistant');
+    const edge = (node, side) => round(node.getBoundingClientRect()[side]);
+    const secondTh = document.querySelectorAll('.markdown th')[1];
+    return {
+      bodySize: metric('body', 'fontSize'), bodyLine: metric('body', 'lineHeight'),
+      paragraphMargin: metric('.markdown p', 'marginTop'),
+      listIndent: metric('.markdown ul', 'paddingLeft'),
+      listGap: metric('.markdown li:nth-child(2)', 'marginTop'),
+      h1: metric('.markdown h1', 'fontSize'), h2: metric('.markdown h2', 'fontSize'),
+      h1Weight: metric('.markdown h1', 'fontWeight'),
+      inlineCode: metric('.markdown :not(pre) > code', 'fontSize'),
+      codeRadius: metric('.code-block', 'borderRadius'),
+      codePadding: metric('.code-block pre', 'paddingTop'),
+      codeSize: metric('.code-block pre', 'fontSize'),
+      narrowFills: (() => {
+        const wrapper = document.querySelectorAll('.markdown-table')[0];
+        return Math.abs(wrapper.querySelector('table').getBoundingClientRect().width - wrapper.getBoundingClientRect().width) < 2;
+      })(),
+      // A four-column table keeps its natural width and scrolls inside its own
+      // wrapper instead of stretching the transcript.
+      wideScrolls: (() => {
+        const wrapper = document.querySelectorAll('.markdown-table')[1];
+        return wrapper.scrollWidth > wrapper.clientWidth;
+      })(),
+      headPadFirst: metric('.markdown th', 'paddingLeft'),
+      headPadSecond: round(parseFloat(getComputedStyle(secondTh).paddingLeft)),
+      // Chromium snaps every border width up to at least one device pixel, so
+      // the half-pixel hairline is read from the token that declares it.
+      hairline: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--dsh-hairline')),
+      headRuleIsHairline: metric('.markdown th', 'borderBottomWidth') <= 1,
+      bubbleRadius: metric('.message.user .message-body', 'borderRadius'),
+      bubblePad: metric('.message.user .message-body', 'paddingTop'),
+      bubbleInset: metric('.message.user .message-body', 'paddingLeft'),
+      flowWork: round(edge(tools[1], 'top') - edge(tools[0], 'bottom')),
+      userRowGap: round(edge(document.querySelector('#messages .user-actions'), 'top') - edge(document.querySelector('.message.user .message-body'), 'bottom')),
+      flowAnswer: round(edge(answer, 'top') - edge(tools[1], 'bottom')),
+      toolRow: round(document.querySelector('.tool summary').getBoundingClientRect().height),
+      toolLeading: metric('.tool-icon', 'width'),
+      toolGlyphMargin: metric('.tool-icon', 'marginRight'),
+      toolTitleSize: metric('.tool-title', 'fontSize'),
+      thoughtRow: round(document.querySelector('.thinking summary').getBoundingClientRect().height),
+      actionsHeight: round(document.querySelector('.message-actions.end').getBoundingClientRect().height),
+      actionsGap: metric('.message-actions.end', 'gap'),
+      actionsTop: metric('.message-actions.end', 'marginTop'),
+      actionsLeft: metric('.message-actions.end', 'marginLeft'),
+      actionIcon: round(document.querySelector('.message-actions.end .message-copy svg').getBoundingClientRect().width),
+      pillRadius: round(parseFloat(getComputedStyle(document.querySelector('.usage-pill')).borderRadius)),
+      pillPad: metric('.usage-pill', 'paddingLeft'),
+      pillIcon: round(document.querySelector('.usage-pill svg').getBoundingClientRect().width),
+      clockSize: metric('#messages .message-clock', 'fontSize'),
+      dockCentered: (() => {
+        const dock = document.getElementById('usageStats').getBoundingClientRect();
+        const app = document.getElementById('app').getBoundingClientRect();
+        return Math.abs((dock.left + dock.right) / 2 - (app.left + app.right) / 2) < 2;
+      })(),
+      dockGap: metric('#usageStats', 'gap'),
+      dockSize: metric('.stat-pill', 'fontSize'),
+      dockPills: document.querySelectorAll('#usageStats .stat-pill').length,
+      dockAboveComposer: document.getElementById('usageStats').getBoundingClientRect().bottom <= document.querySelector('.composer').getBoundingClientRect().top + 1,
+    };
+  })()`)
+  assert.deepEqual(type, {
+    bodySize: 14, bodyLine: 24,
+    paragraphMargin: 16,
+    listIndent: 18,
+    listGap: 6,
+    h1: 21, h2: 19, h1Weight: 700,
+    inlineCode: 12.25,
+    codeRadius: 16, codePadding: 16, codeSize: 11,
+    narrowFills: true, wideScrolls: true,
+    headPadFirst: 0, headPadSecond: 16, hairline: 0.5, headRuleIsHairline: true,
+    bubbleRadius: 20, bubblePad: 10, bubbleInset: 16,
+    flowWork: 6, flowAnswer: 16, userRowGap: 6,
+    toolRow: 24, toolLeading: 16, toolGlyphMargin: 6, toolTitleSize: 14,
+    thoughtRow: 24,
+    actionsHeight: 28, actionsGap: 8, actionsTop: 16, actionsLeft: -6,
+    actionIcon: 16, pillRadius: 999, pillPad: 8, pillIcon: 14, clockSize: 12,
+    dockCentered: true, dockGap: 12, dockSize: 12, dockPills: 2, dockAboveComposer: true,
+  })
+  // A design-review hook: the same fixture, rendered for a human to look at.
+  if (process.env.DSH_LAYOUT_SCREENSHOT) {
+    await page('Emulation.setDeviceMetricsOverride', { width: 400, height: 1000, deviceScaleFactor: 2, mobile: false })
+    await evaluate('tick()')
+    const { data } = await page('Page.captureScreenshot', { format: 'png' })
+    await writeFile(process.env.DSH_LAYOUT_SCREENSHOT, Buffer.from(data, 'base64'))
+  }
+  await page('Emulation.setDeviceMetricsOverride', { width: 410, height: 720, deviceScaleFactor: 2, mobile: false })
+
+  // And the wide table still scrolls, rather than pushing the sidebar sideways.
+  await page('Emulation.setDeviceMetricsOverride', { width: 300, height: 720, deviceScaleFactor: 2, mobile: false })
+  await evaluate('tick()')
+  assert.equal(await evaluate(`(() => { const w = document.querySelectorAll('.markdown-table')[1]; return w.scrollWidth > w.clientWidth && w.getBoundingClientRect().right <= document.getElementById('app').getBoundingClientRect().right + 1; })()`), true)
+  console.log('PASS: the transcript is laid out at DSH’s own measurements')
+
   // The running mark and the streaming sweep are CSS: jsdom cannot see either,
   // and reduced motion has to switch both off.
   await evaluate(`showState({...baseline, running: true, turnStartedAt: Date.now() - 12000, turnActivityAt: Date.now()});`)

@@ -35,12 +35,30 @@ The first release of the fork as an independent extension, on DSH 0.2.0-rc.2.
   swimming tail DSH's own running row shows.
 - The thinking row draws DSH's thinking mark, and every animation stops for
   `prefers-reduced-motion`.
+- DSH's session statistics as pills above the composer: what the session has run
+  and at what rate, then what it has spent and how much of it the cache carried,
+  each with DSH's own mark and wording.
 - A setting for the runtime's web search base URL, for hosts that cannot reach
   the public API.
 - Default keyboard shortcuts for the sidebar commands.
 
 ### Changed
 
+- The transcript is laid out at DSH's own measurements: one content size the
+  whole conversation scales from, 16px between blocks and 32px around headings,
+  18px of list indent, code at DSH's own sizes, and hairlines instead of full
+  table borders. Under four columns a table fills the column, from four up it
+  keeps its natural width and scrolls.
+- A message is no longer introduced by a name and an avatar: your own turn is a
+  bubble and the reply is the text itself, as in DSH, and the flow gap between
+  rows is DSH's 6px inside a turn and 12px after a reply.
+- Tool output is a disclosure row rather than a card — DSH's 24px row, a 16px
+  leading mark and the detail after a dot — with the result on DSH's code
+  surface, so a long turn reads as lines instead of a column of boxes.
+- The turn's action row follows DSH's: 28px tall, 8px apart, 16px under the
+  answer, with the bill and the clock grouped at its end as "12.3K tok" and
+  "Completed in 2m 3s" — DSH's own wording, with the duration in DSH's tabular
+  code face.
 - Adapt to DSH 0.2.0-rc.2; 0.1.7 runtimes stay supported.
 - Collaboration modes are controlled by slash commands, as in DSH; permissions
   are the part that gets its own UI.

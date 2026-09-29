@@ -487,12 +487,47 @@ describe('the row under a completed turn', () => {
     const row = h.document.querySelector('.message-actions')
     expect(row).not.toBeNull()
     expect(row!.querySelector('.message-copy')!.getAttribute('aria-label')).toBe('Copy')
-    expect(row!.querySelector('.usage-pill')!.textContent).toBe('Usage 12.3K tok')
+    // DSH's own wording, and its database mark on the pill.
+    expect(row!.querySelector('.usage-pill')!.textContent).toBe('12.3K tok')
+    expect(row!.querySelector('.usage-pill svg')).not.toBeNull()
     // The pill names the fields DSH's panel names, in its order.
     const detail = row!.querySelector('.usage-pill')!.getAttribute('aria-label')!
     expect(detail).toContain('Uncached input: 12,000')
     expect(detail).toContain('Output: 300')
     expect(row!.querySelector('.message-clock')!.textContent).toMatch(/^\d{2}:\d{2}$/)
+  })
+
+  it('reports the cache share the way DSH reports it', async () => {
+    const h = open()
+    h.sendState(state([{ id: 'm1', time: todayAt(14, 39), turnEnd: true,
+      turnUsage: { uncachedInputTokens: 1_000, cacheReadTokens: 9_000, outputTokens: 300, totalTokens: 10_300, routes: [] } }]))
+    await h.settle()
+    const label = h.document.querySelector('.usage-pill .stat-label')!
+    expect(label.textContent).toBe('10.3K tok·Cache hit 90%')
+    expect([...label.querySelectorAll('.usage-pill-sep')].map(node => node.textContent)).toEqual(['·'])
+  })
+
+  it('groups the turn bill and its clock after the marks, as DSH does', async () => {
+    const h = open()
+    h.sendState(state([{ id: 'm1', time: todayAt(14, 39), turnEnd: true, turnDurationMs: 65_000,
+      turnUsage: { uncachedInputTokens: 12_000, outputTokens: 300, totalTokens: 12_300, routes: [] } }]))
+    await h.settle()
+    const row = h.document.querySelector('.message-actions')!
+    const end = row.querySelector('.message-end')!
+    expect(end).not.toBeNull()
+    // The order of the whole row: marks first, then the bill and the clock.
+    expect([...row.children].map(child => child.className)).toEqual([
+      'message-action message-icon message-copy',
+      'message-action message-icon message-positive',
+      'message-action message-icon message-negative',
+      'message-action message-icon message-branch',
+      'message-end',
+    ])
+    expect([...end.children].map(child => child.className)).toEqual(['message-action usage-pill', 'message-duration', 'message-clock'])
+    // DSH sets the wait apart in the code face with tabular figures.
+    const number = end.querySelector('.duration-number')!
+    expect(number.textContent).toBe('1m 5s')
+    expect(end.querySelector('.message-duration')!.textContent).toBe('Completed in 1m 5s')
   })
 
   it('draws its buttons with DSH’s own marks instead of emoji', async () => {
@@ -550,7 +585,7 @@ describe('the row under a completed turn', () => {
     await h.settle()
     const rows = [...h.document.querySelectorAll('.message-actions')]
     expect(rows).toHaveLength(2)
-    expect(rows[0]!.querySelector('.message-duration')!.textContent).toBe('Took 1m 5s')
+    expect(rows[0]!.querySelector('.message-duration')!.textContent).toBe('Completed in 1m 5s')
     // Under a second the label would be noise rather than information.
     expect(rows[1]!.querySelector('.message-duration')).toBeNull()
   })

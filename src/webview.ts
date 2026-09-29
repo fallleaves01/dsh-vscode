@@ -23,10 +23,38 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; style-src ${webview.cspSource} 'nonce-${token}'; script-src 'nonce-${token}';">
   <link rel="stylesheet" href="${escapeHtml(markdownAssets.style.toString(true))}">
   <style nonce="${token}">
-    :root { color-scheme: light dark; }
+    /**
+     * DSH's content axis, ported: one body size that everything in the
+     * transcript scales from, a secondary tier one step under it, and the line
+     * heights DSH derives from the same delta. The base follows VS Code's own UI
+     * font size, so the sidebar keeps matching the editor it lives in while the
+     * proportions stay DSH's.
+     */
+    :root {
+      color-scheme: light dark;
+      --dsh-content-font-size: var(--vscode-font-size, 14px);
+      --dsh-content-font-delta: calc(var(--dsh-content-font-size) - 14px);
+      --dsh-content-font-size-secondary: min(calc(var(--dsh-content-font-size) - 1px), max(13px, calc(var(--dsh-content-font-size) - 2px)));
+      --dsh-content-font-delta-secondary: calc(var(--dsh-content-font-size-secondary) - 13px);
+      --dsh-line: calc(24px + var(--dsh-content-font-delta));
+      --dsh-line-secondary: calc(20px + var(--dsh-content-font-delta-secondary));
+      /* DSH's radii, by their own names. */
+      --dsh-radius-xs: 4px; --dsh-radius-sm: 8px; --dsh-radius-md: 12px;
+      --dsh-radius-lg: 16px; --dsh-radius-xl: 20px;
+      --dsh-code-font: var(--vscode-editor-font-family);
+      /* The user bubble: DSH paints it with the brand's own light blue; over a
+         VS Code theme the same tint keeps it distinguishable in both kinds. */
+      --dsh-bubble: color-mix(in srgb, #4d6bfe 12%, var(--vscode-editor-background));
+      --dsh-hover: var(--vscode-toolbar-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 8%, transparent));
+      /* DSH draws every separator as a half-pixel hairline. */
+      --dsh-hairline: .5px;
+      --dsh-hairline-l1: color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
+      --dsh-hairline-l2: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+      --dsh-hairline-l3: color-mix(in srgb, var(--vscode-foreground) 18%, transparent);
+    }
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-    body { color: var(--vscode-foreground); background: var(--vscode-sideBar-background); font: 13px/1.5 var(--vscode-font-family); }
+    body { color: var(--vscode-foreground); background: var(--vscode-sideBar-background); font: var(--dsh-content-font-size)/var(--dsh-line) var(--vscode-font-family); }
     button, select, textarea, input { font: inherit; color: inherit; }
     button { cursor: pointer; }
     #app { width: 100%; height: 100%; min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; position: relative; }
@@ -81,21 +109,43 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .subagent-bar-label { flex: none; color: var(--vscode-descriptionForeground); }
     .subagent-bar-back { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 1px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; cursor: pointer; }
     .subagent-bar-back:hover { background: var(--vscode-toolbar-hoverBackground); }
-    .message-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; margin-left: -6px; opacity: 0; transition: opacity 80ms; }
+    /**
+     * DSH's turn action row, at DSH's metrics: 28px tall, 8px apart, pulled 6px
+     * left so the first mark lines up with the text above it, and 16px below the
+     * answer it belongs to.
+     */
+    .message-actions { display: flex; align-items: center; gap: 8px; height: calc(28px + var(--dsh-content-font-delta)); margin-top: 16px; margin-left: -6px; opacity: 0; transition: opacity 80ms; }
     .message:hover .message-actions, .message:focus-within .message-actions, .message-actions.always { opacity: 1; }
-    .message-action { display: flex; align-items: center; min-height: 28px; padding: 2px 6px; border: none; border-radius: 4px; background: transparent; color: var(--vscode-descriptionForeground); font-size: 11px; cursor: pointer; }
-    .message-action:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
-    .message-action.usage-pill { color: var(--vscode-descriptionForeground); }
-    .message-clock { color: var(--vscode-descriptionForeground); font-size: 11px; font-variant-numeric: tabular-nums; }
-    .message-duration { color: var(--vscode-descriptionForeground); font-size: 11px; font-variant-numeric: tabular-nums; }
+    .message-action { display: inline-flex; align-items: center; justify-content: center; padding: 6px; border: none; border-radius: var(--dsh-radius-sm); background: transparent; color: var(--vscode-descriptionForeground); font-size: var(--dsh-content-font-size-secondary); cursor: pointer; }
+    .message-action:hover { background: var(--dsh-hover); color: var(--vscode-foreground); }
     /* The icon buttons carry DSH's own artwork at DSH's own size, so the row reads
        as one control group instead of emoji next to text. */
-    .message-action.message-icon { width: 28px; min-width: 28px; padding: 6px; justify-content: center; }
-    .message-action.message-icon svg { width: 15px; height: 15px; }
+    .message-action.message-icon { flex: none; width: calc(28px + var(--dsh-content-font-delta)); height: calc(28px + var(--dsh-content-font-delta)); }
+    .message-action.message-icon svg { width: calc(15px + var(--dsh-content-font-delta)); height: calc(15px + var(--dsh-content-font-delta)); }
+    /* A finished turn's marks are a size up, as DSH draws the end-of-turn row.
+       DSH asks for 17px there, but its button is a 28px box with 6px of padding
+       — a 16px content box — so the artwork paints at 16 and only shrinks
+       unpredictably. Asking for the size it actually renders keeps it crisp. */
+    .message-actions.end .message-action.message-icon svg { flex: none; width: calc(16px + var(--dsh-content-font-delta)); height: calc(16px + var(--dsh-content-font-delta)); }
+    /* DSH's stat pill: a rounded chip at the secondary size, tabular figures. */
+    .message-action.usage-pill { flex: none; gap: 6px; padding: 1px 8px; border-radius: 999px; font-size: calc(var(--dsh-content-font-size-secondary) - 1px); line-height: var(--dsh-line-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .message-action.usage-pill svg { flex: none; width: 14px; height: 14px; }
+    .usage-pill-sep { margin: 0 6px; color: color-mix(in srgb, currentColor 55%, transparent); }
+    /* What the turn cost and when it landed, grouped 8px clear of the marks. */
+    .message-end { display: inline-flex; align-items: center; gap: 8px; margin-left: 8px; color: inherit; }
+    .message-clock { color: inherit; font-size: calc(var(--dsh-content-font-size-secondary) - 1px); line-height: var(--dsh-line); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    /* The wait, in DSH's duration face: code, tabular, so it never jitters. */
+    .message-duration { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; color: inherit; font-size: calc(var(--dsh-content-font-size-secondary) - 1px); line-height: var(--dsh-line-secondary); white-space: nowrap; }
+    .message-duration .duration-number { font-family: var(--dsh-code-font); font-variant-numeric: tabular-nums; }
+    /* A user row leads with its own clock, 12px clear of the copy beside it, and
+       DSH's user row sits the actions 6px under the bubble rather than the 16px
+       a finished reply gets. */
+    .message.user .message-actions { margin-top: 6px; }
+    .user-actions .message-clock { padding-right: 12px; }
     /* A recorded rating shows the filled mark, as DSH's row does, and keeps the
        quiet colour: the fill is the state, not a highlight. */
     .message-action.active { color: var(--vscode-descriptionForeground); background: transparent; }
-    .message-action.active:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    .message-action.active:hover { color: var(--vscode-foreground); background: var(--dsh-hover); }
     .message-copy.copied svg { display: none; }
     .message-copy.copied::after { content: '✓'; font-size: 12px; }
     .message-copy.copied { color: var(--vscode-charts-green, #3fb950); }
@@ -147,7 +197,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .jump-latest:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground)); }
     .jump-latest[hidden] { display: none; }
     .jump-latest svg { width: 13px; height: 13px; }
-    .conversation { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto; padding: 12px 14px 30px; overflow: hidden; }
+    .conversation { width: 100%; min-width: 0; max-width: 748px; margin: 0 auto; padding: 16px 14px 30px; overflow: hidden; }
     .conversation-slot, .messages { display: contents; }
     .history-loader { display: flex; justify-content: center; padding: 1px 0 9px; }
     .history-button { padding: 3px 9px; border: 0; border-radius: 5px; color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; }
@@ -157,32 +207,51 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .empty-logo { width: 38px; height: 38px; margin-bottom: 13px; }
     .empty h2 { margin: 0 0 7px; font-size: 15px; font-weight: 600; }
     .empty p { max-width: 280px; margin: 0; color: var(--vscode-descriptionForeground); }
-    .message { width: 100%; min-width: 0; padding: 8px 0 16px; overflow: hidden; }
-    .message + .message { margin-top: 8px; }
-    .message-head { min-width: 0; display: flex; align-items: center; gap: 8px; margin-bottom: 7px; font-size: 12px; font-weight: 600; }
-    .avatar { width: 21px; height: 21px; flex: 0 0 21px; display: grid; place-items: center; border-radius: 50%; background: color-mix(in srgb, #4d6bfe 78%, var(--vscode-editor-background)); color: white; font-size: 10px; }
-    .assistant .avatar { border-radius: 0; background-color: #4d6bfe; }
-    .message-body { width: 100%; min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; font-size: 13px; line-height: 1.65; }
-    .assistant .message-body { padding-left: 29px; }
-    .message.user { display: flex; flex-direction: column; align-items: flex-end; padding-top: 6px; }
-    .user .message-head { display: none; }
-    .user .message-body { width: fit-content; max-width: 82%; margin-left: auto; padding: 8px 12px; white-space: pre-wrap; border-radius: 16px; background: color-mix(in srgb, var(--vscode-foreground) 8%, var(--vscode-editor-background)); }
+    /**
+     * DSH's flow rhythm: the rows of one turn's working sit 6px apart so a run
+     * of tool rows reads as one block, 12px follows a finished response, and 16px
+     * of air stands where the answer follows the working.
+     *
+     * Not a message-adjacent-sibling rule: the rows of a transcript are different
+     * elements (a message is an article, a tool a disclosure row), so the gap is
+     * settled here, after every row has set its own margins.
+     */
+    #messages > * { margin-top: 0; }
+    #messages > * + * { margin-top: 6px; }
+    #messages > .message.assistant + * { margin-top: 12px; }
+    #messages > .tool + .message.assistant,
+    #messages > .command-card + .message.assistant { margin-top: 16px; }
+    .message { width: 100%; min-width: 0; overflow: hidden; }
+    .message-body { width: 100%; min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; font-size: var(--dsh-content-font-size); line-height: var(--dsh-line); }
+    /* DSH's user side is the bubble and nothing else: no name, no avatar. */
+    .message.user { display: flex; flex-direction: column; align-items: flex-end; }
+    .user .message-body { width: fit-content; max-width: 82%; padding: 10px 16px; white-space: pre-wrap; border-radius: var(--dsh-radius-xl); background: var(--dsh-bubble); line-height: calc(22px + var(--dsh-content-font-delta)); }
     .message-images { width: 100%; display: grid; gap: 7px; margin-top: 8px; }
-    .message-image { display: block; max-width: 100%; max-height: 380px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; object-fit: contain; background: var(--vscode-editor-background); }
-    .thinking { margin: 0 0 8px; padding-left: 29px; }
-    .thinking summary { display: flex; align-items: center; gap: 6px; min-height: 22px; padding: 1px 0; cursor: pointer; list-style: none; color: var(--vscode-descriptionForeground); }
+    .message-image { display: block; max-width: 100%; max-height: 380px; border: 1px solid var(--vscode-widget-border); border-radius: var(--dsh-radius-sm); object-fit: contain; background: var(--vscode-editor-background); }
+    /**
+     * DSH's disclosure header, ported: a 16px leading box holding a 14px glyph,
+     * 6px of air, then the label at the secondary size on the body line.
+     */
+    .thinking { margin: 0 0 8px; }
+    .thinking summary { display: flex; align-items: center; height: var(--dsh-line); min-width: 0; cursor: pointer; list-style: none; color: var(--vscode-descriptionForeground); transition: color 100ms ease; }
+    .thinking summary:hover { color: var(--vscode-foreground); }
     .thinking summary::-webkit-details-marker { display: none; }
-    .thinking-icon { flex: none; width: 14px; height: 14px; display: inline-flex; color: var(--vscode-descriptionForeground); }
-    .thinking-icon svg { width: 100%; height: 100%; }
+    .thinking-icon { position: relative; flex: none; width: 16px; height: 16px; margin-right: 6px; display: inline-flex; align-items: center; justify-content: center; color: inherit; }
+    .thinking-icon svg { width: 14px; height: 14px; }
     .thinking.live .thinking-icon { color: var(--vscode-foreground); animation: thinking-pulse 1.4s ease-in-out infinite; }
     .thinking.live .thinking-title { color: var(--vscode-foreground); }
-    .thinking.live .thinking-preview { opacity: 1; }
     @keyframes thinking-pulse { 0%, 100% { opacity: .35; transform: scale(.9); } 50% { opacity: 1; transform: scale(1.1); } }
-    @media (prefers-reduced-motion: reduce) { .thinking.live .thinking-icon { animation: none; opacity: 1; } }
-    .thinking-title { flex: none; font-size: 12px; font-weight: 600; }
-    .thinking-preview { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; opacity: .85; }
-    .thinking-body { margin: 3px 0 2px; padding: 2px 0 2px 9px; border-left: 2px solid var(--vscode-widget-border); color: var(--vscode-descriptionForeground); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
-    .live-status { display: flex; align-items: center; gap: 6px; margin: 6px 0 3px; padding-left: 29px; color: var(--vscode-descriptionForeground); font-size: 12px; }
+    @media (prefers-reduced-motion: reduce) { .thinking.live .thinking-icon { animation: none; opacity: 1; } .thinking summary { transition: none; } }
+    .thinking-title { flex: none; font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsh-line); font-weight: 400; color: inherit; }
+    /* DSH separates the label from its summary with a 2px dot, not a dash. */
+    .thinking-sep { flex: none; width: 2px; height: 2px; margin: 0 8px; border-radius: 1px; background: color-mix(in srgb, var(--vscode-foreground) 45%, transparent); }
+    .thinking-sep[hidden] { display: none; }
+    /* DSH sets a duration apart in the code face with tabular figures. */
+    .thinking-duration { flex: none; font-family: var(--dsh-code-font); font-variant-numeric: tabular-nums; font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsh-line); color: inherit; }
+    .thinking-duration[hidden] { display: none; }
+    .thinking-preview { min-width: 0; flex: auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsh-line-secondary); }
+    .thinking-body { margin: 0; padding: 4px 0 4px 22px; border: 0; color: var(--vscode-descriptionForeground); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--dsh-content-font-size-secondary); line-height: calc(20px + var(--dsh-content-font-delta-secondary)); }
+    .live-status { display: flex; align-items: center; gap: 6px; margin: 6px 0 3px; color: var(--vscode-descriptionForeground); font-size: calc(var(--dsh-content-font-size) - 2px); line-height: calc(22px + var(--dsh-content-font-delta)); }
     .live-status-mark { position: relative; flex: none; width: 14px; height: 14px; display: inline-flex; color: var(--vscode-charts-blue, #4d6bfe); }
     .live-status-mark svg { display: block; width: 100%; height: 100%; }
     /**
@@ -228,27 +297,53 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .message-image-status.failed { color: var(--vscode-errorForeground); }
     .pending-steering { opacity: .82; }
     .pending-steering .message-body::after { content: 'Steering…'; display: block; margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 10px; }
-    .markdown > :first-child { margin-top: 0; }
-    .markdown > :last-child { margin-bottom: 0; }
+    /**
+     * DSH's markdown sheet, at DSH's own measurements: 16px between blocks,
+     * 32px around headings, 18px of list indent with the marker on the body
+     * line, and hairlines instead of full table borders. Everything is sized
+     * from the content axis, so it all moves together with the reader's font.
+     */
+    .markdown { min-width: 0; font: var(--dsh-content-font-size)/var(--dsh-line) var(--vscode-font-family); color: var(--vscode-foreground); }
+    .markdown > :first-child, .markdown p:first-child { margin-top: 0 !important; }
+    .markdown > :last-child, .markdown p:last-child { margin-bottom: 0 !important; }
     .streaming-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
-    .markdown p { margin: 0 0 9px; }
-    .markdown h1, .markdown h2, .markdown h3 { margin: 14px 0 7px; line-height: 1.3; }
-    .markdown h1 { font-size: 17px; } .markdown h2 { font-size: 15px; } .markdown h3 { font-size: 13px; }
-    .markdown ul, .markdown ol { margin: 5px 0 10px; padding-left: 22px; }
-    .markdown blockquote { margin: 8px 0; padding: 2px 10px; border-left: 2px solid var(--vscode-textBlockQuote-border); color: var(--vscode-descriptionForeground); background: var(--vscode-textBlockQuote-background); }
-    .markdown-table { max-width: 100%; overflow-x: auto; margin: 10px 0; border: 1px solid var(--vscode-widget-border, #8886); border-radius: 6px; }
-    .markdown table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    .markdown th, .markdown td { min-width: 80px; padding: 7px 10px; border: 1px solid var(--vscode-widget-border, #8886); vertical-align: top; }
-    .markdown th { font-weight: 600; background: var(--vscode-textCodeBlock-background); }
+    .markdown p { margin: 16px 0; }
+    .markdown strong { font-weight: 600; }
+    .markdown h1 { font: 700 calc(21px + var(--dsh-content-font-delta))/calc(30px + var(--dsh-content-font-delta)) var(--vscode-font-family); margin: 32px 0 16px; }
+    .markdown h2 { font: 700 calc(19px + var(--dsh-content-font-delta))/calc(28px + var(--dsh-content-font-delta)) var(--vscode-font-family); margin: 32px 0 16px; }
+    .markdown h3 { font: 700 calc(18px + var(--dsh-content-font-delta))/calc(26px + var(--dsh-content-font-delta)) var(--vscode-font-family); margin: 32px 0 16px; }
+    .markdown h4 { font: 600 var(--dsh-content-font-size)/var(--dsh-line) var(--vscode-font-family); margin: 16px 0; }
+    .markdown h5, .markdown h6 { font: 600 var(--dsh-content-font-size)/var(--dsh-line) var(--vscode-font-family); margin: 16px 0; }
+    /* A short heading against a list keeps 8px, not a whole paragraph of air. */
+    .markdown h4 + ul, .markdown h4 + ol, .markdown h5 + ul, .markdown h5 + ol, .markdown h6 + ul, .markdown h6 + ol { margin-top: 8px; }
+    .markdown ul, .markdown ol { margin: 16px 0; padding-left: 18px; }
+    .markdown li:not(:first-child) { margin-top: 6px; }
+    .markdown li > ul, .markdown li > ol { margin-top: 4px; }
+    .markdown li::marker { line-height: var(--dsh-line); color: var(--vscode-descriptionForeground); }
+    .markdown li > p { margin: 8px 0; }
+    .markdown li > *:first-child { margin-top: 0; }
+    .markdown li > *:last-child { margin-bottom: 0; }
+    .markdown hr { height: var(--dsh-hairline); margin: 32px 0; border: 0; background: var(--dsh-hairline-l2); }
+    .markdown blockquote { margin: 16px 0 0; padding-left: 14px; border-left: 2px solid color-mix(in srgb, var(--vscode-foreground) 32%, transparent); color: var(--vscode-foreground); background: none; }
+    .markdown pre { margin: 16px 0; font-family: var(--dsh-code-font); overflow: auto; }
+    .markdown :not(pre) > code { display: inline-flex; align-items: center; font-family: var(--dsh-code-font); font-size: .875em !important; padding: 0 5px; border: var(--dsh-hairline) solid var(--dsh-hairline-l1); border-radius: var(--dsh-radius-xs); background: var(--vscode-textCodeBlock-background); }
+    .markdown-table { max-width: 100%; margin: 16px 0; overflow-x: auto; overscroll-behavior-x: contain; border: 0; border-radius: 0; }
+    .markdown table { border-collapse: collapse; width: max-content; max-width: max-content; font: var(--dsh-content-font-size-secondary)/var(--dsh-line-secondary) var(--vscode-font-family); }
+    /* Under four columns a table fills the column instead of scrolling. */
+    .markdown-table.md-table-fill table { width: 100%; max-width: none; }
+    .markdown th { padding: 10px 16px; border: 0; border-bottom: var(--dsh-hairline) solid var(--dsh-hairline-l3); background: none; font-weight: 500; text-align: start; vertical-align: top; max-width: min(30vw, 320px); min-width: 100px; }
+    .markdown td { padding: 10px 16px; border: 0; border-bottom: var(--dsh-hairline) solid var(--dsh-hairline-l2); vertical-align: top; max-width: min(30vw, 320px); min-width: 100px; }
+    .markdown th:first-child, .markdown td:first-child { padding-left: 0; }
+    .markdown td:last-child { padding-right: 0; }
+    .markdown tbody tr:nth-child(even) { background: none; }
     .markdown th:not([align]), .markdown td:not([align]) { text-align: left; }
-    .markdown tbody tr:nth-child(even) { background: color-mix(in srgb, var(--vscode-foreground) 3%, transparent); }
     .markdown-math-inline { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: middle; padding: 2px 0; }
-    .markdown-math-display { display: block; max-width: 100%; overflow-x: auto; margin: 10px 0; }
+    .markdown-math-display { display: block; max-width: 100%; overflow-x: auto; margin: 16px 0; }
     .markdown .katex { font-size: 1.1em; overflow-wrap: normal; word-break: normal; }
     .markdown .katex-display { margin: 0; padding: 5px 2px; text-align: left; }
     .markdown .katex-display > .katex { text-align: left; }
-    code { padding: 1px 4px; border-radius: 4px; font-family: var(--vscode-editor-font-family); background: var(--vscode-textCodeBlock-background); }
-    pre { max-width: 100%; margin: 7px 0; padding: 9px 10px; overflow: auto; white-space: pre; border-radius: 6px; color: var(--vscode-editor-foreground); background: var(--vscode-textCodeBlock-background); font: 12px/1.55 var(--vscode-editor-font-family); }
+    code { padding: 1px 4px; border-radius: var(--dsh-radius-xs); font-family: var(--dsh-code-font); background: var(--vscode-textCodeBlock-background); }
+    pre { max-width: 100%; margin: 16px 0; padding: 16px; overflow: auto; white-space: pre; border-radius: var(--dsh-radius-lg); color: var(--vscode-editor-foreground); background: var(--vscode-textCodeBlock-background); font: 11px/19px var(--dsh-code-font); }
     pre code { padding: 0; background: transparent; }
     .cancel-spinner { display: none; width: 12px; height: 12px; border: 2px solid var(--vscode-descriptionForeground); border-top-color: transparent; border-radius: 50%; animation: cancel-spin .8s linear infinite; }
     .cancel.stopping .cancel-spinner { display: block; }
@@ -256,13 +351,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .cancel.stopping { opacity: .8; cursor: default; }
     @keyframes cancel-spin { to { transform: rotate(360deg); } }
     @media (prefers-reduced-motion: reduce) { .cancel-spinner { animation-duration: 2.4s; } }
-    .code-block { margin: 8px 0; border: 1px solid var(--vscode-widget-border); border-radius: 6px; overflow: hidden; background: var(--vscode-textCodeBlock-background); }
-    .code-block-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 1px 4px 1px 10px; border-bottom: 1px solid var(--vscode-widget-border); }
-    .code-block-language { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 11px; }
-    .code-copy { flex: none; padding: 2px 8px; border: 0; border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 11px; cursor: pointer; }
-    .code-copy:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    /* DSH's code card: one surface at the large radius, a banner at 11px, and a
+       body that wraps rather than pushing the conversation sideways. */
+    .code-block { margin: 16px 0; border: 0; border-radius: var(--dsh-radius-lg); overflow: hidden; background: var(--vscode-textCodeBlock-background); }
+    .code-block-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 8px 5px 14px; border-bottom: 0; font: 11px/18px var(--vscode-font-family); }
+    .code-block-language { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-foreground); font-family: var(--dsh-code-font); font-size: 11px; }
+    .code-copy { flex: none; padding: 2px 8px; border: 0; border-radius: var(--dsh-radius-xs); color: var(--vscode-descriptionForeground); background: transparent; font: inherit; font-size: 11px; cursor: pointer; }
+    .code-copy:hover { color: var(--vscode-foreground); background: var(--dsh-hover); }
     .code-copy.copied { color: var(--vscode-charts-green, #3fb950); }
-    .code-block pre { margin: 0; border-radius: 0; background: transparent; }
+    .code-block pre { margin: 0; padding: 16px; border-radius: 0; background: transparent; white-space: pre-wrap; word-break: break-word; }
     /* Token colours follow the default VS Code themes; the Webview body carries
        the active theme kind as a class. */
     .hljs-comment, .hljs-quote { color: #6a9955; font-style: italic; }
@@ -299,29 +396,40 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .file-link { min-width: 0; padding: 0; border: 0; color: var(--vscode-textLink-foreground); background: transparent; text-align: left; font-family: var(--vscode-editor-font-family); cursor: pointer; overflow-wrap: anywhere; }
     .file-link:hover { text-decoration: underline; }
     .code-link { padding: 1px 4px; border-radius: 4px; color: var(--vscode-textPreformat-foreground); background: var(--vscode-textCodeBlock-background); }
-    .tool { margin: 7px 0 10px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; overflow: hidden; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); }
-    .tool.failed { border-color: var(--vscode-errorForeground); }
-    .tool summary { min-height: 35px; padding: 7px 9px; display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; }
+    /**
+     * DSH's tool rows are disclosure rows, not cards: a 16px leading box, the
+     * tool's own title on the body line, then a dot and the detail. The result
+     * below is DSH's code surface — indented to the title's text edge, at the
+     * code-block size, so a long transcript reads as lines rather than boxes.
+     */
+    .tool { margin: 0; border: 0; border-radius: 0; overflow: visible; background: none; color: var(--vscode-descriptionForeground); }
+    .tool.failed { color: var(--vscode-errorForeground); }
+    .tool summary { min-height: var(--dsh-line); padding: 0; display: flex; align-items: center; cursor: pointer; list-style: none; transition: color 100ms ease; }
+    .tool summary:hover { color: var(--vscode-foreground); }
     .tool summary::-webkit-details-marker { display: none; }
-    .tool-icon { width: 18px; color: var(--vscode-descriptionForeground); text-align: center; font-family: var(--vscode-editor-font-family); }
-    .tool-title { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
-    .tool-detail { color: var(--vscode-descriptionForeground); font-size: 11px; }
-    .tool-body { padding: 0 10px 9px 34px; min-width: 0; overflow: hidden; color: var(--vscode-descriptionForeground); }
-    .tool-body pre { color: var(--vscode-foreground); }
-    .tool-output-more { margin: 5px 0 0; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; }
-    .tool-output-more:hover { background: var(--vscode-toolbar-hoverBackground); }
-    .command-card { margin: 7px 0 10px; padding: 8px 10px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); }
-    .command-card.failed { border-color: var(--vscode-errorForeground); }
-    .command-head { min-width: 0; display: flex; align-items: center; gap: 7px; }
-    .command-name { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--vscode-editor-font-family); font-weight: 600; }
-    .command-result { margin: 5px 0 0 25px; color: var(--vscode-descriptionForeground); white-space: pre-wrap; overflow-wrap: anywhere; }
+    @media (prefers-reduced-motion: reduce) { .tool summary { transition: none; } }
+    .tool-icon { position: relative; flex: none; width: 16px; height: 16px; margin-right: 6px; display: inline-flex; align-items: center; justify-content: center; color: inherit; font-family: var(--dsh-code-font); font-size: 11px; text-align: center; }
+    .tool-title { min-width: 0; flex: none; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--dsh-content-font-size); line-height: var(--dsh-line); font-weight: 400; color: inherit; }
+    .tool-detail { min-width: 0; flex: auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: inherit; font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsh-line); }
+    .tool-detail:not(:empty) { display: inline-flex; align-items: center; }
+    .tool-detail:not(:empty)::before { content: ''; flex: none; width: 2px; height: 2px; margin: 0 8px; border-radius: 1px; background: color-mix(in srgb, currentColor 55%, transparent); }
+    .tool-body { margin: 4px 0 0 22px; padding: 0; min-width: 0; overflow: hidden; color: var(--vscode-descriptionForeground); }
+    .tool-body pre { margin: 4px 0; padding: 10px 12px; border-radius: var(--dsh-radius-md); color: var(--vscode-foreground); background: var(--vscode-textCodeBlock-background); font: 11px/16px var(--dsh-code-font); }
+    .tool-output-more { margin: 5px 0 0; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: var(--dsh-radius-xs); color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; }
+    .tool-output-more:hover { background: var(--dsh-hover); }
+    /* A slash command DSH ran on its own is the same disclosure row, verbatim. */
+    .command-card { margin: 0; padding: 0; border: 0; border-radius: 0; background: none; }
+    .command-card.failed { color: var(--vscode-errorForeground); }
+    .command-head { min-width: 0; min-height: var(--dsh-line); display: flex; align-items: center; color: var(--vscode-descriptionForeground); }
+    .command-name { min-width: 0; flex: none; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--dsh-code-font); font-size: var(--dsh-content-font-size); line-height: var(--dsh-line); font-weight: 400; color: var(--vscode-foreground); }
+    .command-result { margin: 4px 0 0 22px; color: var(--vscode-descriptionForeground); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsh-line-secondary); }
     .diff-path, .result-title { margin: 7px 0 4px; font-weight: 600; color: var(--vscode-foreground); }
     .diff-old { border-left: 2px solid var(--vscode-gitDecoration-deletedResourceForeground); }
     .diff-new { border-left: 2px solid var(--vscode-gitDecoration-addedResourceForeground); }
     .source { display: block; margin: 4px 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .source-line { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--vscode-editor-font-family); font-size: 11px; }
     .tool-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
-    .tool-action { min-height: 24px; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-foreground); background: transparent; font-size: 11px; }
+    .tool-action { min-height: 24px; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: var(--dsh-radius-xs); color: var(--vscode-foreground); background: transparent; font-size: 11px; }
     .tool-action:hover { background: var(--vscode-toolbar-hoverBackground); }
     .changed-files { margin: 14px 0 4px; padding: 10px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); }
     .changed-files-head { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 7px; font-weight: 600; }
@@ -341,8 +449,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .failed, .error-text { color: var(--vscode-errorForeground); }
     .streaming::after { content: ''; display: inline-block; width: 6px; height: 13px; margin-left: 2px; vertical-align: -2px; background: var(--vscode-foreground); animation: blink 1s steps(2) infinite; }
     @keyframes blink { 50% { opacity: 0; } }
-    .status, .interaction { margin: 10px 0; padding: 11px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; overflow-wrap: anywhere; background: var(--vscode-editor-background); }
-    .status { color: var(--vscode-descriptionForeground); border: 0; background: var(--vscode-textBlockQuote-background); }
+    .status, .interaction { margin: 10px 0; padding: 11px; border: 1px solid var(--vscode-widget-border); border-radius: var(--dsh-radius-md); overflow-wrap: anywhere; background: var(--vscode-editor-background); }
+    /* A runtime note is a line of the transcript, not a card in it. */
+    .status { margin: 6px 0; padding: 0; color: var(--vscode-descriptionForeground); border: 0; border-radius: 0; background: none; font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsh-line-secondary); }
     .status.error { color: var(--vscode-errorForeground); }
     .status.setup { padding: 15px; color: var(--vscode-foreground); border: 1px solid var(--vscode-widget-border); border-radius: 10px; background: var(--vscode-editor-background); }
     .setup-title { margin-bottom: 4px; font-weight: 600; }
@@ -436,7 +545,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .usage-row dt, .usage-row dd { margin: 0; }
     .usage-row dd { color: var(--vscode-foreground); font-variant-numeric: tabular-nums; }
     .usage-swatch { width: 7px; height: 7px; margin-right: 6px; display: inline-block; border-radius: 2px; }
-    .usage-stats { min-width: 0; padding: 0 12px 8px; overflow: hidden; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
+    /**
+     * DSH's composer dock: the session's own statistics, as pills, centred above
+     * the input. They report what the session has done and what it has cost, and
+     * appear only once there is something to report.
+     */
+    .composer-dock { max-width: 100%; margin: 0 auto; padding-top: 4px; display: flex; align-items: center; justify-content: center; gap: 12px; font-size: calc(var(--dsh-content-font-size-secondary) - 1px); line-height: var(--dsh-line-secondary); }
+    .composer-dock.hidden { display: none; }
+    .stat-pill { max-width: 100%; padding: 1px 8px; display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 999px; color: var(--vscode-descriptionForeground); background: transparent; font: inherit; line-height: inherit; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .stat-pill svg { flex: none; width: 14px; height: 14px; }
+    button.stat-pill { cursor: pointer; }
+    button.stat-pill:hover, button.stat-pill[aria-expanded='true'] { color: var(--vscode-foreground); background: var(--dsh-hover); }
+    .stat-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .stat-sep { margin: 0 6px; color: color-mix(in srgb, currentColor 55%, transparent); }
     .project { width: 100%; min-width: 0; height: 28px; padding: 0 4px; overflow: hidden; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; color: var(--vscode-descriptionForeground); background: transparent; }
     .project:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .project span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -495,6 +616,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     </div>
     <footer class="composer-wrap">
       <div id="queueDock" class="queue-dock hidden" aria-label="Queued messages"></div>
+      <div id="usageStats" class="composer-dock hidden" role="status" aria-label="Session statistics"></div>
       <div class="composer">
         <div id="subagentBar" class="subagent-bar hidden" role="status"></div>
         <div id="routableNotice" class="routable-notice hidden" role="status"></div>
@@ -528,7 +650,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
             <button id="send" class="icon-button send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg></button>
           </div>
         </div>
-        <div id="usageStats" class="usage-stats hidden"></div>
       </div>
     </footer>
   </div>
@@ -1210,12 +1331,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return live ? Date.now() - entry.startedAt : entry.frozen;
     }
 
+    /** DSH's label is the state alone; the wait rides its own span beside it. */
     function thinkingLabel(message) {
+      return message.streaming === true ? 'Thinking' : 'Thought';
+    }
+    function thinkingDuration(message) {
       const elapsed = thinkingElapsed(message);
-      const live = message.streaming === true;
-      const title = live ? 'Thinking' : 'Thought';
-      if (elapsed === undefined || elapsed < 1000) return title;
-      return title + ' · ' + formatLiveDuration(elapsed);
+      return elapsed === undefined || elapsed < 1000 ? '' : formatLiveDuration(elapsed);
     }
 
     /**
@@ -1303,13 +1425,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       root.className = 'thinking';
       const summary = document.createElement('summary');
       const title = node('span', 'thinking-title', thinkingLabel(message));
+      // DSH puts the wait in the code face, then a 2px dot, then the preview.
+      const duration = node('span', 'thinking-duration', thinkingDuration(message));
+      const separator = node('span', 'thinking-sep');
       const preview = shimmerNode('thinking-preview', thinkingPreview(message.reasoning));
       const glyph = node('span', 'thinking-icon');
       glyph.append(icon(THINK_SHAPES, false));
-      summary.append(glyph, title, preview);
+      summary.append(glyph, title, duration, separator, preview);
       const body = node('div', 'thinking-body');
       root.append(summary, body);
-      const thinking = { root, title, preview, body, message };
+      const thinking = { root, title, duration, separator, preview, body, message };
       applyThinkingState(thinking, message);
       // A collapsed body is never materialized, so long thinking stays cheap.
       root.addEventListener('toggle', () => { if (root.open) body.textContent = thinking.message.reasoning || ''; });
@@ -1322,9 +1447,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const live = message.streaming === true;
       thinking.root.classList.toggle('live', live);
       thinking.title.textContent = thinkingLabel(message);
+      const duration = thinkingDuration(message);
+      thinking.duration.textContent = duration;
+      thinking.duration.hidden = duration === '';
+      // DSH shows the dot and the summary together or not at all.
+      const summary = thinkingPreview(message.reasoning);
+      thinking.separator.hidden = summary === '';
+      thinking.preview.hidden = summary === '';
       // DSH highlights the summary while the model is still writing it.
       thinking.preview.classList.toggle('shimmer', live);
-      thinking.preview.textContent = thinkingPreview(message.reasoning);
+      thinking.preview.textContent = summary;
       if (thinking.root.open) thinking.body.textContent = message.reasoning || '';
     }
     function syncThinking(thinking, message) {
@@ -1380,6 +1512,27 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         + (turnUsage.reasoningTokens === undefined ? '' : ' (' + exactTokens(turnUsage.reasoningTokens) + ' reasoning)'));
       return lines;
     }
+    /**
+     * DSH's own token pill: what the turn spent, then how much of it the cache
+     * carried. The field-by-field breakdown stays on the pill's tooltip, which is
+     * where the old text pill kept it.
+     */
+    function usagePill(turnUsage) {
+      const pill = node('button', 'message-action usage-pill');
+      pill.type = 'button';
+      pill.append(icon(DATABASE_SHAPES, false));
+      const label = node('span', 'stat-label');
+      label.append(document.createTextNode(compactTokens(turnUsage.totalTokens) + ' tok'));
+      const cached = Number(turnUsage.cacheReadTokens || 0);
+      const input = cached + Number(turnUsage.uncachedInputTokens || 0);
+      if (turnUsage.cacheReadTokens !== undefined && input > 0) {
+        label.append(node('span', 'usage-pill-sep', '·'), document.createTextNode('Cache hit ' + Math.round((cached / input) * 100) + '%'));
+      }
+      pill.append(label);
+      const detail = usageLines(turnUsage).join('\\n');
+      pill.title = detail; pill.setAttribute('aria-label', 'Turn usage: ' + detail);
+      return pill;
+    }
     function copyMessageText(message, button) {
       const text = typeof message.text === 'string' ? message.text : '';
       const restore = () => window.setTimeout(() => {
@@ -1429,6 +1582,20 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       { tag: 'path', attrs: { d: 'M1.01221 7.9999L5.6964 7.9999C6.41913 7.9999 6.78049 7.9999 7.12115 8.08049C7.4232 8.15196 7.71233 8.26986 7.97821 8.43C8.27809 8.61061 8.5364 8.86331 9.05303 9.36871L11.3281 11.5944' } },
       { tag: 'circle', attrs: { cx: '12.4502', cy: '3.3079', r: '1.56962' } },
       { tag: 'circle', attrs: { cx: '12.4502', cy: '12.6921', r: '1.56962' } },
+    ];
+    /** DSH's gauge: the session's own pace, next to the counts it belongs to. */
+    const GAUGE_SHAPES = [
+      { tag: 'path', attrs: { d: 'M3.4041 13.096C2.49514 12.187 1.87614 11.0288 1.62537 9.76798C1.37459 8.50716 1.50331 7.20028 1.99525 6.01261C2.48719 4.82494 3.32025 3.80981 4.3891 3.09557C5.45795 2.38134 6.71458 2.00008 8.0001 2C9.28563 2.00008 10.5423 2.38134 11.6111 3.09557C12.68 3.80981 13.513 4.82494 14.005 6.01261C14.4969 7.20028 14.6256 8.50716 14.3748 9.76798C14.1241 11.0288 13.5051 12.187 12.5961 13.096' } },
+      { tag: 'path', attrs: { d: 'M8 8.49994L11.6114 4.88855' } },
+      { tag: 'path', attrs: { d: 'M8 9.75C8.69036 9.75 9.25 9.19036 9.25 8.5C9.25 7.80964 8.69036 7.25 8 7.25C7.30964 7.25 6.75 7.80964 6.75 8.5C6.75 9.19036 7.30964 9.75 8 9.75Z' }, fill: 'currentColor', stroke: false },
+    ];
+    /** DSH's database: what the session has spent. */
+    const DATABASE_SHAPES = [
+      { tag: 'path', attrs: { d: 'M13.1967 5.1869C13.7232 4.77378 14.0003 4.30517 14.0001 3.82819C14.0003 3.3512 13.7232 2.88259 13.1967 2.46947C12.6702 2.05635 11.9128 1.71328 11.0006 1.47475C10.0885 1.23621 9.05371 1.11062 8.00039 1.1106C6.94707 1.11057 5.9123 1.23612 5.00009 1.47461C4.08742 1.71301 3.32948 2.05604 2.80249 2.46919C2.2755 2.88235 1.99805 3.35106 1.99805 3.82819C1.99805 4.30531 2.2755 4.77402 2.80249 5.18718C3.32948 5.60033 4.08742 5.94336 5.00009 6.18176C5.9123 6.42025 6.94707 6.5458 8.00039 6.54578C9.05371 6.54575 10.0885 6.42016 11.0006 6.18163C11.9128 5.94309 12.6702 5.60002 13.1967 5.1869Z' } },
+      { tag: 'path', attrs: { d: 'M2 3.80371V11.7848' } },
+      { tag: 'path', attrs: { d: 'M14 3.80371V11.7848' } },
+      { tag: 'path', attrs: { d: 'M2 7.81396C2 8.60524 2.63214 9.36411 3.75736 9.92363C4.88258 10.4832 6.4087 10.7975 8 10.7975C9.5913 10.7975 11.1174 10.4832 12.2426 9.92363C13.3679 9.36411 14 8.60524 14 7.81396' } },
+      { tag: 'path', attrs: { d: 'M2 11.7847C2 12.6081 2.63214 13.3977 3.75736 13.98C4.88258 14.5622 6.4087 14.8893 8 14.8893C9.5913 14.8893 11.1174 14.5622 12.2426 13.98C13.3679 13.3977 14 12.6081 14 11.7847' } },
     ];
     /**
      * Build one icon: stroked, or filled as well when it marks a chosen state.
@@ -1657,7 +1824,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
      * copy the whole message, the turn's usage, and the clock.
      */
     function renderMessageActions(message, meta) {
-      const row = node('div', 'message-actions');
+      const row = node('div', 'message-actions end');
       const list = (state && state.messages) || [];
       // Only the newest turn's row stays visible; the rest reveal on hover, as
       // DSH does, so a long transcript is not a wall of buttons.
@@ -1672,21 +1839,21 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       row.append(feedbackButton('positive', message.id, rating));
       row.append(feedbackButton('negative', message.id, rating));
       row.append(branchButton(meta));
-      if (meta.turnUsage !== undefined) {
-        const usage = meta.turnUsage;
-        const pill = node('button', 'message-action usage-pill', 'Usage ' + compactTokens(usage.totalTokens) + ' tok');
-        pill.type = 'button';
-        const detail = usageLines(usage).join('\\n');
-        pill.title = detail; pill.setAttribute('aria-label', 'Turn usage: ' + detail);
-        row.append(pill);
-      }
-      // What DSH's turn process row calls "Took 2m 3s": the wait the user sat
-      // through, measured from the prompt that opened the turn.
+      // DSH groups the turn's bill and its clock at the end of the row, in that
+      // order, 8px clear of the marks.
+      const end = node('div', 'message-end');
+      if (meta.turnUsage !== undefined) end.append(usagePill(meta.turnUsage));
+      // What DSH's turn process row calls "Completed in 2m 3s": the wait the user
+      // sat through, measured from the prompt that opened the turn.
       if (typeof meta.turnDurationMs === 'number' && meta.turnDurationMs >= 1000) {
-        row.append(node('span', 'message-duration', 'Took ' + formatLiveDuration(meta.turnDurationMs)));
+        const duration = node('span', 'message-duration');
+        duration.append(document.createTextNode('Completed in '));
+        duration.append(node('span', 'duration-number', formatLiveDuration(meta.turnDurationMs)));
+        end.append(duration);
       }
       const clock = formatMessageClock(meta.time);
-      if (clock !== '') row.append(node('span', 'message-clock', clock));
+      if (clock !== '') end.append(node('span', 'message-clock', clock));
+      if (end.childNodes.length > 0) row.append(end);
       return row;
     }
     function renderMessage(message) {
@@ -1694,9 +1861,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (message.role === 'command') return { message, node: renderCommand(message) };
       if (message.role === 'notice') return { message, node: node('div', 'status' + (message.failed ? ' error' : ''), message.text) };
       const item = node('article', 'message ' + message.role);
-      const head = node('div', 'message-head');
-      head.append(node('span', 'avatar' + (message.role === 'assistant' ? ' deepseek-mark' : ''), message.role === 'user' ? 'Y' : ''));
-      head.append(node('span', '', message.role === 'user' ? 'You' : 'DeepSeek'));
       const markdown = message.role === 'assistant' && message.streaming === true ? createMarkdownStream(message.text) : undefined;
       const thinking = message.role === 'assistant' && hasThinking(message) ? renderThinking(message) : undefined;
       const body = message.role === 'assistant'
@@ -1706,7 +1870,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (message.streaming) body.classList.add('streaming');
       if (message.deferredBody === true) attachDeferredOutput(message, body, renderAssistantPage, false, 'Show full response' + (message.bodyLength ? ' · ' + String(message.bodyLength) + ' characters' : ''));
       else appendImages(body, message.images);
-      item.append(head);
       if (thinking) item.append(thinking.root);
       item.append(body);
       const meta = messageMetaFor(message.id);
@@ -1951,6 +2114,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (value < 60000) return (value / 1000).toFixed(value < 10000 ? 1 : 0) + 's';
       return (value / 60000).toFixed(1) + 'm';
     }
+    /** DSH's decode figure: whole tokens from ten up, one decimal below. */
+    function formatTokensPerSecond(value) {
+      const clamped = Math.max(0, Number(value) || 0);
+      return clamped >= 10 ? String(Math.round(clamped)) : String(Math.round(clamped * 10) / 10);
+    }
     function usageStatsLine(usage) {
       const groups = [];
       const stats = usage && usage.sessionStats;
@@ -1962,7 +2130,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         if (durations.length) groups.push(durations.join(' · '));
         const speeds = [];
         if (stats.ttftSteps > 0) speeds.push('TTFT avg ' + formatDuration(stats.ttftMs / stats.ttftSteps));
-        if (stats.decodeMs > 0) speeds.push((stats.decodeTokens / (stats.decodeMs / 1000)).toFixed(1) + ' tok/s');
+        if (stats.decodeMs > 0) speeds.push(formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1000)) + ' tok/s');
         if (speeds.length) groups.push(speeds.join(' · '));
       }
       const tokens = usage && usage.tokenUsage;
@@ -1975,26 +2143,50 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       return groups.join('  |  ');
     }
-    function usageStatsSummary(usage) {
-      const groups = [];
+    /**
+     * One of DSH's composer-dock pills: a mark, then the parts of one figure,
+     * separated by the dot DSH separates them with.
+     */
+    function statPill(shapes, parts, title) {
+      const pill = node('span', 'stat-pill');
+      pill.append(icon(shapes, false));
+      const label = node('span', 'stat-label');
+      label.append(document.createTextNode(parts[0]));
+      for (const part of parts.slice(1)) label.append(node('span', 'stat-sep', '·'), document.createTextNode(part));
+      pill.append(label);
+      if (title) { pill.title = title; pill.setAttribute('aria-label', title); }
+      return pill;
+    }
+    /**
+     * DSH's session statistics, split the way its own pills split them: what the
+     * session has done, then what it has cost. Empty groups are simply absent,
+     * so a fresh session shows no dock at all.
+     */
+    function usageStatPills(usage) {
+      const pills = [];
       const stats = usage && usage.sessionStats;
       if (stats && stats.steps > 0) {
-        groups.push(stats.turns + (stats.turns === 1 ? ' turn' : ' turns'));
-        groups.push(stats.steps + (stats.steps === 1 ? ' step' : ' steps'));
+        const counts = [stats.turns + (stats.turns === 1 ? ' turn' : ' turns') + ' ' + stats.steps + (stats.steps === 1 ? ' step' : ' steps')];
+        if (stats.decodeMs > 0) counts.push(formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1000)) + ' tok/s');
+        pills.push(statPill(GAUGE_SHAPES, counts, usageStatsLine(usage)));
       }
       const tokens = usage && usage.tokenUsage;
       if (tokens) {
-        const total = tokens.uncachedInputTokens + tokens.cacheReadTokens + tokens.cacheWriteTokens + tokens.outputTokens;
-        if (total > 0) groups.push(formatTokens(total) + ' tokens');
+        const input = tokens.uncachedInputTokens + tokens.cacheReadTokens + tokens.cacheWriteTokens;
+        const total = input + tokens.outputTokens;
+        if (total > 0) {
+          const spent = [formatTokens(total) + ' tok'];
+          if (input > 0) spent.push('Cache hit ' + Math.round(tokens.cacheReadTokens / input * 100) + '%');
+          pills.push(statPill(DATABASE_SHAPES, spent, usageStatsLine(usage)));
+        }
       }
-      return groups.join(' · ');
+      return pills;
     }
     function renderUsage(current) {
       const usage = current.usage || { available: false, percent: 0, usedTokens: 0, contextWindow: 0 };
-      const stats = usageStatsSummary(usage);
-      elements.usageStats.textContent = stats;
-      elements.usageStats.title = usageStatsLine(usage);
-      elements.usageStats.classList.toggle('hidden', stats === '');
+      const pills = usageStatPills(usage);
+      elements.usageStats.replaceChildren(...pills);
+      elements.usageStats.classList.toggle('hidden', pills.length === 0);
       elements.usageControl.classList.toggle('hidden', usage.available !== true);
       if (usage.available !== true) {
         usageOpen = false;

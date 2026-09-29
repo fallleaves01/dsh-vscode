@@ -204,7 +204,10 @@ export function renderMarkdown(text: string, hooks?: MarkdownHooks): HTMLDivElem
   }
   for (const table of root.querySelectorAll('table')) {
     const container = document.createElement('div')
-    container.className = 'markdown-table'
+    // DSH's own split: a table under four columns fills the column and wraps,
+    // one with four or more keeps its natural width and scrolls inside the box.
+    const wide = table.querySelector('tr > *:nth-child(4)') !== null
+    container.className = 'markdown-table' + (wide ? '' : ' md-table-fill')
     container.tabIndex = 0
     container.setAttribute('role', 'region')
     container.setAttribute('aria-label', 'Table (scroll horizontally)')

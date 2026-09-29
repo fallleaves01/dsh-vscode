@@ -47,6 +47,7 @@ settings/describe  settings/mutate  workspace/archiveSession  workspace/follow
 | DSH web 模块 | 插件对应实现 |
 |---|---|
 | `chat` / `conversation` | 自绘 webview 聊天视图、流式 markdown、思考折叠（本次新增） |
+| `primitives` 排版（markdown 工作表 / `DisclosureRow` / `StatsPills` / 回合尾部） | webview 直接用 DSH 的度量：正文 `--dsh-content-font-*`、段间 16px、列表缩进 18px、0.5px 细线表格、24px 工具披露行、28px 回合动作行、composer dock 统计胶囊（`conversation-scroll.browser.mjs` 逐项量测） |
 | `tool` | `tool-presentation.ts` / `tool-diff.ts` 工具卡片 |
 | `deliverables` | `diff-review.ts` 改动文件分组 + **回复内文件引用可点击跳转**（`webview.ts:514` → `open-file` → `showTextDocument` 带行号） |
 | `plan` | `collaboration-state.ts` `planModeStateOf` / `effectivePlanMode` |

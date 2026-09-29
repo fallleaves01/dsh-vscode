@@ -89,6 +89,18 @@ describe('Markdown rendering', () => {
     expect(root.querySelector('.markdown-table')?.getAttribute('tabindex')).toBe('0')
   })
 
+  it('lets a narrow table fill the column and keeps a wide one scrollable', () => {
+    // DSH's own split: under four columns the table wraps to the column width,
+    // from four up it keeps its natural width and scrolls inside the wrapper.
+    const narrow = renderMarkdown('| Name | Value |\n| --- | --- |\n| a | b |')
+    expect(narrow.querySelector('.markdown-table')?.classList.contains('md-table-fill')).toBe(true)
+
+    const wide = renderMarkdown('| Name | Value | Status | Owner |\n| --- | --- | --- | --- |\n| a | b | c | d |')
+    const wrapper = wide.querySelector('.markdown-table')!
+    expect(wrapper.classList.contains('md-table-fill')).toBe(false)
+    expect(wrapper.querySelectorAll('th')).toHaveLength(4)
+  })
+
   it.each([
     ['inline dollars', 'Energy: $E = mc^2$.', false],
     ['inline parentheses', String.raw`Energy: \(E = mc^2\).`, false],
