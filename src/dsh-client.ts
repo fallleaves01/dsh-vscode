@@ -249,7 +249,13 @@ export class DshClient {
       request: { data, ...(name === undefined || name === '' ? {} : { name }) },
     }, 300_000)
   }
-  pluginInventory(): Promise<PluginInventorySnapshot> { return this.call('pluginInventory/list', {}) }
+  async pluginInventory(): Promise<PluginInventorySnapshot> {
+    const value = await this.call<PluginInventorySnapshot>('pluginInventory/list', {})
+    // A runtime that renamed or dropped the array would otherwise throw a
+    // TypeError out of a picker, hiding the real message ("inventory
+    // unavailable"). An empty list is what the caller can act on.
+    return { ...value, entries: Array.isArray(value?.entries) ? value.entries : [] }
+  }
   /** Origin of the runtime this client is bound to; used for the sign-in callback. */
   get runtimeOrigin(): URL { return this.connection.baseUrl }
 
@@ -284,7 +290,10 @@ export class DshClient {
   signOutAccount(client: Record<string, unknown>): Promise<unknown> {
     return this.call('account/signOut', { client }, 30_000)
   }
-  settings(): Promise<SettingsDescription> { return this.call('settings/describe', {}) }
+  async settings(): Promise<SettingsDescription> {
+    const value = await this.call<SettingsDescription>('settings/describe', {})
+    return { ...value, namespaces: Array.isArray(value?.namespaces) ? value.namespaces : [] }
+  }
   mutateSettings(ns: string, ops: SettingsMutation[], expectedRevision: number): Promise<SettingsNamespace> {
     return this.call('settings/mutate', { ns, ops, expectedRevision })
   }

@@ -118,7 +118,9 @@ export function settingConstantOptions(field: RuntimeSettingField, schema: Setti
 export function parseRuntimeSetting(field: RuntimeSettingField, source: string): unknown {
   if (field.node.type === 'string') return source
   if (field.node.type === 'number') {
-    const value = Number(source)
+    // Number('') is 0 and Number('  ') is 0, so an emptied box would silently
+    // write a zero — indistinguishable from leaving the setting unchanged.
+    const value = source.trim() === '' ? Number.NaN : Number(source)
     if (!Number.isFinite(value)) throw new Error('Enter a valid number.')
     const min = field.node.meta?.min
     const max = field.node.meta?.max

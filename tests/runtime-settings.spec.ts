@@ -44,4 +44,13 @@ describe('runtime settings schemas', () => {
     expect(() => parseRuntimeSetting(numberField, '0')).toThrow('at least 1')
     expect(() => parseRuntimeSetting(numberField, 'not-a-number')).toThrow('valid number')
   })
+
+  it('refuses an emptied number box instead of writing zero', () => {
+    // Number('') is 0 and passes every min/max check, so clearing the field
+    // would silently apply a zero the user never typed.
+    const field = { path: ['temperature'], node: { type: 'number', meta: { min: 0, max: 1 } }, value: 0.1, inherited: 0.1, overridden: false }
+    expect(() => parseRuntimeSetting(field as never, '')).toThrow('Enter a valid number.')
+    expect(() => parseRuntimeSetting(field as never, '   ')).toThrow('Enter a valid number.')
+    expect(parseRuntimeSetting(field as never, '0')).toBe(0)
+  })
 })

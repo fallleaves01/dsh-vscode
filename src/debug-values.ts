@@ -1,4 +1,12 @@
-const SENSITIVE_NAME = /(?:api[_-]?key|access[_-]?token|authorization|auth[_-]?token|cookie|credential|password|passwd|secret|session[_-]?token)/i
+/**
+ * Names whose value must never reach the agent transcript.
+ *
+ * `token` alone is included: it is the most common name for a credential, and
+ * the qualified forms do not cover it. This over-redacts names that merely
+ * contain the word (a tokenizer, say), which is the safe direction for a debug
+ * aid — the name is still shown, only the value is hidden.
+ */
+const SENSITIVE_NAME = /(?:api[_-]?key|token|authorization|cookie|credential|password|passwd|secret)/i
 
 export interface DebugVariableValue {
   readonly name: string

@@ -119,6 +119,16 @@ describe('DSH 0.1.2 chat transport', () => {
       kind: 'subagent', parentSessionId: 'parent', childSessionId: 'child', mode: 'unknown' } } })
   })
 
+  it('treats a payload without its array as an unavailable inventory', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    // A renamed or dropped array must not throw a TypeError out of a picker.
+    h.results['pluginInventory/list'] = {}
+    h.results['settings/describe'] = {}
+    expect(await h.client.pluginInventory()).toEqual({ entries: [] })
+    expect(await h.client.settings()).toEqual({ namespaces: [] })
+  })
+
   it('re-reads the model catalog when the account changes', async () => {
     const h = harness()
     await h.client.startStreams()

@@ -330,6 +330,10 @@ export class DshRuntime implements vscode.Disposable {
   }
 
   private async connectExternal(launchUrl: URL, pending: PendingStart): Promise<void> {
+    // The URL has arrived, so the startup timeout's only question is answered.
+    // Leaving it armed while authentication and the probe run could fail a start
+    // that succeeded, and blame a missing URL that was in fact reported.
+    this.clearStartupTimer()
     const connection = new DshConnection(new URL(launchUrl.origin))
     this.authenticating = connection
     this.publish({ kind: 'starting', detail: 'Connecting to the existing DeepSeek Harness runtime…' })

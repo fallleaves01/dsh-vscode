@@ -33,4 +33,12 @@ describe('debug tool values', () => {
     expect(isRuntimeInternalSource('node:internal/modules/run_main')).toBe(true)
     expect(isRuntimeInternalSource('/workspace/src/index.js')).toBe(false)
   })
+
+  it('hides a credential held in a variable simply named token', () => {
+    // The qualified forms (access_token, session_token) do not cover the most
+    // common name, and the value reaches the agent transcript.
+    for (const name of ['token', 'refresh_token', 'id_token', 'authToken', 'myTokenValue']) {
+      expect(debugVariableValue(name, 'secret-value').value).toBe('<redacted>')
+    }
+  })
 })
