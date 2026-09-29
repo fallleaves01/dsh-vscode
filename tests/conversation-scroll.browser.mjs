@@ -170,6 +170,34 @@ try {
   await evaluate('tick()')
   assert.equal(await evaluate(`(() => { const b=document.getElementById('jumpLatest').getBoundingClientRect(), s=elements.scroll.getBoundingClientRect(); return b.width>0 && b.left>=s.left && b.right<=s.right && b.bottom<=s.bottom; })()`), true)
   console.log('PASS: narrow sidebar resize and visible, in-bounds button')
+
+  // The running-turn clock rewrites its own label once a second, and that label
+  // grows: the duration lengthens, and past the quiet threshold a note is
+  // appended. A wrapped label makes the turn taller without a state change, so
+  // the clock itself must tell the scroller or a reader at the bottom is left
+  // behind by a timer.
+  await evaluate(`showState({...baseline, messages:[...baseline.messages], turnStartedAt: Date.now() - 96000, turnActivityAt: Date.now(), running: true});`)
+  await evaluate('tick()')
+  assert.equal(await evaluate('document.querySelector(".live-status-text").textContent'), 'Deep diving for 1m 36s')
+  assert.equal(await evaluate('conversationScroller.following && gap() <= 2'), true)
+  const shortHeight = await evaluate('document.querySelector(".live-status").offsetHeight')
+  // Past the quiet threshold the label grows; make it long enough to wrap, so
+  // this covers the height change rather than assuming one line always fits.
+  await evaluate(`syncLiveStatus({...state, turnStartedAt: Date.now() - 13000000, turnActivityAt: Date.now() - 900000})`)
+  await evaluate('tick()')
+  const clock = await evaluate('({text: document.querySelector(".live-status-text").textContent, height: document.querySelector(".live-status").offsetHeight})')
+  assert.match(clock.text, /^Deep diving for 3h 3[0-9]m 4[0-9]s · no new output for 15m 0s$/)
+  assert.ok(clock.height > shortHeight, `the clock label should wrap at 300px: ${shortHeight} -> ${clock.height}`)
+  assert.equal(await evaluate('conversationScroller.following && gap() <= 2'), true)
+  await evaluate('syncLiveStatus({...state, turnStartedAt: 0, turnActivityAt: 0})')
+  await evaluate('tick()')
+  assert.equal(await evaluate('document.querySelector(".live-status-text").textContent'), 'Deep diving…')
+  assert.equal(await evaluate('conversationScroller.following && gap() <= 2'), true)
+  await evaluate(`showState({...baseline, sessionId:'settled', messages:[...baseline.messages]});`)
+  await evaluate('tick()')
+  assert.equal(await evaluate('document.querySelector(".live-status") === null'), true)
+  console.log('PASS: the live turn clock ticks without losing a reader at the bottom')
+
   if (process.env.DSH_SCROLL_SCREENSHOT) {
     const { data } = await page('Page.captureScreenshot', { format: 'png' })
     await writeFile(process.env.DSH_SCROLL_SCREENSHOT, Buffer.from(data, 'base64'))

@@ -92,7 +92,7 @@ export function harness(): Harness {
         phase: 'ready', statusText: '', setup: null, canReconnect: false,
         workspaceName: 'demo', cwd: '/workspace',
         sessions: [], archivedSessions: [], sessionId: 'session-a',
-        messages: [], running: false, routable: true, models: [],
+        messages: [], running: false, routable: true, models: [], turnStartedAt: 0, turnActivityAt: 0,
         approval: null, question: null, commands: [], skills: [],
         agentPreset: { available: false, locked: false, busy: false, current: '', options: [] },
         usage: { available: false, percent: 0, usedTokens: 0, contextWindow: 0 },

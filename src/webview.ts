@@ -169,6 +169,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .thinking-title { flex: none; font-size: 12px; font-weight: 600; }
     .thinking-preview { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; opacity: .85; }
     .thinking-body { margin: 3px 0 2px; padding: 2px 0 2px 9px; border-left: 2px solid var(--vscode-widget-border); color: var(--vscode-descriptionForeground); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
+    .live-status { display: flex; align-items: center; gap: 6px; margin: 6px 0 3px; padding-left: 29px; color: var(--vscode-descriptionForeground); font-size: 12px; }
+    .live-status-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--vscode-charts-blue, #4d6bfe); animation: live-pulse 1.6s ease-in-out infinite; }
+    .live-status.stopping .live-status-dot { background: var(--vscode-descriptionForeground); }
+    .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+    @keyframes live-pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) { .live-status-dot { animation: none; opacity: 1; } }
     .message-image-status { padding: 8px 10px; border: 1px dashed var(--vscode-widget-border); border-radius: 7px; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .message-image-status.failed { color: var(--vscode-errorForeground); }
     .pending-steering { opacity: .82; }
@@ -514,11 +520,18 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const renderedMessages = new Map();
     /** Longest tail of the newest thought line kept in the collapsed summary. */
     const THINKING_PREVIEW_CHARS = 140;
-    /** Elapsed label refresh while the model is thinking. */
+    /** Elapsed label refresh while the model is thinking or a turn is running. */
     const THINKING_TICK_MS = 1000;
+    /** A quiet turn reports how long it has been quiet only past this. */
+    const QUIET_AFTER_MS = 15000;
     /** message id -> when the sidebar first saw it think, and its frozen total. */
     const thinkingTiming = new Map();
     let thinkingTicker;
+    let liveStatusTicker;
+    /** The live turn clock node, while a turn is running and the sidebar shows it. */
+    let liveStatusNode;
+    /** What the live turn clock was built for, so it is rebuilt only when it must. */
+    let renderedLiveKey = '';
     /** What the user last chose for one tool's output, when they ever chose. */
     const toolOpenIntent = new Map();
     const loadingToolRequests = new Map();
@@ -531,7 +544,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const toolOutputChunkSize = 20000;
 
     const conversationScroller = dshConversationScroll.createConversationScroller(elements.scroll, elements.conversation, document.getElementById('jumpLatest'));
-    window.addEventListener('pagehide', () => { conversationScroller.dispose(); if (thinkingTicker !== undefined) { clearInterval(thinkingTicker); thinkingTicker = undefined; } }, { once: true });
+    window.addEventListener('pagehide', () => { conversationScroller.dispose(); if (thinkingTicker !== undefined) { clearInterval(thinkingTicker); thinkingTicker = undefined; } if (liveStatusTicker !== undefined) { clearInterval(liveStatusTicker); liveStatusTicker = undefined; } }, { once: true });
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -1111,12 +1124,70 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const live = message.streaming === true;
       const title = live ? 'Thinking' : 'Thought';
       if (elapsed === undefined || elapsed < 1000) return title;
-      const seconds = Math.floor(elapsed / 1000);
-      if (seconds < 60) return title + ' · ' + seconds + 's';
-      const minutes = Math.floor(seconds / 60);
-      return title + ' · ' + minutes + 'm ' + (seconds % 60) + 's';
+      return title + ' · ' + formatLiveDuration(elapsed);
     }
 
+    /**
+     * DSH's live run clock: 12s, 2m 5s, 1h 02m 05s.
+     *
+     * One formatter for every duration the sidebar ticks, so the thinking
+     * summary and the turn clock cannot read the same wait two different ways.
+     */
+    function formatLiveDuration(ms) {
+      const total = Math.max(0, Math.floor(ms / 1000));
+      const seconds = total % 60;
+      const minutes = Math.floor(total / 60) % 60;
+      const hours = Math.floor(total / 3600);
+      if (hours > 0) return hours + 'h ' + (minutes < 10 ? '0' : '') + minutes + 'm ' + (seconds < 10 ? '0' : '') + seconds + 's';
+      if (minutes > 0) return minutes + 'm ' + seconds + 's';
+      return seconds + 's';
+    }
+
+    /**
+     * The live turn clock, the sidebar's answer to DSH's "Deep diving for 12s".
+     *
+     * A running turn that has sent nothing for a while looked exactly like one
+     * that had died, because the sidebar showed no state at all while it waited.
+     * The clock ticks either way, so the age of the newest runtime event is what
+     * separates a quiet turn from a stalled one.
+     */
+    function liveStatusText(current) {
+      if (current.stopping === true) return 'Stopping…';
+      const startedAt = Number(current.turnStartedAt) || 0;
+      const activityAt = Number(current.turnActivityAt) || 0;
+      const label = startedAt === 0 ? 'Deep diving…' : 'Deep diving for ' + formatLiveDuration(Date.now() - startedAt);
+      if (activityAt === 0) return label;
+      const quiet = Date.now() - activityAt;
+      return quiet < QUIET_AFTER_MS ? label : label + ' · no new output for ' + formatLiveDuration(quiet);
+    }
+    function renderLiveStatus(current) {
+      const box = node('div', 'live-status' + (current.stopping === true ? ' stopping' : ''));
+      // The announcement is a separate, constant string: the visible clock
+      // rewrites itself every second, and a live region would read all of it.
+      const announced = node('span', 'sr-only', current.stopping === true ? 'Stopping' : 'Deep diving');
+      announced.setAttribute('role', 'status');
+      box.append(node('span', 'live-status-dot'), node('span', 'live-status-text', liveStatusText(current)), announced);
+      return box;
+    }
+    /** Refresh the live text in place; the ticking clock must not rebuild the DOM. */
+    function syncLiveStatus(current) {
+      if (liveStatusNode === undefined) return;
+      const text = liveStatusText(current);
+      const label = liveStatusNode.querySelector('.live-status-text');
+      if (label === null || label.textContent === text) return;
+      // The label grows as the duration lengthens and the quiet note appears, and
+      // a wrapped label makes the turn taller without a state change; the
+      // scroller's own ResizeObserver on the content is what re-pins a reader.
+      label.textContent = text;
+    }
+    function syncLiveStatusTicker() {
+      const live = state !== undefined && state.phase === 'ready' && state.running === true;
+      if (live && liveStatusTicker === undefined) {
+        liveStatusTicker = setInterval(() => { if (state !== undefined) syncLiveStatus(state); }, THINKING_TICK_MS);
+      } else if (!live && liveStatusTicker !== undefined) {
+        clearInterval(liveStatusTicker); liveStatusTicker = undefined;
+      }
+    }
     /** One timer drives every live summary, and stops as soon as none is live. */
     function syncThinkingTicker() {
       let live = false;
@@ -2052,6 +2123,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         // writing into them; it only stops when no live entry remains.
         renderedMessages.clear(); thinkingTiming.clear(); syncThinkingTicker();
         renderedHistoryKey = ''; renderedTail = {};
+        // The turn clock is gone with the tail, and a dead runtime must not keep
+        // ticking it.
+        renderedLiveKey = ''; liveStatusNode = undefined; syncLiveStatusTicker();
         return;
       }
 
@@ -2073,11 +2147,27 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedTail.queue !== current.queue || renderedTail.changedFiles !== current.changedFiles || renderedTail.approval !== current.approval || renderedTail.question !== current.question) {
         renderedTail = { queue: current.queue, changedFiles: current.changedFiles, approval: current.approval, question: current.question };
         elements.conversationTail.replaceChildren();
+        // The turn clock is not one of these cards but it lives in the same slot,
+        // and the user must not lose the one signal that a turn is still alive
+        // because a queued message arrived.
+        if (liveStatusNode !== undefined) elements.conversationTail.append(liveStatusNode);
         for (const item of current.queue || []) if (item.placement === 'steering') elements.conversationTail.append(renderPendingSteering(item));
         if (current.changedFiles && current.changedFiles.length) elements.conversationTail.append(renderChangedFiles(current.changedFiles));
         if (current.approval) elements.conversationTail.append(renderApproval(current.approval));
         if (current.question) elements.conversationTail.append(renderQuestions(current.question));
       }
+      // The turn clock is its own slot: it ticks once a second, and rebuilding
+      // the changed-files and approval cards on every tick would be absurd.
+      const liveKey = current.running === true ? current.sessionId + '::' + String(current.stopping === true) : '';
+      if (liveKey !== renderedLiveKey) {
+        renderedLiveKey = liveKey;
+        if (liveStatusNode !== undefined) { liveStatusNode.remove(); liveStatusNode = undefined; }
+        if (liveKey !== '') {
+          liveStatusNode = renderLiveStatus(current);
+          elements.conversationTail.prepend(liveStatusNode);
+        }
+      } else syncLiveStatus(current);
+      syncLiveStatusTicker();
     }
     function render(current) {
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;

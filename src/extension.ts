@@ -187,6 +187,22 @@ interface ChatViewState {
   /** Ratings already recorded for this conversation, so the row can show its choice. */
   messageFeedback: MessageFeedbackItem[]
   running: boolean
+  /**
+   * When the sidebar first saw this conversation running, in epoch ms, or 0.
+   *
+   * DSH's own client shows a live clock for the running turn. The sidebar has no
+   * turn-start event to read, so it times what it witnessed: the moment the
+   * session was first reported running. A conversation opened mid-turn therefore
+   * counts from when it was opened.
+   */
+  turnStartedAt: number
+  /**
+   * When the runtime last sent anything for the running turn, in epoch ms, or 0.
+   *
+   * The clock alone cannot separate a stuck turn from a silent one, because it
+   * ticks either way; the age of the newest event is what distinguishes them.
+   */
+  turnActivityAt: number
   routable: boolean
   /** Whether any provider can route; the model picker stays usable on this. */
   anyRoutable: boolean
@@ -258,6 +274,8 @@ function initialState(cwd: string): ChatViewState {
     messageMeta: [],
     messageFeedback: [],
     running: false,
+    turnStartedAt: 0,
+    turnActivityAt: 0,
     routable: cwd !== '',
     anyRoutable: cwd !== '',
     models: [],
@@ -315,6 +333,10 @@ export class DshChatController implements vscode.Disposable {
   private stoppingDeadline: NodeJS.Timeout | undefined
   /** Which conversation the acknowledgement belongs to, so it cannot leak. */
   private stoppingSessionId: string | undefined
+  /** The running-turn clock: when it started, and when it last heard anything. */
+  private turnStartedAt = 0
+  private turnActivityAt = 0
+  private turnClockSessionId = ''
   /** Attempt whose authorize URL was already handed to the browser. */
   private openedSignInAttempt: string | undefined
   /** Polls spent on the current attempt, so a stuck attempt cannot poll forever. */
@@ -435,6 +457,8 @@ export class DshChatController implements vscode.Disposable {
       archivedSessions: [],
       sessionId: '',
       running: false,
+      turnStartedAt: 0,
+      turnActivityAt: 0,
       routable: this.cwd !== '',
       anyRoutable: this.cwd !== '',
       models: [],
@@ -908,13 +932,48 @@ export class DshChatController implements vscode.Disposable {
     this.stoppingDeadline = undefined
   }
 
-  private runningPatch(running: boolean, sessionId: string = this._state.sessionId): Pick<ChatViewState, 'running' | 'stopping'> {
+  private runningPatch(running: boolean, sessionId: string = this._state.sessionId): Pick<ChatViewState, 'running' | 'stopping' | 'turnStartedAt' | 'turnActivityAt'> {
     // An acknowledgement belongs to the turn it was requested for: another
     // conversation may be running, but its turn was never asked to stop.
     const stopping = running && this.stoppingSessionId === sessionId
     if (!stopping) this.clearStoppingDeadline()
     if (!stopping) this.stoppingSessionId = undefined
-    return { running, stopping }
+    this.turnClock(running, sessionId)
+    return { running, stopping, turnStartedAt: this.turnStartedAt, turnActivityAt: this.turnActivityAt }
+  }
+
+  /**
+   * Keep the running-turn clock honest: it starts when a turn is first reported
+   * running, follows the conversation on screen, and drops to zero otherwise.
+   *
+   * A conversation opened while it is already running counts from the moment it
+   * was opened: DSH's turn start is not part of any frame the sidebar reads, and
+   * claiming an exact start it never saw would be worse than an honest lower
+   * bound.
+   */
+  private turnClock(running: boolean, sessionId: string): void {
+    if (!running) {
+      this.turnStartedAt = 0
+      this.turnActivityAt = 0
+      this.turnClockSessionId = ''
+      return
+    }
+    if (this.turnStartedAt === 0 || this.turnClockSessionId !== sessionId) {
+      this.turnStartedAt = Date.now()
+      this.turnActivityAt = this.turnStartedAt
+      this.turnClockSessionId = sessionId
+    }
+  }
+
+  /**
+   * A frame arrived for the running turn, so it is working rather than silent.
+   *
+   * The clock alone cannot tell a stalled turn from a busy one, because it ticks
+   * either way; this is the half that can.
+   */
+  private noteTurnActivity(): Pick<ChatViewState, 'turnActivityAt'> {
+    if (this._state.running) this.turnActivityAt = Date.now()
+    return { turnActivityAt: this.turnActivityAt }
   }
 
   async updateQueue(sessionId: string, itemId: string, action: 'edit' | 'remove' | 'steer', text?: string): Promise<void> {
@@ -1552,7 +1611,7 @@ export class DshChatController implements vscode.Disposable {
 
     if (frame.channel === 'mux' && type === 'session/assistant-stream' && sessionId === this._state.sessionId) {
       this.projector.applyStream(payload.update as AssistantStreamUpdate)
-      this.publish({ messages: this.projectedMessages(), ...this.messageMetaPatch() })
+      this.publish({ messages: this.projectedMessages(), ...this.messageMetaPatch(), ...this.noteTurnActivity() })
       return
     }
 
@@ -1585,7 +1644,7 @@ export class DshChatController implements vscode.Disposable {
           )
         }
         this.publish({
-          messages: this.projectedMessages(), ...this.messageMetaPatch(),
+          messages: this.projectedMessages(), ...this.messageMetaPatch(), ...this.noteTurnActivity(),
           ...(changed ? { changedFiles: this.diffReviews.changedFiles(sessionId) } : {}),
         })
         this.hydrateImages(this.requireClient(), sessionId)

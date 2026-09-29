@@ -1362,3 +1362,81 @@ describe('archived conversations and background jobs', () => {
     expect(h.client.killJob).toHaveBeenCalledWith('a', 'live')
   })
 })
+
+/**
+ * While a turn runs and sends nothing, the sidebar used to show no state at all,
+ * so a quietly working model looked exactly like a dead one. The Webview renders
+ * the clock; what it renders has to come from here, and the honest source is
+ * what the sidebar witnessed rather than a turn start DSH never sends it.
+ */
+describe('the running-turn clock', () => {
+  it('starts with the turn and refreshes on every frame of it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const h = await harness()
+    await h.controller.selectSession('a')
+
+    vi.setSystemTime(1_000_000)
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    expect(h.controller.state).toMatchObject({ running: true, turnStartedAt: 1_000_000, turnActivityAt: 1_000_000 })
+
+    // A frame is what proves the turn is alive: the clock must not move by
+    // itself, or a stalled turn would keep looking healthy.
+    vi.setSystemTime(1_045_000)
+    h.emit({ type: 'session/event', sessionId: 'a', event: { type: 'user/message', seq: 1, time: 10,
+      data: { id: 'u1', source: { kind: 'user' }, content: [{ type: 'text', text: 'go' }] } } }, 'mux')
+    expect(h.controller.state).toMatchObject({ turnStartedAt: 1_000_000, turnActivityAt: 1_045_000 })
+  })
+
+  it('keeps one start time for as long as the same turn runs', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const h = await harness()
+    await h.controller.selectSession('a')
+
+    vi.setSystemTime(2_000_000)
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    vi.setSystemTime(2_030_000)
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    expect(h.controller.state.turnStartedAt).toBe(2_000_000)
+  })
+
+  it('leaves the clock alone while nothing is running', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const h = await harness()
+    await h.controller.selectSession('a')
+
+    vi.setSystemTime(3_000_000)
+    h.emit({ type: 'session/event', sessionId: 'a', event: { type: 'user/message', seq: 1, time: 10,
+      data: { id: 'u1', source: { kind: 'user' }, content: [{ type: 'text', text: 'typed' }] } } }, 'mux')
+    expect(h.controller.state).toMatchObject({ running: false, turnStartedAt: 0, turnActivityAt: 0 })
+  })
+
+  it('drops the clock when the turn ends', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const h = await harness()
+    await h.controller.selectSession('a')
+    vi.setSystemTime(4_000_000)
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    expect(h.controller.state.turnStartedAt).toBe(4_000_000)
+
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: false })
+    expect(h.controller.state).toMatchObject({ running: false, turnStartedAt: 0, turnActivityAt: 0 })
+  })
+
+  it('times the conversation on screen, not another one sending frames', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const h = await harness()
+    await h.controller.selectSession('a')
+    vi.setSystemTime(5_000_000)
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+
+    // A background conversation working is not this turn making progress.
+    vi.setSystemTime(5_060_000)
+    h.emit({ type: 'session/event', sessionId: 'b', event: { type: 'user/message', seq: 1, time: 10,
+      data: { id: 'b1', source: { kind: 'user' }, content: [{ type: 'text', text: 'elsewhere' }] } } }, 'mux')
+    expect(h.controller.state.turnActivityAt).toBe(5_000_000)
+
+    await h.controller.selectSession('b')
+    h.emit({ type: 'host/session-status', sessionId: 'b', running: true })
+    expect(h.controller.state.turnStartedAt).toBe(5_060_000)
+  })
+})
