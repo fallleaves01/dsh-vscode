@@ -1290,7 +1290,9 @@ export class DshChatController implements vscode.Disposable {
       loadingHistory: false,
     })
     const result = await (async () => {
-      const opening = await client.openSession(sessionId)
+      // `parentIdOf` only names a parent for a genuine subagent lineage (a fork
+      // records one too, and is still an ordinary session).
+      const opening = await client.openSession(sessionId, parentIdOf(this.summaries, sessionId))
       if (!opening.isCurrent()) return undefined
       const models = await client.models(sessionId)
       return { opening, models }

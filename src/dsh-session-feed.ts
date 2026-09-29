@@ -6,8 +6,29 @@ import { DshAssistantStream } from './dsh-assistant-stream.js'
 
 interface Projection { seq: number; value: unknown }
 interface PendingQuestion { sessionId: string; event: string; request: Record<string, unknown> }
+/** Durable address of one conversation, as DSH's `SessionAddress` union defines it. */
+type SessionAddress =
+  | { kind: 'session'; sessionId: string }
+  | { kind: 'subagent'; parentSessionId: string; childSessionId: string; mode: 'unknown' }
+
+/**
+ * Address a conversation the way DSH expects.
+ *
+ * A subagent child is not addressable as an ordinary session: DSH refuses that
+ * with `session/agent-busy` ("subagent Sessions require their durable parent
+ * address"), so opening a child — or paging its history — needs the subagent
+ * variant. The `mode` field is a discriminator that the validator does not
+ * inspect, so the caller does not have to know it.
+ */
+export function sessionAddress(sessionId: string, parentSessionId: string | undefined): SessionAddress {
+  return parentSessionId === undefined
+    ? { kind: 'session', sessionId }
+    : { kind: 'subagent', parentSessionId, childSessionId: sessionId, mode: 'unknown' }
+}
+
 interface Follow {
   sessionId: string
+  address: SessionAddress
   cursor: number
   lastSeq: number
   active: boolean
@@ -140,10 +161,11 @@ export class DshSessionFeed {
     return Object.fromEntries([...this.projections.get(sessionId) ?? []].map(([key, projection]) => [key, projection.value]))
   }
 
-  open(sessionId: string): Promise<SessionOpening> {
+  open(sessionId: string, parentSessionId?: string): Promise<SessionOpening> {
     this.closeFollow()
+    const address = sessionAddress(sessionId, parentSessionId)
     return new Promise((resolve, reject) => {
-      const state: Follow = { sessionId, cursor: -1, lastSeq: -1, active: false, pending: [], committedMessages: new Set(), cancel: () => {}, reject }
+      const state: Follow = { sessionId, address, cursor: -1, lastSeq: -1, active: false, pending: [], committedMessages: new Set(), cancel: () => {}, reject }
       this.follow = state
       this.subscribeJobs(sessionId)
       const assistant = new DshAssistantStream(
@@ -155,7 +177,7 @@ export class DshSessionFeed {
         if (this.follow === state) this.closeFollow(new Error('DSH session snapshot timed out.'))
       }, 30_000)
       state.reject = error => { clearTimeout(timer); reject(error) }
-      state.cancel = this.streams.open('session/follow', { request: { address: { kind: 'session', sessionId }, maxMessages: 100, assistantStream: true } }, raw => {
+      state.cancel = this.streams.open('session/follow', { request: { address, maxMessages: 100, assistantStream: true } }, raw => {
         if (this.follow !== state) return
         if (!wireRecord(raw)) throw new Error('Invalid session frame.')
         if (!opened) {
@@ -199,7 +221,7 @@ export class DshSessionFeed {
     const state = this.follow
     if (state?.sessionId !== sessionId || state.cursor < 0) throw new Error('Open the session before loading older history.')
     const result = await this.connection.call<{ records: unknown; hasMore: boolean }>('session/page', {
-      request: { address: { kind: 'session', sessionId }, throughSeq: state.cursor, beforeSeq, maxMessages: 100 },
+      request: { address: state.address, throughSeq: state.cursor, beforeSeq, maxMessages: 100 },
     })
     if (this.follow !== state) throw new Error('The conversation changed while loading history.')
     if (typeof result.hasMore !== 'boolean') throw new Error('Invalid history page.')

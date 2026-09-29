@@ -190,10 +190,15 @@ export class DshClient {
     this.presets.invalidate()
     for (const read of [...this.commands.values(), ...this.skills.values()]) read.invalidate()
   }
-  openSession(sessionId: string): Promise<SessionOpening> {
+  /**
+   * Open one conversation.
+   * @param parentSessionId - owning conversation when this session is a
+   *   subagent child, which DSH requires in the address instead of a plain id.
+   */
+  openSession(sessionId: string, parentSessionId?: string): Promise<SessionOpening> {
     this.presets.invalidate()
     this.invalidateSessionDiscovery(sessionId)
-    return this.feed.open(sessionId)
+    return this.feed.open(sessionId, parentSessionId)
   }
   async listSessions(): Promise<{ items: SessionSummary[] }> {
     const revision = this.feed.listRevision

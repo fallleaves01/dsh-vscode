@@ -41,7 +41,11 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
       if (frame.endpoint === '$events') receive(frame.streamId, { type: 'ready', clientId: 'client-1', host: { home: '/isolated' } })
       if (frame.endpoint === 'session/control') receive(frame.streamId, { type: 'baseline', value: { queues: {}, jobs: initialJobs, projections: {} } })
       if (frame.endpoint === 'workspace/follow') receive(frame.streamId, { type: 'baseline', value: { items: [], archivedSessionIds: ['archived'] } })
-      if (frame.endpoint === 'session/follow' && autoSnapshot) receive(frame.streamId, snapshot(frame.payload.args.request.address.sessionId))
+      // A conversation is addressed by id, or by parent for a subagent child.
+      if (frame.endpoint === 'session/follow' && autoSnapshot) {
+        const address = frame.payload.args.request.address
+        receive(frame.streamId, snapshot(address.kind === 'session' ? address.sessionId : address.childSessionId))
+      }
       // Opt-in: DSH 0.1.7 serves jobs from a per-session `job/list` stream.
       if (jobList && frame.endpoint === 'job/list') receive(frame.streamId, { type: 'rows', jobs: initialJobs[frame.payload.args.request.sessionId] ?? [] })
     })
@@ -90,6 +94,29 @@ describe('DSH 0.1.2 chat transport', () => {
     const before = h.frames.length
     opening.activate()
     expect(h.frames.slice(before).filter(frame => frame.payload.type === 'session/jobs').map(frame => frame.payload.jobs)).toEqual([[completed]])
+  })
+
+  it('addresses a subagent conversation through its parent', async () => {
+    const h = harness()
+    await h.client.openSession('s')
+    h.outgoing.length = 0
+    // DSH refuses a session-kind address for a child, so the parent has to be
+    // part of the address or opening one fails.
+    await h.client.openSession('child', 'parent')
+    // `session/follow` is a stream, so its request is an open frame.
+    const follow = h.outgoing.find(frame => frame.endpoint === 'session/follow')
+    expect(follow?.payload.args).toMatchObject({ request: { address: {
+      kind: 'subagent', parentSessionId: 'parent', childSessionId: 'child', mode: 'unknown' } } })
+  })
+
+  it('pages a subagent conversation with the same address it opened', async () => {
+    const h = harness()
+    await h.client.openSession('child', 'parent')
+    h.requests.length = 0
+    await h.client.history('child', 0)
+    const page = h.requests.find(request => request.endpoint === 'session/page')
+    expect(page?.args).toMatchObject({ request: { address: {
+      kind: 'subagent', parentSessionId: 'parent', childSessionId: 'child', mode: 'unknown' } } })
   })
 
   it('forwards the actual discovery events and does not publish credential references', async () => {

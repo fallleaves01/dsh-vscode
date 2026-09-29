@@ -509,7 +509,8 @@ describe('sidebar reconnect', () => {
     expect(connection.authenticated).toBe(false)
     expect(h.client.dispose).toHaveBeenCalledTimes(1)
     expect(next.client.startStreams).toHaveBeenCalledTimes(1)
-    expect(next.client.openSession).toHaveBeenCalledWith('b')
+    // The second argument is the subagent owner; an ordinary conversation has none.
+    expect(next.client.openSession).toHaveBeenCalledWith('b', undefined)
     expect(h.runtime.start).toHaveBeenCalledTimes(1)
     expect(h.runtime.stop).not.toHaveBeenCalled()
     expect(next.client.prompt).not.toHaveBeenCalled()
