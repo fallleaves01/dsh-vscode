@@ -7,9 +7,12 @@ import type { PluginInventorySnapshot } from './plugin-profile.js'
 import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
 import { RemoteRead } from './remote-read.js'
 import { DshCommandTransport } from './dsh-command-transport.js'
+import { goalOf, schedulesOf, type GoalView, type ScheduleEntry } from './task-features.js'
 
 export interface SessionSummary {
   sessionId: string
+  /** A live parent can continue a child even while its own turn is idle. */
+  agentAvailable?: boolean
   updatedAt: number
   running: boolean
   blank: boolean
@@ -180,6 +183,7 @@ export class DshClient {
   private readonly commandTransport = new DshCommandTransport((endpoint, args, timeoutMs) => this.call(endpoint, args, timeoutMs))
   private readonly api: DshRemoteApi
   private readonly feed: DshSessionFeed
+  private readonly observers = new Set<DshSessionFeed>()
   private readonly lifetime = new AbortController()
   private readonly frameListeners = new Set<(frame: DshFrame) => void>()
   private readonly errorListeners = new Set<(error: Error) => void>()
@@ -202,6 +206,40 @@ export class DshClient {
   }
 
   get handledSessionIds(): string[] { return this.feed.handledSessionIds }
+  watchRequests(sessionId: string): void { this.feed.handleRequestsFor(sessionId) }
+
+  monitorJobs(sessionIds: readonly string[], refresh = false): void { this.feed.monitorJobs(sessionIds, refresh) }
+  observeJob(sessionId: string, jobId: string, from: number, item: (frame: Record<string, unknown>) => void, fail: (error: Error) => void): () => void {
+    return this.feed.observeJob(sessionId, jobId, from, item, fail)
+  }
+  pendingRequests(sessionId: string): Array<{ rpcId: string; event: string; request: Record<string, unknown> }> {
+    return this.feed.pendingRequests(sessionId)
+  }
+  /** Independent read reference; it never replaces the main conversation's follow. */
+  observeSession(sessionId: string, parentSessionId: string | undefined, emit: (frame: DshFrame) => void, fail: (error: Error) => void): {
+    opening: Promise<SessionOpening>; page: (beforeSeq: number) => Promise<{ events: HistoryEntry[]; hasMore: boolean }>; dispose: () => void
+  } {
+    this.lifetime.signal.throwIfAborted()
+    const observer = new DshSessionFeed(this.connection, emit, fail)
+    this.observers.add(observer)
+    return { opening: observer.open(sessionId, parentSessionId), page: beforeSeq => observer.page(sessionId, beforeSeq),
+      dispose: () => { if (this.observers.delete(observer)) observer.dispose() } }
+  }
+  async goal(sessionId: string): Promise<GoalView | null> {
+    const value = await this.call('goals/get', { agentId: sessionId }, 10_000), goal = goalOf(value)
+    if (value !== null && value !== undefined && goal === null) throw new Error('Invalid goal returned by DSH.')
+    return goal
+  }
+  async changeGoal(sessionId: string, action: 'create' | 'edit' | 'pause' | 'resume' | 'complete' | 'clear', ref?: { id: string; revision: number }, request?: { objective?: string; maxGoalRounds?: number }): Promise<void> {
+    await this.call(`goals/${action}`, { agentId: sessionId, ...(action === 'create' || ref === undefined ? {} : { ref }), ...(request === undefined ? {} : { request }) })
+  }
+  async schedules(): Promise<ScheduleEntry[]> { return schedulesOf(await this.call('schedule/catalog', {}, 10_000)) }
+  scheduleHistory(sessionId: string, id: string, before?: string): Promise<unknown> {
+    return this.call('schedule/history', { request: { sessionId, id, limit: 20, ...(before === undefined ? {} : { before }) } }, 10_000)
+  }
+  searchHistory(query: string): Promise<{ items: Array<{ sessionId: string; snippet: string }>; hasMore: boolean }> {
+    return this.call('session/search', { request: { query } }, 10_000)
+  }
 
   onFrame(listener: (frame: DshFrame) => void): () => void {
     this.frameListeners.add(listener)
@@ -421,6 +459,8 @@ export class DshClient {
   }
   dispose(): void {
     this.lifetime.abort()
+    for (const observer of this.observers) observer.dispose()
+    this.observers.clear()
     this.feed.dispose()
     this.frameListeners.clear()
     this.errorListeners.clear()

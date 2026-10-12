@@ -6,6 +6,7 @@ import { once } from 'node:events'
 import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
@@ -20,16 +21,17 @@ const candidates = [process.env.DSH_TEST_BROWSER,
 const browser = candidates.find(path => path && existsSync(path))
 assert.ok(browser, 'Set DSH_TEST_BROWSER to a Chrome/Chromium executable.')
 const root = new URL('../', import.meta.url)
-const [{ outputFiles }, markdown, scrollBundle, tailPng] = await Promise.all([
+const [{ outputFiles }, markdown, scrollBundle, tailPng, markSvg] = await Promise.all([
   build({ entryPoints: [fileURLToPath(new URL('src/webview.ts', root))], bundle: true, platform: 'node', format: 'cjs', write: false }),
   readFile(new URL('dist/webview/markdown.js', root), 'utf8'),
   readFile(new URL('dist/webview/scroll.js', root), 'utf8'),
   readFile(new URL('media/deepseek-tail.png', root)),
+  readFile(new URL('media/deepseek.svg', root)),
 ])
 const module = { exports: {} }
 new Function('module', 'exports', outputFiles[0].text)(module, module.exports)
 const uri = name => ({ toString: () => `https://assets.invalid/${name}` })
-const html = module.exports.chatHtml({ cspSource: 'https://assets.invalid' }, uri('mark.svg'), {
+const html = module.exports.chatHtml({ cspSource: 'https://assets.invalid' }, { toString: () => 'data:image/svg+xml;base64,' + markSvg.toString('base64') }, {
   script: uri('markdown.js'), style: uri('katex.css'), scroll: uri('scroll.js'),
   // The real asset, inline: the point of this one is that it animates.
   tail: { toString: () => 'data:image/png;base64,' + tailPng.toString('base64') },
@@ -38,6 +40,14 @@ const inline = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(html)[1]
 // Load the same built scripts explicitly; no external network or VS Code API.
 const shell = html.replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, '')
   .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '').replace(/<link\b[^>]*>/g, '')
+const [taskCompiled, taskScript] = await Promise.all([
+  build({ entryPoints: [fileURLToPath(new URL('src/task-details-html.ts', root))], bundle: true, platform: 'node', format: 'cjs', write: false }),
+  readFile(new URL('dist/webview/task-details.js', root), 'utf8'),
+])
+const taskModule = { exports: {} }
+new Function('module', 'exports', 'require', taskCompiled.outputFiles[0].text)(taskModule, taskModule.exports, createRequire(import.meta.url))
+const taskShell = taskModule.exports.taskDetailsHtml({ cspSource: 'https://assets.invalid' }, { script: uri('task.js'), markdown: uri('markdown.js'), style: uri('katex.css') })
+  .replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, '').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '').replace(/<link\b[^>]*>/g, '')
 const profile = await mkdtemp(join(tmpdir(), 'dsh-scroll-browser-'))
 const child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
   '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'],
@@ -442,10 +452,267 @@ try {
   assert.notEqual(caret.tail, 'none')
   console.log('PASS: no caret under a streaming reply — the swimming tail is the only live mark')
 
+  // Task rows must remain reachable above the composer in a narrow sidebar.
+  await evaluate(`window.taskDemo = {...baseline, running:false, messages:[{id:'task-reply',role:'assistant',text:'I am checking the runtime lifecycle and task navigation.'}],
+    todos:[{content:'Inspect runtime lifecycle',status:'completed'},{content:'Improve child task navigation',status:'in_progress'}],
+    sessions:[{id:'a',title:'Maintain DSH Sidebar',childCount:2},
+      {id:'child-check',parentId:'a',title:'Check runtime lifecycle',running:true,subagent:{mode:'continuable',label:'Runtime review'},attention:{approvals:1,questions:0},activity:{status:'running',elapsedMs:9000,activeSince:Date.now()-13000,totalTokens:5420}},
+      {id:'child-ui',parentId:'a',title:'Improve child task navigation',running:false,subagent:{mode:'one-shot',label:'Task UI review'},activity:{status:'completed',elapsedMs:65000,totalTokens:1250}},
+      {id:'nested',parentId:'child-ui',title:'Check narrow sidebar layout',running:false,subagent:{mode:'one-shot',label:'Narrow sidebar layout'},activity:{status:'idle',elapsedMs:5000,totalTokens:250}}]};
+    showState(taskDemo);`)
+  for (const width of [320, 420, 650]) {
+    await page('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: false })
+    await evaluate('tick()')
+    const layout = await evaluate(`(() => {
+      const panel = document.getElementById('taskPanel').getBoundingClientRect();
+      const prompt = document.getElementById('prompt').getBoundingClientRect();
+      return { count:document.querySelectorAll('.task-child').length,
+        overflow:document.documentElement.scrollWidth>innerWidth,
+        aboveComposer:panel.bottom<=prompt.top, visible:panel.height>0,
+        status:document.querySelector('.task-child').textContent };
+    })()`)
+    assert.equal(layout.count, 3)
+    assert.equal(layout.overflow, false, `task panel overflow at ${width}px`)
+    assert.equal(layout.aboveComposer && layout.visible, true)
+    assert.match(layout.status, /Needs approval/)
+    if (process.env.DSH_TASK_SCREENSHOT_DIR) {
+      const { data } = await page('Page.captureScreenshot', { format: 'png' })
+      await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR, `tasks-panel-${width}.png`), Buffer.from(data, 'base64'))
+    }
+  }
+  await evaluate(`document.querySelector('.task-child[data-session-id="child-check"]').click()`)
+  assert.deepEqual(await evaluate('sent.at(-1)'), {type:'open-task-details',kind:'subagent',sessionId:'child-check'})
+  await evaluate(`showState({...taskDemo,sessionId:'child-ui',parentSessionId:'a'});`)
+  await evaluate('tick()')
+  assert.equal(await evaluate('document.getElementById("prompt").disabled'), true)
+  await evaluate(`document.querySelector('.subagent-bar-back').click()`)
+  assert.deepEqual(await evaluate('sent.at(-1)'), {type:'select-session',sessionId:'a'})
+  await evaluate(`showState(taskDemo);`)
+  await evaluate('tick()')
+  await evaluate(`document.getElementById('taskToggle').click()`)
+  assert.equal(await evaluate('document.getElementById("taskList").classList.contains("hidden")'), true)
+  console.log('PASS: subagent details navigation, read-only child, collapse and 320/420/650px task layouts')
+
+  // Open both sections in a short sidebar: the composer must stay reachable.
+  await evaluate(`(async()=>{showState({...taskDemo,
+    goal:{available:true,loading:false,busy:false,value:{id:'g',revision:2,objective:'Repair task inspection and lifecycle',phase:'active',maxGoalRounds:20,roundsStarted:5,activation:'armed'}},
+    schedules:{available:true,loading:false,items:[{id:'r',sessionId:'a',title:'Daily review',prompt:'Check background jobs',kind:'daily',status:'active',scheduledAt:'2026-10-05T01:00:00Z'}]},
+    workflows:[{id:'w',name:'Audit',members:[{seq:1,label:'Runtime review',phase:'Verify',childId:'child-check',outcome:'success'}],stopReason:'finished'}]}); await tick();
+    document.getElementById('taskFeatures').open=true; document.getElementById('taskToggle').click();})()`)
+  for (const width of [320, 420, 650]) {
+    await page('Emulation.setDeviceMetricsOverride', { width, height: 400, deviceScaleFactor: 1, mobile: false })
+    await evaluate('tick()')
+    const layout = await evaluate(`({ overflow:document.documentElement.scrollWidth>innerWidth, prompt:document.getElementById('prompt').getBoundingClientRect().bottom, send:document.getElementById('send').getBoundingClientRect().bottom })`)
+    assert.equal(layout.overflow, false); assert.ok(layout.prompt <= 400 && layout.send <= 400, 'short sidebar must keep composer visible')
+  }
+  await page('Emulation.setDeviceMetricsOverride', { width:420,height:800,deviceScaleFactor:1,mobile:false })
+  await evaluate('tick()')
+  if (process.env.DSH_TASK_SCREENSHOT_DIR) {
+    const {data}=await page('Page.captureScreenshot',{format:'png'}); await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'task-features.png'),Buffer.from(data,'base64'))
+  }
+  console.log('PASS: Goal, reminders and workflow layout keeps composer visible at 320/420/650px and 400px height')
+
   if (process.env.DSH_SCROLL_SCREENSHOT) {
     const { data } = await page('Page.captureScreenshot', { format: 'png' })
     await writeFile(process.env.DSH_SCROLL_SCREENSHOT, Buffer.from(data, 'base64'))
+  }  // A separate renderer uses the real independent detail HTML and production bundle.
+  const detailTarget=await call('Target.createTarget',{url:'about:blank'})
+  const detailSession=await call('Target.attachToTarget',{targetId:detailTarget.targetId,flatten:true})
+  const detailPage=(method,params)=>call(method,params,detailSession.sessionId)
+  const detailEvaluate=async expression=>{const result=await detailPage('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});assert.equal(result.exceptionDetails,undefined,JSON.stringify(result.exceptionDetails));return result.result.value}
+  await detailPage('Page.enable'); const detailTree=await detailPage('Page.getFrameTree')
+  await detailPage('Page.setDocumentContent',{frameId:detailTree.frameTree.frame.id,html:taskShell})
+  await detailEvaluate(`window.sent=[];window.acquireVsCodeApi=()=>({postMessage:value=>sent.push(value)});document.documentElement.style.cssText='--vscode-foreground:#ddd;--vscode-editor-background:#202020;--vscode-font-family:Arial;--vscode-editor-font-family:monospace;--vscode-descriptionForeground:#aaa;--vscode-widget-border:#444;--vscode-button-secondaryBackground:#333;--vscode-button-background:#4d6bfe;--vscode-button-foreground:#fff;--vscode-input-background:#181818;--vscode-textLink-foreground:#65aaff';`)
+  await detailEvaluate(markdown); await detailEvaluate(taskScript)
+  await detailEvaluate(`window.taskState={kind:'subagent',sessionId:'child-check',parentSessionId:'a',title:'Runtime review',status:'Needs your answer',meta:'5,420 tokens · 22s',readOnlyReason:null,running:true,hasMore:true,loadingHistory:false,chunks:[],gap:false,
+    requests:[{rpcId:'q',event:'user-questions/request',request:{questions:[{id:'approach',question:'Which approach should I verify?',options:[{label:'Clean restart'},{label:'Reconnect'}]}]}}],
+    messages:[{id:'user',role:'user',text:'Inspect the runtime restart lifecycle.'},{id:'reply',role:'assistant',text:'## Findings\\n\\nThe previous runtime must finish before its replacement starts. I am checking timeout and cancellation paths.',reasoning:'Checking ownership and process termination.'},...Array.from({length:30},(_,i)=>({id:'msg-'+i,role:'assistant',text:'Progress '+i+'\\n\\n'+ 'Verification details. '.repeat(15)}))]};
+    window.showTask=patch=>{taskState={...taskState,...patch};window.dispatchEvent(new MessageEvent('message',{data:{type:'state',state:taskState}}))};showTask({});`)
+  for(const width of [320,420,650]) {
+    await detailPage('Emulation.setDeviceMetricsOverride',{width,height:800,deviceScaleFactor:1,mobile:false})
+    assert.equal(await detailEvaluate('document.documentElement.scrollWidth>innerWidth'),false)
+    assert.ok(await detailEvaluate("document.getElementById('send').getBoundingClientRect().bottom<=800"))
   }
+  await detailEvaluate(`document.getElementById('scroll').scrollTop=100; document.getElementById('scroll').dispatchEvent(new Event('scroll')); window.readingTop=document.getElementById('scroll').scrollTop;showTask({messages:[...taskState.messages,{id:'extra',role:'assistant',text:'New streamed content',streaming:true}]});`)
+  assert.equal(await detailEvaluate("document.getElementById('scroll').scrollTop"),await detailEvaluate('readingTop'))
+  await detailEvaluate(`document.querySelector('#requests textarea').value='Reconnect first';showTask({meta:'5,421 tokens · 23s'});`)
+  assert.equal(await detailEvaluate("document.querySelector('#requests textarea').value"),'Reconnect first')
+  await detailEvaluate(`document.getElementById('draft').value='Check the cleanup path';document.getElementById('draft').focus()`)
+  await detailPage('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+  await detailPage('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+  assert.equal(await detailEvaluate('sent.at(-1).type'),'send'); assert.equal(await detailEvaluate('sent.at(-1).mode'),'queue')
+  await detailEvaluate(`const receipt=sent.at(-1);window.dispatchEvent(new MessageEvent('message',{data:{type:'sent',requestId:receipt.requestId}}));document.getElementById('scroll').scrollTop=0;`)
+  if(process.env.DSH_TASK_SCREENSHOT_DIR) {
+    await detailPage('Emulation.setDeviceMetricsOverride',{width:650,height:800,deviceScaleFactor:1,mobile:false}); const {data}=await detailPage('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'subagent-details.png'),Buffer.from(data,'base64'))
+    await detailEvaluate(`showTask({kind:'job',title:'Build output',requests:[],messages:[],hasMore:false,status:'Completed',meta:'Build finished',running:false,readOnlyReason:'Live output preview',gap:true,chunks:[{at:1,text:'▸ Verify runtime lifecycle\\n',channel:'log'},{at:2,text:'PASS: cleanup and cancellation\\n',channel:'stdout'},{at:3,text:'Warning: earlier output was trimmed\\n',channel:'stderr'}]})`)
+    const shot=await detailPage('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'job-output.png'),Buffer.from(shot.data,'base64'))
+  }
+  console.log('PASS: independent task pane layout, reading position, answer drafts and native Enter delivery')
+
+  // Theme and viewport coverage uses the actual chat/detail markup and bundles.
+  const themes = {
+    dark: { foreground:'#ddd', sideBar:'#181818', editor:'#202020', muted:'#aaa', input:'#202020', border:'#454545', link:'#80b6ff', button:'#4d6bfe', contrast:'' },
+    light: { foreground:'#262626', sideBar:'#fafafa', editor:'#fff', muted:'#666', input:'#fff', border:'#d4d4d4', link:'#2856c9', button:'#4d6bfe', contrast:'' },
+    contrast: { foreground:'#fff', sideBar:'#000', editor:'#000', muted:'#fff', input:'#000', border:'#fff', link:'#54bfff', button:'#084e99', contrast:'#fff' },
+  }
+  const applyTheme = async (run, theme) => run(`(() => {
+    const theme=${JSON.stringify(theme)}, style=document.documentElement.style;
+    for(const [key,value] of Object.entries({foreground:theme.foreground,'sideBar-background':theme.sideBar,'editor-background':theme.editor,
+      descriptionForeground:theme.muted,'input-background':theme.input,'input-foreground':theme.foreground,'input-placeholderForeground':theme.muted,
+      'widget-border':theme.border,'textLink-foreground':theme.link,'button-background':theme.button,'button-foreground':'#fff',
+      'button-hoverBackground':theme.button,'editorWarning-foreground':theme.contrast?'#ffff00':'#b38400',errorForeground:'#e45454',
+      'testing-iconPassed':theme.editor==='#fff'?'#22863a':'#73c991',
+      'textCodeBlock-background':theme.editor,'list-hoverBackground':theme.input,'list-activeSelectionBackground':theme.input,
+      'list-activeSelectionForeground':theme.foreground,'icon-foreground':theme.muted,'toolbar-hoverBackground':theme.input}))style.setProperty('--vscode-'+key,value);
+    if(theme.contrast)style.setProperty('--vscode-contrastBorder',theme.contrast);else style.removeProperty('--vscode-contrastBorder');
+  })()`)
+  // The detail tab is foreground after its input checks; restore the chat so
+  // Chromium runs its scheduled render before inspecting welcome actions.
+  await page('Page.bringToFront')
+  await evaluate(`showState({...baseline,sessionId:'welcome',messages:[],sessions:[{id:'welcome',title:'New conversation'}]})`)
+  await evaluate('tick()')
+  await evaluate(`window.beforeSuggestions=sent.filter(item=>item.type==='send').length;document.querySelector('.empty-action').click()`)
+  assert.equal(await evaluate("elements.prompt.value.includes('main entry points') && document.activeElement.id==='prompt' && sent.filter(item=>item.type==='send').length===beforeSuggestions"),true)
+  await evaluate("elements.prompt.value='';resizePrompt();elements.prompt.blur()")
+  await page('Emulation.setDeviceMetricsOverride',{width:420,height:800,deviceScaleFactor:1,mobile:false})
+  await evaluate('tick()')
+  if(process.env.DSH_TASK_SCREENSHOT_DIR) {
+    const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'welcome.png'),Buffer.from(data,'base64'))
+  }
+  for(const [name,theme] of Object.entries(themes)) {
+    await page('Page.bringToFront')
+    await applyTheme(evaluate,theme);await applyTheme(detailEvaluate,theme)
+    await evaluate(`showState({...taskDemo,models:[{provider:'deepseek',providerLabel:'DeepSeek',model:'deepseek-v4',label:'DeepSeek V4',selected:true,reasoningEfforts:['low','high'],reasoningEffort:'high'}]})`)
+    await detailEvaluate(`showTask({kind:'subagent',title:'Runtime review',running:true,status:'Needs your answer',meta:'5,420 tokens · 22s',readOnlyReason:null,chunks:[],gap:false,
+      requests:[{rpcId:'theme-q',event:'user-questions/request',request:{questions:[{id:'approach',question:'Which approach should I verify?',options:[{label:'Clean restart'},{label:'Reconnect'}]}]}}],
+      messages:[{id:'theme-user',role:'user',text:'Inspect the runtime restart lifecycle.'},{id:'theme-reply',role:'assistant',text:'## Findings\\n\\nThe previous runtime must finish before its replacement starts. I am checking timeout and cancellation paths.',reasoning:'Checking ownership and process termination.'}]});document.getElementById('scroll').scrollTop=0`)
+    for(const [width,height] of [[320,400],[420,800],[650,800]]) {
+      const metrics={width,height,deviceScaleFactor:1,mobile:false}
+      await page('Emulation.setDeviceMetricsOverride',metrics);await detailPage('Emulation.setDeviceMetricsOverride',metrics)
+      await evaluate('tick()')
+      for(const [run,label] of [[evaluate,'chat'],[detailEvaluate,'detail']]) {
+        const layout=await run(`(() => {const button=document.getElementById('send'),r=button.getBoundingClientRect();return {overflow:document.documentElement.scrollWidth>innerWidth,send:r.bottom,visible:r.width>0&&r.height>0&&r.top>=0}})()`)
+        assert.equal(layout.overflow,false,`${label} overflow: ${name} ${width}x${height}`)
+        assert.ok(layout.visible && layout.send<=height,`${label} send hidden: ${name} ${width}x${height}`)
+      }
+    }
+    await page('Emulation.setDeviceMetricsOverride',{width:420,height:800,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+    await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9})
+    await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9})
+    await evaluate(`elements.newSession.focus()`)
+    assert.equal(await evaluate("getComputedStyle(elements.newSession).outlineStyle"),'solid')
+    await evaluate(`elements.newSession.blur();document.getElementById('sessionTrigger').click()`)
+    const bounds=await evaluate("(() => {const r=elements.sessionMenu.getBoundingClientRect();return {left:r.left,right:r.right}})()")
+    assert.ok(bounds.left>=0 && bounds.right<=420,`session menu clipped in ${name}`)
+    await evaluate(`document.getElementById('sessionTrigger').click()`)
+    if(process.env.DSH_TASK_SCREENSHOT_DIR) {
+      const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,`chat-${name}.png`),Buffer.from(data,'base64'))
+      await detailPage('Emulation.setDeviceMetricsOverride',{width:650,height:800,deviceScaleFactor:1,mobile:false})
+      await detailPage('Page.bringToFront')
+      await detailEvaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+      const shot=await detailPage('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,`details-${name}.png`),Buffer.from(shot.data,'base64'))
+    }
+  }
+  console.log('PASS: dark/light/high contrast, keyboard focus, session menu bounds, welcome drafts and 18 theme/viewport layouts')
+
+  // Reproduce the ordinary composer state reported by the user, including the
+  // fixed standard/ptc/minimal/cordis catalog and the actual editor file path.
+  await page('Page.bringToFront')
+  await applyTheme(evaluate,themes.dark)
+  await evaluate(`document.documentElement.style.setProperty('--vscode-font-size','18px');
+    window.contextDemo={...baseline,workspaceName:'DeepEP',cwd:'/demo/DeepEP',sessionId:'context-review',sessions:[{id:'context-review',title:'Review buffer lifecycle'}],
+      messages:[{id:'context-reply',role:'assistant',text:'I am reviewing the buffer lifecycle in deep_ep/buffers/bucket.py.'}],
+      agentPreset:{available:true,locked:true,busy:false,current:'standard',options:['standard','ptc','minimal','cordis'].map(id=>({id,label:id,selected:id==='standard',trust:'system'}))}};
+    showState(contextDemo);window.dispatchEvent(new MessageEvent('message',{data:{type:'ide-context',state:{sessionId:'context-review',availableFile:{kind:'file',path:'deep_ep/buffers/bucket.py'},pinned:[{id:'bucket-ref',kind:'file',path:'deep_ep/buffers/bucket.py'}]}}}));`)
+  for(const [width,height] of [[320,400],[420,800],[650,800]]) {
+    await page('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false})
+    await evaluate('tick()')
+    const layout=await evaluate(`(() => {const chips=elements.contextChips,r=chips.getBoundingClientRect(),send=elements.send.getBoundingClientRect();return {
+      font:getComputedStyle(document.querySelector('.context-name')).fontSize,height:r.height,label:document.querySelector('.context-name').textContent,
+      fixedRowHidden:elements.modeChips.classList.contains('hidden'),overflow:document.documentElement.scrollWidth>innerWidth,send:send.bottom,visible:send.height>0}})()`)
+    assert.equal(layout.font,'11px');assert.equal(layout.label,'bucket.py');assert.ok(layout.height<=30)
+    assert.equal(layout.fixedRowHidden,true);assert.equal(layout.overflow,false);assert.ok(layout.visible && layout.send<=height)
+  }
+  await page('Emulation.setDeviceMetricsOverride',{width:420,height:800,deviceScaleFactor:1,mobile:false})
+  await evaluate("document.documentElement.style.removeProperty('--vscode-font-size');tick()")
+  await evaluate(`sent.length=0;document.querySelector('.context-open').click()`)
+  assert.deepEqual(await evaluate('sent.at(-1)'),{type:'open-file',path:'deep_ep/buffers/bucket.py'})
+  if(process.env.DSH_TASK_SCREENSHOT_DIR) {
+    const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'composer-context.png'),Buffer.from(data,'base64'))
+  }
+  await evaluate(`elements.policyTrigger.click()`)
+  assert.equal(await evaluate("document.querySelector('.policy-preset-name').textContent"),'standard')
+  assert.equal(await evaluate("document.querySelectorAll('.agent-preset-option').length"),0)
+  if(process.env.DSH_TASK_SCREENSHOT_DIR) {
+    const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'composer-settings.png'),Buffer.from(data,'base64'))
+  }
+  await evaluate(`showState({...contextDemo,agentPreset:{...contextDemo.agentPreset,locked:false}})`);await evaluate('tick()')
+  await evaluate(`document.querySelector('.agent-preset-option[data-preset-id="ptc"]').click()`)
+  assert.deepEqual(await evaluate('sent.at(-1)'),{type:'select-agent-preset',agentPreset:'ptc'})
+  console.log('PASS: fixed agent preset stays in settings; 11px editor context fits three viewports even with 18px chat text, file navigation and preset switching')
+
+  // The open editor is only a suggestion. The file picker supports multiple
+  // explicit choices, and sending waits for the host to finish each mutation.
+  await evaluate(`window.publishContext=pinned=>window.dispatchEvent(new MessageEvent('message',{data:{type:'ide-context',state:{sessionId:'context-review',availableFile:{kind:'file',path:'deep_ep/buffers/bucket.py'},pinned}}}));
+    window.finishContext=request=>window.dispatchEvent(new MessageEvent('message',{data:{type:'context-updated',sessionId:request.sessionId,requestId:request.requestId}}));
+    window.answerFileSearch=()=>{const request=sent.filter(item=>item.type==='request-context-files').at(-1);
+      window.dispatchEvent(new MessageEvent('message',{data:{...request,type:'context-files',candidates:[{kind:'file',path:'deep_ep/buffers/bucket.py'},{kind:'file',path:'deep_ep/buffers/runtime.py'},{kind:'file',path:'tests/test_bucket.py'},{kind:'folder',path:'deep_ep/buffers'}]}}));};
+    publishContext([]);elements.attach.click();answerFileSearch();`)
+  assert.equal(await evaluate("document.querySelector('.context-chip')"),null)
+  assert.equal(await evaluate('document.activeElement.id'),'contextSearch')
+  assert.equal(await evaluate("document.querySelector('.context-option').getAttribute('aria-selected')"),'false')
+  assert.equal(await evaluate("document.querySelectorAll('.context-option').length"),4)
+  for(const [width,height] of [[320,400],[420,800],[650,800]]) {
+    await page('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+    const layout=await evaluate(`(() => {const send=elements.send.getBoundingClientRect(),search=elements.contextSearch.getBoundingClientRect(),done=elements.contextDone.getBoundingClientRect(),menu=elements.contextMenu.getBoundingClientRect();return {
+      overflow:document.documentElement.scrollWidth>innerWidth,send:send.bottom,sendHeight:send.height,searchHeight:search.height,doneHeight:done.height,menuTop:menu.top,menuBottom:menu.bottom,footerBottom:done.bottom}})()`)
+    assert.equal(layout.overflow,false,`file picker overflow ${width}x${height}`)
+    assert.ok(layout.sendHeight>0 && layout.send<=height,`file picker hides Send ${width}x${height}`)
+    assert.ok(layout.searchHeight>0 && layout.doneHeight>0 && layout.menuTop>=0 && layout.footerBottom<=layout.menuBottom,`file picker controls clipped ${width}x${height}`)
+  }
+  await page('Emulation.setDeviceMetricsOverride',{width:420,height:800,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+  if(process.env.DSH_TASK_SCREENSHOT_DIR) {
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+    const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'file-picker.png'),Buffer.from(data,'base64'))
+  }
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40})
+  assert.equal(await evaluate('document.activeElement.dataset.path'),'deep_ep/buffers/bucket.py')
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',unmodifiedText:'\r',windowsVirtualKeyCode:13})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+  await evaluate(`window.addBucket=sent.filter(item=>item.type==='add-context').at(-1);elements.prompt.value='Review the buffer lifecycle';elements.prompt.dispatchEvent(new Event('input',{bubbles:true}));elements.prompt.focus()`)
+  assert.deepEqual(await evaluate('({type:addBucket.type,path:addBucket.path,sessionId:addBucket.sessionId})'),{type:'add-context',path:'deep_ep/buffers/bucket.py',sessionId:'context-review'})
+  const beforeSend=await evaluate("sent.filter(item=>item.type==='send').length")
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',unmodifiedText:'\r',windowsVirtualKeyCode:13})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+  assert.equal(await evaluate("sent.filter(item=>item.type==='send').length"),beforeSend)
+  await evaluate(`publishContext([{id:'bucket-ref',kind:'file',path:addBucket.path}]);finishContext(addBucket);elements.attach.click();answerFileSearch();
+    document.querySelector('.context-option[data-path="deep_ep/buffers/runtime.py"]').click();window.addRuntime=sent.filter(item=>item.type==='add-context').at(-1);
+    publishContext([{id:'bucket-ref',kind:'file',path:addBucket.path},{id:'runtime-ref',kind:'file',path:addRuntime.path}]);finishContext(addRuntime);elements.contextDone.click();`)
+  assert.equal(await evaluate("document.querySelectorAll('.context-chip').length"),2)
+  assert.equal(await evaluate('elements.send.disabled'),false)
+  assert.equal(await evaluate('document.activeElement.id'),'prompt')
+  assert.equal(await evaluate('elements.sessionTriggerTitle.textContent'),'Review buffer lifecycle')
+  assert.equal(await evaluate("elements.messages.textContent.includes('buffer lifecycle')"),true)
+  if(process.env.DSH_TASK_SCREENSHOT_DIR) {
+    // Headless Chrome can retain a clipped surface after the flex menu closes;
+    // a viewport resize makes the screenshot repaint the full chat surface.
+    await page('Emulation.setDeviceMetricsOverride',{width:421,height:800,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+    await page('Emulation.setDeviceMetricsOverride',{width:420,height:800,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+    const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'files-selected.png'),Buffer.from(data,'base64'))
+  }
+  await evaluate(`document.querySelector('.context-remove').click();window.removeBucket=sent.filter(item=>item.type==='remove-context').at(-1);
+    publishContext([{id:'runtime-ref',kind:'file',path:addRuntime.path}]);finishContext(removeBucket);publishContext([{id:'runtime-ref',kind:'file',path:addRuntime.path}]);`)
+  assert.deepEqual(await evaluate('({type:removeBucket.type,id:removeBucket.id,sessionId:removeBucket.sessionId})'),{type:'remove-context',id:'bucket-ref',sessionId:'context-review'})
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.context-name')].map(item=>item.textContent)"),['runtime.py'])
+  await evaluate('elements.attach.click()')
+  assert.equal(await evaluate("document.querySelector('.context-option[data-path=\"deep_ep/buffers/bucket.py\"]').getAttribute('aria-selected')"),'false')
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
+  assert.equal(await evaluate('elements.contextMenu.classList.contains("hidden") && document.activeElement.id==="prompt"'),true)
+  console.log('PASS: explicit file picker, three viewport layouts, native keyboard add, send receipt gating, multiple removable files and optional editor context')
+
 } finally {
   clearTimeout(timeout)
   socket?.terminate()

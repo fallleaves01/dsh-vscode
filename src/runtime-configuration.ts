@@ -4,6 +4,7 @@ import {
   isCurrentRuntimeTarget,
   restartAfterRuntimeChange,
   runtimeChangeTarget,
+  runtimeIsNotOurs,
   type RuntimeChangeController,
 } from './runtime-change.js'
 
@@ -17,7 +18,7 @@ export async function configureApiKey(
   if (controller.isDisposed) return
   if (controller.runtimeOwnership === undefined && controller.state.phase !== 'loading') await controller.start()
   if (controller.isDisposed) return
-  if (controller.runtimeOwnership === 'external') {
+  if (runtimeIsNotOurs(controller.runtimeOwnership)) {
     await vscode.window.showInformationMessage('This sidebar is using an external DeepSeek Harness runtime. Configure its API key where that process is started.')
     return
   }
@@ -53,7 +54,7 @@ export async function clearApiKey(
   await secrets.delete(DEEPSEEK_API_KEY_SECRET)
   output.appendLine('[credentials] DeepSeek API key removed from VS Code SecretStorage.')
   if (controller.isDisposed) return
-  if (isCurrentRuntimeTarget(controller, target) && controller.runtimeOwnership === 'external') {
+  if (isCurrentRuntimeTarget(controller, target) && runtimeIsNotOurs(controller.runtimeOwnership)) {
     await vscode.window.showInformationMessage('Stored DeepSeek API key removed. The reused external DSH keeps its own credentials.')
     return
   }
@@ -82,7 +83,7 @@ export function watchDebugConfiguration(
         void vscode.window.showInformationMessage(`${message}. The setting will apply the next time a managed DSH runtime starts.`)
         return
       }
-      if (isCurrentRuntimeTarget(controller, target) && controller.runtimeOwnership === 'external') {
+      if (isCurrentRuntimeTarget(controller, target) && runtimeIsNotOurs(controller.runtimeOwnership)) {
         void vscode.window.showInformationMessage(`${message}. VS Code debugging integration applies to managed DSH runtimes; the connected external runtime was not changed.`)
         return
       }

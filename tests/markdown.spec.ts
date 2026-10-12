@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { createMarkdownScanState, renderMarkdown, scanMarkdownStream } from '../src/markdown.mjs'
+import { createMarkdownScanState, parseFileLink, renderMarkdown, scanMarkdownStream } from '../src/markdown.mjs'
 
 describe('fenced code blocks', () => {
   const fence = (body: string, info = 'ts') => '```' + info + '\n' + body + '\n```'
@@ -165,6 +165,146 @@ describe('Markdown rendering', () => {
     expect(root.querySelector('button')?.textContent).toBe('src/b.ts')
     expect(root.querySelector('a[data-handled] strong')?.textContent).toBe('docs')
     expect(root.querySelector('pre code')?.textContent).toContain('src/c.ts')
+  })
+
+  it('opens the destination a local link names, not its label', () => {
+    const files: Array<{ path: string; line?: number }> = []
+    const root = renderMarkdown('See [rdma.cuh](csrc/kernels/rdma.cuh#L42), [the fix](src/a.ts#L7-L9) and [MIT](LICENSE).', {
+      appendFileText(parent, text) { parent.append(document.createTextNode(text)) },
+      inlineCode(text) { const button = document.createElement('button'); button.textContent = text; return button },
+      link(href) { const anchor = document.createElement('a'); anchor.href = href; return anchor },
+      fileLink(path, line) {
+        files.push({ path, ...(line === undefined ? {} : { line }) })
+        const button = document.createElement('button')
+        button.className = 'file-link'
+        return button
+      },
+    })
+    // The label is what the reader sees; the destination is what the click opens.
+    expect(files).toEqual([
+      { path: 'csrc/kernels/rdma.cuh', line: 42 },
+      { path: 'src/a.ts', line: 7 },
+      { path: 'LICENSE' },
+    ])
+    expect([...root.querySelectorAll('button.file-link')].map(button => button.textContent))
+      .toEqual(['rdma.cuh', 'the fix', 'MIT'])
+    expect(root.querySelector('a')).toBeNull()
+  })
+
+  it('keeps the label markup inside the file link it belongs to', () => {
+    const root = renderMarkdown('[**the handler**](src/a.ts#L3)', {
+      appendFileText(parent, text) { parent.append(document.createTextNode(text)) },
+      inlineCode(text) { const button = document.createElement('button'); button.textContent = text; return button },
+      link(href) { const anchor = document.createElement('a'); anchor.href = href; return anchor },
+      fileLink() {
+        const button = document.createElement('button')
+        button.className = 'file-link'
+        return button
+      },
+    })
+    const button = root.querySelector('button.file-link')
+    expect(button?.querySelector('strong')?.textContent).toBe('the handler')
+    // The walker must not wrap the link's own label in a second link.
+    expect(root.querySelectorAll('button.file-link')).toHaveLength(1)
+  })
+
+  it('leaves a label that is itself path-shaped as the label, not as a second link', () => {
+    // `src/a.ts` matches the bare-text linkifier, so a walker that entered the
+    // button would nest a link whose click answers with the label instead of the
+    // destination. An inline code label is the other way to nest one.
+    const files: string[] = []
+    const root = renderMarkdown('[src/a.ts](docs/README.md) and [`src/b.ts`](docs/GUIDE.md)', {
+      appendFileText(parent, text) { parent.append(document.createTextNode(text)) },
+      inlineCode(text) { const button = document.createElement('button'); button.textContent = text; return button },
+      link(href) { const anchor = document.createElement('a'); anchor.href = href; return anchor },
+      fileLink(path) {
+        files.push(path)
+        const button = document.createElement('button')
+        button.className = 'file-link'
+        return button
+      },
+    })
+    expect(files).toEqual(['docs/README.md', 'docs/GUIDE.md'])
+    expect(root.querySelectorAll('button.file-link')).toHaveLength(2)
+    expect(root.querySelectorAll('button.code-link')).toHaveLength(0)
+    expect(root.querySelector('button.file-link code')?.textContent).toBe('src/b.ts')
+  })
+
+  it('labels a file link that carries no text, instead of leaving an invisible button', () => {
+    const root = renderMarkdown('[](csrc/a.ts#L3)', {
+      appendFileText(parent, text) { parent.append(document.createTextNode(text)) },
+      inlineCode(text) { const button = document.createElement('button'); button.textContent = text; return button },
+      link(href) { const anchor = document.createElement('a'); anchor.href = href; return anchor },
+      fileLink(path, line) {
+        const button = document.createElement('button')
+        button.className = 'file-link'
+        button.textContent = path + (line === undefined ? '' : ':' + String(line))
+        return button
+      },
+    })
+    const button = root.querySelector('button.file-link')
+    expect(button?.textContent).toBe('csrc/a.ts:3')
+  })
+
+  it('keeps a Windows destination, which the sanitizer must not read as a URL scheme', () => {
+    const files: string[] = []
+    const root = renderMarkdown('[fix](C:/proj/a.ts#L3) [other](C:\\proj\\b.ts) [bad](javascript:alert%281%29) [mail](mailto:a@b.com)', {
+      appendFileText(parent, text) { parent.append(document.createTextNode(text)) },
+      inlineCode(text) { const button = document.createElement('button'); button.textContent = text; return button },
+      link(href) { const anchor = document.createElement('a'); anchor.href = href; return anchor },
+      fileLink(path, line) {
+        files.push(path + (line === undefined ? '' : ':' + String(line)))
+        const button = document.createElement('button')
+        button.className = 'file-link'
+        return button
+      },
+    })
+    // marked percent-encodes the backslash form, which the parse decodes again.
+    expect(files).toEqual(['C:/proj/a.ts:3', 'C:\\proj\\b.ts'])
+    expect(root.textContent?.trim()).toBe('fix other bad mail')
+  })
+
+  it('decodes an escaped destination and refuses a fragment, query or URL that is not a file', () => {
+    const files: string[] = []
+    const root = renderMarkdown('[spaced](My%20Project/src/a.ts) [section](#heading) [scheme](mailto:a@b.com) '
+      + '[url](https://example.com/a.ts) [bad](src/a.ts#L0)', {
+      appendFileText(parent, text) { parent.append(document.createTextNode(text)) },
+      inlineCode(text) { const button = document.createElement('button'); button.textContent = text; return button },
+      link(href) { const anchor = document.createElement('a'); anchor.href = href; return anchor },
+      fileLink(path) {
+        files.push(path)
+        const button = document.createElement('button')
+        button.className = 'file-link'
+        return button
+      },
+    })
+    expect(files).toEqual(['My Project/src/a.ts'])
+    // Everything else stays inert text: no dead link for the user to click.
+    expect(root.textContent?.trim()).toBe('spaced section scheme url bad')
+  })
+
+  it.each([
+    ['', undefined],
+    ['a.ts', { path: 'a.ts' }],
+    ['a.ts#L42', { path: 'a.ts', line: 42 }],
+    ['a.ts#L42-L50', { path: 'a.ts', line: 42 }],
+    ['a%20b.ts', { path: 'a b.ts' }],
+    ['%E4%B8%AD.ts', { path: '中.ts' }],
+    ['C:/x.ts', { path: 'C:/x.ts' }],
+    ['C:x.ts', undefined],
+    ['#L1', undefined],
+    ['a.ts#L0', undefined],
+    ['a.ts#L2-L1', undefined],
+    ['a.ts#1', undefined],
+    ['a.ts?x=1', undefined],
+    ['//host/share/a.ts', undefined],
+    ['file:///etc/passwd', undefined],
+    ['javascript:alert%281%29', undefined],
+    ['mailto:a@b.com', undefined],
+    ['%ZZ', undefined],
+    ['a%00b.ts', undefined],
+  ])('parses %s the way DSH does', (href, expected) => {
+    expect(parseFileLink(href)).toEqual(expected)
   })
 })
 

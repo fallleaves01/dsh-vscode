@@ -19,7 +19,7 @@ DSH Sidebar gives you a project-aware assistant in the VS Code right sidebar, wi
 
 - **Autonomous VS Code debugging.** Let DeepSeek launch the current project from `.vscode/launch.json`, manage breakpoints, step through execution, and inspect stack frames and local variables using VS Code's native debugger.
 - **Work with the official DSH runtime.** Sessions, streaming responses, tool calls, approvals, and follow-up questions stay inside VS Code.
-- **Bring in editor context.** The active file and selected code can travel with your prompt. Use `@file` or `@folder` to add more context.
+- **Choose your file context.** Click `+` to search and add project files or folders, then remove individual references with `×`. The current editor and selected lines are optional suggestions. Use `@file`, `@folder` or **Add Selection to Chat** for explicit context.
 - **Control each session.** Switch Permission and Plan modes, choose Model and Reasoning Effort, and steer a task while it is running.
 - **Review edits natively.** Open changes in VS Code's Diff Editor, then Keep or safely Revert them. DSH stops before overwriting a file with unsaved editor changes.
 - **Extend DSH from the sidebar.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks loaded by DSH.

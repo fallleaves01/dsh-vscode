@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { accessSync, constants, existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -177,6 +177,10 @@ function resolveWindowsPathCommand(executable: string, host: LaunchHost): string
 
 function installedDshEntry(binDirectory: string): string | undefined {
   const packageRoot = join(binDirectory, 'node_modules', '@deepseek-ai', 'dsh')
+  return packageDshEntry(packageRoot)
+}
+
+function packageDshEntry(packageRoot: string): string | undefined {
   const manifestPath = join(packageRoot, 'package.json')
   if (!existsSync(manifestPath)) return undefined
 
@@ -198,6 +202,38 @@ function installedDshEntry(binDirectory: string): string | undefined {
     return entry
   } catch {
     return undefined
+  }
+}
+
+/** npm's POSIX symlink uses /usr/bin/env node, which fails with a stale SSH PATH. */
+function resolvePosixDsh(executable: string, args: readonly string[], host: LaunchHost): LaunchCommand | undefined {
+  // Custom wrappers and bare commands keep their original launch semantics.
+  if (!executable.includes('/')) return undefined
+  const requested = explicitExecutablePath(executable, host.cwd)
+  let entry: string
+  try { entry = realpathSync(requested) } catch { return undefined }
+  if (!/\.[cm]?js$/i.test(entry)) return undefined
+  let directory = dirname(entry), official = false
+  for (let depth = 0; depth < 4; depth++) {
+    const candidate = packageDshEntry(directory)
+    if (candidate !== undefined) {
+      try { official = realpathSync(candidate) === entry } catch { /* incomplete installation */ }
+      break
+    }
+    const parent = dirname(directory)
+    if (parent === directory) break
+    directory = parent
+  }
+  if (!official) return undefined
+  const adjacent = join(dirname(requested), 'node')
+  let node = process.execPath
+  try { accessSync(adjacent, constants.X_OK); if (statSync(adjacent).isFile()) node = adjacent } catch { /* use the extension host's supported Node */ }
+  return {
+    command: node, args: [entry, ...args], sourceCheckout: false,
+    env: {
+      ...(node === process.execPath ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+      PATH: [dirname(node), host.env.PATH].filter(Boolean).join(':'),
+    },
   }
 }
 
@@ -294,7 +330,10 @@ export function parseDshWebUrl(line: string): string | undefined {
   if (match?.[1] === undefined) return undefined
   try {
     const url = new URL(match[1])
-    return url.port !== '0' ? match[1] : undefined
+    // A concrete port is required: `new URL('http://127.0.0.1:80/').port` is ''
+    // because the parser drops a default port, and a URL with no port would send
+    // the launch token to whatever listens on loopback :80.
+    return url.port === '' || url.port === '0' ? undefined : match[1]
   } catch {
     return undefined
   }
@@ -339,6 +378,10 @@ export function resolveLaunch(
   }
 
   if (configuredExecutable !== '') {
+    if (host.platform !== 'win32') {
+      const posixLaunch = resolvePosixDsh(configuredExecutable, configuredArgs, host)
+      if (posixLaunch !== undefined) return posixLaunch
+    }
     if (host.platform === 'win32') {
       const windowsLaunch = resolveWindowsDsh(configuredExecutable, configuredArgs, host)
       if (windowsLaunch !== undefined) return windowsLaunch

@@ -47,6 +47,12 @@ await build({
   logLevel: 'info',
 })
 
+await build({
+  entryPoints: { 'task-details': 'src/task-details.mts' },
+  outdir: 'dist/webview', bundle: true, platform: 'browser', format: 'iife',
+  target: 'chrome132', minify: true, sourcemap: true, logLevel: 'info',
+})
+
 const require = createRequire(import.meta.url)
 const katexRoot = dirname(require.resolve('katex/package.json'))
 await mkdir('dist/webview/fonts', { recursive: true })

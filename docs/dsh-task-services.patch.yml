@@ -1,0 +1,11 @@
+# Optional overlay for DSH 0.2.0-rc.2+ standard Web profiles.
+# Managed runtimes can use the extension's enableHistorySearch/enableSchedule settings.
+# External runtimes can pass --patch /absolute/path/to/this/file when launching DSH.
+# If your profile already mounts Schedule, omit the insert block below.
+- id: session-query-sqlite
+  config:
+    path: ':memory:'
+    openAt: first-search
+- insert:
+    - id: vscode-task-schedule
+      name: '@deepseek-ai/dsh-schedule'

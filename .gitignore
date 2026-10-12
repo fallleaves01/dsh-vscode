@@ -12,3 +12,11 @@ artifacts/
 .probe-home/
 .drift/
 .npm-cache/
+# Local credentials and conversation transcripts must never be published.
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.jsonl

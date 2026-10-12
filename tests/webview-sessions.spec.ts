@@ -154,3 +154,38 @@ describe('webview delegation depth', () => {
     expect(rows[0]?.textContent).toContain('Nested find')
   })
 })
+
+describe('reaching another conversation when this one will not open', () => {
+  const conversations = [
+    { id: 'session-a', title: 'Unfinished task', updatedAt: 300, blank: false, running: true },
+    { id: 'session-b', title: 'Another task', updatedAt: 200, blank: false },
+  ]
+
+  for (const phase of ['loading', 'error']) {
+    it(`opens the list and switches away from the ${phase} phase`, async () => {
+      const h = open()
+      h.sendState({ phase, sessionId: 'session-a', sessions: conversations, statusText: 'Loading project conversation…' })
+      await h.settle()
+      const trigger = h.document.getElementById('sessionTrigger') as HTMLButtonElement
+      // A disabled trigger swallows the click with no feedback at all, and a
+      // conversation stuck loading is exactly when the list has to work.
+      expect(trigger.disabled).toBe(false)
+      h.click('#sessionTrigger')
+      await h.settle()
+      expect(h.document.getElementById('sessionMenu')!.classList.contains('hidden')).toBe(false)
+
+      h.posts.length = 0
+      const rows = [...h.document.querySelectorAll('.session-row .session-main')]
+      expect(rows).toHaveLength(2)
+      rows[1]?.dispatchEvent(new Event('click', { bubbles: true }))
+      expect(h.posts).toContainEqual({ type: 'select-session', sessionId: 'session-b' })
+    })
+  }
+
+  it('is disabled only when there is nothing to switch to', async () => {
+    const h = open()
+    h.sendState({ phase: 'error', sessionId: '', sessions: [], archivedSessions: [], statusText: 'DeepSeek Harness stopped.' })
+    await h.settle()
+    expect((h.document.getElementById('sessionTrigger') as HTMLButtonElement).disabled).toBe(true)
+  })
+})

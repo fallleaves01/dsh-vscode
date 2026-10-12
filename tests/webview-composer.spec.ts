@@ -538,6 +538,106 @@ describe('a queued message is visible before the runtime answers', () => {
     expect(h.document.getElementById('queueDock')!.classList.contains('hidden')).toBe(true)
     expect((h.document.getElementById('prompt') as HTMLTextAreaElement).value).toBe('also check the docs')
   })
+
+  it('retires the row when the runtime takes a message that never queues', async () => {
+    const h = open()
+    h.sendState(running)
+    await h.settle()
+    type(h, 'also check the docs')
+    await h.settle()
+    sendButton(h).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await h.settle()
+    const requestId = (h.posts.findLast(post => post.type === 'send') as { requestId: number }).requestId
+    // Sent into a conversation whose turn ends at once: the message never appears
+    // in a queue projection, so the acknowledgement is the last the two sides say
+    // about it. The row may not survive it, or a sent message reads as queued.
+    h.send({ type: 'draft-sent', requestId, sessionId: 'session-a' })
+    await h.settle()
+    const dock = h.document.getElementById('queueDock')!
+    expect(dock.querySelectorAll('.queue-row')).toHaveLength(0)
+    expect(dock.classList.contains('hidden')).toBe(true)
+  })
+
+  it('keeps the runtime’s own row after the acknowledgement', async () => {
+    const h = open()
+    h.sendState(running)
+    await h.settle()
+    type(h, 'also check the docs')
+    await h.settle()
+    sendButton(h).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await h.settle()
+    const requestId = (h.posts.findLast(post => post.type === 'send') as { requestId: number }).requestId
+    // A message the runtime really is holding: the acknowledgement only ends the
+    // local row, and the projection's row is what remains.
+    h.sendState({ ...running, queue: [{ id: 'q1', placement: 'queued', preview: 'also check the docs', text: 'also check the docs' }] })
+    await h.settle()
+    h.send({ type: 'draft-sent', requestId, sessionId: 'session-a' })
+    await h.settle()
+    const dock = h.document.getElementById('queueDock')!
+    expect(dock.querySelectorAll('.queue-row')).toHaveLength(1)
+    expect(dock.querySelector('.queue-sending')).toBeNull()
+    expect([...dock.querySelectorAll('.queue-action')].map(button => button.textContent)).toEqual(['Edit', 'Delete', 'Steer'])
+  })
+
+  it('keeps an open queue editor, and the caret in it, while the turn streams', async () => {
+    const h = open()
+    const queue = [{ id: 'q1', placement: 'queued', preview: 'draft text', text: 'draft text' }]
+    h.sendState({ ...running, queue })
+    await h.settle()
+    const edit = [...h.document.querySelectorAll('.queue-action')].find(button => button.textContent === 'Edit') as HTMLButtonElement
+    edit.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await h.settle()
+    const editor = h.document.querySelector('.queue-editor') as HTMLTextAreaElement
+    expect(editor).not.toBeNull()
+    // Type in the middle of the text, which is what a rebuilt editor destroys.
+    editor.value = 'draftX text'
+    editor.setSelectionRange(6, 6)
+    editor.dispatchEvent(new Event('input', { bubbles: true }))
+
+    // The agent keeps streaming: renders arrive with the same queue, and none of
+    // them may replace the textarea or move the caret to the end.
+    h.send({ type: 'state-update', update: { patch: { statusText: 'still working' } } })
+    await h.settle()
+    h.send({ type: 'state-update', update: { patch: { turnActivityAt: Date.now() } } })
+    await h.settle()
+    expect(h.document.querySelector('.queue-editor')).toBe(editor)
+    expect(editor.value).toBe('draftX text')
+    expect(editor.selectionStart).toBe(6)
+  })
+
+  it('shows a command held until the task finishes, and offers to run or drop it', async () => {
+    const h = open()
+    h.sendState({ ...running, queuedCommands: [{ id: 'c1', text: '/compact', preview: '/compact' }] })
+    await h.settle()
+    const dock = h.document.getElementById('queueDock')!
+    // A command is not a message, and the dock says so.
+    expect(dock.querySelector('.queue-title')?.textContent).toBe('1 queued item')
+    expect(dock.querySelector('.queue-row.command .queue-preview')?.textContent).toBe('/compact')
+    expect(dock.querySelector('.queue-command-note')?.textContent).toBe('Runs when this task finishes')
+    expect([...dock.querySelectorAll('.queue-action')].map(button => button.textContent)).toEqual(['Run now', 'Delete'])
+
+    h.posts.length = 0
+    dock.querySelectorAll('.queue-action')[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(h.posts).toContainEqual({ type: 'queued-command-action', sessionId: 'session-a', commandId: 'c1', action: 'run' })
+    dock.querySelectorAll('.queue-action')[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(h.posts).toContainEqual({ type: 'queued-command-action', sessionId: 'session-a', commandId: 'c1', action: 'remove' })
+  })
+
+  it('counts a held command and a queued message together', async () => {
+    const h = open()
+    h.sendState({
+      ...running,
+      queue: [{ id: 'q1', placement: 'queued', preview: 'also check the docs', text: 'also check the docs' }],
+      queuedCommands: [{ id: 'c1', text: '/compact', preview: '/compact' }],
+    })
+    await h.settle()
+    const dock = h.document.getElementById('queueDock')!
+    expect(dock.querySelector('.queue-title')?.textContent).toBe('2 queued items')
+    expect(dock.querySelectorAll('.queue-row')).toHaveLength(2)
+    // The runtime's own row keeps its actions; the held command keeps its note.
+    expect([...dock.querySelectorAll('.queue-row')][0]!.classList.contains('command')).toBe(false)
+    expect([...dock.querySelectorAll('.queue-row')][1]!.classList.contains('command')).toBe(true)
+  })
 })
 
 describe('the row under a completed turn', () => {
@@ -638,6 +738,44 @@ describe('the row under a completed turn', () => {
     // DSH swaps the artwork rather than tinting the button: filled means chosen.
     expect(h.document.querySelector('.message-negative path')!.getAttribute('fill')).toBe('currentColor')
     expect(h.document.querySelector('.message-positive path')!.getAttribute('fill')).toBe('none')
+  })
+
+  it('fills the mark of a rating that arrives after the reply was drawn', async () => {
+    const h = open()
+    h.sendState({
+      sessionId: 'session-a', phase: 'ready',
+      messages: [{ id: 'm1', role: 'assistant', text: 'the answer' }],
+      messageMeta: [{ id: 'm1', seq: 42, time: Date.now(), turnEnd: true }],
+      messageFeedback: [],
+    })
+    await h.settle()
+    expect(h.document.querySelector('.message-positive path')!.getAttribute('fill')).toBe('none')
+
+    // What the extension answers a click with: a patch carrying only the rating.
+    // The message array is untouched, so the row has to notice by itself —
+    // clicking used to leave the mark an outline, and a second click then
+    // withdrew the rating invisibly.
+    h.send({ type: 'state-update', update: { patch: { messageFeedback: [{ messageId: 'm1', rating: 'positive', version: 4 }] } } })
+    await h.settle()
+    expect(h.document.querySelector('.message-positive path')!.getAttribute('fill')).toBe('currentColor')
+    expect(h.document.querySelector('.message-positive')!.getAttribute('aria-pressed')).toBe('true')
+    expect(h.document.querySelector('.message-positive')!.getAttribute('aria-label')).toBe('Remove rating')
+  })
+
+  it('adds a turn’s clock when its metadata arrives after the reply', async () => {
+    const h = open()
+    const now = Date.now()
+    h.sendState({
+      sessionId: 'session-a', phase: 'ready',
+      messages: [{ id: 'm1', role: 'assistant', text: 'the answer' }],
+      messageMeta: [{ id: 'm1', seq: 42, time: now, turnEnd: true, turnDurationMs: 0 }],
+    })
+    await h.settle()
+    expect(h.document.querySelector('.message-duration')).toBeNull()
+
+    h.send({ type: 'state-update', update: { patch: { messageMeta: [{ id: 'm1', seq: 42, time: now, turnEnd: true, turnDurationMs: 125_000 }] } } })
+    await h.settle()
+    expect(h.document.querySelector('.message-duration')?.textContent).toBe('Completed in 2m 5s')
   })
 
   it('confirms a copy without losing the mark it replaces', async () => {
@@ -812,5 +950,64 @@ describe('candidate lists belong to the prompt that asked for them', () => {
     const sent = h.posts.filter(post => post.type === 'send')
     expect(sent).toHaveLength(1)
     expect(sent[0]?.text).toBe('unrelated message')
+  })
+})
+
+/**
+ * A conversation another DSH process owns is an ordinary state, not a failure:
+ * the history is readable, the composer is not, and the banner offers the only
+ * two things a user can do about it.
+ */
+describe('a conversation held by another DSH process', () => {
+  const held = 'This conversation is already in use, possibly by another running DSH instance (such as another dsh web, or the desktop app). Quit the other instance and try again.'
+
+  it('disables the composer and explains why, without a transcript error', async () => {
+    const h = open()
+    h.sendState({ occupancyNotice: held, sessions: [] })
+    await h.settle()
+    const banner = h.document.getElementById('heldNotice') as HTMLElement
+    expect(banner.classList.contains('hidden')).toBe(false)
+    expect(banner.textContent).toContain('already in use')
+    expect((h.document.getElementById('prompt') as HTMLTextAreaElement).disabled).toBe(true)
+    expect(sendButton(h).disabled).toBe(true)
+    // It is state, not an event: nothing was appended to the conversation.
+    expect(h.document.getElementById('messages')?.textContent ?? '').not.toContain('already in use')
+  })
+
+  it('offers the two ways out, and posts them', async () => {
+    const h = open()
+    h.sendState({ occupancyNotice: held, sessions: [] })
+    await h.settle()
+    const buttons = [...(h.document.getElementById('heldNotice') as HTMLElement).querySelectorAll('button')]
+    expect(buttons.map(button => button.textContent)).toEqual(['Check again', 'Find the holder'])
+    h.click('#heldNotice button:first-of-type')
+    h.click('#heldNotice button:last-of-type')
+    await h.settle()
+    expect(h.posts).toContainEqual({ type: 'retry-occupancy' })
+    expect(h.posts).toContainEqual({ type: 'diagnose-occupancy' })
+  })
+
+  it('re-enables the composer when the hold is lifted', async () => {
+    const h = open()
+    h.sendState({ occupancyNotice: held, sessions: [] })
+    await h.settle()
+    expect(sendButton(h).disabled).toBe(true)
+
+    h.sendState({ occupancyNotice: null, sessions: [] })
+    await h.settle()
+    type(h, 'hello')
+    await h.settle()
+    const banner = h.document.getElementById('heldNotice') as HTMLElement
+    expect(banner.classList.contains('hidden')).toBe(true)
+    expect(banner.textContent).toBe('')
+    expect(sendButton(h).disabled).toBe(false)
+  })
+
+  it('is not shown for an unroutable conversation, which has its own notice', async () => {
+    const h = open()
+    h.sendState({ routable: false, routableNotice: 'No model can serve a request.', occupancyNotice: null, sessions: [] })
+    await h.settle()
+    expect((h.document.getElementById('heldNotice') as HTMLElement).classList.contains('hidden')).toBe(true)
+    expect((h.document.getElementById('routableNotice') as HTMLElement).textContent).toBe('No model can serve a request.')
   })
 })

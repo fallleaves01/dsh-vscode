@@ -116,10 +116,42 @@ function escapeHtml(text: string): string {
   return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
 }
 
+/**
+ * Decode a link destination that names a file on this machine.
+ *
+ * A model writes the file it means as the destination and puts any label on
+ * the link, so the destination — not the label text — is the path to open.
+ * URLs, fragments, queries, malformed escapes and line ranges DSH does not
+ * accept are rejected rather than guessed at.
+ */
+export function parseFileLink(value: string): { path: string; line?: number } | undefined {
+  const hash = value.indexOf('#')
+  const destination = hash < 0 ? value : value.slice(0, hash)
+  if (destination.includes('?')) return undefined
+  let path: string
+  try {
+    path = decodeURIComponent(destination)
+  } catch {
+    return undefined
+  }
+  if (path === '' || /[\u0000-\u001f\u007f]/.test(path) || /^[\\/]{2}/.test(path)
+    || (/^[a-z][a-z\d+.-]*:/i.test(path) && !/^[a-z]:[\\/]/i.test(path))) return undefined
+  if (hash < 0) return { path }
+  const fragment = value.slice(hash + 1)
+  const match = /^L([1-9]\d*)(?:-L([1-9]\d*))?$/.exec(fragment)
+  if (match === null) return undefined
+  const line = Number(match[1])
+  const end = match[2] === undefined ? line : Number(match[2])
+  if (!Number.isSafeInteger(line) || !Number.isSafeInteger(end) || end < line) return undefined
+  return { path, line }
+}
+
 export interface MarkdownHooks {
   appendFileText(parent: HTMLElement, text: string): void
   inlineCode(text: string): HTMLElement
   link(href: string, label: string): HTMLElement
+  /** A settled local destination. The hook owns the label's child nodes. */
+  fileLink?(path: string, line?: number): HTMLElement
 }
 
 /** Parse Markdown locally. Model HTML is text, not an executable webview surface. */
@@ -175,23 +207,44 @@ export function renderMarkdown(text: string, hooks?: MarkdownHooks): HTMLDivElem
       'span', 'div', 'button'],
     ALLOWED_ATTR: ['href', 'title', 'class', 'align', 'start', 'type', 'checked', 'disabled', 'data-math', 'aria-label'],
     ALLOW_DATA_ATTR: false,
+    // DOMPurify's default allow-list reads the `C` of a Windows path as a URL
+    // scheme and drops the destination, which would leave one on the page that
+    // nothing can open. A drive letter is the one single-letter scheme allowed.
+    ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp):|[a-z]:(?:[\\/]|%5c)|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
   }))
 
   for (const anchor of root.querySelectorAll('a')) {
     const href = anchor.getAttribute('href') ?? ''
-    if (!/^https?:\/\//i.test(href)) { anchor.replaceWith(...anchor.childNodes); continue }
-    if (hooks) {
-      const replacement = hooks.link(href, '')
-      replacement.replaceChildren(...anchor.childNodes)
-      anchor.replaceWith(replacement)
+    if (/^https?:\/\//i.test(href)) {
+      if (hooks) {
+        const replacement = hooks.link(href, '')
+        replacement.replaceChildren(...anchor.childNodes)
+        anchor.replaceWith(replacement)
+      }
+      continue
     }
+    // A local destination is the path the model meant; the label is just what
+    // the reader sees, so the link keeps working when the label is a basename.
+    const buildFileLink = hooks?.fileLink
+    const file = buildFileLink === undefined ? undefined : parseFileLink(href)
+    if (file !== undefined && buildFileLink !== undefined) {
+      const replacement = buildFileLink(file.path, file.line)
+      // An empty label would otherwise clear the hook's own label and leave an
+      // invisible button on the page that only the keyboard can find.
+      if (anchor.hasChildNodes()) replacement.replaceChildren(...anchor.childNodes)
+      anchor.replaceWith(replacement)
+      continue
+    }
+    anchor.replaceWith(...anchor.childNodes)
   }
   if (hooks) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
     const texts: Text[] = []
     while (walker.nextNode()) {
       const textNode = walker.currentNode as Text
-      if (!textNode.parentElement?.closest('a, pre, code, [data-math]')) texts.push(textNode)
+      // A button already carries its own target; walking inside it would wrap
+      // the file link's own label in a second link.
+      if (!textNode.parentElement?.closest('a, button, pre, code, [data-math]')) texts.push(textNode)
     }
     for (const textNode of texts) {
       const container = document.createElement('span')
@@ -199,7 +252,10 @@ export function renderMarkdown(text: string, hooks?: MarkdownHooks): HTMLDivElem
       textNode.replaceWith(...container.childNodes)
     }
     for (const code of root.querySelectorAll('code')) {
-      if (!code.closest('pre')) code.replaceWith(hooks.inlineCode(code.textContent ?? ''))
+      // A code span that sits inside a link is part of that link's label, not a
+      // link of its own: wrapping it would nest two targets, and the inner one
+      // would answer the click with the label instead of the destination.
+      if (!code.closest('pre, a, button')) code.replaceWith(hooks.inlineCode(code.textContent ?? ''))
     }
   }
   for (const table of root.querySelectorAll('table')) {

@@ -4,6 +4,7 @@ src/**
 tests/**
 scripts/**
 tooling/**
+patches/**
 docs/**
 build.sh
 .build/**
@@ -29,3 +30,9 @@ dist/**/*.map
 .probe-home/**
 .drift/**
 .npm-cache/**
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.jsonl
+**/*.log

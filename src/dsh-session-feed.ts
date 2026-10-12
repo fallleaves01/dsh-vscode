@@ -75,10 +75,18 @@ export class DshSessionFeed {
   private readonly jobs = new Map<string, unknown[]>()
   /** Per-session `job/list` subscriptions (DSH 0.1.7 moved jobs out of the control baseline). */
   private readonly jobStreams = new Map<string, () => void>()
+  private readonly pendingJobBaselines = new Set<string>()
+  private readonly monitoredJobs = new Set<string>()
+  private readonly scannedJobs = new Set<string>()
+  private readonly queuedJobBaselines = new Set<string>()
+  private pumpingJobs = false
   private readonly running = new Map<string, boolean>()
+  private readonly available = new Map<string, boolean>()
   private readonly questions = new Map<string, PendingQuestion>()
   private readonly displayedQuestions = new Map<string, string>()
   private readonly requestSessions = new Set<string>()
+  private readonly subagentParents = new Map<string, string>()
+  private readonly catalogParents = new Map<string, string>()
   private readonly addedSessions = new Map<string, { revision: number; summary: SessionSummary }>()
   private addedRevision = 0
   private readonly activity = new Map<string, number>()
@@ -134,6 +142,44 @@ export class DshSessionFeed {
 
   get listRevision(): number { return this.addedRevision }
 
+  pendingRequests(sessionId: string): Array<{ rpcId: string; event: string; request: Record<string, unknown> }> {
+    return [...this.questions].filter(([, pending]) => pending.sessionId === sessionId)
+      .map(([rpcId, pending]) => ({ rpcId, event: pending.event, request: pending.request }))
+  }
+
+  monitorJobs(sessionIds: readonly string[], refresh = false): void {
+    this.monitoredJobs.clear()
+    for (const id of sessionIds) {
+      this.monitoredJobs.add(id)
+      if (refresh) this.scannedJobs.delete(id)
+      if (!this.scannedJobs.has(id) && !this.jobStreams.has(id)) this.queuedJobBaselines.add(id)
+    }
+    for (const id of this.queuedJobBaselines) if (!this.monitoredJobs.has(id)) this.queuedJobBaselines.delete(id)
+    for (const id of this.jobStreams.keys()) if (!this.monitoredJobs.has(id) && this.follow?.sessionId !== id) {
+      this.jobStreams.get(id)?.(); this.jobStreams.delete(id); this.pendingJobBaselines.delete(id)
+    }
+    this.pumpJobBaselines()
+  }
+
+  private pumpJobBaselines(): void {
+    if (this.pumpingJobs) return
+    this.pumpingJobs = true
+    try {
+      for (const id of this.queuedJobBaselines) {
+        if (this.pendingJobBaselines.size >= 8) break
+        this.queuedJobBaselines.delete(id)
+        this.subscribeJobs(id)
+      }
+    } finally { this.pumpingJobs = false }
+  }
+
+  observeJob(sessionId: string, jobId: string, from: number, item: (frame: Record<string, unknown>) => void, fail: (error: Error) => void): () => void {
+    return this.streams.open('job/follow', { request: { sessionId, jobId, from } }, raw => {
+      if (!wireRecord(raw)) throw new Error('Invalid background output frame.')
+      item(raw)
+    }, fail, true)
+  }
+
   summaries(items: SessionSummary[], sinceRevision: number): SessionSummary[] {
     const summaries = new Map(items.map(summary => [summary.sessionId, summary]))
     // Do not lose a new conversation when its notification races session/list.
@@ -144,16 +190,22 @@ export class DshSessionFeed {
   }
 
   private summary(summary: SessionSummary): SessionSummary {
+    if (!this.running.has(summary.sessionId)) this.running.set(summary.sessionId, summary.running)
+    if (summary.origin === 'subagent' && typeof summary.parentSessionId === 'string') {
+      this.subagentParents.set(summary.sessionId, summary.parentSessionId)
+    }
     const values = { ...summary.projections?.values }
     const watermark = summary.projections?.asOfSeq ?? -1
     for (const [key, projection] of this.projections.get(summary.sessionId) ?? []) {
       if (projection.seq >= watermark) values[key] = projection.value
     }
+    this.trackCatalog(summary.sessionId, values.subagentCatalog)
     const activity = this.activity.get(summary.sessionId)
     if (!summary.blank || summary.running) this.nonBlankSessions.add(summary.sessionId)
     return { ...summary, updatedAt: Math.max(summary.updatedAt, activity ?? 0),
       blank: !this.nonBlankSessions.has(summary.sessionId),
       running: this.running.get(summary.sessionId) ?? summary.running,
+      ...(this.available.has(summary.sessionId) ? { agentAvailable: this.available.get(summary.sessionId)! } : {}),
       projections: { values }, ...(typeof values.agentPreset === 'string' ? { agentPreset: values.agentPreset } : {}) }
   }
 
@@ -162,6 +214,7 @@ export class DshSessionFeed {
   }
 
   open(sessionId: string, parentSessionId?: string): Promise<SessionOpening> {
+    if (parentSessionId !== undefined) this.subagentParents.set(sessionId, parentSessionId)
     this.closeFollow()
     const address = sessionAddress(sessionId, parentSessionId)
     return new Promise((resolve, reject) => {
@@ -196,6 +249,7 @@ export class DshSessionFeed {
           resolve({ events, hasMore: raw.hasMore, projections: this.projectionValues(sessionId), isCurrent: () => this.follow === state, activate: () => {
             if (this.follow !== state || state.active) return
             state.active = true
+            this.requestSessions.add(sessionId)
             this.mux({ type: 'session/queue', sessionId, items: this.queueItems(sessionId) })
             this.mux({ type: 'session/jobs', sessionId, jobs: this.jobs.get(sessionId) ?? [] })
             for (const [key, projection] of this.projections.get(sessionId) ?? []) {
@@ -216,7 +270,17 @@ export class DshSessionFeed {
       // A conversation-scoped subscription must not take the runtime feed with it:
       // a conversation archived elsewhere, or a subagent whose parent is gone,
       // fails this stream alone. Its code is what the sidebar explains.
-      }, error => { if (this.follow === state) this.closeFollow(error); else state.reject(error) }, true)
+      }, (error, cause) => {
+        // Before the snapshot the open is still pending, so the failure is the
+        // opener's to report. After it, this stream was the only thing updating the
+        // transcript: closing it silently left the sidebar showing a conversation
+        // that had stopped moving, with no notice and no way back. A carrier abort
+        // is reported once, by the carrier itself.
+        if (!opened) { state.reject(error); return }
+        if (this.follow !== state) return
+        this.closeFollow(error)
+        if (cause === 'stream') this.error(error)
+      }, true)
     })
   }
 
@@ -251,8 +315,15 @@ export class DshSessionFeed {
     this.closeFollow()
     for (const cancel of this.jobStreams.values()) cancel()
     this.jobStreams.clear()
+    this.pendingJobBaselines.clear()
+    this.monitoredJobs.clear()
+    this.scannedJobs.clear()
+    this.queuedJobBaselines.clear()
+    this.available.clear()
     this.questions.clear()
     this.requestSessions.clear()
+    this.subagentParents.clear()
+    this.catalogParents.clear()
     this.streams.dispose()
   }
 
@@ -261,8 +332,7 @@ export class DshSessionFeed {
     this.follow = undefined
     this.displayedQuestions.clear()
     if (previous === undefined) return
-    this.jobStreams.get(previous.sessionId)?.()
-    this.jobStreams.delete(previous.sessionId)
+    this.releaseIdleJobStream(previous.sessionId)
     previous.cancel()
     previous.reject(error)
   }
@@ -287,12 +357,66 @@ export class DshSessionFeed {
    * than fail the shared stream carrier.
    */
   private subscribeJobs(sessionId: string): void {
-    this.jobStreams.get(sessionId)?.()
-    const cancel = this.streams.open('job/list', { request: { sessionId } }, raw => {
+    if (this.jobStreams.has(sessionId)) return
+    this.scannedJobs.add(sessionId)
+    this.pendingJobBaselines.add(sessionId)
+    let failed = false
+    let timer: NodeJS.Timeout | undefined
+    const failure = (error: Error): void => {
+      failed = true
+      if (timer !== undefined) clearTimeout(timer)
+      this.pendingJobBaselines.delete(sessionId); this.jobStreams.delete(sessionId)
+      this.mux({ type: 'session/jobs-status', sessionId, error: `Background task status may be stale: ${error.message}` })
+      this.pumpJobBaselines()
+    }
+    const close = this.streams.open('job/list', { request: { sessionId } }, raw => {
       if (!wireRecord(raw) || raw.type !== 'rows' || !Array.isArray(raw.jobs)) return
+      if (timer !== undefined) clearTimeout(timer)
+      this.pendingJobBaselines.delete(sessionId)
+      this.jobs.set(sessionId, raw.jobs)
       this.publishJobs(sessionId, raw.jobs)
-    }, () => {}, true)
-    this.jobStreams.set(sessionId, cancel)
+      this.mux({ type: 'session/jobs-status', sessionId, error: null })
+      this.releaseIdleJobStream(sessionId)
+      this.pumpJobBaselines()
+    }, failure, true)
+    if (!failed) {
+      const cancel = (): void => { if (timer !== undefined) clearTimeout(timer); close() }
+      this.jobStreams.set(sessionId, cancel)
+      if (this.pendingJobBaselines.has(sessionId)) timer = setTimeout(() => {
+        cancel(); failure(new Error('Task status timed out. Refresh tasks to retry.'))
+      }, 10_000)
+    }
+  }
+
+  /** Keep watching work after navigation, until its last live job settles. */
+  private releaseIdleJobStream(sessionId: string): void {
+    if (this.follow?.sessionId === sessionId) return
+    if (this.monitoredJobs.has(sessionId) && this.running.get(sessionId) === true) return
+    const jobs = this.jobs.get(sessionId)
+    // A baseline still in flight must get a chance to report live work.
+    if (this.pendingJobBaselines.has(sessionId) || jobs === undefined
+      || jobs.some(job => wireRecord(job) && (job.status === 'running' || job.status === 'stopping'))) return
+    this.jobStreams.get(sessionId)?.()
+    this.jobStreams.delete(sessionId)
+  }
+
+  private trackCatalog(parentId: string, value: unknown): void {
+    if (!Array.isArray(value)) return
+    for (const [child, parent] of this.catalogParents) if (parent === parentId) this.catalogParents.delete(child)
+    for (const entry of value) if (wireRecord(entry) && typeof entry.id === 'string' && entry.id !== parentId) {
+      this.catalogParents.set(entry.id, parentId)
+    }
+  }
+
+  /** A delegated child can need an answer before anybody opens its transcript. */
+  private handlesRequestsFor(sessionId: string): boolean {
+    const seen = new Set<string>()
+    for (let current: string | undefined = sessionId; current !== undefined && !seen.has(current);
+      current = this.subagentParents.get(current) ?? this.catalogParents.get(current)) {
+      if (current === this.follow?.sessionId || this.requestSessions.has(current)) return true
+      seen.add(current)
+    }
+    return false
   }
 
   /**
@@ -325,6 +449,7 @@ export class DshSessionFeed {
     // queue model from the merged snapshot rather than only from live frames.
     const inbox = next.get('inbox')
     if (inbox !== undefined) this.applyInbox(sessionId, inbox.value)
+    this.trackCatalog(sessionId, next.get('subagentCatalog')?.value)
   }
 
   private control(frame: Record<string, unknown>): void {
@@ -360,6 +485,7 @@ export class DshSessionFeed {
       this.projections.set(id, map)
       // DSH 0.1.7 delivers the message queue as the `inbox` projection.
       if (frame.key === 'inbox') this.applyInbox(id, frame.value)
+      if (frame.key === 'subagentCatalog') this.trackCatalog(id, frame.value)
       // Replayed from the newest cached value on activation, never from stale buffered values.
       if (this.follow?.sessionId !== id || this.follow.active) this.mux({ type: 'session/projection', sessionId: id, key: frame.key, value: frame.value })
     } else throw new Error('Invalid control update.')
@@ -385,10 +511,13 @@ export class DshSessionFeed {
   }
 
   private remoteEvent(frame: Record<string, unknown>): void {
+    if (frame.type === 'emit' && (frame.event === 'schedule/changed' || frame.event === 'goal/activation-changed')) {
+      this.host({ type: frame.event === 'schedule/changed' ? 'host/schedules-changed' : 'host/goal-activation-changed', value: Array.isArray(frame.args) ? frame.args[0] : undefined })
+    }
     if (frame.type === 'cancel' && typeof frame.eventId === 'string') { this.dismissQuestion(frame.eventId); return }
     if (frame.type === 'waterfall' && typeof frame.eventId === 'string' && typeof frame.agentId === 'string'
       && typeof frame.event === 'string' && wireRecord(frame.request)) {
-      if ((frame.agentId !== this.follow?.sessionId && !this.requestSessions.has(frame.agentId))
+      if (!this.handlesRequestsFor(frame.agentId)
         || (frame.event !== 'approval/request' && frame.event !== 'user-questions/request')) {
         void this.result(frame.eventId, { kind: 'next' }).catch(this.error)
         return
@@ -425,13 +554,17 @@ export class DshSessionFeed {
       const summary = id as unknown as SessionSummary
       this.addedSessions.set(summary.sessionId, { revision: ++this.addedRevision, summary })
       this.running.set(summary.sessionId, summary.running)
+      if (typeof summary.agentAvailable === 'boolean') this.available.set(summary.sessionId, summary.agentAvailable)
       this.host({ ...this.summary(summary), type: 'host/session-added' })
     }
     else if (typeof id === 'string') {
       if (frame.event === 'api-session/status' && typeof value === 'boolean') {
         this.running.set(id, value)
+        this.available.set(id, true)
+        if (value && this.monitoredJobs.has(id)) { this.queuedJobBaselines.add(id); this.pumpJobBaselines() }
+        else this.releaseIdleJobStream(id)
         if (value) this.nonBlankSessions.add(id)
-        this.host({ type: 'host/session-status', sessionId: id, running: value })
+        this.host({ type: 'host/session-status', sessionId: id, running: value, agentAvailable: true })
       } else if (frame.event === 'api-session/activity' && typeof value === 'number' && Number.isFinite(value)) {
         const updatedAt = Math.max(this.activity.get(id) ?? 0, value)
         this.activity.set(id, updatedAt)
@@ -440,9 +573,14 @@ export class DshSessionFeed {
       } else if (frame.event === 'api-session/removed') {
         // A disposed live instance is not a deletion of its persisted history.
         this.running.set(id, false)
+        this.available.set(id, false)
         this.requestSessions.delete(id)
         this.queues.delete(id)
         this.jobs.delete(id)
+        this.jobStreams.get(id)?.()
+        this.jobStreams.delete(id)
+        this.pendingJobBaselines.delete(id)
+        this.pumpJobBaselines()
         this.projections.delete(id)
         this.projectionFloors.delete(id)
         // Everything below is derived from events, so the durable session list

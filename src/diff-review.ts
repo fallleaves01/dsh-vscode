@@ -1,4 +1,5 @@
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import * as vscode from 'vscode'
@@ -102,6 +103,81 @@ function diffsOf(value: unknown, expected: 'call' | 'result'): FileDiff[] {
 function inside(basePath: string, filePath: string): boolean {
   const relative = path.relative(path.resolve(basePath), path.resolve(filePath))
   return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
+}
+
+/** A reply may spell the home directory as `~`, which the file system does not. */
+function expandHome(value: string): string {
+  if (value !== '~' && !value.startsWith('~/') && !value.startsWith('~\\')) return value
+  const home = os.homedir()
+  return value.length === 1 ? home : path.join(home, value.slice(2))
+}
+
+/** A written path, as a workspace glob literal: only the names, never a pattern. */
+function globLiteral(value: string): string {
+  return value.replace(/[*?[\]{}!\\]/g, '\\$&')
+}
+
+/** The tail of a written path, as the project index searches for it. */
+function searchSuffix(value: string): string {
+  // A Windows separator is a glob escape, so a path spelled that way is read as
+  // a POSIX one before the pattern is built. On POSIX a backslash is a name.
+  const separators = path.sep === '\\' ? value.replace(/\\/g, '/') : value
+  return globLiteral(separators.replace(/^(?:\.{1,2}[\\/])+/, '').replace(/[\\/]$/, ''))
+}
+
+function depth(filePath: string): number {
+  return filePath.split(/[\\/]/).filter(part => part !== '').length
+}
+
+/** Whether the editor's own file system can see the path. */
+async function exists(filePath: string): Promise<boolean> {
+  try {
+    await vscode.workspace.fs.stat(vscode.Uri.file(filePath))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The path as the project spells it, which is the part that tells files apart. */
+function projectLabel(cwd: string, filePath: string): string {
+  const folder = (vscode.workspace.workspaceFolders ?? []).find(candidate => inside(candidate.uri.fsPath, filePath))
+  const relative = path.relative(folder?.uri.fsPath ?? cwd, filePath)
+  return relative === '' ? filePath : relative
+}
+
+/**
+ * Ask which of several files was meant.
+ *
+ * Absolute paths share so much of their prefix that a list of them is not a
+ * question a reader can answer, so each entry leads with the project-relative
+ * path and keeps the absolute one beside it.
+ */
+async function pickProjectFile(cwd: string, value: string, candidates: readonly string[]): Promise<string | undefined> {
+  const items = candidates.map(candidate => ({ label: projectLabel(cwd, candidate), detail: candidate }))
+  const picked = await vscode.window.showQuickPick(items, {
+    title: `${value} matched more than one file`,
+    placeHolder: 'Open which file?',
+  })
+  // Two folders can spell a path the same way, so the answer is the row's own
+  // absolute path rather than the label the reader saw.
+  return picked?.detail
+}
+
+/**
+ * The files under one root whose path ends with a written one.
+ *
+ * The first search honours the reader's `files.exclude` settings, which is what
+ * keeps it quick. A model also writes about the files it built (`dist/*.js`),
+ * and a basename-only link to one of those is still a file the click asked for,
+ * so a search that found nothing looks again past those exclusions — the two
+ * directories nothing useful lives in stay excluded either way.
+ */
+async function searchProject(root: string, suffix: string): Promise<vscode.Uri[]> {
+  const pattern = new vscode.RelativePattern(root, '**/' + suffix)
+  const found = await vscode.workspace.findFiles(pattern, undefined, 64)
+  if (found.length > 0) return found
+  return vscode.workspace.findFiles(pattern, '**/{.git,node_modules}/**', 64)
 }
 
 function projectPath(cwd: string, value: string): string | undefined {
@@ -331,10 +407,25 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
       .filter(group => group.files.length > 0)
   }
 
+  /**
+   * Open a file a reply named.
+   *
+   * A model writes the file it means, not the one this window has open: the
+   * value can be absolute, relative to the project, or nothing but the basename
+   * of a file several directories down (`rdma.cuh`). Resolving only the literal
+   * project spelling made every such link read as "not available on this
+   * machine", so the project's own index answers for a name the roots cannot.
+   */
   async openFile(cwd: string, value: string, line?: number): Promise<void> {
-    const filePath = projectPath(cwd, value)
-    if (filePath === undefined) throw new Error('This file is outside the current DeepSeek project.')
-    const uri = vscode.Uri.file(filePath)
+    const candidates = await this.openCandidates(cwd, value)
+    if (candidates.length === 0) {
+      throw new Error(`Could not open ${value}: no file with that path or name was found in this project.`)
+    }
+    // One answer needs no ceremony; several mean the reply named a file this
+    // project holds more than once, and guessing between them would be a coin flip.
+    const picked = candidates.length === 1 ? candidates[0] : await pickProjectFile(cwd, value, candidates)
+    if (picked === undefined) return
+    const uri = vscode.Uri.file(picked)
     const stat = await vscode.workspace.fs.stat(uri)
     if ((stat.type & vscode.FileType.Directory) !== 0) {
       await vscode.commands.executeCommand('revealInExplorer', uri)
@@ -347,6 +438,49 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
       preview: true,
       ...(selection === undefined ? {} : { selection }),
     })
+  }
+
+  /**
+   * Every path the project can answer for a written one, best first.
+   *
+   * A model writes its paths relative to the directory the conversation runs in,
+   * which is this project, so that is the directory that answers for them: a
+   * literal hit wins outright, and otherwise the project's own index supplies
+   * the files whose path ends with what was written — `rdma.cuh` finds
+   * `csrc/kernels/rdma.cuh`. The index answer can be ambiguous, which is the
+   * caller's cue to ask rather than to guess.
+   */
+  private async openCandidates(cwd: string, value: string): Promise<string[]> {
+    const written = expandHome(value.trim())
+    if (written === '') return []
+    // Without a project of its own, the window's folders are the only roots.
+    const roots = cwd === '' ? (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath) : [cwd]
+    if (path.isAbsolute(written)) {
+      // An absolute path is the model's own spelling of a file anywhere on the
+      // machine, and reading it is what the click asked for.
+      const absolute = path.normalize(written)
+      if (await exists(absolute)) return [absolute]
+      // A reply also spells a *project* path with a leading slash
+      // (`/csrc/kernels/rdma.cuh`), which is not where this project lives: that
+      // spelling is answered for below rather than refused here.
+    }
+    const relative = written.replace(/^[\\/]+/, '')
+    for (const root of roots) {
+      const resolved = path.normalize(path.resolve(root, relative))
+      if (await exists(resolved)) return [resolved]
+    }
+    // A Windows separator is a glob escape, so the search reads the path the
+    // way the glob language does before the pattern is built.
+    const suffix = searchSuffix(relative)
+    if (suffix === '') return []
+    const found: string[] = []
+    for (const root of roots) {
+      const matches = await searchProject(root, suffix)
+      for (const uri of matches) if (!found.includes(uri.fsPath)) found.push(uri.fsPath)
+    }
+    // The shallowest and shortest path is the likeliest one meant.
+    return found.sort((left, right) => depth(left) - depth(right)
+      || left.length - right.length || left.localeCompare(right))
   }
 
   async reviewFile(sessionId: string, cwd: string, value: string, turn?: number): Promise<void> {

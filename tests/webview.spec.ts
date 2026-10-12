@@ -45,8 +45,8 @@ describe('chat webview', () => {
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
     const html = chatHtml(webview, mark)
 
-    expect(html).toContain('aria-label="Star dsh-vscode on GitHub"')
-    expect(html).toContain("href: 'https://github.com/Lixxx1/dsh-vscode'")
+    expect(html).toContain('aria-label="DSH Sidebar on GitHub"')
+    expect(html).toContain("href: 'https://github.com/fallleaves01/dsh-vscode'")
   })
 
   it('binds queue actions to the rendered conversation and blocks actions during loading', () => {
@@ -79,7 +79,7 @@ describe('chat webview', () => {
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
     const html = chatHtml(webview, mark)
 
-    expect(html).toContain('placeholder="Search conversations"')
+    expect(html).toContain('placeholder="Search titles and message history"')
     expect(html).toContain("type: 'rename-session'")
     expect(html).toContain("type: 'archive-session'")
     expect(html).toContain('const sessionDrafts = new Map()')
@@ -247,7 +247,7 @@ describe('chat webview', () => {
     expect(source).toContain('archivedOpen = !archivedOpen')
     expect(source).toContain("type: 'unarchive-session'")
     expect(source).toContain("node('button', 'session-restore', 'Restore')")
-    expect(source).toContain("if (!anyRows && !archived.length)")
+    expect(source).toContain("if (!anyRows && !archived.length && !query)")
   })
 
   it('nests subagent sessions under their parent and offers a way back', () => {

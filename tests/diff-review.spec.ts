@@ -3,7 +3,15 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ executeCommand: vi.fn(), textDocuments: [] as Array<{ isDirty: boolean; uri: { fsPath: string } }> }))
+const mocks = vi.hoisted(() => ({
+  executeCommand: vi.fn(),
+  textDocuments: [] as Array<{ isDirty: boolean; uri: { fsPath: string } }>,
+  openTextDocument: vi.fn(),
+  showTextDocument: vi.fn(),
+  showQuickPick: vi.fn(),
+  workspaceFolders: [] as Array<{ uri: { fsPath: string } }>,
+  findPatterns: [] as string[],
+}))
 
 vi.mock('vscode', () => {
   class EventEmitter {
@@ -12,14 +20,68 @@ vi.mock('vscode', () => {
   }
   return {
     EventEmitter,
+    FileType: { File: 1, Directory: 2 },
+    RelativePattern: class {
+      readonly baseUri: { fsPath: string }
+      constructor(base: string | { fsPath: string }, readonly pattern: string) {
+        this.baseUri = typeof base === 'string' ? { fsPath: base } : base
+      }
+    },
+    Range: class {
+      constructor(readonly startLine: number, readonly startColumn: number, readonly endLine: number, readonly endColumn: number) {}
+    },
     Uri: {
       from(value: { scheme: string; authority: string; path: string }) {
         return { ...value, toString: () => `${value.scheme}://${value.authority}${value.path}` }
       },
+      file(filePath: string) {
+        return { scheme: 'file', authority: '', path: filePath, fsPath: filePath, toString: () => `file://${filePath}` }
+      },
     },
     commands: { executeCommand: mocks.executeCommand },
-    workspace: { textDocuments: mocks.textDocuments },
-    window: { showInformationMessage: vi.fn() },
+    workspace: {
+      textDocuments: mocks.textDocuments,
+      get workspaceFolders() { return mocks.workspaceFolders },
+      fs: {
+        async stat(uri: { fsPath: string }) {
+          const stat = fs.statSync(uri.fsPath)
+          return { type: stat.isDirectory() ? 2 : 1 }
+        },
+      },
+      openTextDocument: mocks.openTextDocument,
+      // The real search honours glob syntax, a base folder, and the reader's
+      // file-excludes (undefined = the settings apply, which this mock models by
+      // hiding `dist`). These tests need only the literal `**/<name>` shape the
+      // sidebar asks for, resolved over a real directory tree.
+      async findFiles(include: string | { baseUri: { fsPath: string }; pattern: string }, exclude?: unknown, maxResults?: number) {
+        const pattern = typeof include === 'string' ? include : include.pattern
+        mocks.findPatterns.push(pattern)
+        const bases = typeof include === 'string'
+          ? mocks.workspaceFolders.map(folder => folder.uri.fsPath)
+          : [include.baseUri.fsPath]
+        const hidden = exclude === undefined
+          ? /[\\/](dist|\.git|node_modules)[\\/]/
+          : /[\\/](\.git|node_modules)[\\/]/
+        const wanted = pattern.replace(/^\*\*\//, '').replace(/\\(.)/g, '$1')
+        const found: Array<{ fsPath: string }> = []
+        const walk = (directory: string): void => {
+          if (found.length >= (maxResults ?? 64)) return
+          for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            const child = path.join(directory, entry.name)
+            if (entry.isDirectory()) walk(child)
+            else if (child.endsWith(path.sep + wanted)) found.push({ fsPath: child })
+            if (found.length >= (maxResults ?? 64)) return
+          }
+        }
+        for (const base of bases) walk(base)
+        return found.filter(entry => !hidden.test(entry.fsPath))
+      },
+    },
+    window: {
+      showInformationMessage: vi.fn(),
+      showTextDocument: mocks.showTextDocument,
+      showQuickPick: mocks.showQuickPick,
+    },
   }
 })
 
@@ -34,7 +96,16 @@ function event(type: string, seq: number, data: unknown): DshEvent {
 describe('DiffReviewManager', () => {
   const temporaryDirectories: string[] = []
 
-  beforeEach(() => { mocks.executeCommand.mockReset(); mocks.textDocuments.splice(0) })
+  beforeEach(() => {
+    mocks.executeCommand.mockReset()
+    mocks.textDocuments.splice(0)
+    mocks.workspaceFolders.splice(0)
+    mocks.findPatterns.splice(0)
+    mocks.showQuickPick.mockReset()
+    mocks.showTextDocument.mockReset()
+    mocks.openTextDocument.mockReset()
+    mocks.openTextDocument.mockImplementation(async (uri: { fsPath: string }) => ({ uri, lineCount: 3 }))
+  })
   afterEach(() => { for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true }) })
 
   function temporaryWorkspace(): string {
@@ -537,5 +608,211 @@ describe('DiffReviewManager', () => {
 
     expect(manager.keepFile('session-keep', cwd, 'app.ts', 4)).toEqual([])
     expect(fs.readFileSync(filePath, 'utf8')).toBe('after')
+  })
+
+  describe('opening a file a reply named', () => {
+    /** A reply that names a file the way DSH writes it: often just the basename. */
+    async function opened(): Promise<string[]> {
+      return mocks.showTextDocument.mock.calls.map(call => (call[0] as { uri: { fsPath: string } }).uri.fsPath)
+    }
+
+    it('opens a project-relative path at the requested line', async () => {
+      const cwd = temporaryWorkspace()
+      fs.writeFileSync(path.join(cwd, 'app.ts'), 'one\ntwo\nthree')
+      const manager = new DiffReviewManager()
+
+      await manager.openFile(cwd, 'app.ts', 2)
+
+      expect(mocks.showTextDocument).toHaveBeenCalledTimes(1)
+      expect((mocks.showTextDocument.mock.calls[0]![1] as { selection: { startLine: number } }).selection.startLine).toBe(1)
+    })
+
+    it('finds a file the reply named by basename alone, the way a kernel tree is linked', async () => {
+      const cwd = temporaryWorkspace()
+      const nested = path.join(cwd, 'csrc', 'kernels')
+      fs.mkdirSync(nested, { recursive: true })
+      fs.writeFileSync(path.join(nested, 'rdma.cuh'), 'kernel')
+      mocks.workspaceFolders.push({ uri: { fsPath: cwd } })
+      const manager = new DiffReviewManager()
+
+      await manager.openFile(cwd, 'rdma.cuh')
+
+      expect(await opened()).toEqual([path.join(cwd, 'csrc', 'kernels', 'rdma.cuh')])
+    })
+
+    it('falls back to the window\'s own folders when there is no project to resolve against', async () => {
+      const folder = temporaryWorkspace()
+      fs.mkdirSync(path.join(folder, 'csrc'))
+      fs.writeFileSync(path.join(folder, 'csrc', 'hybrid.cuh'), 'kernel')
+      mocks.workspaceFolders.push({ uri: { fsPath: folder } })
+      const manager = new DiffReviewManager()
+
+      await manager.openFile('', path.join('csrc', 'hybrid.cuh'))
+
+      expect(await opened()).toEqual([path.join(folder, 'csrc', 'hybrid.cuh')])
+    })
+
+    it('opens the row the reader picked when two folders spell it the same way', async () => {
+      const first = temporaryWorkspace()
+      const second = temporaryWorkspace()
+      for (const folder of [first, second]) {
+        fs.mkdirSync(path.join(folder, 'src'))
+        fs.writeFileSync(path.join(folder, 'src', 'index.ts'), 'export {}')
+      }
+      mocks.workspaceFolders.push({ uri: { fsPath: first } }, { uri: { fsPath: second } })
+      const manager = new DiffReviewManager()
+
+      mocks.showQuickPick.mockResolvedValueOnce(undefined)
+      await manager.openFile('', 'index.ts')
+      const offered = mocks.showQuickPick.mock.calls[0]![0] as Array<{ label: string; detail: string }>
+      expect(offered.map(item => item.label)).toEqual([path.join('src', 'index.ts'), path.join('src', 'index.ts')])
+
+      // The labels are indistinguishable, so the answer has to be the row itself.
+      mocks.showQuickPick.mockResolvedValueOnce(offered[0])
+      await manager.openFile('', 'index.ts')
+      expect(await opened()).toEqual([offered[0]!.detail])
+    })
+
+    it('opens a path the reply spelled above the project', async () => {
+      const parent = temporaryWorkspace()
+      const cwd = path.join(parent, 'project')
+      fs.mkdirSync(cwd)
+      fs.writeFileSync(path.join(parent, 'shared.cuh'), 'kernel')
+      const manager = new DiffReviewManager()
+
+      // Opening is a read the click asked for, so it is not confined to the
+      // project; review, keep and revert still are.
+      await manager.openFile(cwd, path.join('..', 'shared.cuh'))
+
+      expect(await opened()).toEqual([path.join(parent, 'shared.cuh')])
+    })
+
+    it('reads a leading slash as the project root, not as an absolute path', async () => {
+      const cwd = temporaryWorkspace()
+      fs.mkdirSync(path.join(cwd, 'csrc', 'kernels'), { recursive: true })
+      fs.writeFileSync(path.join(cwd, 'csrc', 'kernels', 'rdma.cuh'), 'kernel')
+      mocks.workspaceFolders.push({ uri: { fsPath: cwd } })
+      const manager = new DiffReviewManager()
+
+      // Models spell a project path from the root with a leading slash, which is
+      // not where the project lives on this machine.
+      await manager.openFile(cwd, '/csrc/kernels/rdma.cuh')
+
+      expect(await opened()).toEqual([path.join(cwd, 'csrc', 'kernels', 'rdma.cuh')])
+    })
+
+    it('looks past the reader\'s own file-excludes, so a built file is still openable', async () => {
+      const cwd = temporaryWorkspace()
+      fs.mkdirSync(path.join(cwd, 'dist'))
+      fs.writeFileSync(path.join(cwd, 'dist', 'extension.js'), 'bundle')
+      mocks.workspaceFolders.push({ uri: { fsPath: cwd } })
+      const manager = new DiffReviewManager()
+
+      await manager.openFile(cwd, 'extension.js')
+
+      expect(await opened()).toEqual([path.join(cwd, 'dist', 'extension.js')])
+    })
+
+    it('searches the conversation\'s own project, not another open folder\'s copy of the name', async () => {
+      const cwd = temporaryWorkspace()
+      const other = temporaryWorkspace()
+      fs.mkdirSync(path.join(cwd, 'vendor'))
+      fs.writeFileSync(path.join(cwd, 'vendor', 'chunk.cuh'), 'ours')
+      fs.writeFileSync(path.join(other, 'chunk.cuh'), 'theirs, and shallower')
+      mocks.workspaceFolders.push({ uri: { fsPath: cwd } }, { uri: { fsPath: other } })
+      const manager = new DiffReviewManager()
+
+      // The model wrote its path relative to the project it runs in, so a
+      // same-named file in another folder of the window is not its file.
+      await manager.openFile(cwd, 'chunk.cuh')
+
+      expect(await opened()).toEqual([path.join(cwd, 'vendor', 'chunk.cuh')])
+      expect(mocks.showQuickPick).not.toHaveBeenCalled()
+    })
+
+    it('looks up a name that glob syntax would otherwise read as a pattern', async () => {
+      const cwd = temporaryWorkspace()
+      fs.mkdirSync(path.join(cwd, 'vendor'))
+      fs.writeFileSync(path.join(cwd, 'vendor', 'weird[1].ts'), 'generated')
+      mocks.workspaceFolders.push({ uri: { fsPath: cwd } })
+      const manager = new DiffReviewManager()
+
+      await manager.openFile(cwd, 'weird[1].ts')
+
+      // The name is escaped, so the search looks for a file rather than for
+      // `weird1.ts` or for nothing at all.
+      expect(mocks.findPatterns).toEqual(['**/weird\\[1\\].ts'])
+      expect(await opened()).toEqual([path.join(cwd, 'vendor', 'weird[1].ts')])
+    })
+
+    it('asks which file when the name is ambiguous, and opens nothing when the picker is dismissed', async () => {
+      const cwd = temporaryWorkspace()
+      for (const directory of ['kernels', 'csrc/kernels']) {
+        fs.mkdirSync(path.join(cwd, directory), { recursive: true })
+        fs.writeFileSync(path.join(cwd, directory, 'reduce_scatter.hpp'), 'kernel')
+      }
+      mocks.workspaceFolders.push({ uri: { fsPath: cwd } })
+      const manager = new DiffReviewManager()
+
+      mocks.showQuickPick.mockResolvedValueOnce(undefined)
+      await manager.openFile(cwd, 'reduce_scatter.hpp')
+      expect(mocks.showQuickPick).toHaveBeenCalledTimes(1)
+      expect(mocks.showTextDocument).not.toHaveBeenCalled()
+
+      // The shallowest match is offered first, and each entry leads with the
+      // project-relative path, which is the part that tells them apart.
+      const offered = mocks.showQuickPick.mock.calls[0]![0] as Array<{ label: string }>
+      expect(offered.map(item => item.label)).toEqual([
+        path.join('kernels', 'reduce_scatter.hpp'),
+        path.join('csrc', 'kernels', 'reduce_scatter.hpp'),
+      ])
+      mocks.showQuickPick.mockResolvedValueOnce(offered[1])
+      await manager.openFile(cwd, 'reduce_scatter.hpp')
+      expect(await opened()).toEqual([path.join(cwd, 'csrc', 'kernels', 'reduce_scatter.hpp')])
+    })
+
+    it('opens an absolute path outside the project, and expands a home directory', async () => {
+      const cwd = temporaryWorkspace()
+      const outside = temporaryWorkspace()
+      const file = path.join(outside, 'notes.md')
+      fs.writeFileSync(file, 'notes')
+      const manager = new DiffReviewManager()
+
+      await manager.openFile(cwd, file)
+      expect(await opened()).toEqual([file])
+
+      // A reply may spell the home directory as `~`, which no file system does.
+      const home = process.env.HOME ?? os.homedir()
+      const managed = path.join(home, 'dsh-open-file-spec.tmp')
+      fs.writeFileSync(managed, 'home')
+      try {
+        await manager.openFile(cwd, '~/dsh-open-file-spec.tmp')
+        expect(await opened()).toEqual([file, managed])
+      } finally {
+        fs.rmSync(managed, { force: true })
+      }
+    })
+
+    it('reports a name the project cannot answer for, instead of claiming the file was deleted', async () => {
+      const cwd = temporaryWorkspace()
+      mocks.workspaceFolders.push({ uri: { fsPath: cwd } })
+      const manager = new DiffReviewManager()
+
+      await expect(manager.openFile(cwd, 'missing.cuh')).rejects.toThrow(
+        'Could not open missing.cuh: no file with that path or name was found in this project.',
+      )
+      expect(mocks.showTextDocument).not.toHaveBeenCalled()
+    })
+
+    it('reveals a directory rather than opening it as a document', async () => {
+      const cwd = temporaryWorkspace()
+      fs.mkdirSync(path.join(cwd, 'csrc'))
+      const manager = new DiffReviewManager()
+
+      await manager.openFile(cwd, 'csrc')
+
+      expect(mocks.executeCommand).toHaveBeenCalledWith('revealInExplorer', expect.objectContaining({ fsPath: path.join(cwd, 'csrc') }))
+      expect(mocks.showTextDocument).not.toHaveBeenCalled()
+    })
   })
 })

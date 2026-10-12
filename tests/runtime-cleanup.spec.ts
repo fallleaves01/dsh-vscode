@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('vscode', () => ({
   EventEmitter: class {
@@ -15,8 +15,29 @@ interface RuntimeCleanupAccess {
   launchPreparation: RuntimeLaunchPreparation | undefined
   releaseLaunchPreparation(): Promise<void>
 }
+afterEach(() => vi.useRealTimers())
 
 describe('runtime launch cleanup', () => {
+  it('rejects a hung stop and permits retry only after the same cleanup finishes', async () => {
+    vi.useFakeTimers()
+    let finishDisposal: (() => void) | undefined
+    const dispose = vi.fn(() => new Promise<void>(resolve => { finishDisposal = resolve }))
+    const runtime = new DshRuntime({} as never, { appendLine: vi.fn() } as never)
+    const cleanup = runtime as unknown as RuntimeCleanupAccess
+    cleanup.launchPreparation = { transformArguments: args => [...args], dispose }
+    const stop = runtime.stop()
+    const rejected = expect(stop).rejects.toThrow('cleanup did not finish')
+    await vi.advanceTimersByTimeAsync(5_000)
+    await rejected
+    expect(runtime.state).toMatchObject({ kind: 'failed' })
+    expect(dispose).toHaveBeenCalledTimes(1)
+    const retry = runtime.stop()
+    finishDisposal?.()
+    await retry
+    expect(runtime.state).toMatchObject({ kind: 'stopped' })
+    expect(dispose).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
   it('shares an in-flight asynchronous cleanup with every waiter', async () => {
     let finishDisposal: (() => void) | undefined
     const dispose = vi.fn(() => new Promise<void>(resolve => { finishDisposal = resolve }))

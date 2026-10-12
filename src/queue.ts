@@ -7,6 +7,19 @@ export interface QueueItemState {
   text: string | null
 }
 
+/**
+ * One slash command held locally until the conversation is idle.
+ *
+ * DSH executes a command immediately and offers no way to queue one, and a
+ * command like `/compact` refuses while an agent is busy — so the wait is this
+ * window's, and it has to be visible for the user to trust it.
+ */
+export interface QueuedCommandItem {
+  id: string
+  text: string
+  preview: string
+}
+
 export interface QueueSnapshot {
   items: QueueItemState[]
   rawText: Map<string, string>

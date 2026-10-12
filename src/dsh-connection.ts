@@ -20,10 +20,14 @@ function record(value: unknown): value is Record<string, unknown> {
 /** Only the local, root DSH endpoint may receive a launch token or cookie. */
 export function dshLocalUrl(value: URL): URL {
   const url = new URL(value.href)
+  // The port must be concrete. The WHATWG parser erases a default port (`:80`
+  // becomes ''), and a URL naming no port is not the endpoint DSH printed: it is
+  // whatever happens to listen on loopback :80, which must never be handed the
+  // runtime's bearer token.
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1'
     || url.username !== '' || url.password !== '' || url.pathname !== '/'
-    || url.hash !== '' || url.port === '0') {
-    throw new DshConnectionError('invalid-url', 'DSH must use an HTTP root URL on 127.0.0.1.')
+    || url.hash !== '' || url.port === '' || url.port === '0') {
+    throw new DshConnectionError('invalid-url', 'DSH must use an HTTP root URL on 127.0.0.1 with its own port.')
   }
   const keys = [...url.searchParams.keys()]
   if (keys.some(key => key !== 'token') || keys.length > 1

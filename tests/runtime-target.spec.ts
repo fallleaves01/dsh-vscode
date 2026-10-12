@@ -10,6 +10,9 @@ describe('existing runtime URL', () => {
   it.each([
     'http://example.com/?token=secret', 'http://localhost:3080/?token=secret',
     'https://127.0.0.1/?token=secret', 'http://127.0.0.1:0/?token=secret',
+    // No concrete port: the parser erases a default port, so accepting this form
+    // would hand the launch token to whatever listens on loopback :80.
+    'http://127.0.0.1/?token=secret', 'http://127.0.0.1:80/?token=secret',
     'http://user:secret@127.0.0.1/?token=secret', 'http://127.0.0.1/api/?token=secret',
     'http://127.0.0.1/?token=secret#fragment', 'http://127.0.0.1/?token=secret&token=another',
     'http://127.0.0.1/?token=secret&redirect=elsewhere', 'http://127.0.0.1/',

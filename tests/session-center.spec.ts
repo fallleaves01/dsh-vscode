@@ -233,3 +233,27 @@ describe('lineage that must not be treated as delegation', () => {
   // tests/session-center-cycle.spec.ts, in a child process: an in-process
   // regression there would hang the run instead of failing it.
 })
+
+describe('subagent activity metadata', () => {
+  it('uses completion, timing and the four disjoint token buckets from projections', () => {
+    const items = sessionItems([
+      summary({ sessionId: 'parent' }),
+      summary({ sessionId: 'kid', origin: 'subagent', parentSessionId: 'parent', projections: { values: {
+        subagent: { mode: 'continuable', label: 'Research' },
+        subagentTiming: { settledMs: 50, lastTurnCompleted: true },
+        tokenUsage: { uncachedInputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 40 },
+      } } }),
+    ], new Set(), 'parent', new Set())
+    expect(items[1]?.activity).toEqual({ status: 'completed', elapsedMs: 50, totalTokens: 100 })
+  })
+  it('does not infer failure or completion from an idle child or malformed timing', () => {
+    const items = sessionItems([
+      summary({ sessionId: 'parent' }),
+      summary({ sessionId: 'kid', origin: 'subagent', parentSessionId: 'parent', projections: { values: {
+        subagentTiming: { settledMs: -1, active: { since: 20, through: 10 } },
+        tokenUsage: { uncachedInputTokens: 10 },
+      } } }),
+    ], new Set(), 'parent', new Set())
+    expect(items[1]?.activity).toEqual({ status: 'idle' })
+  })
+})

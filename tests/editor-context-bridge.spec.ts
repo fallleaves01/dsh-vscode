@@ -18,7 +18,7 @@ vi.mock('vscode', () => ({
     dispose() { this.listeners.clear() }
   },
   RelativePattern: class { constructor(readonly base: unknown, readonly pattern: string) {} },
-  Uri: { parse: (value: string) => ({ scheme: value.split(':')[0], fsPath: value.replace(/^file:\/\//, ''), toString: () => value }) },
+  Uri: { parse: (value: string) => ({ scheme: value.split(':')[0], fsPath: value.replace(/^file:\/\//, ''), toString: () => value }), file: (fsPath: string) => ({ scheme: 'file', fsPath, toString: () => 'file://' + fsPath }) },
   window: {
     get activeTextEditor() { return mocks.activeEditor },
     onDidChangeActiveTextEditor: () => ({ dispose() {} }),
@@ -37,6 +37,8 @@ vi.mock('vscode', () => ({
 }))
 
 import { EditorContextBridge } from '../src/editor-context-bridge.js'
+import { hasIdeContext } from '../src/ide-context.js'
+import * as vscode from 'vscode'
 
 const CWD = '/workspace'
 
@@ -52,6 +54,8 @@ function uri(path: string) {
 beforeEach(() => {
   mocks.activeEditor = undefined
   mocks.diagnostics = []
+  vi.mocked(vscode.workspace.fs.stat).mockReset().mockResolvedValue({ type: 1 } as never)
+  vi.mocked(vscode.workspace.findFiles).mockReset().mockResolvedValue([])
 })
 
 describe('editor context pins', () => {
@@ -109,5 +113,67 @@ describe('editor context pins', () => {
     await context.pinUri(uri('/workspace/src/app.ts') as never, CWD, { startLine: 4, endLine: 9 })
     const snapshot = await context.snapshotForPrompt('explain this')
     expect(snapshot.pinned).toEqual([expect.objectContaining({ path: 'src/app.ts', startLine: 4, endLine: 9 })])
+  })
+
+  it('offers the editor and selection as suggestions without including them in a prompt', async () => {
+    const getText = vi.fn(() => 'code selected in the editor')
+    mocks.activeEditor = {
+      document: { uri: uri('/workspace/src/current.ts'), languageId: 'typescript', getText },
+      selection: { isEmpty: false, start: { line: 3, character: 0 }, end: { line: 8, character: 0 } },
+    }
+    const context = bridge(() => 'session-a')
+    expect(context.viewState()).toMatchObject({ sessionId: 'session-a', availableFile: { path: 'src/current.ts' }, availableSelection: { startLine: 4, endLine: 8 }, pinned: [] })
+    const snapshot = await context.snapshotForPrompt('explain this project')
+    expect(snapshot).toEqual({ pinned: [], mentions: [] })
+    expect(hasIdeContext(snapshot)).toBe(false)
+    expect(getText).not.toHaveBeenCalled()
+    expect(vscode.workspace.findFiles).not.toHaveBeenCalled()
+    expect(context.pinSelection()).toBe(true)
+    expect((await context.snapshotForPrompt('explain selected code')).pinned).toEqual([expect.objectContaining({ kind: 'selection', text: 'code selected in the editor' })])
+  })
+
+  it('removing an explicitly added current file prevents it from returning on the next send', async () => {
+    mocks.activeEditor = { document: { uri: uri('/workspace/src/current.ts'), languageId: 'typescript' }, selection: { isEmpty: true } }
+    const context = bridge(() => 'session-a')
+    expect(await context.pinPath('src/current.ts', 'session-a')).toBe(true)
+    context.removePinned(context.viewState().pinned[0]!.id!)
+    expect((await context.snapshotForPrompt('hello')).pinned).toEqual([])
+    expect(context.viewState().pinned).toEqual([])
+    expect(context.viewState().availableFile!.path).toBe('src/current.ts')
+  })
+
+  it('confines picker paths to the project and refuses a stale session add', async () => {
+    const context = bridge(() => 'session-a')
+    expect(await context.pinPath('../private.txt', 'session-a')).toBe(false)
+    expect(await context.pinPath('/outside/private.txt', 'session-a')).toBe(false)
+    expect(await context.pinPath('src/app.ts', 'session-b')).toBe(false)
+    expect(vscode.workspace.fs.stat).not.toHaveBeenCalled()
+  })
+
+  it('does not duplicate concurrent additions and keeps the original session after stat awaits', async () => {
+    let sessionId = 'session-a'
+    let finish!: (value: never) => void
+    const stat = new Promise<never>(resolve => { finish = resolve })
+    vi.mocked(vscode.workspace.fs.stat).mockImplementation(() => stat)
+    const context = bridge(() => sessionId)
+    const first = context.pinPath('src/app.ts', 'session-a')
+    const second = context.pinPath('src/app.ts', 'session-a')
+    sessionId = 'session-b'; finish({ type: 1 } as never)
+    await Promise.all([first, second])
+    expect(context.viewState().pinned).toEqual([])
+    sessionId = 'session-a'
+    expect(context.viewState().pinned).toHaveLength(1)
+  })
+
+  it('consumes only references sent by that session, preserving later additions and other drafts', async () => {
+    let sessionId = 'session-a'
+    const context = bridge(() => sessionId)
+    await context.pinPath('sent.ts', 'session-a')
+    const snapshot = await context.snapshotForPrompt('check this')
+    await context.pinPath('next.ts', 'session-a')
+    sessionId = 'session-b'; await context.pinPath('other.ts', 'session-b')
+    context.clearPinned('session-a', snapshot.pinned)
+    expect(context.viewState().pinned.map(item => item.path)).toEqual(['other.ts'])
+    sessionId = 'session-a'; expect(context.viewState().pinned.map(item => item.path)).toEqual(['next.ts'])
   })
 })

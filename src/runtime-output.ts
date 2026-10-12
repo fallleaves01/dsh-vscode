@@ -6,8 +6,20 @@ export function redactDshSecrets(value: string, secrets: readonly string[] = [])
     if (secret !== '') text = text.split(secret).join('[redacted]')
   }
   return text
-    .replace(/([?&](?:token|access_token)=)[^\s&#"']*/gi, '$1[redacted]')
-    .replace(/(\b(?:authorization|cookie|set-cookie)\s*:\s*)[^\r\n]*/gi, '$1[redacted]')
+    .replace(/([?&](?:token|access_token|refresh_token|api[_-]?key|client_secret)=)[^\s&#"']*/gi, '$1[redacted]')
+    // A *quoted* value: `"cookie":"…"`, `'authorization': 'Bearer …'`. The whole
+    // value goes, including a `Bearer ` prefix, which is why this runs before the
+    // unquoted rule below.
+    .replace(/(["']?(?:authorization|cookie|set-cookie|token|access_token|refresh_token|api[_-]?key|client_secret|deepseek_api_key)["']?\s*[:=]\s*)(["'])(?:[^"'\\]|\\.)*\2/gi,
+      '$1$2[redacted]$2')
+    // An unquoted value runs to the end of the line: a header, an assignment, or a
+    // JSON field whose name was quoted but whose value was not. The rule this
+    // replaces required a colon directly after the name, so `cookie="…"`,
+    // `cookie=…` and `{"cookie":"…"}` reached the output channel verbatim.
+    .replace(/(^|[^\w"'])(["']?(?:authorization|cookie|set-cookie|token|access_token|refresh_token|api[_-]?key|client_secret|deepseek_api_key)["']?\s*[:=]\s*)(?!["'\[])(?!\[redacted\])(\S[^\r\n]*)/gi,
+      '$1$2[redacted]')
+    .replace(/(--(?:token|access-token|refresh-token|api-key|client-secret|password)(?:["']?\s+|=))(["']?)([^\s"']+)\2/gi,
+      '$1$2[redacted]$2')
 }
 
 /** Buffer before logging: a token (or even the word `token`) can span chunks. */

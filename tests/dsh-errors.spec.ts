@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NO_ROUTABLE_PROVIDER_TEXT, dshErrorText, dshFailure } from '../src/dsh-errors.js'
+import { CONVERSATION_HELD_TEXT, NO_ROUTABLE_PROVIDER_TEXT, dshErrorText, dshFailure, isConversationHeld } from '../src/dsh-errors.js'
 
 /** The shape DshConnection throws: a preserved DSH code plus the runtime message. */
 function failure(code: string, message: string): Error & { code: string } {
@@ -114,5 +114,45 @@ describe('DSH failure text', () => {
 
   it('explains an empty provider catalog rather than leaving the composer dead', () => {
     expect(NO_ROUTABLE_PROVIDER_TEXT).toContain('No DeepSeek model is available')
+  })
+})
+
+/**
+ * A conversation another DSH process owns is a state, not a fault. It reaches the
+ * sidebar in three shapes and every one of them must be recognised, because the
+ * alternative is raw persistence wording in the UI.
+ */
+describe('a conversation held by another DSH process', () => {
+  // The exact message of DSH's SessionAlreadyOwnedError, which the background
+  // resume during `follow` delivers as bare text on the agent channel.
+  const persisted = 'session "session-a" is already owned by an active write handle'
+
+  it('is recognised from the wire code, from bare agent text, and under a generic code', () => {
+    expect(isConversationHeld(failure('session/writer-held', 'session "session-a" is already owned by an active write handle'))).toBe(true)
+    expect(isConversationHeld(persisted)).toBe(true)
+    expect(isConversationHeld(failure('gateway/internal', persisted))).toBe(true)
+  })
+
+  it('is not claimed for unrelated failures', () => {
+    expect(isConversationHeld(failure('session/not-found', 'session "x" not found'))).toBe(false)
+    expect(isConversationHeld(new Error('spawn dsh ENOENT'))).toBe(false)
+    expect(isConversationHeld(undefined)).toBe(false)
+  })
+
+  it('does not mistake a port conflict for a held conversation', () => {
+    // "address already in use" must keep its own meaning: it is a startup failure,
+    // not a conversation another instance owns.
+    const port = failure('gateway/internal', 'listen EADDRINUSE: address already in use 127.0.0.1:3080')
+    expect(isConversationHeld(port)).toBe(false)
+    expect(dshErrorText(port)).toContain('EADDRINUSE')
+  })
+
+  it('never shows the persistence layer wording, whatever code wrapped it', () => {
+    for (const error of [failure('session/writer-held', persisted), persisted, failure('gateway/internal', persisted)]) {
+      const text = dshErrorText(error)
+      expect(text).toBe(CONVERSATION_HELD_TEXT)
+      expect(text).not.toContain('write handle')
+      expect(text).toContain('another running DSH instance')
+    }
   })
 })

@@ -19,8 +19,10 @@ export interface IdeContextViewReference extends Omit<IdeContextReference, 'text
 }
 
 export interface IdeContextViewState {
-  activeFile?: IdeContextViewReference
-  selection?: IdeContextViewReference
+  sessionId: string
+  /** Suggestions only: editor focus does not attach anything to a prompt. */
+  availableFile?: IdeContextViewReference
+  availableSelection?: IdeContextViewReference
   pinned: IdeContextViewReference[]
 }
 
@@ -95,20 +97,20 @@ export class EditorContextBridge implements vscode.Disposable {
   viewState(): IdeContextViewState {
     const current = this.currentReferences()
     return {
-      ...(current.activeFile === undefined ? {} : { activeFile: withoutText(current.activeFile) }),
-      ...(current.selection === undefined ? {} : { selection: withoutText(current.selection) }),
+      sessionId: this.sessionId(),
+      ...(current.activeFile === undefined ? {} : { availableFile: withoutText(current.activeFile) }),
+      ...(current.selection === undefined ? {} : { availableSelection: withoutText(current.selection) }),
       pinned: this.ownPinned().map(item => withoutText(item.reference, item.id)),
     }
   }
 
   /** Pins staged for the conversation the sidebar currently shows. */
-  private ownPinned(): PinnedReference[] {
-    const sessionId = this.sessionId()
+  private ownPinned(sessionId = this.sessionId()): PinnedReference[] {
     return this.pinned.filter(item => item.sessionId === sessionId)
   }
 
   pinSelection(): boolean {
-    const selection = this.currentReferences().selection
+    const selection = this.currentReferences(true).selection
     if (selection === undefined) return false
     const sessionId = this.sessionId()
     const duplicate = this.pinned.some(item => item.sessionId === sessionId
@@ -121,8 +123,8 @@ export class EditorContextBridge implements vscode.Disposable {
     return true
   }
 
-  removePinned(id: string): void {
-    const index = this.pinned.findIndex(item => item.id === id)
+  removePinned(id: string, sessionId = this.sessionId()): void {
+    const index = this.pinned.findIndex(item => item.id === id && item.sessionId === sessionId)
     if (index < 0) return
     this.pinned.splice(index, 1)
     this.publish()
@@ -141,14 +143,17 @@ export class EditorContextBridge implements vscode.Disposable {
     uri: vscode.Uri,
     cwd: string,
     selection?: { startLine: number; endLine: number },
+    sessionId = this.sessionId(),
   ): Promise<boolean> {
+    if (sessionId === '' || sessionId !== this.sessionId()) return false
     const relative = insideWorkspace(cwd, uri.fsPath)
     if (relative === undefined || relative === '') return false
-    const sessionId = this.sessionId()
-    if (this.pinned.some(item => item.sessionId === sessionId
+    const duplicate = (): boolean => this.pinned.some(item => item.sessionId === sessionId
       && item.reference.kind !== 'selection'
       && item.reference.path === relative
-      && item.reference.startLine === selection?.startLine)) return true
+      && item.reference.startLine === selection?.startLine
+      && item.reference.endLine === selection?.endLine)
+    if (duplicate()) return true
     let isDirectory = false
     try {
       isDirectory = (await vscode.workspace.fs.stat(uri)).type === vscode.FileType.Directory
@@ -156,6 +161,8 @@ export class EditorContextBridge implements vscode.Disposable {
       return false
     }
     if (isDirectory && selection !== undefined) return false
+    // Concurrent adds may complete together after stat. Re-check before storing.
+    if (duplicate()) return true
     this.pinned.push({
       id: randomUUID(),
       sessionId,
@@ -170,33 +177,37 @@ export class EditorContextBridge implements vscode.Disposable {
   }
 
   /** Clears only the open conversation's pins, so another session keeps its own. */
-  clearPinned(): void {
-    const sessionId = this.sessionId()
+  clearPinned(sessionId = this.sessionId(), sent?: readonly IdeContextReference[]): void {
     const before = this.pinned.length
     for (let index = this.pinned.length - 1; index >= 0; index -= 1) {
-      if (this.pinned[index]?.sessionId === sessionId) this.pinned.splice(index, 1)
+      const item = this.pinned[index]
+      if (item?.sessionId === sessionId && (sent === undefined || sent.includes(item.reference))) this.pinned.splice(index, 1)
     }
     if (this.pinned.length === before) return
     this.publish()
   }
 
   async snapshotForPrompt(text: string): Promise<IdeContextSnapshot> {
-    const current = this.currentReferences()
-    const candidates = await this.candidates()
-    const problems = this.problems()
-    const mentions = resolveMentionReferences(mentionedPaths(text), candidates, problems)
-    const pinned = this.ownPinned()
-      .map(item => item.reference)
-      .filter(reference => current.selection === undefined
-        || reference.path !== current.selection.path
-        || reference.startLine !== current.selection.startLine
-        || reference.endLine !== current.selection.endLine
-        || reference.text !== current.selection.text)
+    const sessionId = this.sessionId()
+    const paths = mentionedPaths(text)
+    const mentions = paths.length === 0 ? [] : resolveMentionReferences(paths, await this.candidates(), this.problems())
     return {
-      ...current,
-      pinned,
+      pinned: this.ownPinned(sessionId).map(item => item.reference),
       mentions,
     }
+  }
+
+  async searchFiles(query: string): Promise<IdeMentionCandidate[]> {
+    return searchMentionCandidates(await this.candidates(), query)
+  }
+
+  /** Explicit picker selection, resolved and confined on the extension host. */
+  async pinPath(filePath: string, sessionId: string, selection?: { startLine: number; endLine: number }): Promise<boolean> {
+    const cwd = this.cwd()
+    if (cwd === '' || filePath === '' || filePath.includes('\0') || sessionId !== this.sessionId()) return false
+    const resolved = path.resolve(cwd, filePath)
+    if (insideWorkspace(cwd, resolved) === undefined) return false
+    return this.pinUri(vscode.Uri.file(resolved), cwd, selection, sessionId)
   }
 
   async search(query: string): Promise<IdeMentionCandidate[]> {
@@ -276,7 +287,7 @@ export class EditorContextBridge implements vscode.Disposable {
     this.changes.dispose()
   }
 
-  private currentReferences(): Pick<IdeContextSnapshot, 'activeFile' | 'selection'> {
+  private currentReferences(includeSelectionText = false): Pick<IdeContextSnapshot, 'activeFile' | 'selection'> {
     const editor = vscode.window.activeTextEditor
     if (editor === undefined || editor.document.uri.scheme !== 'file') return {}
     const relative = insideWorkspace(this.cwd(), editor.document.uri.fsPath)
@@ -287,8 +298,8 @@ export class EditorContextBridge implements vscode.Disposable {
       languageId: editor.document.languageId,
     }
     if (editor.selection.isEmpty) return { activeFile }
-    const fullText = editor.document.getText(editor.selection)
-    const truncated = fullText.length > MAX_SELECTION_CHARACTERS
+    const fullText = includeSelectionText ? editor.document.getText(editor.selection) : undefined
+    const truncated = fullText !== undefined && fullText.length > MAX_SELECTION_CHARACTERS
     const selection: IdeContextReference = {
       kind: 'selection',
       path: relative,
@@ -297,7 +308,7 @@ export class EditorContextBridge implements vscode.Disposable {
       endLine: editor.selection.end.character === 0 && editor.selection.end.line > editor.selection.start.line
         ? editor.selection.end.line
         : editor.selection.end.line + 1,
-      text: truncated ? fullText.slice(0, MAX_SELECTION_CHARACTERS) : fullText,
+      ...(fullText === undefined ? {} : { text: truncated ? fullText.slice(0, MAX_SELECTION_CHARACTERS) : fullText }),
       ...(truncated ? { truncated: true } : {}),
     }
     return { activeFile, selection }

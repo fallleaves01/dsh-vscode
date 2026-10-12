@@ -3,7 +3,7 @@
   "displayName": "DSH Sidebar",
   "description": "A project-aware VS Code chat sidebar powered by the official DeepSeek Harness runtime.",
   "icon": "media/deepseek.png",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "private": true,
   "publisher": "fallleaves01",
   "license": "MIT",
@@ -52,7 +52,11 @@
     "onCommand:deepseekHarness.configureApiKey",
     "onCommand:deepseekHarness.signIn",
     "onCommand:deepseekHarness.signOut",
-    "onCommand:deepseekHarness.clearApiKey"
+    "onCommand:deepseekHarness.clearApiKey",
+    "onCommand:deepseekHarness.diagnoseOccupancy",
+    "onCommand:deepseekHarness.endLeftoverRuntime",
+    "onCommand:deepseekHarness.forgetSavedRuntime",
+    "onCommand:deepseekHarness.configureTaskServices"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -128,6 +132,21 @@
         "title": "DeepSeek Harness: Show Runtime Output"
       },
       {
+        "command": "deepseekHarness.diagnoseOccupancy",
+        "title": "DeepSeek Harness: Diagnose Session Occupancy",
+        "icon": "$(inspect)"
+      },
+      {
+        "command": "deepseekHarness.endLeftoverRuntime",
+        "title": "DeepSeek Harness: End a Leftover Runtime",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "deepseekHarness.forgetSavedRuntime",
+        "title": "DeepSeek Harness: Forget the Saved Runtime",
+        "icon": "$(trash)"
+      },
+      {
         "command": "deepseekHarness.openInBrowser",
         "title": "DeepSeek Harness: Open in Browser"
       },
@@ -148,6 +167,10 @@
       {
         "command": "deepseekHarness.clearApiKey",
         "title": "DeepSeek Harness: Clear Stored API Key"
+      },
+      {
+        "command": "deepseekHarness.configureTaskServices",
+        "title": "DeepSeek Harness: Configure Task Services"
       }
     ],
     "keybindings": [
@@ -251,6 +274,18 @@
           "default": true,
           "description": "Look for an existing DSH Web runtime on 127.0.0.1:3080 when no custom executable or arguments are configured. Authenticated runtimes prompt you to connect with their launch URL or start a separate managed runtime. A service that answers without its launch token is never adopted: 127.0.0.1 is reachable by every local user on a shared host."
         },
+        "deepseekHarness.rememberExternalRuntime": {
+          "type": "boolean",
+          "scope": "machine",
+          "default": true,
+          "markdownDescription": "Offer to save a runtime you connect to with its launch URL, so every VS Code window and every later session attaches to it instead of starting another one. Saving writes that URL — which authenticates the runtime — into this extension's global storage, owner-only (`0600`); it is never logged, shown or synced, and \"DSH: Forget the Saved Runtime\" removes it. A saved runtime is **attach-only**: no plugins are installed into it, no settings or credentials are written to it, and it is never ended by this extension. Turn this off to connect per window without being asked."
+        },
+        "deepseekHarness.reuseAcrossWindows": {
+          "type": "boolean",
+          "scope": "machine",
+          "default": true,
+          "markdownDescription": "Attach this window to a DSH runtime that another VS Code window **of this extension** already started, instead of starting a second one. DSH keeps a conversation's write lock until the process owning it exits, so one shared runtime means one holder rather than several competing for the same conversations. Only a runtime this extension started is ever reused, and ending one requires proving it is the same process: by pid together with its process start time where the platform reports one, and otherwise by authenticating the runtime's own launch token — which DSH mints per process and never stores, so only that exact instance can answer it. A runtime started with different settings (a different `DSH_HOME`, executable, arguments or extension version) is never adopted, and a pid that cannot be proved is reported rather than signalled. Turning this off does not affect a runtime you asked this extension to remember (`deepseekHarness.rememberExternalRuntime`) — that one is yours, and every window attaches to it. Reload the window after changing this setting."
+        },
         "deepseekHarness.autonomousDebugging": {
           "type": "boolean",
           "scope": "resource",
@@ -270,6 +305,18 @@
           "scope": "machine",
           "default": "",
           "markdownDescription": "Base URL for the runtime's web search, for a host that cannot reach the public API. Include the version path — the search plugin appends `/messages` — for example `https://host/anthropic/v1`. Left empty, the runtime keeps its own default. DSH only accepts this variable from the process that launches it, so it cannot be set in the runtime's `.env`; this extension provides it. Per-machine, so Settings Sync never carries it to another host."
+        },
+        "deepseekHarness.enableHistorySearch": {
+          "type": "boolean",
+          "scope": "machine",
+          "default": false,
+          "markdownDescription": "Enable server-side message history search in managed DSH Web runtimes (0.2.0-rc.2+). Creates an ephemeral SQLite index on the first search. Restart DSH to apply. Configure session-query in your own profile instead when using a custom or external runtime."
+        },
+        "deepseekHarness.enableSchedule": {
+          "type": "boolean",
+          "scope": "machine",
+          "default": false,
+          "markdownDescription": "Mount the official Schedule service in a standard managed DSH Web runtime (0.2.0-rc.2+) so the sidebar can list reminders and delivery history. Restart DSH to apply. Leave disabled when your custom profile already mounts Schedule, and configure external runtimes separately."
         }
       }
     }
@@ -282,24 +329,25 @@
     "test:scroll-browser": "node tests/conversation-scroll.browser.mjs",
     "check": "tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts && node scripts/build.mjs",
     "package": "vsce package --readme-path README.marketplace.md --out dsh-vscode.vsix",
-    "publish:marketplace": "vsce publish --readme-path README.marketplace.md"
+    "publish:marketplace": "vsce publish --readme-path README.marketplace.md",
+    "test:task-runtime": "node tests/task-features.runtime.mjs"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0",
-    "@types/node": "^22.20.0",
-    "@types/vscode": "^1.100.0",
-    "@types/ws": "^8.18.1",
-    "@vscode/vsce": "^3.6.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "@types/node": "^22.20.5",
+    "@types/vscode": "1.100.0",
+    "@types/ws": "^8.18.2",
+    "@vscode/vsce": "^3.9.2",
     "diff": "^9.0.0",
-    "dompurify": "^3.4.15",
+    "dompurify": "^3.4.16",
     "esbuild": "^0.25.12",
     "highlight.js": "^11.12.0",
     "jsdom": "^27.4.0",
-    "katex": "^0.18.7",
-    "marked": "^18.0.12",
+    "katex": "0.18.7",
+    "marked": "^18.1.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.8",
-    "ws": "^8.21.3",
+    "vitest": "^4.1.11",
+    "ws": "^8.22.0",
     "zod": "^3.25.76"
   }
 }

@@ -6,7 +6,7 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-DeepSeek Harness を、実際にコードを書く場所へ。dsh-vscode は Claude Code や Codex のような右サイドバーを DSH に提供し、プロジェクト・開いているファイル・選択中のコードを最初から理解した状態で動きます。
+DeepSeek Harness を、実際にコードを書く場所へ。dsh-vscode は Claude Code や Codex のような右サイドバーを DSH に提供し、プロジェクトのコンテキストと明示的なファイル・コード選択をサポートします。
 
 エディタ、ターミナル、別のチャットウィンドウを行き来することなく、DeepSeek にコードの調査・変更・検証を任せられます。
 
@@ -28,7 +28,7 @@ DeepSeek Harness を、実際にコードを書く場所へ。dsh-vscode は Cla
 
 - **VS Code のネイティブデバッガーを自律的に操作。** DeepSeek は現在のプロジェクトの `.vscode/launch.json` からデバッグを開始し、ブレークポイントの管理、ステップ実行、コールスタックやローカル変数の確認を行えます。
 - **VS Code の中で公式の DSH をそのまま。** セッション、ストリーミング応答、ツール呼び出し、承認、追加の質問はすべて公式 DSH ランタイム上で動作します。
-- **プロジェクトを理解したエディタコンテキスト。** 開いているファイル、選択中のコード、`@file` や `@folder` の参照がプロンプトと一緒に送られます。
+- **ファイルコンテキストを選択。** `+` からプロジェクトのファイルやフォルダーを検索して追加し、`×` で個別に削除できます。現在のファイルと選択範囲は任意の候補で、自動送信されません。`@file`／`@folder` と **Add Selection to Chat** も利用できます。
 - **必要な場所にセッション操作を。** Permission モードと Plan モードの切り替え、Model と Reasoning Effort の選択、実行中タスクの軌道修正ができます。
 - **ネイティブなレビューと安全な取り消し。** VS Code の Diff Editor で変更を確認して Keep または Revert を選べます。未保存の変更があるファイルを上書きする前に DSH を停止します。
 - **サイドバーから DSH を拡張。** DSH が読み込む Tools、Skills、MCP 連携、Memory、Agent Hooks を検索・管理できます。

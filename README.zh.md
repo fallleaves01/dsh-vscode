@@ -6,7 +6,7 @@
 >
 > Fork 仓库：https://github.com/fallleaves01/dsh-vscode
 
-把 DeepSeek Harness 放到你真正写代码的地方。dsh-vscode 为 DSH 提供类似 Claude Code、Codex 的 VS Code 右侧边栏，并自动理解当前项目、文件和选区。
+把 DeepSeek Harness 放到你真正写代码的地方。dsh-vscode 为 DSH 提供类似 Claude Code、Codex 的 VS Code 右侧边栏，支持项目上下文和主动添加文件、选区。
 
 让 DeepSeek 直接阅读、修改和验证代码，不再需要在编辑器、终端和独立聊天窗口之间反复切换。
 
@@ -28,7 +28,7 @@
 
 - **自主调用 VS Code 原生调试器。** DeepSeek 可以通过当前项目的 `.vscode/launch.json` 启动调试、管理断点、单步执行，并读取调用栈和局部变量。
 - **在 VS Code 中使用官方 DSH。** 会话、流式回复、工具调用、审批和追问都通过官方 DSH runtime 运行。
-- **自动结合编辑器上下文。** 当前文件、选中的代码以及 `@file`、`@folder` 引用会随消息一起发送。
+- **主动选择文件上下文。** 点击 `+` 搜索并添加项目文件、目录，点击标签上的 `×` 逐项移除。当前编辑文件和选区只作为可选建议，不会自动发送。也可输入 `@file`、`@folder`，或执行 **Add Selection to Chat** 添加代码选区。
 - **随时控制运行中的任务。** 切换 Permission 和 Plan 模式，分别选择模型和推理强度，也可以在任务运行时调整方向。
 - **原生改动审阅与安全回退。** 在 VS Code Diff Editor 中检查改动，执行 Keep 或 Revert；遇到未保存文件时，会在覆盖前停止任务。
 - **直接在侧边栏扩展 DSH。** 查找和管理 Tools、Skills、MCP、Memory 与 Agent Hooks，并交给 DSH 加载。

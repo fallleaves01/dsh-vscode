@@ -74,4 +74,16 @@ describe('Agent Preset state', () => {
   it('stays hidden when the runtime exposes no healthy presets', () => {
     expect(agentPresetStateOf([presets[2]!], undefined, true)).toEqual(unavailableAgentPresetState())
   })
+
+  it('clears the busy flag even when the settled id is not on the roster', () => {
+    const state = { ...agentPresetStateOf(presets, 'standard', true), busy: true }
+    // The failure path settles on whatever the summary reports, which can name a
+    // preset this roster excludes (it was removed, or broken). Returning the state
+    // untouched kept `busy` true, and the Webview disables the dropdown on it.
+    const settled = selectAgentPresetState(state, 'gone', false)
+
+    expect(settled.busy).toBe(false)
+    expect(settled.current).toBe('standard')
+    expect(settled.options.find(option => option.id === 'standard')?.selected).toBe(true)
+  })
 })

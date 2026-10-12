@@ -1,11 +1,76 @@
 # DSH web ↔ VS Code 插件 功能对照分析
 
+- **最新本地复核：2026-10-12**，见 [发布前代码与安全复核（0.1.3）](RELEASE-REVIEW-2026-10-12.md)、[主动选择文件上下文（0.1.2）](FILE-CONTEXT-2026-10-12.md)、[输入区 UI 补充修正](COMPOSER-UI-2026-10-12.md) 和 [UI 优化与完整回归检查](UI-AUDIT-2026-10-10.md)；功能对照的 2026-10-04 记录见下方“本轮维护”。后面的第一至七节保留旧版本审计记录；其中“核心链路完整对齐”“无需改代码”等结论只适用于当时覆盖的用例，不能当作当前无 bug 的保证。
 - **对照基线**：DSH `0.1.7-rc.2`（本文正文即该基线）；**当前支持基线**：DSH `0.2.0-rc.2`（复核见第六节）；插件 = 本目录的补丁版 `0.0.9`
 - **rc.1 → rc.2 漂移审计**：见本文档第五节；**rc.2 → 0.2.0-rc.2** 见第六节（均无破坏性变更）
 - **插件上游**：[Lixxx1/dsh-vscode](https://github.com/Lixxx1/dsh-vscode)
 - **方法**
   - DSH 侧：解析 `dsh-api-*/lib/typert.host.js` 的 manifest，并**实机探测**（临时起一个 `dsh web` 随机端口实例，对 73 个候选接口用空参数调用，按错误码区分"接口不存在"=HTTP 404 / "参数不对但接口存在"=各种 `*-invalid`）
   - 插件侧：源码 grep + 统计它**实际调用**的接口
+
+---
+
+## UI 优化与回归：2026-10-10
+
+主对话、Tasks 和独立详情统一视觉样式，补充三主题、窄侧栏、短窗口和键盘焦点检查。
+本轮修复 POSIX 官方 DSH 在旧 PATH 下启动失败、停止任务 NaN 耗时、嵌套缩进、
+详情控件卸载监听及异常正文响应五处问题。89 个测试文件、1108 项测试、类型检查、
+构建、真实 Chromium 和隔离官方 runtime 检查通过。完整覆盖与验收边界见
+[检查报告](UI-AUDIT-2026-10-10.md)。
+
+## 本轮维护：2026-10-04
+
+基线分别核实：本机官方 DSH CLI 和 [npm latest](https://www.npmjs.com/package/@deepseek-ai/dsh) 均为 `0.2.0-rc.2`；官方 [GitHub master 的 CLI 清单](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/package.json) 是 `0.2.1-alpha.1`。插件清单版本是 `0.1.0`。开发分支的 UI 和契约用于判断方向，不能直接当成已经发布的产品承诺。
+
+### 本轮已修复的可复现问题
+
+| 问题 | 成因与影响 | 本轮修复 |
+|---|---|---|
+| 后台任务刚出现就消失 | `job/list` 初始行只发送给 UI，没有进入 feed 缓存；激活会话时又用空缓存覆盖。旧测试模拟的 control baseline 含有旧式 `jobs`，掩盖了问题 | 缓存独立 jobs 快照；测试改为真实的新 baseline 形状 |
+| 切换会话后任务永远显示运行中 | 导航时直接取消旧会话的 jobs 流，结束事件再也收不到 | 有运行中／停止中的 job 时继续观察，全部结束后释放流；等待新 baseline 时不提前取消 |
+| 子代理等待审批／回答，却没有可操作入口 | 请求过滤只接受当前会话或已手动发送的会话，把未打开的子代理请求交给后续 handler | 按明确的父子血缘或持久化 catalog 识别后代，缓存请求并显示 attention；无关会话仍不接管 |
+| 清理阶段使 restart 永久等待 | launch contribution 的异步 `dispose` 没有截止时间，重启串行等待同一个永不完成的 Promise | 等待清理最多 5 秒，失败显示错误并取消启动；保留原清理过程，完成后才允许重试 |
+| 终止失败却误报停止，可能留下旧进程 | 信号抛错／强杀未退出时仍 resolve；丢失 child 句柄，broker 也可能删除仍存活的记录 | 等待实际退出；失败时保留活进程句柄／记录并拒绝 restart，避免启动替代进程 |
+| 启动窗口重启会打断借用它的其他窗口 | 原路径先杀自己持有的 child，之后才检查跨窗口 lease | 终止前检查其他活跃 lease；仍被使用时只解除当前窗口连接 |
+
+这些问题能解释插件等待、任务状态失真和特定条件下遗留进程。源码和回归测试没有建立它们与某次集群／文件系统卡顿的因果关系，也没有发现该重启路径会自动无限创建 runtime。
+
+### 子任务界面的具体改进
+
+主对话输入框上方新增默认展开的 **Tasks** 面板：子任务可以直接点击打开旁边的独立详情面板，不必先打开会话下拉菜单；支持嵌套子任务，并显示运行状态、待审批／待回答、正常完成、累计耗时和 token。进入后保留返回父任务入口。一次性或模式未知的子任务明确只读，宿主也拒绝无效续聊；continuable 子任务仍支持排队发送和独立停止。
+
+同一面板显示 `todos` 计划步骤，按 pending／in progress／completed 状态更新；切换会话和重启时清空旧计划。耗时来自 `subagentTiming`，token 由四个不重叠的 usage 桶相加。官方并未给所有非正常结束提供可靠分类，因此界面只把明确正常完成标记为 Completed，其余闲置状态显示 Idle，避免把取消或异常误写成成功。[官方 subagent UI 契约](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-subagent/README.md)
+
+### 后续补齐：此前列出的八项缺口
+
+以下接入已实现，操作与运行条件见 [任务功能使用说明](TASK-FEATURES.md)。
+
+| 原优先级 | 功能 | 当前实现 |
+|---|---|---|
+| P1 | 后台 job 输出详情 | 独立 `job/follow`，stdout/stderr/log、进度、最终状态、保留缺口；每面板 128 KiB／1024 片段上限 |
+| P1 | 子任务与主对话同时查看 | 可复用的独立详情面板；会话历史、审批／回答、Queue／Steer／Stop；主对话导航保持观察 |
+| P1 | 子任务恢复提示 | 按父 `agentAvailable` 门控，父任务空闲仍可续聊，释放后给出恢复说明 |
+| P2 | jobs 断线和全局观察 | 项目已有会话基线扫描，并发等待最多 8 个；运行中持续观察；失败标记可能过期并提供 Refresh |
+| P2 | Goal | 专用目标视图，阶段／轮数预算／activation／阻塞原因；创建、编辑、暂停、恢复、完成、清空；CAS 防止旧操作覆盖 |
+| P2 | Schedule | 项目提醒目录、下一次／上次投递、历史分页和 retention 提示；仍使用 runtime 工具创建或管理提醒 |
+| P2 | Workflow | durable run/member/outcome、阶段分组、独立成员详情；实时 phase/log 通过后台输出查看 |
+| P2 | 正文搜索 | 服务端会话正文命中与摘要；归档恢复；项目过滤、全 runtime 20 命中上限说明、旧请求隔离 |
+
+实机发现标准 Web profile 默认没有开放 Schedule，也未启用正文搜索。插件增加两项默认关闭的可选设置：`enableSchedule` 和 `enableHistorySearch`，由用户启用并重启 managed runtime；外部／自定义 runtime 使用自己的配置。用全新临时 DSH_HOME 加载配置层后，Goal 读取、Schedule 目录、正文搜索和独立 follow 均通过；没有发起模型请求。
+
+依据：[job 观察接口](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/api/job-controller/README.md)、[subagent UI](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-subagent/README.md)、[Goal](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/goal/goal/README.md)、[Schedule](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/schedule/schedule/README.md)、[Workflow](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/workflow/workflow/README.md)，并与本目录源码的实际调用和状态渲染交叉检查。
+
+会话分叉、取消归档、job 停止已经有代码和入口，旧章节仍列为缺口的地方应以本轮源码为准。终端、文件树和路径打开优先使用 VS Code 原生能力；Code Mode、deferred loading 等 runtime 内部能力也不能仅因没有专门按钮就判定插件不支持。
+
+### 验证范围
+
+新增用例覆盖 jobs 初始快照与导航后结束、嵌套子代理请求、只读模式、耗时与 token、todo 切换、终止拒绝、强杀后不退出、清理超时和共享 child 的 lease。真实 Chromium 检查 320／420／650px 下的面板布局、详情导航、返回及折叠，同时运行原滚动回归。完整测试、类型检查和构建结果见本轮交付说明。
+
+前一轮维护检查：82 个测试文件通过，1030 项测试通过、1 项跳过；TypeScript 类型检查和生产构建通过；真实 Chromium 回归通过。安装包为 `artifacts/dsh-sidebar-0.1.0-maintenance.vsix`，三种宽度的界面截图也保存在 `artifacts/`。
+
+后续补齐的最终检查：88 个测试文件通过，1100 项测试通过、1 项跳过；类型检查、生产构建和真实 Chromium 回归通过。隔离官方 runtime 只读接口检查通过。安装包为 `artifacts/dsh-sidebar-0.1.0-task-features.vsix`；使用说明见 [TASK-FEATURES.md](TASK-FEATURES.md)，截图包括 `task-features.png`、`subagent-details.png` 和 `job-output.png`。
+
+上述前一轮包是本地代码维护结果，尚未在真实 VS Code 多窗口和远程集群里进行端到端验收，也没有发起付费模型请求。保留现有未提交改动；本轮没有升级 DSH、覆盖已安装插件或发布 Marketplace。
 
 ---
 

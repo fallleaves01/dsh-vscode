@@ -1,16 +1,21 @@
 import * as vscode from 'vscode'
 import { existingRuntimeUrl, type RuntimeTarget } from './runtime-target.js'
+import { runtimeIsOurs } from './runtime-change.js'
+import type { RuntimeOwnership } from './runtime.js'
 
 interface RuntimePickerHost {
   readonly cwd: string
-  readonly runtimeOwnership: 'external' | 'managed' | undefined
+  readonly runtimeOwnership: RuntimeOwnership | undefined
   assertCanSelectRuntime(): void
   selectRuntime(target: RuntimeTarget): Promise<void>
 }
 
 async function confirmSwitch(host: RuntimePickerHost): Promise<boolean> {
   host.assertCanSelectRuntime()
-  if (host.runtimeOwnership !== 'managed') return true
+  // A runtime that is not ours belongs to whoever started it, so switching away
+  // stops nothing. Ours is stopped by switching — which also releases every
+  // conversation it holds.
+  if (!runtimeIsOurs(host.runtimeOwnership)) return true
   return await vscode.window.showWarningMessage(
     'Switching runtimes will stop the extension-managed DSH process and its background jobs.',
     { modal: true }, 'Switch Runtime',

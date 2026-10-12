@@ -30,7 +30,12 @@ interface Stream {
   endpoint: string
   args: Record<string, unknown>
   item: (value: unknown) => void
-  fail: (error: Error) => void
+  /**
+   * `cause` tells the subscriber whether its own stream failed (`stream`) or
+   * whether the shared carrier took every stream down with it (`carrier`), so a
+   * stream-level failure can be reported without reporting the same failure twice.
+   */
+  fail: (error: Error, cause: 'stream' | 'carrier') => void
   /** An optional stream that a runtime may not serve; its failure must not tear down the feed. */
   optional: boolean
 }
@@ -46,7 +51,7 @@ export class DshStreams {
   open(endpoint: string, args: Record<string, unknown>, item: Stream['item'], fail: Stream['fail'],
     optional = false): () => void {
     if (this.closed) {
-      fail(new Error('The DSH event stream is closed. Reconnect the runtime.'))
+      fail(new Error('The DSH event stream is closed. Reconnect the runtime.'), 'carrier')
       return () => {}
     }
     const id = randomUUID()
@@ -83,8 +88,23 @@ export class DshStreams {
         const stream = this.streams.get(frame.streamId)
         // Cancellation can race an already queued server frame.
         if (stream === undefined) return
-        if (frame.type === 'item') stream.item(frame.value)
-        else if (frame.type === 'end' || frame.type === 'error') {
+        if (frame.type === 'item') {
+          // `optional` has to cover a handler that rejects its own frame, not only
+          // the server ending the stream: a conversation-scoped subscription must
+          // not take the runtime feed with it. Without this, one unexpected frame
+          // terminated the socket, failed every stream, and left the sidebar
+          // needing a manual reconnect that hit the same frame again.
+          try {
+            stream.item(frame.value)
+          } catch (error) {
+            if (!stream.optional) throw error
+            this.streams.delete(frame.streamId)
+            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'cancel', streamId: frame.streamId }))
+            stream.fail(error instanceof Error ? error : new Error(String(error)), 'stream')
+          }
+          return
+        }
+        if (frame.type === 'end' || frame.type === 'error') {
           this.streams.delete(frame.streamId)
           // Do not put arbitrary remote error text (or credentials) in logs; the
           // code is safe and is what the sidebar maps to its own sentence.
@@ -93,7 +113,7 @@ export class DshStreams {
             false,
             errorCodeOf(frame.error),
           )
-          stream.fail(error)
+          stream.fail(error, 'stream')
           // A runtime that does not serve an optional stream must not lose the feed.
           if (!stream.optional) this.abort(error)
         } else throw new Error('Unknown envelope')
@@ -120,7 +140,7 @@ export class DshStreams {
     const pending = [...this.streams.values()]
     this.streams.clear()
     this.socket?.terminate()
-    for (const stream of pending) stream.fail(error)
+    for (const stream of pending) stream.fail(error, 'carrier')
     if (report) this.failed(error)
   }
 }

@@ -7,7 +7,7 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-Bring DeepSeek Harness into the same place you write code. dsh-vscode gives DSH a Claude Code/Codex-style right sidebar that already understands your project, active file, and selected code.
+Bring DeepSeek Harness into the same place you write code. dsh-vscode gives DSH a Claude Code/Codex-style right sidebar with project context and explicit file and code selection.
 
 Ask DeepSeek to inspect, change, and verify code without switching between your editor, terminal, and a separate chat window.
 
@@ -29,7 +29,7 @@ Ask DeepSeek to inspect, change, and verify code without switching between your 
 
 - **Autonomous VS Code debugging.** Let DeepSeek launch the current project from `.vscode/launch.json`, manage breakpoints, step through execution, and inspect stack frames and local variables using VS Code's native debugger.
 - **Official DSH inside VS Code.** Sessions, streaming responses, tool calls, approvals, and follow-up questions run through the official DSH runtime.
-- **Project-aware editor context.** The active file, selected code, and `@file` or `@folder` references travel with your prompt.
+- **Choose your file context.** Click `+` to search and add project files or folders; remove references with `×`. The current editor and selected lines are optional suggestions, never automatically attached. Typed `@file`/`@folder` references and **Add Selection to Chat** remain available.
 - **Session controls where you need them.** Switch Permission and Plan modes, choose Model and Reasoning Effort, or steer an active task.
 - **Native review and safe revert.** Review changes in VS Code's Diff Editor, Keep or Revert edits, and stop DSH before it overwrites a file with unsaved changes.
 - **Sign in with your DeepSeek account.** Start browser sign-in from the sidebar, see your profile and balance, and sign out again — no API key needed. Works on a remote host too, by forwarding the runtime's port.

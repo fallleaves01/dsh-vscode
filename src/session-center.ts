@@ -1,4 +1,5 @@
 import type { SessionSummary } from './dsh-client.js'
+import { usageMeterStateOf } from './usage-meter.js'
 
 export interface SessionAttention { approvals: number; questions: number }
 
@@ -8,8 +9,18 @@ export interface SubagentIdentity {
   label?: string
 }
 
+export interface SubagentActivity {
+  status: 'running' | 'completed' | 'idle'
+  elapsedMs?: number
+  activeSince?: number
+  /** Last event at the same projection cut; bounds an interrupted open turn. */
+  activeThrough?: number
+  totalTokens?: number
+}
+
 export interface SessionItem {
   id: string
+  agentAvailable?: boolean
   title: string
   updatedAt: number
   running: boolean
@@ -20,8 +31,26 @@ export interface SessionItem {
   parentId?: string
   /** Present on subagent rows; a `one-shot` child is finished work, not a chat. */
   subagent?: SubagentIdentity
+  activity?: SubagentActivity
   /** Direct subagent children this row can reveal. */
   childCount: number
+}
+
+export function subagentActivityOf(summary: SessionSummary): SubagentActivity {
+  const values = summary.projections?.values
+  const timing = recordOf(values?.subagentTiming)
+  const nonnegative = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
+  const active = recordOf(timing?.active)
+  const hasActive = nonnegative(active?.since) && nonnegative(active?.through) && active.through >= active.since
+  const usage = usageMeterStateOf(values).tokenUsage
+  const totalTokens = usage === undefined ? undefined
+    : usage.uncachedInputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens
+  return {
+    status: summary.running ? 'running' : timing?.lastTurnCompleted === true ? 'completed' : 'idle',
+    ...(nonnegative(timing?.settledMs) ? { elapsedMs: timing.settledMs } : {}),
+    ...(hasActive ? { activeSince: active.since as number, activeThrough: active.through as number } : {}),
+    ...(totalTokens !== undefined && Number.isFinite(totalTokens) ? { totalTokens } : {}),
+  }
 }
 
 export function sessionTitle(summary: SessionSummary): string {
@@ -133,6 +162,7 @@ function toSessionItem(
   const waiting = attention.get(summary.sessionId)
   return {
     id: summary.sessionId,
+    ...(summary.agentAvailable === undefined ? {} : { agentAvailable: summary.agentAvailable }),
     title: sessionTitle(summary),
     updatedAt: summary.updatedAt,
     running: summary.running,
@@ -141,6 +171,7 @@ function toSessionItem(
     childCount,
     ...(parentId === undefined ? {} : { parentId }),
     ...(subagent === undefined ? {} : { subagent }),
+    ...(parentId === undefined ? {} : { activity: subagentActivityOf(summary) }),
     ...(waiting === undefined ? {} : { attention: waiting }),
   }
 }

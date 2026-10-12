@@ -43,10 +43,13 @@ function testClient() {
     onFrame: vi.fn((callback: (frame: DshFrame) => void) => { listeners.add(callback); return () => listeners.delete(callback) }),
     onError: vi.fn((callback: (error: Error) => void) => { errors.add(callback); return () => errors.delete(callback) }),
     startStreams: vi.fn(async () => {}), dispose: vi.fn(), handledSessionIds: [] as string[], respond: vi.fn(async () => ({ accepted: true })),
+    monitorJobs: vi.fn(), goal: vi.fn(async () => null), schedules: vi.fn(async () => []), searchHistory: vi.fn(async () => ({ items: [], hasMore: false })),
+    scheduleHistory: vi.fn(), changeGoal: vi.fn(), pendingRequests: vi.fn(() => []),
     listWorkspaces: vi.fn(async () => ({ archivedSessionIds: [] })),
     listSessions: vi.fn(async () => ({ items: ['a', 'b'].map(sessionId => ({ sessionId, cwd: '/workspace', updatedAt: 1,
-      blank: true, running: false, agentPreset: 'standard', projections: { values: { ...projections } } })) })),
+      blank: true, running: false, agentAvailable: true, agentPreset: 'standard', projections: { values: { ...projections } } })) })),
     openSession: vi.fn(async () => ({ events: [], hasMore: false, projections: { ...projections }, isCurrent: () => true, activate() {} })),
+    createSession: vi.fn(async () => ({ sessionId: 'created' })),
     models: vi.fn(async () => models()), currentModels: vi.fn(() => models()),
     listCommands: vi.fn(async () => [{ name: 'plan', description: 'Plan' }]),
     listSkills: vi.fn(async (): Promise<SkillDescriptor[]> => []),
@@ -87,7 +90,15 @@ async function harness(connection?: DshConnection) {
   const { client, emit, fail } = testClient()
   mocks.client = client
   const output = { appendLine: vi.fn() }
-  const runtime = { start: vi.fn(async () => {}), stop: vi.fn(async () => {}), connection: connection ?? { canReauthenticate: true, reauthenticate: vi.fn(async () => {}) }, state: { kind: 'ready' } }
+  const runtime = {
+    start: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+    connection: connection ?? { canReauthenticate: true, reauthenticate: vi.fn(async () => {}) },
+    state: { kind: 'ready' },
+    // Selecting an external runtime offers to save it; these tests never reach the
+    // prompt because the double reports nothing worth remembering.
+    externalRuntimeUrlToRemember: () => undefined,
+    rememberExternalRuntime: vi.fn(async () => true),
+  }
   const reviews = { clear: vi.fn(), rebuild: vi.fn(() => []), accept: () => false, dispose() {} }
   const controller = new DshChatController(runtime as any,
     output as any, {} as any, reviews as any,
@@ -229,10 +240,20 @@ describe('diagnostics and notices', () => {
 })
 
 describe('sending in a subagent conversation', () => {
+  it.each(['one-shot', 'unknown'])('rejects follow-ups to a %s child before calling the runtime', async mode => {
+    const h = await harness()
+    h.emit({ type: 'host/session-added', sessionId: 'child', cwd: '/workspace', origin: 'subagent', parentSessionId: 'a' })
+    await h.controller.selectSession('child')
+    h.emit({ type: 'session/projection', sessionId: 'child', key: 'subagent', value: { mode, label: 'Research', seq: 1 } }, 'mux')
+    h.client.prompt.mockClear()
+    await expect(h.controller.send('continue please')).rejects.toThrow('read-only')
+    expect(h.client.prompt).not.toHaveBeenCalled()
+  })
   it('delivers the message through the owning conversation', async () => {
     const h = await harness()
     h.emit({ type: 'host/session-added', sessionId: 'child', cwd: '/workspace', origin: 'subagent', parentSessionId: 'a' })
     await h.controller.selectSession('child')
+    h.emit({ type: 'session/projection', sessionId: 'child', key: 'subagent', value: { mode: 'continuable', label: 'Research', seq: 1 } }, 'mux')
     h.client.prompt.mockClear()
     await h.controller.send('continue please')
     // session/prompt is refused for a session owned by subagent routing.
@@ -244,6 +265,21 @@ describe('sending in a subagent conversation', () => {
     h.client.prompt.mockClear()
     await h.controller.send('hello')
     expect(h.client.prompt).toHaveBeenCalledWith('a', 'hello', [], 'queue', undefined)
+  })
+})
+
+describe('task projection state', () => {
+  it('updates child activity and resets todo steps when navigating to its conversation', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/projection', sessionId: 'a', key: 'todos', value: [{ content: 'Inspect', status: 'in_progress' }] }, 'mux')
+    expect(h.controller.state.todos).toEqual([{ content: 'Inspect', status: 'in_progress' }])
+    h.emit({ type: 'host/session-added', sessionId: 'child', cwd: '/workspace', origin: 'subagent', parentSessionId: 'a', blank: false })
+    h.emit({ type: 'session/projection', sessionId: 'child', key: 'subagentTiming', value: { settledMs: 65000, lastTurnCompleted: true } }, 'mux')
+    expect(h.controller.state.sessions.find(item => item.id === 'child')?.activity).toMatchObject({ elapsedMs: 65000, status: 'completed' })
+    await h.controller.selectSession('child')
+    expect(h.controller.state.todos).toEqual([])
+    h.emit({ type: 'session/projection', sessionId: 'a', key: 'todos', value: [{ content: 'Parent only', status: 'pending' }] }, 'mux')
+    expect(h.controller.state.todos).toEqual([])
   })
 })
 
@@ -658,6 +694,21 @@ describe('starting again', () => {
     // list is reloaded from scratch, and the selection has to survive it.
     await h.controller.start()
     expect(h.controller.state.sessionId).toBe('b')
+  })
+
+  it('leaves a failed restart on a screen that can try again', async () => {
+    const h = await harness()
+    await h.controller.selectSession('b')
+    h.runtime.stop.mockRejectedValueOnce(new Error('the runtime would not stop'))
+
+    await expect(h.controller.restart()).rejects.toThrow('the runtime would not stop')
+
+    // Loading offers the user nothing to click, so a restart that cannot even
+    // stop used to be a dead screen: no conversation, no composer, no retry.
+    expect(h.controller.state.phase).toBe('error')
+    expect(h.controller.state.statusText).toBe('Could not restart DeepSeek Harness: the runtime would not stop')
+    expect(h.controller.state.setup).toBeNull()
+    expect(h.controller.state.running).toBe(false)
   })
 })
 
@@ -1134,6 +1185,20 @@ describe('sidebar discovery notifications', () => {
     expect(h.client.updateQueue).toHaveBeenCalledExactlyOnceWith('b', 'same-row', { kind: 'remove' })
   })
 
+  it('switches conversations while a load that never finishes is still in flight', async () => {
+    const h = await harness()
+    const stuck = Promise.withResolvers<any>()
+    h.client.openSession.mockReturnValueOnce(stuck.promise)
+    void h.controller.selectSession('a')
+    await vi.waitFor(() => expect(h.controller.state.phase).toBe('loading'))
+    // That conversation is not going to open. The list is the way out of it, so
+    // the second click must supersede the load instead of being refused for the
+    // phase it left behind.
+    await h.controller.selectSession('b')
+    expect(h.controller.state).toMatchObject({ phase: 'ready', sessionId: 'b' })
+    stuck.resolve({ events: [], hasMore: false, projections: {}, isCurrent: () => true, activate() {} })
+  })
+
   it('accepts the new command attachment capability without enabling attachments on other commands', async () => {
     const h = await harness()
     const image = { type: 'image' as const, mediaType: 'image/png' as const, data: 'YWJj' }
@@ -1438,5 +1503,252 @@ describe('the running-turn clock', () => {
     await h.controller.selectSession('b')
     h.emit({ type: 'host/session-status', sessionId: 'b', running: true })
     expect(h.controller.state.turnStartedAt).toBe(5_060_000)
+  })
+})
+
+describe('state that may not outlive its conversation or its connection', () => {
+  it('stops showing the previous conversation’s turn when the next one will not open', async () => {
+    const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    expect(h.controller.state.running).toBe(true)
+
+    h.client.openSession.mockRejectedValueOnce(new Error('session "b" not found'))
+    await expect(h.controller.selectSession('b')).rejects.toThrow()
+    expect(h.controller.state.phase).toBe('error')
+    expect(h.controller.state.sessionId).toBe('b')
+    // The state names 'b' now, so its running flags must describe 'b' — the clock
+    // and the Stop button used to belong to the conversation it left.
+    expect(h.controller.state.running).toBe(false)
+    expect(h.controller.state.turnStartedAt).toBe(0)
+  })
+
+  it('releases a running turn when the event stream is lost', async () => {
+    const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    h.fail(new DshStreamError('Invalid stream frame'))
+    expect(h.controller.state.phase).toBe('error')
+    expect(h.controller.state.running).toBe(false)
+    // Nothing is observable, so an unfinished task must not keep blocking a
+    // project or runtime switch until a reconnect happens to succeed.
+    expect(h.controller.hasRunningTasks).toBe(false)
+  })
+
+  it('marks the conversation the failure came from, not the one on screen', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    expect(h.controller.state.sessionId).toBe('a')
+    const held = new DshConnectionError('gateway/internal', 'session "b" is already owned by an active write handle')
+
+    h.controller.report(held, 'b')
+    // 'a' is writable: marking it here disabled a composer the user could use.
+    expect(h.controller.state.occupancyNotice).toBeNull()
+
+    h.controller.report(held, 'a')
+    expect(h.controller.state.occupancyNotice).toContain('already in use')
+  })
+
+  it('logs a failed ratings read instead of rejecting into nothing', async () => {
+    const h = await harness()
+    h.client.messageFeedback.mockRejectedValueOnce(new DshConnectionError('transport-error', 'socket closed'))
+    await h.controller.selectSession('a')
+    await vi.waitFor(() => expect(h.output.appendLine).toHaveBeenCalledWith(expect.stringContaining('[feedback]')))
+  })
+
+  it('reports a rating the runtime refuses, and does not reject the click', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    h.client.putMessageFeedback.mockRejectedValueOnce(new DshConnectionError('transport-error', 'socket closed'))
+    await expect(h.controller.submitFeedback('a', 'm1', 'positive')).resolves.toBeUndefined()
+    expect(h.output.appendLine).toHaveBeenCalledWith(expect.stringContaining('[chat]'))
+  })
+
+  it('opens the conversation it created even when another load started in the meantime', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    const create = Promise.withResolvers<{ sessionId: string }>()
+    h.client.createSession.mockReturnValueOnce(create.promise)
+    const creating = h.controller.newSession()
+    await vi.waitFor(() => expect(h.client.createSession).toHaveBeenCalled())
+
+    // A background list refresh (or a click) starts a load while the create is in
+    // flight. A conversation with no messages earns no row of its own, so dropping
+    // it left the user's click as a no-op and the conversation unreachable.
+    const stuck = Promise.withResolvers<any>()
+    h.client.openSession.mockReturnValueOnce(stuck.promise)
+    void h.controller.selectSession('b')
+    await vi.waitFor(() => expect(h.controller.state.phase).toBe('loading'))
+
+    create.resolve({ sessionId: 'fresh' })
+    await creating
+    expect(h.controller.state.sessionId).toBe('fresh')
+    expect(h.controller.state.phase).toBe('ready')
+    stuck.resolve({ events: [], hasMore: false, projections: {}, isCurrent: () => true, activate() {} })
+  })
+})
+
+describe('a command sent while a turn is running', () => {
+  /** A conversation whose catalog offers /compact, the command that cannot run busy. */
+  async function withCompact() {
+    const h = await harness()
+    h.client.listCommands.mockResolvedValue([{ name: 'compact', description: 'Compact older conversation history' }])
+    await h.controller.selectSession('a')
+    await vi.waitFor(() => expect(h.controller.state.commands.map(command => command.name)).toContain('compact'))
+    return h
+  }
+
+  it('waits for the turn to finish, then runs it', async () => {
+    const h = await withCompact()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.send('/compact', [], undefined, 'queue')
+
+    // DSH executes a command immediately and `/compact` refuses while the agent is
+    // busy, so running it here was a failed command node instead of a compaction.
+    expect(h.client.executeCommand).not.toHaveBeenCalled()
+    expect(h.controller.state.queuedCommands).toHaveLength(1)
+    expect(h.controller.state.queuedCommands[0]).toMatchObject({ text: '/compact', preview: '/compact' })
+
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: false })
+    await vi.waitFor(() => expect(h.client.executeCommand).toHaveBeenCalledWith('a', '/compact', undefined))
+    expect(h.controller.state.queuedCommands).toEqual([])
+  })
+
+  it('runs immediately when the conversation is idle', async () => {
+    const h = await withCompact()
+    await h.controller.send('/compact')
+    expect(h.client.executeCommand).toHaveBeenCalledWith('a', '/compact', undefined)
+    expect(h.controller.state.queuedCommands).toEqual([])
+  })
+
+  it('runs immediately when the send asked to steer', async () => {
+    const h = await withCompact()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.send('/compact', [], undefined, 'steer')
+    expect(h.client.executeCommand).toHaveBeenCalledWith('a', '/compact', undefined)
+    expect(h.controller.state.queuedCommands).toEqual([])
+  })
+
+  it('waits for a queued message to have its turn first', async () => {
+    const h = await withCompact()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    h.emit({ type: 'session/queue', sessionId: 'a', items: [{ id: 'q1', placement: 'queued', message: { content: [{ type: 'text', text: 'later' }] } }] }, 'mux')
+    await h.controller.send('/compact', [], undefined, 'queue')
+    expect(h.controller.state.queuedCommands).toHaveLength(1)
+
+    // That queued message starts the next turn: the held command must not cut in.
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: false })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(h.client.executeCommand).not.toHaveBeenCalled()
+
+    // Its turn ends, and now the command runs.
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    h.emit({ type: 'session/queue', sessionId: 'a', items: [] }, 'mux')
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: false })
+    await vi.waitFor(() => expect(h.client.executeCommand).toHaveBeenCalledWith('a', '/compact', undefined))
+  })
+
+  it('runs a held command now, or drops it, from the dock', async () => {
+    const h = await withCompact()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.send('/compact', [], undefined, 'queue')
+    const held = h.controller.state.queuedCommands[0]!
+
+    await h.controller.runQueuedCommand('a', held.id)
+    expect(h.client.executeCommand).toHaveBeenCalledWith('a', '/compact', undefined)
+    expect(h.controller.state.queuedCommands).toEqual([])
+
+    await h.controller.send('/compact', [], undefined, 'queue')
+    const again = h.controller.state.queuedCommands[0]!
+    h.controller.removeQueuedCommand('a', again.id)
+    expect(h.controller.state.queuedCommands).toEqual([])
+    expect(h.client.executeCommand).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['idle', 'manual'])('preserves image attachments in a command queued until %s execution', async execution => {
+    const h = await harness()
+    h.client.listCommands.mockResolvedValue([{ name: 'inspect', description: '', input: { images: true } }] as any)
+    await h.controller.selectSession('a')
+    const images = [{ type: 'image' as const, mediaType: 'image/png', data: 'aW1hZ2U=' }]
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.send('/inspect', images, undefined, 'queue')
+    if (execution === 'manual') await h.controller.runQueuedCommand('a', h.controller.state.queuedCommands[0]!.id)
+    else h.emit({ type: 'host/session-status', sessionId: 'a', running: false })
+    await vi.waitFor(() => expect(h.client.executeCommand).toHaveBeenCalledWith('a', '/inspect', images))
+  })
+
+  it('keeps command arguments out of queue lifecycle logs', async () => {
+    const h = await withCompact()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.send('/compact private draft text', [], undefined, 'queue')
+    expect(h.output.appendLine.mock.calls.flat().join('\n')).not.toContain('private draft text')
+  })
+
+  it('executes queued commands serially when idle notifications overlap', async () => {
+    const h = await withCompact()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.send('/compact first', [], undefined, 'queue')
+    await h.controller.send('/compact second', [], undefined, 'queue')
+    const first = Promise.withResolvers<any>()
+    h.client.executeCommand.mockReturnValueOnce(first.promise)
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: false })
+    await vi.waitFor(() => expect(h.client.executeCommand).toHaveBeenCalledTimes(1))
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: false })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(h.client.executeCommand).toHaveBeenCalledTimes(1)
+    first.resolve({ result: { kind: 'success' } })
+    await vi.waitFor(() => expect(h.client.executeCommand).toHaveBeenCalledTimes(2))
+    expect(h.client.executeCommand.mock.calls.map(call => call[1])).toEqual(['/compact first', '/compact second'])
+  })
+
+  it('removing a prior conversation command does not replace the visible queue', async () => {
+    const h = await withCompact()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.send('/compact', [], undefined, 'queue')
+    const held = h.controller.state.queuedCommands[0]!
+    await h.controller.selectSession('b')
+    h.emit({ type: 'host/session-status', sessionId: 'b', running: true })
+    await h.controller.send('/compact other', [], undefined, 'queue')
+    h.controller.removeQueuedCommand('a', held.id)
+    expect(h.controller.state.queuedCommands).toEqual([expect.objectContaining({ text: '/compact other' })])
+  })
+})
+
+describe('parallel child actions and authoritative parent availability', () => {
+  async function childHarness() {
+    const h = await harness()
+    h.emit({ type: 'host/session-added', sessionId: 'child', cwd: '/workspace', origin: 'subagent', parentSessionId: 'a', updatedAt: 1, blank: false, running: true })
+    h.emit({ type: 'session/projection', sessionId: 'child', key: 'subagent', value: { mode: 'continuable', label: 'Audit', seq: 1 } }, 'mux')
+    return h
+  }
+  it('sends to a child while the main conversation is loading without changing selection', async () => {
+    const h = await childHarness(); h.controller.publish({ phase: 'loading' })
+    await h.controller.sendToChild('child', 'Check more', 'steer')
+    expect(h.client.prompt).toHaveBeenCalledWith('child', 'Check more', [], 'steer', 'a')
+    expect(h.controller.state.sessionId).toBe('a')
+  })
+  it('blocks a child whose parent has been disposed but keeps Stop available', async () => {
+    const h = await childHarness(); h.emit({ type: 'host/session-removed', sessionId: 'a' })
+    await expect(h.controller.sendToChild('child', 'Continue')).rejects.toThrow('owning agent is unavailable')
+    await h.controller.stopChild('child')
+    expect(h.client.interruptSubagent).toHaveBeenCalledWith('child', 'a')
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: false })
+    expect(h.controller.childReadOnlyReason('child')).toBeNull()
+    await h.controller.sendToChild('child', 'Now continue')
+    expect(h.client.prompt).toHaveBeenCalledWith('child', 'Now continue', [], 'queue', 'a')
+  })
+  it('validates child approval identity and exact question answers before responding', async () => {
+    const h = await childHarness()
+    h.client.pendingRequests.mockReturnValue([{ rpcId: 'q', event: 'user-questions/request', request: { questions: [{ id: 'one' }, { id: 'two' }] } }] as any)
+    await expect(h.controller.answerTaskRequest('child', 'other', { answers: [] })).rejects.toThrow('no longer pending')
+    await expect(h.controller.answerTaskRequest('child', 'q', { answers: [{ id: 'one', selected: [] }, { id: 'one', selected: [] }] })).rejects.toThrow('exactly one')
+    await h.controller.answerTaskRequest('child', 'q', { answers: [{ id: 'one', selected: ['A'] }, { id: 'two', selected: [], custom: 'B' }] })
+    expect(h.client.respond).toHaveBeenCalledWith('q', { sessionId: 'child', answer: { answers: [{ id: 'one', selected: ['A'] }, { id: 'two', selected: [], custom: 'B' }] } })
+  })
+  it('retains workflow member outcomes from durable conversation records', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/event', sessionId: 'a', event: { seq: 1, time: 1, type: 'tool-workflow/run-start', data: { runId: 'w', name: 'Audit' } } }, 'mux')
+    h.emit({ type: 'session/event', sessionId: 'a', event: { seq: 2, time: 2, type: 'tool-workflow/agent-start', data: { runId: 'w', seq: 1, childId: 'c', label: 'Verify', phase: 'Testing' } } }, 'mux')
+    h.emit({ type: 'session/event', sessionId: 'a', event: { seq: 3, time: 3, type: 'tool-workflow/agent-end', data: { runId: 'w', seq: 1, outcome: 'success' } } }, 'mux')
+    expect(h.controller.state.workflows[0]?.members[0]?.outcome).toBe('success')
   })
 })

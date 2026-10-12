@@ -1,9 +1,39 @@
 import * as vscode from 'vscode'
+import type { RuntimeOwnership } from './runtime.js'
+
+/**
+ * Whether this window owns the runtime process and its configuration.
+ *
+ * The one question every consumer actually asks — plugin installs, settings
+ * writes, credential writes and restarts all hinge on it. `attached` (the user's
+ * own runtime, remembered) and `external` (a launch URL used for this window only)
+ * are both *not ours*: nothing may be installed into them, written to them, or
+ * restarted on them. Keeping this in one place is what stops the union from having
+ * to be re-derived at each call site.
+ */
+export function runtimeIsOurs(ownership: RuntimeOwnership | undefined): boolean {
+  return ownership === 'managed' || ownership === 'adopted'
+}
+
+/**
+ * Whether the connected runtime belongs to someone else.
+ *
+ * `attached` and `external` both do: this extension may not install into them,
+ * write settings or credentials to them, or restart them.
+ *
+ * `undefined` means **not connected**, which is not the same thing — a window that
+ * has not connected yet still owns its own startup, its own credentials and its own
+ * profile. Keeping this separate from a plain negated {@link runtimeIsOurs} is what
+ * makes that distinction impossible to get wrong at a call site.
+ */
+export function runtimeIsNotOurs(ownership: RuntimeOwnership | undefined): boolean {
+  return ownership !== undefined && !runtimeIsOurs(ownership)
+}
 
 export interface RuntimeChangeController {
   readonly cwd: string
   readonly isDisposed: boolean
-  readonly runtimeOwnership: 'external' | 'managed' | undefined
+  readonly runtimeOwnership: RuntimeOwnership | undefined
   readonly runtimeIdentity: object | undefined
   readonly hasRunningTasks: boolean
   readonly state: { phase: 'loading' | 'ready' | 'error'; statusText: string }
@@ -37,8 +67,10 @@ export async function restartAfterRuntimeChange(
     await vscode.window.showWarningMessage(`${successMessage}. The runtime connection changed; no runtime was restarted. Restart the intended runtime when ready to apply the change.`)
     return
   }
-  if (controller.runtimeOwnership === 'external') {
-    await vscode.window.showWarningMessage(`${successMessage}. Restart the external DeepSeek Harness process to apply this change, then reconnect from VS Code.`)
+  if (runtimeIsNotOurs(controller.runtimeOwnership)) {
+    // Neither a URL used for this window alone nor the user's remembered runtime is
+    // this extension's to restart: only its owner can apply the change.
+    await vscode.window.showWarningMessage(`${successMessage}. Restart that DeepSeek Harness process yourself to apply this change, then reconnect from VS Code.`)
     return
   }
   if (controller.hasRunningTasks) {

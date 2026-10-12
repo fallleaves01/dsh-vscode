@@ -57,14 +57,15 @@ vi.mock('node:child_process', async () => {
 })
 
 vi.mock('../src/process-tree.ts', () => ({
-  terminateProcessTree: (child: ChildProcessWithoutNullStreams) => {
+  terminateProcessTree: vi.fn((child: ChildProcessWithoutNullStreams) => {
     child.emit('exit', 0)
     child.emit('close', 0)
     return true
-  },
+  }),
 }))
 
 import { DshRuntime, describeLaunchFailure } from '../src/runtime.ts'
+import { terminateProcessTree } from '../src/process-tree.js'
 import type { RuntimeLaunchContributor } from '../src/runtime-launch.js'
 
 const runtimes: DshRuntime[] = []
@@ -101,6 +102,7 @@ beforeEach(() => {
 afterEach(async () => {
   await Promise.all(runtimes.splice(0).map(instance => instance.stop()))
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
 })
 
 describe('launch failure diagnosis', () => {
@@ -279,6 +281,31 @@ describe('authenticated runtime startup', () => {
     expect(logs.join('\n')).not.toContain('token=secret')
   })
 
+  it.each(['stored', 'environment'])('redacts the %s API key even when runtime output echoes it without a label', async source => {
+    const { instance, logs, readSecret } = runtime()
+    if (source === 'stored') readSecret.mockResolvedValue('test-stored-credential' as never)
+    else vi.stubEnv('DEEPSEEK_API_KEY', 'test-stored-credential')
+    const pending = instance.start()
+    await vi.waitFor(() => { expect(state.children).toHaveLength(1) })
+    const child = state.children[0]!
+    child.stderr.emit('data', 'provider echoed test-stored-credential\n')
+    child.stdout.emit('data', 'dsh web: http://127.0.0.1:43127/?token=secret\n')
+    await pending
+    expect(logs.join('\n')).not.toContain('test-stored-credential')
+    expect(logs.join('\n')).toContain('provider echoed [redacted]')
+  })
+
+  it('does not publish or reject a launch failure containing the stored API key', async () => {
+    const { instance, readSecret } = runtime()
+    readSecret.mockResolvedValue('test-stored-credential' as never)
+    const pending = instance.start()
+    const rejection = expect(pending).rejects.toThrow('failed for [redacted]')
+    await vi.waitFor(() => { expect(state.children).toHaveLength(1) })
+    state.children[0]!.emit('error', new Error('failed for test-stored-credential'))
+    await rejection
+    expect(JSON.stringify(instance.state)).not.toContain('test-stored-credential')
+  })
+
   it('rejects older DSH before spawning its web process', async () => {
     state.version = '0.1.1-rc.2'
     const { instance } = runtime()
@@ -349,6 +376,50 @@ describe('authenticated runtime startup', () => {
     await instance.stop()
     await checked
     expect(state.children).toEqual([])
+  })
+
+  it('settles a stop whose own process cannot be signalled', async () => {
+    const { instance, logs } = runtime()
+    const starting = instance.start()
+    await vi.waitFor(() => { expect(state.children).toHaveLength(1) })
+    state.children[0]!.stdout.emit('data', 'dsh web: http://127.0.0.1:43127/?token=secret\n')
+    await starting
+
+    // A platform that refuses the signal must not leave the stop pending: the
+    // next restart awaits the same task, so one throw would wedge the sidebar.
+    vi.mocked(terminateProcessTree).mockImplementationOnce(() => { throw new Error('EPERM: not permitted') })
+    await expect(instance.stop()).rejects.toThrow('EPERM: not permitted')
+    expect(instance.state).toMatchObject({ kind: 'failed' })
+    expect(logs.join('\n')).toContain('EPERM: not permitted')
+    expect(state.children).toHaveLength(1)
+    // Retrying uses the original handle, rather than abandoning the process.
+    await instance.stop()
+    expect(terminateProcessTree).toHaveBeenLastCalledWith(state.children[0], 'SIGTERM')
+    expect(instance.state).toMatchObject({ kind: 'stopped' })
+  })
+
+  it.each(['refused', 'no-exit'])('cancels restart when force termination is %s', async outcome => {
+    const { instance } = runtime()
+    const starting = instance.start()
+    await vi.waitFor(() => expect(state.children).toHaveLength(1))
+    state.children[0]!.stdout.emit('data', 'dsh web: http://127.0.0.1:43127/?token=secret\n')
+    await starting
+    vi.useFakeTimers()
+    try {
+      vi.mocked(terminateProcessTree).mockImplementationOnce(() => true).mockImplementationOnce(() => {
+        if (outcome === 'refused') throw new Error('EPERM: force kill refused')
+        return true // Signal delivery alone does not prove process exit.
+      })
+      const restart = instance.restart()
+      const rejected = expect(restart).rejects.toThrow(outcome === 'refused' ? 'EPERM' : 'did not exit')
+      await vi.advanceTimersByTimeAsync(5_000)
+      await rejected
+      expect(instance.state).toMatchObject({ kind: 'failed' })
+      expect(state.children).toHaveLength(1)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('preserves a startup timeout and ignores a late launch URL', async () => {

@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
+import {
+  RuntimeBroker,
+  describeDescriptor,
+  describeLockHolders,
+  sessionLockPaths,
+} from './runtime-broker.js'
+import { endRecordedRuntime, inspectRecordedRuntime } from './runtime-recovery.js'
+import { resolveDshHome } from './plugin-profile.js'
 import type { TurnTokenUsage } from './token-usage.js'
 import { DshConnectionError } from './dsh-connection.js'
 import type { MessageFeedbackItem, MessageFeedbackRating } from './dsh-client.js'
@@ -25,6 +33,7 @@ import {
 import { configureApiKey, clearApiKey, watchDebugConfiguration } from './runtime-configuration.js'
 import { DiffReviewManager, type ChangedFileGroup } from './diff-review.js'
 import { DebugRuntimeContribution } from './debug-runtime-contribution.js'
+import { TaskRuntimeContribution } from './task-runtime-contribution.js'
 import { DebugSessionManager } from './debug-session-manager.js'
 import { redactDshSecrets } from './runtime-output.js'
 import { DirtyFileGuard } from './dirty-file-guard.js'
@@ -46,7 +55,7 @@ import {
   type SessionSummary,
   type SkillDescriptor,
 } from './dsh-client.js'
-import { replaceTextPreservingIdeContext, withIdeContext, type IdeContextReference, type IdeContextSnapshot } from './ide-context.js'
+import { replaceTextPreservingIdeContext, withIdeContext, type IdeContextReference, type IdeContextSnapshot, type IdeMentionCandidate } from './ide-context.js'
 import {
   imageLimitsOf,
   rejectImageAttachments,
@@ -54,7 +63,11 @@ import {
   type ImageCandidate,
 } from './image-limits.js'
 import { jobsSnapshotOf, type JobItem } from './jobs.js'
-import { queueSnapshotOf, type QueueItemState } from './queue.js'
+import { todosOf, type TodoItem } from './task-state.js'
+import { TaskFeatureController, type TaskFeatureState, type GoalAction } from './task-feature-controller.js'
+import { emptyGoalState, emptyScheduleState, emptySearchState, workflowsOf, type WorkflowRun } from './task-features.js'
+import { TaskPanelManager } from './task-panels.js'
+import { queueSnapshotOf, type QueuedCommandItem, type QueueItemState } from './queue.js'
 import type { AssistantStreamUpdate } from './dsh-assistant-stream.js'
 import { DshRuntime, type RuntimeOwnership, type RuntimeState } from './runtime.js'
 import { toolWriteIntents } from './tool-write-guard.js'
@@ -73,7 +86,7 @@ import {
   messagesPatchForWebview,
   type ConversationMessagesPatch,
 } from './chat-state-patch.js'
-import { archivedSessionItems, parentIdOf, sessionItems, type SessionItem, type SessionAttention } from './session-center.js'
+import { archivedSessionItems, parentIdOf, sessionItems, sessionTitle, type SessionItem, type SessionAttention } from './session-center.js'
 import {
   accountAttemptActive,
   accountAttemptFailed,
@@ -83,7 +96,14 @@ import {
   unavailableAccountState,
   type AccountState,
 } from './account.js'
-import { dshErrorText, dshFailure, NO_ROUTABLE_PROVIDER_TEXT, SELECTED_MODEL_UNAVAILABLE_TEXT } from './dsh-errors.js'
+import {
+  CONVERSATION_HELD_TEXT,
+  dshErrorText,
+  dshFailure,
+  isConversationHeld,
+  NO_ROUTABLE_PROVIDER_TEXT,
+  SELECTED_MODEL_UNAVAILABLE_TEXT,
+} from './dsh-errors.js'
 import { wireRecord } from './dsh-streams.js'
 import type { DshConnection } from './dsh-connection.js'
 import { canRetryConnection, reconnectAttempts } from './dsh-reconnect.js'
@@ -157,7 +177,7 @@ interface WorkspacePick extends vscode.QuickPickItem {
   uri?: vscode.Uri
 }
 
-interface ChatViewState {
+export interface ChatViewState extends TaskFeatureState {
   phase: 'loading' | 'ready' | 'error'
   statusText: string
   setup: SetupKind
@@ -172,6 +192,7 @@ interface ChatViewState {
    * undefined properties, so an absent key could never clear a stale owner.
    */
   parentSessionId: string | null
+  todos: TodoItem[]
   /** DeepSeek account sign-in state for this runtime; carries no credential. */
   account: AccountState
   /** One human line for the account row, derived from {@link account}. */
@@ -180,6 +201,15 @@ interface ChatViewState {
   accountFailed: boolean
   /** Why the composer is unavailable, when no model can serve a request. */
   routableNotice: string | null
+  /**
+   * Set while another DSH process owns this conversation.
+   *
+   * A single-writer conversation that is held elsewhere is a normal state, not a
+   * fault: the history is readable and the composer is not. Keeping it in state
+   * (rather than as a transcript notice) is what lets the sidebar say so once,
+   * offer a way out, and stop repeating it on every open.
+   */
+  occupancyNotice: string | null
   /** A stop was admitted and the turn has not ended yet. */
   stopping: boolean
   sessionId: string
@@ -220,7 +250,20 @@ interface ChatViewState {
   plan: PlanModeState
   changedFiles: ChangedFileGroup[]
   queue: QueueItemState[]
+  /**
+   * Slash commands this window is holding until the conversation is idle.
+   *
+   * Not the runtime's inbox: DSH executes a command immediately and has no way to
+   * queue one, and `/compact` refuses outright while an agent is busy. Sending one
+   * with Enter therefore holds it here, where the queue dock can show it, delete
+   * it, or run it now.
+   */
+  queuedCommands: QueuedCommandItem[]
   jobs: JobItem[]
+  projectJobs: Array<JobItem & { sessionId: string; sessionTitle: string }>
+  jobsStatus: string | null
+  childReadOnlyReason: string | null
+  workflows: WorkflowRun[]
   hasMoreHistory: boolean
   loadingHistory: boolean
 }
@@ -266,10 +309,12 @@ function initialState(cwd: string): ChatViewState {
     sessions: [],
     archivedSessions: [],
     parentSessionId: null,
+    todos: [],
     account: unavailableAccountState(),
     accountNotice: null,
     accountFailed: false,
     routableNotice: null,
+    occupancyNotice: null,
     stopping: false,
     sessionId: '',
     messages: [],
@@ -292,7 +337,10 @@ function initialState(cwd: string): ChatViewState {
     plan: planModeStateOf(undefined),
     changedFiles: [],
     queue: [],
+    queuedCommands: [],
     jobs: [],
+    projectJobs: [], jobsStatus: null, childReadOnlyReason: null, workflows: [],
+    goal: emptyGoalState(), schedules: emptyScheduleState(), historySearch: emptySearchState(),
     hasMoreHistory: false,
     loadingHistory: false,
   }
@@ -320,8 +368,23 @@ export class DshChatController implements vscode.Disposable {
   private readonly attachmentResults = new Map<string, Pick<ConversationImage, 'data' | 'error'>>()
   private readonly attachmentLoads = new Map<string, Promise<void>>()
   private readonly jobsBySession = new Map<string, JobItem[]>()
+  private readonly jobErrors = new Map<string, string>()
+  private readonly taskFeatures = new TaskFeatureController(patch => this.publish(patch), () => this.summaries)
+  /**
+   * Conversations this window was told another DSH process owns.
+   *
+   * A single-writer conversation held elsewhere is an ordinary state, so it is
+   * tracked per conversation and cleared by the first sign that this window can
+   * write again — never carried across a fresh open.
+   */
+  private readonly occupancyHolders = new Set<string>()
+  /** Launch URLs the user declined to save, so this window stops asking. */
+  private readonly declinedRuntimeUrls = new Set<string>()
   /** Ratings the runtime confirmed for the open conversation, by message id. */
   private readonly feedback = new Map<string, MessageFeedbackItem>()
+  /** Slash commands held until a conversation is idle, in submission order. */
+  private readonly queuedCommands = new Map<string, { id: string; text: string; images: readonly PromptImage[] }[]>()
+  private drainingCommands = false
   private historyEntries: HistoryEntry[] = []
   private archivedSessionIds = new Set<string>()
   private readonly unreadSessionIds: Set<string>
@@ -379,6 +442,60 @@ export class DshChatController implements vscode.Disposable {
     return this._state
   }
 
+  taskClient(requireSelection = true): DshClient { if (requireSelection) this.requireReady(); return this.requireClient() }
+  async refreshTasks(): Promise<void> {
+    this.requireReady()
+    this.requireClient().monitorJobs(this.summaries.map(summary => summary.sessionId), true)
+    await Promise.all([this.taskFeatures.refreshGoal(), this.taskFeatures.refreshSchedules()])
+  }
+  async searchHistory(query: string): Promise<void> { this.requireReady(); await this.taskFeatures.search(query) }
+  async scheduleHistory(sessionId: string, id: string, before?: string): Promise<void> {
+    this.requireReady(); await this.taskFeatures.showScheduleHistory(sessionId, id, before)
+  }
+  async changeGoal(sessionId: string, action: GoalAction, ref?: { id: string; revision: number }, request?: { objective?: string; maxGoalRounds?: number }): Promise<void> {
+    this.requireReady()
+    const reason = this.childReadOnlyReason(sessionId)
+    if (reason !== null) throw new Error(reason)
+    await this.taskFeatures.changeGoal(sessionId, action, ref, request)
+  }
+  childReadOnlyReason(sessionId: string): string | null {
+    const child = this._state.sessions.find(item => item.id === sessionId)
+    if (child?.subagent === undefined) return null
+    if (child.subagent.mode !== 'continuable') return 'This child is read-only. Continue the work in its owning conversation.'
+    const parent = this.summaries.find(item => item.sessionId === child.parentId)
+    if (parent?.agentAvailable !== true) return 'The owning agent is unavailable. Open its conversation and send a message to resume it, then return to this child.'
+    return null
+  }
+  async sendToChild(sessionId: string, text: string, mode: PromptMode = 'queue'): Promise<void> {
+    const client = this.taskClient(false); const child = this._state.sessions.find(item => item.id === sessionId)
+    if (!child?.parentId || !child.subagent) throw new Error('This child is no longer in the project.')
+    const reason = this.childReadOnlyReason(sessionId)
+    if (reason !== null) throw new Error(reason)
+    if (!text.trim()) return
+    await client.prompt(sessionId, text.trim(), [], mode, child.parentId)
+  }
+  async stopChild(sessionId: string): Promise<void> {
+    const client = this.taskClient(false); const child = this._state.sessions.find(item => item.id === sessionId)
+    if (!child?.parentId) throw new Error('This child is no longer in the project.')
+    await client.interruptSubagent(sessionId, child.parentId)
+  }
+  async answerTaskRequest(sessionId: string, rpcId: string, answer: Record<string, unknown>): Promise<void> {
+    const client = this.taskClient(false)
+    if (!this._state.sessions.some(item => item.id === sessionId)) throw new Error('This child is no longer in the current project.')
+    const pending = client.pendingRequests(sessionId).find(item => item.rpcId === rpcId)
+    if (!pending) throw new Error('This request is no longer pending.')
+    if (pending.event === 'approval/request' && answer.outcome !== 'allowed-once' && answer.outcome !== 'rejected') throw new Error('Invalid approval answer.')
+    if (pending.event === 'user-questions/request') {
+      const questions = Array.isArray(pending.request.questions) ? pending.request.questions : []
+      const answers = Array.isArray(answer.answers) ? answer.answers : []
+      const ids = new Set(questions.flatMap(item => typeof item === 'object' && item !== null && typeof (item as Record<string, unknown>).id === 'string' ? [(item as Record<string, unknown>).id as string] : []))
+      if (answers.length !== ids.size || answers.some(item => typeof item !== 'object' || item === null || !ids.delete(String((item as Record<string, unknown>).id)))) throw new Error('Every question needs exactly one answer.')
+      if (answers.some(item => { const value = item as Record<string, unknown>; return !Array.isArray(value.selected) || value.selected.some(option => typeof option !== 'string') || (value.custom !== undefined && typeof value.custom !== 'string') })) throw new Error('Invalid question answer.')
+    }
+    const result = await client.respond(rpcId, pending.event === 'approval/request' ? { sessionId, approvalId: rpcId, outcome: answer.outcome } : { sessionId, answer: { answers: answer.answers } })
+    if (!result.accepted) throw new Error('The runtime no longer accepts this answer.')
+  }
+
   get runtimeOwnership(): RuntimeOwnership | undefined {
     const state = this.runtime.state
     return state.kind === 'ready' ? state.ownership : undefined
@@ -392,6 +509,40 @@ export class DshChatController implements vscode.Disposable {
   }
 
   get isDisposed(): boolean { return this.disposed }
+
+  /** The banner text for a conversation another DSH process owns, or null. */
+  private occupancyNoticeFor(sessionId: string): string | null {
+    return this.occupancyHolders.has(sessionId) ? CONVERSATION_HELD_TEXT : null
+  }
+
+  /**
+   * Record that this conversation is owned elsewhere.
+   *
+   * Reported once, as state rather than as a transcript notice: the condition
+   * stays true until something changes it, so repeating it per action would be
+   * noise. The sign-in and unroutable notices work the same way.
+   */
+  private markConversationHeld(sessionId: string): void {
+    if (sessionId === '' || this.occupancyHolders.has(sessionId)) return
+    this.occupancyHolders.add(sessionId)
+    this.output.appendLine(`[chat] conversation ${sessionId} is held by another DSH process; it is readable but not writable from this window`)
+    if (sessionId === this._state.sessionId) this.publish({ occupancyNotice: CONVERSATION_HELD_TEXT })
+  }
+
+  /**
+   * Clear it, because this window just proved it can write to the conversation.
+   *
+   * Called from every path that succeeds in reaching the conversation: an accepted
+   * message, a turn reported running here, or an explicit retry.
+   */
+  private clearConversationHeld(sessionId: string): void {
+    if (!this.occupancyHolders.delete(sessionId)) return
+    this.output.appendLine(`[chat] conversation ${sessionId} is writable from this window again`)
+    if (sessionId === this._state.sessionId) this.publish({ occupancyNotice: null })
+  }
+
+  /** Conversations the most recent runtime stop released, for the restart report. */
+  get releasedSessions(): number { return this.runtime.releasedSessions }
 
   /** Opaque connection identity for deferred plugin/settings completion checks. */
   get runtimeIdentity(): object | undefined {
@@ -475,6 +626,7 @@ export class DshChatController implements vscode.Disposable {
       changedFiles: [],
       queue: [],
       jobs: [],
+      todos: [],
       hasMoreHistory: false,
       loadingHistory: false,
     })
@@ -505,7 +657,23 @@ export class DshChatController implements vscode.Disposable {
     ++this.generation
     this.disconnectClient()
     this.publish({ phase: 'loading', statusText: 'Restarting DeepSeek Harness…', canReconnect: false })
-    await this.runtime.stop()
+    try {
+      await this.runtime.stop()
+    } catch (error) {
+      // A stop that fails used to leave the sidebar on a loading screen, which
+      // offers no controls at all: nothing published again, so only the view
+      // title could try. The retry belongs where the user is looking.
+      if (revision === this.runtimeSwitchRevision) {
+        this.publish({
+          phase: 'error',
+          setup: null,
+          canReconnect: false,
+          ...this.runningPatch(false),
+          statusText: `Could not restart DeepSeek Harness: ${redactDshSecrets(dshErrorText(error))}`,
+        })
+      }
+      throw error
+    }
     if (revision !== this.runtimeSwitchRevision) return false
     const startGeneration = this.generation + 1
     await this.start(target)
@@ -529,6 +697,33 @@ export class DshChatController implements vscode.Disposable {
     if (target.kind === 'external') existingRuntimeUrl(target.launchUrl.href)
     this.publish({ phase: 'loading', setup: null, statusText: 'Switching DeepSeek Harness runtime…' })
     await this.restart(target)
+    if (target.kind === 'external') await this.offerToRememberExternalRuntime()
+  }
+
+  /**
+   * Offer to save a user-supplied runtime for every window.
+   *
+   * Asked explicitly, never assumed: the record holds the launch URL, which
+   * authenticates that runtime, so writing it down is the user's decision. Saying
+   * no costs one paste per window; saying yes is what stops each window from
+   * starting yet another runtime over the same conversations.
+   */
+  private async offerToRememberExternalRuntime(): Promise<void> {
+    const launchUrl = this.runtime.externalRuntimeUrlToRemember()
+    if (launchUrl === undefined || this.declinedRuntimeUrls.has(launchUrl)) return
+    if (!vscode.workspace.getConfiguration('deepseekHarness', vscode.Uri.file(this.cwd))
+      .get<boolean>('rememberExternalRuntime', true)) return
+    const choice = await vscode.window.showInformationMessage(
+      'Remember this DSH runtime for every VS Code window? Its launch URL authenticates that runtime and will be stored on this machine, readable only by your user account.',
+      'Remember', 'Not Now')
+    if (choice !== 'Remember') {
+      this.declinedRuntimeUrls.add(launchUrl)
+      return
+    }
+    const remembered = await this.runtime.rememberExternalRuntime(this.cwd)
+    void vscode.window.showInformationMessage(remembered
+      ? 'Saved. Every window will attach to this DSH runtime from now on; "DSH: Forget the Saved Runtime" removes it.'
+      : 'This DSH runtime could not be saved. See the DeepSeek Harness output for details.')
   }
 
   /** Rebuild subscriptions on the same runtime; never resubmit a user action. */
@@ -586,6 +781,8 @@ export class DshChatController implements vscode.Disposable {
         phase: 'error',
         setup: null,
         messages: this.resetToDurableMessages(),
+        // Nothing is observable any more, so nothing may still be shown as running.
+        ...this.runningPatch(false),
         statusText: `Could not reconnect to DSH: ${message} No tasks were resent.`,
       })
     }).finally(() => {
@@ -597,6 +794,7 @@ export class DshChatController implements vscode.Disposable {
   private connectClient(connection: DshConnection, requestSessions: readonly string[] = []): DshClient {
     const client = new DshClient(connection, requestSessions)
     this.client = client
+    this.taskFeatures.bind(client)
     this.clientDisposables.push(
       client.onFrame(frame => {
         if (this.client !== client) return
@@ -624,6 +822,7 @@ export class DshChatController implements vscode.Disposable {
             phase: 'error',
             setup: null,
             messages: this.resetToDurableMessages(),
+            ...this.runningPatch(false),
             statusText: `Lost the DSH event stream: ${error.message}`,
           })
         }
@@ -637,7 +836,7 @@ export class DshChatController implements vscode.Disposable {
     this.queueRawText.clear()
     this.jobsBySession.clear()
     this.sessionAttention.clear()
-    this.publish({ approval: null, question: null, queue: [], jobs: [], loadingHistory: false })
+    this.publish({ approval: null, question: null, queue: [], jobs: [], todos: [], loadingHistory: false })
     this.publishSessionItems()
   }
 
@@ -671,18 +870,41 @@ export class DshChatController implements vscode.Disposable {
   async newSession(): Promise<void> {
     this.requireReady()
     const client = this.requireClient()
-    const generation = this.sessionLoadGeneration
     const created = await client.createSession(this.cwd)
-    if (this.client !== client || generation !== this.sessionLoadGeneration) return
-    await this.loadSessions(created.sessionId)
+    if (this.client !== client) return
+    // The runtime created it, so it has to be opened even when another load
+    // started in the meantime: a conversation with no messages does not earn a row
+    // in the list, so returning quietly left the user's click as a no-op and the
+    // conversation unreachable. Opening it directly is what `forkConversation`
+    // does for the same reason.
+    await this.loadSession(created.sessionId)
   }
 
   async selectSession(sessionId: string): Promise<void> {
-    this.requireReady()
+    // Deliberately not gated on the ready phase. A conversation that will not
+    // open leaves the sidebar loading or failed, and switching to another one is
+    // the only way out of it; `loadSession` supersedes the load in flight and
+    // reports its own failure, so refusing here would only turn the escape into
+    // a no-op.
     if (!this.summaries.some(summary => summary.sessionId === sessionId && summary.cwd === this.cwd)
       || this.archivedSessionIds.has(sessionId)) return
     this.markRead(sessionId)
     await this.loadSession(sessionId)
+  }
+
+  /**
+   * Ask the runtime again who owns the open conversation.
+   *
+   * Opening a conversation is what makes the host try to resume it, so reopening
+   * is the only honest way to re-check: the marker is dropped first, and the
+   * host's own answer — a resume that succeeds, or the same failure again —
+   * decides whether it comes back.
+   */
+  async retryHeldConversation(): Promise<void> {
+    const sessionId = this._state.sessionId
+    if (sessionId === '') return
+    this.clearConversationHeld(sessionId)
+    await this.selectSession(sessionId)
   }
 
   async renameSession(sessionId: string, title: string): Promise<void> {
@@ -732,11 +954,11 @@ export class DshChatController implements vscode.Disposable {
    * `job/list` stream, so the authoritative state arrives on its own.
    */
   async killJob(sessionId: string, jobId: string): Promise<void> {
-    this.requireReady()
-    if (sessionId !== this._state.sessionId) return
+    const client = this.taskClient(false)
+    if (!this.summaries.some(summary => summary.sessionId === sessionId)) return
     const job = this.jobsBySession.get(sessionId)?.find(item => item.id === jobId)
     if (job === undefined || (job.status !== 'running' && job.status !== 'stopping')) return
-    await this.requireClient().killJob(sessionId, jobId)
+    await client.killJob(sessionId, jobId)
   }
 
   async loadOlderHistory(): Promise<void> {
@@ -756,6 +978,7 @@ export class DshChatController implements vscode.Disposable {
       if (this.client !== client || this._state.sessionId !== sessionId || loadGeneration !== this.sessionLoadGeneration) return
       const unseenEntries = unseenHistoryEntries(this.historyEntries, page.events)
       this.historyEntries = mergeHistoryEntries(this.historyEntries, unseenEntries)
+      this.publish({ workflows: workflowsOf(this.historyEntries.map(entry => entry.event)) })
       this.projector.reset(this.historyEntries, true)
       this.publish({
         messages: this.projectedMessages(), ...this.messageMetaPatch(),
@@ -785,9 +1008,13 @@ export class DshChatController implements vscode.Disposable {
     const client = this.requireClient()
     const sessionId = this._state.sessionId
     const generation = this.sessionLoadGeneration
+    const readOnlyReason = this.childReadOnlyReason(sessionId)
+    if (readOnlyReason !== null) throw new Error(readOnlyReason)
     const images = attachments.filter((attachment): attachment is PromptImage => attachment.type === 'image')
     const { route: slash, command } = await this.resolveInput(normalized)
     if (this.client !== client || generation !== this.sessionLoadGeneration || this._state.phase !== 'ready') throw new Error('The conversation changed. Check its history before sending again.')
+    const currentReadOnlyReason = this.childReadOnlyReason(sessionId)
+    if (currentReadOnlyReason !== null) throw new Error(currentReadOnlyReason)
     if (slash.kind === 'command') {
       if (attachments.length > 0 && (command?.input?.attachments ?? command?.input?.images) !== true) {
         const imagesOnly = images.length === attachments.length
@@ -796,15 +1023,15 @@ export class DshChatController implements vscode.Disposable {
       if (images.length !== attachments.length) {
         throw new Error(`${slash.token} cannot use file attachments; remove them first.`)
       }
-      const execution = await client.executeCommand(
-        sessionId,
-        normalized,
-        images.length > 0 ? images : undefined,
-      )
-      if (execution === undefined) throw new Error(`DeepSeek did not recognize ${slash.token}.`)
-      if (images.length > 0 && execution.result.kind === 'error') {
-        throw new Error(execution.result.text ?? `${slash.token} could not use the attached images.`)
+      // A command sent with Enter while a turn owns the agent waits for it, the
+      // way a queued message does. Executing it now is what `/compact` cannot
+      // survive: it refuses while the agent is busy, so the user got a failed
+      // command node instead of a compaction. Cmd/Ctrl+Enter still runs it now.
+      if (mode === 'queue' && this._state.running) {
+        this.holdCommand(sessionId, normalized, images)
+        return
       }
+      await this.runCommand(client, sessionId, normalized, images, slash.token)
       return
     }
     await client.prompt(
@@ -817,6 +1044,7 @@ export class DshChatController implements vscode.Disposable {
       this._state.parentSessionId ?? undefined,
     )
     if (this.client !== client) return
+    this.clearConversationHeld(sessionId)
     const summary = this.summaries.find(item => item.sessionId === sessionId)
     if (summary !== undefined) summary.blank = false
     if (generation === this.sessionLoadGeneration) this.publish({ agentPreset: lockAgentPresetState(this._state.agentPreset) })
@@ -824,6 +1052,111 @@ export class DshChatController implements vscode.Disposable {
 
   async slashRoute(text: string): Promise<SlashRoute> {
     return (await this.resolveInput(text)).route
+  }
+
+  /** Execute one already-routed command line against its conversation. */
+  private async runCommand(
+    client: DshClient,
+    sessionId: string,
+    line: string,
+    images: readonly PromptImage[],
+    token: string,
+  ): Promise<void> {
+    const execution = await client.executeCommand(sessionId, line, images.length > 0 ? images : undefined)
+    if (execution === undefined) throw new Error(`DeepSeek did not recognize ${token}.`)
+    if (images.length > 0 && execution.result.kind === 'error') {
+      throw new Error(execution.result.text ?? `${token} could not use the attached images.`)
+    }
+  }
+
+  /** What the queue dock shows for one conversation's held commands. */
+  private queuedCommandItems(sessionId: string): QueuedCommandItem[] {
+    return (this.queuedCommands.get(sessionId) ?? []).map(command => ({
+      id: command.id,
+      text: command.text,
+      preview: command.text.length > 200 ? command.text.slice(0, 200) + '…' : command.text,
+    }))
+  }
+
+  private publishQueuedCommands(sessionId: string = this._state.sessionId): void {
+    if (sessionId !== this._state.sessionId) return
+    this.publish({ queuedCommands: this.queuedCommandItems(sessionId) })
+  }
+
+  /** Hold one command until its conversation is idle. */
+  private holdCommand(sessionId: string, text: string, images: readonly PromptImage[]): void {
+    const queue = this.queuedCommands.get(sessionId) ?? []
+    queue.push({ id: randomUUID(), text, images: [...images] })
+    this.queuedCommands.set(sessionId, queue)
+    this.output.appendLine(`[commands] holding ${slashTokenOf(text)} until the conversation is idle`)
+    this.publishQueuedCommands(sessionId)
+  }
+
+  /** Drop one held command. */
+  removeQueuedCommand(sessionId: string, id: string): void {
+    const queue = this.queuedCommands.get(sessionId)
+    if (queue === undefined) return
+    const remaining = queue.filter(command => command.id !== id)
+    if (remaining.length === queue.length) return
+    if (remaining.length === 0) this.queuedCommands.delete(sessionId)
+    else this.queuedCommands.set(sessionId, remaining)
+    this.publishQueuedCommands(sessionId)
+  }
+
+  /**
+   * Run one held command now, at the user's explicit request.
+   *
+   * The conversation may still be busy; running it anyway is what the click asked
+   * for, and the runtime's own answer — a failed command node, or the command's
+   * effect — is the honest result.
+   */
+  async runQueuedCommand(sessionId: string, id: string): Promise<void> {
+    const queue = this.queuedCommands.get(sessionId)
+    const command = queue?.find(candidate => candidate.id === id)
+    if (queue === undefined || command === undefined) return
+    this.requireReady()
+    const client = this.client
+    if (client === undefined) throw new Error('DeepSeek Harness is not connected.')
+    this.removeQueuedCommand(sessionId, id)
+    await this.runCommand(client, sessionId, command.text, command.images, slashTokenOf(command.text))
+  }
+
+  /**
+   * Run the commands held for the open conversation, in order, once it is idle.
+   *
+   * Only the open conversation: its queue is the one the dock shows and the one
+   * whose state this window tracks, so a background conversation's held command
+   * waits until it is opened. A queued message would start the next turn, so a
+   * command waits for an empty runtime queue too.
+   */
+  private async drainQueuedCommands(): Promise<void> {
+    if (this.drainingCommands) return
+    this.drainingCommands = true
+    try {
+      for (;;) {
+        const sessionId = this._state.sessionId
+        const queue = this.queuedCommands.get(sessionId)
+        if (this._state.phase !== 'ready' || this._state.running || this._state.queue.length > 0
+          || this.childReadOnlyReason(sessionId) !== null || this.occupancyNoticeFor(sessionId) !== null) return
+        const client = this.client, next = queue?.[0]
+        if (client === undefined || next === undefined || queue === undefined) return
+        const remaining = queue.slice(1)
+        if (remaining.length === 0) this.queuedCommands.delete(sessionId)
+        else this.queuedCommands.set(sessionId, remaining)
+        this.publishQueuedCommands(sessionId)
+        try {
+          await this.runCommand(client, sessionId, next.text, next.images, slashTokenOf(next.text))
+        } catch (error) {
+          // Arguments may contain private text; the command name is enough to
+          // identify a failed queue item, and failures must never auto-retry.
+          if (this.client === client) this.output.appendLine(`[commands] ${slashTokenOf(next.text)} failed to run: ${redactDshSecrets(dshErrorText(error))}`)
+          return
+        }
+        if (this.client !== client) return
+      }
+    } finally {
+      this.drainingCommands = false
+    }
   }
 
   private async resolveInput(text: string): Promise<{ route: SlashRoute; command: CommandDescriptor | undefined }> {
@@ -1071,12 +1404,24 @@ export class DshChatController implements vscode.Disposable {
     if (this.client === client && generation === this.sessionLoadGeneration && this._state.question?.rpcId === rpcId) this.publish({ question: null })
   }
 
-  report(error: unknown): void {
+  /**
+   * @param sessionId - the conversation the failed action belonged to. The caller
+   *   knows it; the visible conversation may already be a different one, and a
+   *   held conversation marked on the wrong row disables an input the user can
+   *   still write to.
+   */
+  report(error: unknown, sessionId: string = this._state.sessionId): void {
     const message = redactDshSecrets(dshErrorText(error))
     // The notice is what the user reads; the channel keeps the original text,
     // which is where an absolute path or a provider's wording belongs.
     const raw = redactDshSecrets(dshFailure(error).message)
     this.output.appendLine(`[chat] ${raw === message ? message : `${message} (${raw})`}`)
+    if (isConversationHeld(error) && sessionId !== '') {
+      // A held conversation says the same thing for every action the user tries,
+      // so it belongs in the banner rather than as a notice per attempt.
+      this.markConversationHeld(sessionId)
+      return
+    }
     this.projector.notice(`error:${String(Date.now())}`, message, true)
     this.publish({ messages: this.projectedMessages(), ...this.messageMetaPatch() })
   }
@@ -1273,7 +1618,14 @@ export class DshChatController implements vscode.Disposable {
     this.openedSignInAttempt = undefined
     this.publish(this.accountPatch(unavailableAccountState()))
     this.runtimeActivity.clear()
+    // With no client this window can see nothing running anywhere: leaving the
+    // summaries saying otherwise kept a Stop button that could only fail, and
+    // `hasRunningTasks` rejecting a project or runtime switch until a reconnect
+    // succeeded.
+    for (const summary of this.summaries) { summary.running = false; summary.agentAvailable = false }
     this.jobsBySession.clear()
+    this.jobErrors.clear()
+    this.taskFeatures.bind(undefined)
     ++this.sessionListGeneration
     this.sessionAttention.clear()
     for (const dispose of this.clientDisposables.splice(0)) dispose()
@@ -1286,6 +1638,7 @@ export class DshChatController implements vscode.Disposable {
       if (result.error !== undefined) this.attachmentResults.delete(key)
     }
     client?.dispose()
+    this.publish({ projectJobs: [], jobsStatus: null, workflows: [], childReadOnlyReason: this.childReadOnlyReason(this._state.sessionId) })
     this.settingsChanges.fire()
   }
 
@@ -1365,6 +1718,16 @@ export class DshChatController implements vscode.Disposable {
 
   private publishSessionItems(): void {
     this.publish(this.sessionItemPatch())
+    this.publish({ childReadOnlyReason: this.childReadOnlyReason(this._state.sessionId), projectJobs: this.projectJobs(), jobsStatus: [...this.jobErrors.values()].join('\n') || null })
+    this.client?.monitorJobs(this.summaries.map(summary => summary.sessionId))
+  }
+
+  private projectJobs(): ChatViewState['projectJobs'] {
+    const jobs = new Map<string, ChatViewState['projectJobs'][number]>()
+    for (const summary of this.summaries) for (const job of this.jobsBySession.get(summary.sessionId) ?? []) {
+      if (!jobs.has(job.id)) jobs.set(job.id, { ...job, sessionId: summary.sessionId, sessionTitle: sessionTitle(summary) })
+    }
+    return [...jobs.values()]
   }
 
   private markRead(sessionId: string): void {
@@ -1403,6 +1766,10 @@ export class DshChatController implements vscode.Disposable {
       sessionId,
       ...(sessionChanged ? { messages: [], changedFiles: [] } : {}),
       queue: [],
+      todos: [],
+      // A command held for this conversation stays held; the dock is per
+      // conversation, so it is republished rather than cleared.
+      queuedCommands: this.queuedCommandItems(sessionId),
       approval: null,
       question: null,
       hasMoreHistory: false,
@@ -1427,6 +1794,10 @@ export class DshChatController implements vscode.Disposable {
         statusText: message,
         setup: setupKindFor(this.cwd, 'error', message),
         sessionId,
+        // The state now names this conversation, so its running flags have to
+        // describe it too: the previous conversation's clock and Stop button
+        // outlived the switch and belonged to a turn this conversation never had.
+        ...this.runningPatch(this.summaries.find(item => item.sessionId === sessionId)?.running ?? false, sessionId),
       })
       throw error
     })
@@ -1437,6 +1808,9 @@ export class DshChatController implements vscode.Disposable {
     this.historyEntries = events
     this.guardedDirtyCalls.clear()
     this.queueRawText.clear()
+    // A fresh look at the conversation: whether it is still held is re-established
+    // by this open's own background resume, never carried over from the last one.
+    this.occupancyHolders.delete(sessionId)
     const summary = this.summaries.find(item => item.sessionId === sessionId)
     if (summary !== undefined) {
       summary.projections = { values: opening.projections }
@@ -1455,12 +1829,14 @@ export class DshChatController implements vscode.Disposable {
       skills: [],
       agentPreset: unavailableAgentPresetState(),
       usage: usageMeterStateOf(summary?.projections?.values),
+      todos: todosOf(summary?.projections?.values?.todos),
       imageLimits: imageLimitsOf(summary?.projections?.values?.imageLimits),
       permissions: permissionPresetsOf(summary?.projections?.values?.permissions),
       messageFeedback: [],
       plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       queue: [],
+      queuedCommands: this.queuedCommandItems(sessionId),
       // The owner of a subagent conversation is derived from the selection, and
       // nothing else republishes it: without this, opening a subagent left the
       // previous conversation's lineage in place, so the sidebar showed the wrong
@@ -1469,13 +1845,19 @@ export class DshChatController implements vscode.Disposable {
       jobs: this.jobsBySession.get(sessionId) ?? [],
       hasMoreHistory: hasMore,
       loadingHistory: false,
+      occupancyNotice: this.occupancyNoticeFor(sessionId),
       ...this.modelPatch(models),
     })
     // Ratings belong to the conversation, and the runtime is the authority on
     // them, so they are adopted after the conversation is shown rather than
     // blocking it.
     void this.loadFeedback(client, sessionId)
+    // A command held for this conversation may have been waiting for a turn that
+    // already ended while the user was somewhere else.
+    void this.drainQueuedCommands()
     opening.activate()
+    this.taskFeatures.select(sessionId, summary?.projections?.values ?? {})
+    this.publish({ childReadOnlyReason: this.childReadOnlyReason(sessionId), workflows: workflowsOf(this.historyEntries.map(entry => entry.event)) })
     this.hydrateImages(client, sessionId)
     // Account state is per-runtime, not per-conversation, so the first ready
     // conversation is what makes the account control appear at all.
@@ -1595,6 +1977,13 @@ export class DshChatController implements vscode.Disposable {
     const payload = frame.payload
     const type = typeof payload.type === 'string' ? payload.type : ''
     const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
+    this.taskFeatures.frame(frame)
+    if (frame.channel === 'mux' && type === 'session/jobs-status') {
+      if (typeof payload.error === 'string') this.jobErrors.set(sessionId, payload.error)
+      else this.jobErrors.delete(sessionId)
+      this.publish({ jobsStatus: [...this.jobErrors.values()].join('\n') || null })
+      return
+    }
 
     if (frame.channel === 'host') {
       if (sessionId !== '' && (type === 'host/session-added' || type === 'host/session-status' || type === 'host/session-removed')) {
@@ -1631,6 +2020,7 @@ export class DshChatController implements vscode.Disposable {
           this.publish({ agentPreset: lockAgentPresetState(this._state.agentPreset) })
         }
         this.historyEntries = mergeHistoryEntries(this.historyEntries, [{ event: dshEvent, view: payload.view }])
+        if (dshEvent.type.startsWith('tool-workflow/')) this.publish({ workflows: workflowsOf(this.historyEntries.map(entry => entry.event)) })
         const conflict = this.dirtyConflict(dshEvent, payload.view)
         if (conflict !== undefined) void this.cancelForDirtyConflict(conflict)
         this.projector.apply(dshEvent, payload.view)
@@ -1670,6 +2060,7 @@ export class DshChatController implements vscode.Disposable {
       const jobs = jobsSnapshotOf(payload.jobs)
       this.jobsBySession.set(sessionId, jobs)
       if (sessionId === this._state.sessionId) this.publish({ jobs })
+      this.publish({ projectJobs: this.projectJobs() })
       return
     }
 
@@ -1734,12 +2125,18 @@ export class DshChatController implements vscode.Disposable {
     }
 
     if (frame.channel === 'mux' && type === 'session/projection') {
+      this.taskFeatures.projection(sessionId, String(payload.key), payload.value)
       const summary = this.summaries.find(item => item.sessionId === sessionId)
       if (summary !== undefined && typeof payload.key === 'string') {
         summary.projections = { values: { ...summary.projections?.values, [payload.key]: payload.value } }
       }
-      if ((typeof payload.value === 'string' && payload.key === 'title') || payload.key === 'subagentCatalog') {
+      if ((typeof payload.value === 'string' && payload.key === 'title')
+        || payload.key === 'subagentCatalog' || payload.key === 'subagent'
+        || payload.key === 'subagentTiming' || payload.key === 'tokenUsage') {
         this.publishSessionItems()
+      }
+      if (payload.key === 'todos' && sessionId === this._state.sessionId) {
+        this.publish({ todos: todosOf(payload.value) })
       }
       if (payload.key === 'imageLimits' && sessionId === this._state.sessionId) {
         this.publish({ imageLimits: imageLimitsOf(payload.value) })
@@ -1792,22 +2189,33 @@ export class DshChatController implements vscode.Disposable {
 
     if (frame.channel === 'host' && (type === 'host/session-status' || type === 'host/session-removed')) {
       const running = type === 'host/session-status' && payload.running === true
+      // An agent this window can see running is one this window can write to.
+      if (running) this.clearConversationHeld(sessionId)
       const summary = this.summaries.find(item => item.sessionId === sessionId)
       const wasRunning = summary?.running === true
       if (summary !== undefined) {
         summary.running = running
+        summary.agentAvailable = type !== 'host/session-removed'
         if (running) summary.blank = false
       }
       if (type === 'host/session-removed') {
         this.sessionAttention.delete(sessionId)
         this.jobsBySession.delete(sessionId)
+        this.jobErrors.delete(sessionId)
+        // Nothing will consume a command held for a conversation that is gone.
+        if (this.queuedCommands.delete(sessionId)) this.publishQueuedCommands(sessionId)
         if (sessionId === this._state.sessionId) {
           this.queueRawText.clear()
-          this.publish({ approval: null, question: null, queue: [], jobs: [] })
+          this.publish({ approval: null, question: null, queue: [], jobs: [], todos: [] })
         }
       }
       if (wasRunning && !running && sessionId !== this._state.sessionId) this.markUnread(sessionId)
-      if (sessionId === this._state.sessionId) this.publish(this.runningPatch(running))
+      if (sessionId === this._state.sessionId) {
+        this.publish(this.runningPatch(running))
+        // The turn this command was waiting behind is over: run it now, unless the
+        // runtime has another queued message about to start the next one.
+        if (wasRunning && !running) void this.drainQueuedCommands()
+      }
       this.publishSessionItems()
       return
     }
@@ -1832,9 +2240,15 @@ export class DshChatController implements vscode.Disposable {
 
     if (frame.channel === 'host' && type === 'host/agent-error' && sessionId === this._state.sessionId) {
       // This channel carries text only, but DSH may prefix it with a code.
-      const message = redactDshSecrets(dshErrorText(
-        typeof payload.message === 'string' ? payload.message : 'DeepSeek Harness reported an agent error.',
-      ))
+      const reported = typeof payload.message === 'string' ? payload.message : 'DeepSeek Harness reported an agent error.'
+      if (isConversationHeld(reported)) {
+        // Opening a conversation makes the host try to resume it. When another
+        // process owns it that resume fails, which is not an error the user can
+        // act on as an error — it is who holds the conversation.
+        this.markConversationHeld(sessionId)
+        return
+      }
+      const message = redactDshSecrets(dshErrorText(reported))
       this.projector.notice(`agent-error:${frame.rpcId}`, message, true)
       this.publish({ messages: this.projectedMessages(), ...this.messageMetaPatch(), ...this.runningPatch(false) })
       return
@@ -1844,6 +2258,7 @@ export class DshChatController implements vscode.Disposable {
       // Discovery must not steal focus or replace a snapshot currently loading.
       const existing = this.summaries.find(item => item.sessionId === sessionId)
       const summary: SessionSummary = { sessionId, cwd: this.cwd,
+        ...(typeof payload.agentAvailable === 'boolean' ? { agentAvailable: payload.agentAvailable } : {}),
         updatedAt: Math.max(existing?.updatedAt ?? 0, typeof payload.updatedAt === 'number' ? payload.updatedAt : 0),
         running: payload.running === true, blank: payload.blank === true && existing?.blank !== false,
         ...(wireRecord(payload.projections) && wireRecord(payload.projections.values)
@@ -1874,10 +2289,19 @@ export class DshChatController implements vscode.Disposable {
   async submitFeedback(sessionId: string, messageId: string, rating: MessageFeedbackRating): Promise<void> {
     const client = this.client
     if (client === undefined || sessionId !== this._state.sessionId) return
-    const current = this.feedback.get(messageId)
-    const outcome = current !== undefined && current.rating === rating
-      ? await client.deleteMessageFeedback(sessionId, messageId, current.version)
-      : await client.putMessageFeedback(sessionId, messageId, rating, current?.version ?? null)
+    let outcome: Awaited<ReturnType<DshClient['putMessageFeedback']>> | Awaited<ReturnType<DshClient['deleteMessageFeedback']>>
+    try {
+      const current = this.feedback.get(messageId)
+      outcome = current !== undefined && current.rating === rating
+        ? await client.deleteMessageFeedback(sessionId, messageId, current.version)
+        : await client.putMessageFeedback(sessionId, messageId, rating, current?.version ?? null)
+    } catch (error) {
+      // A rating the runtime never recorded used to reject into nothing: the click
+      // did nothing and said nothing, and the held-conversation case never reached
+      // the banner that explains it.
+      if (this.client === client) this.report(error, sessionId)
+      return
+    }
     if (this.client !== client || sessionId !== this._state.sessionId) return
     if (outcome.ok) {
       if ('absent' in outcome.value) this.feedback.delete(messageId)
@@ -1888,7 +2312,7 @@ export class DshChatController implements vscode.Disposable {
         if (outcome.error.current === null) this.feedback.delete(messageId)
         else this.feedback.set(messageId, outcome.error.current)
       }
-      this.report(new DshConnectionError(outcome.error.code, outcome.error.message ?? outcome.error.code))
+      this.report(new DshConnectionError(outcome.error.code, outcome.error.message ?? outcome.error.code), sessionId)
     }
     this.publish({ messageFeedback: [...this.feedback.values()] })
   }
@@ -1919,7 +2343,18 @@ export class DshChatController implements vscode.Disposable {
 
   /** Adopt the ratings the runtime holds for a conversation. */
   private async loadFeedback(client: DshClient, sessionId: string): Promise<void> {
-    const outcome = await client.messageFeedback(sessionId)
+    let outcome: Awaited<ReturnType<DshClient['messageFeedback']>>
+    try {
+      outcome = await client.messageFeedback(sessionId)
+    } catch (error) {
+      if (this.client !== client) return
+      // A read nobody asked for must not put a notice in the transcript; a held
+      // conversation is the one outcome that changes what the user can do, and
+      // the unhandled rejection this used to produce reached no one at all.
+      if (isConversationHeld(error)) this.markConversationHeld(sessionId)
+      else this.output.appendLine(`[feedback] Ratings are unavailable: ${redactDshSecrets(dshErrorText(error))}`)
+      return
+    }
     if (this.client !== client || sessionId !== this._state.sessionId) return
     // A failed read keeps whatever is shown: wiping the ratings on a transient
     // error would tell the user their votes are gone.
@@ -2260,6 +2695,11 @@ class DshSurface implements vscode.Disposable {
 
   private async addDraftImages(sessionId: string, incoming: readonly DraftImage[]): Promise<void> {
     if (incoming.length === 0) return
+    // The file dialog and the reads are async, so the open conversation can have
+    // changed under them. Staging onto a conversation the user has left made the
+    // pick look like it did nothing and then rode that conversation's next prompt;
+    // the sibling path that takes images from the Webview guards the same way.
+    if (sessionId !== this.controller.state.sessionId) return
 
     const draftImages = this.draftImagesFor(sessionId)
     // Answer with the runtime's own bounds before a rejected prompt spends the upload.
@@ -2419,7 +2859,8 @@ class DshSurface implements vscode.Disposable {
       }
       const startLine = typeof record.startLine === 'number' && Number.isSafeInteger(record.startLine) ? record.startLine : undefined
       const endLine = typeof record.endLine === 'number' && Number.isSafeInteger(record.endLine) ? record.endLine : undefined
-      if (await this.editorContext.pinUri(uri, cwd, startLine === undefined ? undefined : { startLine, endLine: endLine ?? startLine })) {
+      if (sessionId !== this.controller.state.sessionId) return
+      if (await this.editorContext.pinUri(uri, cwd, startLine === undefined ? undefined : { startLine, endLine: endLine ?? startLine }, sessionId)) {
         pinned += 1
       }
     }
@@ -2497,6 +2938,35 @@ class DshSurface implements vscode.Disposable {
         case 'select-session':
           if (typeof value.sessionId === 'string') await this.controller.selectSession(value.sessionId)
           return
+        case 'open-task-details':
+          if (typeof value.sessionId === 'string' && (value.kind === 'subagent' || (value.kind === 'job' && typeof value.jobId === 'string'))) {
+            await vscode.commands.executeCommand('deepseekHarness.openTaskDetails', { kind: value.kind, sessionId: value.sessionId, ...(value.kind === 'job' ? { jobId: value.jobId } : {}) })
+          }
+          return
+        case 'refresh-tasks': await this.controller.refreshTasks(); return
+        case 'configure-task-services': await vscode.commands.executeCommand('deepseekHarness.configureTaskServices'); return
+        case 'search-history':
+          if (typeof value.query === 'string') await this.controller.searchHistory(value.query)
+          return
+        case 'schedule-history':
+          if (typeof value.sessionId === 'string' && typeof value.id === 'string') await this.controller.scheduleHistory(value.sessionId, value.id, typeof value.before === 'string' ? value.before : undefined)
+          return
+        case 'goal-action': {
+          if (typeof value.sessionId !== 'string' || !['create', 'edit', 'pause', 'resume', 'complete', 'clear'].includes(String(value.action))) return
+          const action = value.action as GoalAction
+          const ref = typeof value.id === 'string' && typeof value.revision === 'number' ? { id: value.id, revision: value.revision } : undefined
+          let request: { objective: string; maxGoalRounds: number } | undefined
+          if (action === 'create' || action === 'edit') {
+            const current = this.controller.state.goal.value
+            const objective = await vscode.window.showInputBox({ title: action === 'create' ? 'New goal' : 'Edit goal', prompt: 'What should this conversation accomplish?', value: action === 'edit' ? current?.objective ?? '' : '', validateInput: text => text.trim() ? undefined : 'Enter an objective.' })
+            if (objective === undefined) return
+            const rounds = await vscode.window.showInputBox({ title: 'Goal round limit', prompt: 'Maximum autonomous rounds before the goal stops continuing', value: String(current?.maxGoalRounds ?? 256), validateInput: text => Number.isSafeInteger(Number(text)) && Number(text) > 0 ? undefined : 'Enter a positive whole number.' })
+            if (rounds === undefined) return
+            request = { objective: objective.trim(), maxGoalRounds: Number(rounds) }
+          }
+          await this.controller.changeGoal(value.sessionId, action, ref, request)
+          return
+        }
         case 'rename-session':
           if (typeof value.sessionId === 'string') {
             const session = this.controller.state.sessions.find(item => item.id === value.sessionId)
@@ -2661,7 +3131,7 @@ class DshSurface implements vscode.Disposable {
             this.draftFilesBySession.delete(sessionId)
             // Any upload still in flight belongs to the message just sent.
             this.draftGeneration.set(sessionId, (this.draftGeneration.get(sessionId) ?? 0) + 1)
-            if (carriesIdeContext) this.editorContext.clearPinned()
+            if (carriesIdeContext) this.editorContext.clearPinned(sessionId, ideContext?.pinned)
             await this.publishDraftAttachments(sessionId)
           }
           return
@@ -2738,6 +3208,32 @@ class DshSurface implements vscode.Disposable {
             })
           }
           return
+        case 'request-context-files':
+          if (typeof value.sessionId === 'string' && value.sessionId === this.controller.state.sessionId
+            && typeof value.requestId === 'number' && typeof value.query === 'string') {
+            let candidates: IdeMentionCandidate[] = []
+            let error: string | undefined
+            try { candidates = await this.editorContext.searchFiles(value.query) }
+            catch (cause) { error = cause instanceof Error ? cause.message : String(cause) }
+            await this.webview.postMessage({ type: 'context-files', sessionId: value.sessionId, requestId: value.requestId, query: value.query, candidates, ...(error === undefined ? {} : { error }) })
+          }
+          return
+        case 'request-ide-context':
+          if (value.sessionId === this.controller.state.sessionId) await this.webview.postMessage({ type: 'ide-context', state: this.editorContext.viewState() })
+          return
+        case 'add-context':
+          try {
+            if (typeof value.sessionId === 'string' && value.sessionId === this.controller.state.sessionId && typeof value.path === 'string') {
+              const startLine = typeof value.startLine === 'number' && Number.isSafeInteger(value.startLine) && value.startLine > 0 ? value.startLine : undefined
+              const endLine = typeof value.endLine === 'number' && Number.isSafeInteger(value.endLine) && value.endLine >= (startLine ?? 1) ? value.endLine : startLine
+              const added = await this.editorContext.pinPath(value.path, value.sessionId, startLine === undefined ? undefined : { startLine, endLine: endLine ?? startLine })
+              if (!added) void vscode.window.showWarningMessage('That file is unavailable or outside the current DeepSeek project.')
+            }
+          } finally {
+            await this.webview.postMessage({ type: 'ide-context', state: this.editorContext.viewState() })
+            await this.webview.postMessage({ type: 'context-updated', sessionId: value.sessionId, requestId: value.requestId })
+          }
+          return
         case 'message-feedback':
           if (typeof value.sessionId === 'string' && typeof value.messageId === 'string'
             && (value.rating === 'positive' || value.rating === 'negative')) {
@@ -2750,7 +3246,8 @@ class DshSurface implements vscode.Disposable {
           }
           return
         case 'remove-context':
-          if (typeof value.id === 'string') this.editorContext.removePinned(value.id)
+          if (typeof value.id === 'string' && typeof value.sessionId === 'string' && value.sessionId === this.controller.state.sessionId) this.editorContext.removePinned(value.id, value.sessionId)
+          await this.webview.postMessage({ type: 'context-updated', sessionId: value.sessionId, requestId: value.requestId })
           return
         case 'remove-attachment':
           if (typeof value.id === 'string') {
@@ -2782,6 +3279,12 @@ class DshSurface implements vscode.Disposable {
             )
           }
           return
+        case 'queued-command-action':
+          if (typeof value.sessionId === 'string' && typeof value.commandId === 'string') {
+            if (value.action === 'remove') this.controller.removeQueuedCommand(value.sessionId, value.commandId)
+            else if (value.action === 'run') await this.controller.runQueuedCommand(value.sessionId, value.commandId)
+          }
+          return
         case 'approval':
           if (
             typeof value.rpcId === 'string'
@@ -2808,6 +3311,15 @@ class DshSurface implements vscode.Disposable {
           if (typeof value.href === 'string') {
             const uri = vscode.Uri.parse(value.href)
             if (uri.scheme === 'http' || uri.scheme === 'https') await vscode.env.openExternal(uri)
+            // A link that names a file is a file to open, not a failure: the
+            // click was a deliberate one, and silently ignoring it is invisible.
+            // `Uri.parse` gives a scheme-less string the `file` scheme, so a
+            // bare path lands here too instead of being dropped.
+            else if (uri.scheme === 'file') {
+              const fragment = /^L(\d+)$/.exec(uri.fragment)?.[1]
+              await this.controller.openFile(uri.fsPath, fragment === undefined ? undefined : Number(fragment))
+            }
+            else this.output.appendLine(`[link] Ignored a link with no handler: ${uri.scheme}:`)
           }
           return
         case 'open-file':
@@ -2832,6 +3344,8 @@ class DshSurface implements vscode.Disposable {
             this.controller.keepFile(value.path, value.turn)
           }
           return
+        case 'retry-occupancy': await this.controller.retryHeldConversation(); return
+        case 'diagnose-occupancy': await vscode.commands.executeCommand('deepseekHarness.diagnoseOccupancy'); return
         case 'keep-all': this.controller.keepAll(); return
         case 'revert-file':
           if (typeof value.path === 'string' && typeof value.turn === 'number' && Number.isSafeInteger(value.turn)) {
@@ -2852,8 +3366,18 @@ class DshSurface implements vscode.Disposable {
           }
       }
     }
-    void run().catch(error => { this.controller.report(error) })
+    // The action knows which conversation it belonged to; the user may have moved
+    // to another one while it was in flight, and a failure is that conversation's.
+    void run().catch(error => {
+      this.controller.report(error, typeof value.sessionId === 'string' ? value.sessionId : undefined)
+    })
   }
+}
+
+/** The `/<name>` token of an already-routed command line, for messages the user reads. */
+function slashTokenOf(line: string): string {
+  const token = line.trimStart().split(/\s/, 1)[0] ?? ''
+  return token.startsWith('/') ? token : '/' + token
 }
 
 /** Decoded byte count of a base64 payload, without materializing the bytes again. */
@@ -3041,7 +3565,25 @@ export function activate(context: vscode.ExtensionContext): void {
   const debugRuntime = workspace === undefined || debugSessions === undefined
     ? undefined
     : new DebugRuntimeContribution(context, debugSessions, output)
-  const runtime = new DshRuntime(context, output, debugRuntime)
+  // Records and leases only ever describe runtimes this extension started. DSH
+  // itself writes no pidfile or port file, so a `dsh web` the user launched is
+  // invisible here and can never be adopted, listed or ended by this extension.
+  const storagePath = context.globalStorageUri?.fsPath ?? ''
+  const broker = storagePath !== '' && path.isAbsolute(storagePath)
+    ? new RuntimeBroker({ stateDir: path.join(storagePath, 'dsh-runtimes') })
+    : undefined
+  void broker?.sweep().then(removed => {
+    // Only records whose process is provably gone are removed; nothing is ever
+    // terminated here, so a leftover runtime that is still alive keeps running.
+    for (const file of removed) output.appendLine(`[runtime] discarded a stale runtime record: ${file}`)
+  }).catch(error => {
+    output.appendLine(`[runtime] could not sweep stale runtime records: ${error instanceof Error ? error.message : String(error)}`)
+  })
+  const reuseAcrossWindows = vscode.workspace.getConfiguration('deepseekHarness').get<boolean>('reuseAcrossWindows', true)
+  // The broker is always handed over: `reuseAcrossWindows` gates only attaching to a
+  // runtime *this extension* started, while a runtime the user asked us to remember
+  // is theirs to share and is honoured regardless.
+  const runtime = new DshRuntime(context, output, new TaskRuntimeContribution(context, debugRuntime), broker, reuseAcrossWindows)
   activeRuntime = runtime
 
   if (workspace === undefined) {
@@ -3055,6 +3597,15 @@ export function activate(context: vscode.ExtensionContext): void {
   const editorContext = new EditorContextBridge(() => controller.cwd, () => controller.state.sessionId)
   const provider = new DshViewProvider(controller, output, editorContext, context.extensionUri)
   const panels = new Set<{ panel: vscode.WebviewPanel; surface: DshSurface }>()
+  const taskPanels = new TaskPanelManager(controller, context.extensionUri)
+  context.subscriptions.push(taskPanels, vscode.commands.registerCommand('deepseekHarness.openTaskDetails', (value: unknown) => {
+    if (typeof value !== 'object' || value === null) return
+    const address = value as Record<string, unknown>
+    try {
+      if (address.kind === 'subagent' && typeof address.sessionId === 'string') taskPanels.open({ kind: 'subagent', sessionId: address.sessionId })
+      else if (address.kind === 'job' && typeof address.sessionId === 'string' && typeof address.jobId === 'string') taskPanels.open({ kind: 'job', sessionId: address.sessionId, jobId: address.jobId })
+    } catch (error) { void vscode.window.showErrorMessage(dshErrorText(error)) }
+  }))
 
   context.subscriptions.push(
     output,
@@ -3105,7 +3656,74 @@ export function activate(context: vscode.ExtensionContext): void {
   }))
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.restart', async () => {
-    await controller.restart().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
+    try {
+      await controller.restart()
+    } catch (error) {
+      void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
+      return
+    }
+    // Restarting is the only in-product way to hand conversations back, because
+    // DSH releases one only when its owner exits. Say so when it freed something.
+    const released = controller.releasedSessions
+    if (released > 0) {
+      void vscode.window.showInformationMessage(`DeepSeek Harness restarted, releasing ${String(released)} conversation(s) it was holding.`)
+    }
+  }))
+
+  /**
+   * End a runtime this extension started in an earlier window.
+   *
+   * This is the manual half of the release story: the automatic path only ends a
+   * runtime when no window is left using it. Nothing here can reach a runtime this
+   * extension did not start, and a runtime whose process cannot be proved is
+   * reported instead of signalled.
+   */
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.forgetSavedRuntime', async () => {
+    if (broker === undefined) {
+      await vscode.window.showInformationMessage('This window keeps no record of DSH runtimes.')
+      return
+    }
+    const saved = broker.readDescriptor()
+    if (saved === undefined || saved.manageable) {
+      await vscode.window.showInformationMessage('No saved DSH runtime is on record. (A runtime this extension started is not a saved runtime; "DSH: End a Leftover Runtime" ends one of those.)')
+      return
+    }
+    broker.clearDescriptor()
+    output.appendLine('[runtime] forgot the saved DSH runtime; the process itself is untouched')
+    await vscode.window.showInformationMessage('Forgot the saved DSH runtime. It keeps running — only this extension stops attaching to it.')
+  }))
+
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.endLeftoverRuntime', async () => {
+    if (broker === undefined) {
+      await vscode.window.showInformationMessage('This window keeps no record of DSH runtimes.')
+      return
+    }
+    const recorded = await inspectRecordedRuntime(broker, resolveDshHome())
+    if (recorded.state === 'none' || recorded.state === 'gone') {
+      await vscode.window.showInformationMessage(
+        'No DSH runtime started by this extension is on record. A runtime you started yourself — the desktop app, or a `dsh web` in a terminal — is not managed here; "DSH: Diagnose Session Occupancy" finds what holds a conversation.')
+      return
+    }
+    if (recorded.state === 'attach-only') {
+      await vscode.window.showInformationMessage(`The recorded DSH runtime (${describeDescriptor(recorded.descriptor)}) is attach-only and is never ended from here.`)
+      return
+    }
+    const { descriptor, held } = recorded
+    const where = descriptor.cwd === '' ? '' : `, started in ${descriptor.cwd}`
+    const count = recorded.heldIsLowerBound ? `at least ${String(held)}` : String(held)
+    const choice = await vscode.window.showWarningMessage(
+      `End the DSH runtime this extension started?\n\n${describeDescriptor(descriptor)}${where}. It is holding ${count} conversation(s); ending it releases them so the desktop app or another instance can use them.`,
+      { modal: true }, 'End It')
+    if (choice !== 'End It') return
+    const result = await endRecordedRuntime(broker, descriptor)
+    output.appendLine(`[runtime] ${result.ended ? 'ended' : `did not end (${result.reason})`} ${describeDescriptor(descriptor)}; ${count} conversation(s) released`)
+    if (result.ended) {
+      await vscode.window.showInformationMessage(`Ended the DSH runtime: ${count} conversation(s) released.`)
+      return
+    }
+    await vscode.window.showWarningMessage(result.reason === 'unproved'
+      ? `That DSH runtime did not answer with its own launch token, so it was left alone — the process with pid ${String(descriptor.pid)} may not be it any more. "DSH: Diagnose Session Occupancy" reports what holds a conversation now.`
+      : `The runtime was asked to end but pid ${String(descriptor.pid)} is still there. See the DeepSeek Harness output for details.`)
   }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.reconnect', async () => {
     await controller.reconnect().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
@@ -3153,7 +3771,7 @@ export function activate(context: vscode.ExtensionContext): void {
     } else if (editorContext.pinSelection()) {
       prompt = 'Fix the selected code.'
     } else {
-      const activeFile = editorContext.viewState().activeFile
+      const activeFile = editorContext.viewState().availableFile
       if (activeFile === undefined) {
         void vscode.window.showInformationMessage('Open a file in the current DeepSeek project first.')
         return
@@ -3171,6 +3789,53 @@ export function activate(context: vscode.ExtensionContext): void {
     provider.setPrompt(problemPrompt(problem))
   }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.showOutput', () => { output.show(true) }))
+  /**
+   * Read-only occupancy report for the open conversation.
+   *
+   * DSH returns a lock only when its owner exits, so when a conversation is held
+   * elsewhere the user needs to know *which* process holds it. This reports that
+   * and offers the command to run; it never terminates anything, because the
+   * holder may be the desktop app or a `dsh web` the user started themselves.
+   */
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.diagnoseOccupancy', async () => {
+    const sessionId = controller.state.sessionId
+    if (sessionId === '') {
+      await vscode.window.showInformationMessage('Open a conversation first — this reports which process is holding it.')
+      return
+    }
+    const home = resolveDshHome()
+    const locks = sessionLockPaths(home, sessionId)
+    output.appendLine(`[occupancy] conversation ${sessionId}: ${String(locks.length)} lock file(s) under ${home}`)
+    if (process.platform === 'win32') {
+      output.appendLine('[occupancy] Windows cannot report which process holds a lock file.')
+      await vscode.window.showInformationMessage(
+        'Windows cannot report which process holds a conversation. Quit the other DSH instance — the desktop app, another VS Code window, or a `dsh web` in a terminal — then reconnect.')
+      return
+    }
+    const reports = await Promise.all(locks.map(async lock => await describeLockHolders(lock)))
+    const holders = reports.flatMap(report => report.holders)
+    for (const holder of holders) output.appendLine(`[occupancy] held by pid ${String(holder.pid)} (${holder.command})`)
+    if (holders.length === 0 && reports.some(report => !report.available)) {
+      output.appendLine('[occupancy] the process listing tool is unavailable, so the holder could not be identified')
+      await vscode.window.showInformationMessage(
+        'This conversation is held by another DSH instance, but this machine cannot list the process holding it. Quit the other DSH instance — the desktop app, another VS Code window, or a `dsh web` in a terminal.')
+      return
+    }
+    if (holders.length === 0) {
+      output.appendLine('[occupancy] no running process holds it')
+      await vscode.window.showInformationMessage(locks.length === 0
+        ? 'No DSH instance has this conversation open, so nothing is holding it.'
+        : 'No running process holds this conversation. A lock file stays behind after its holder exits; that is normal.')
+      return
+    }
+    const summary = holders.map(holder => `${holder.command} (pid ${String(holder.pid)})`).join(', ')
+    const choice = await vscode.window.showWarningMessage(
+      `This conversation is held by: ${summary}. DSH releases a conversation only when its owner exits, so ending that process is the only way to free it.`,
+      'Copy kill command', 'Show Output')
+    if (choice === 'Copy kill command') {
+      await vscode.env.clipboard.writeText(`kill ${holders.map(holder => String(holder.pid)).join(' ')}`)
+    } else if (choice === 'Show Output') output.show(true)
+  }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.openInBrowser', async () => {
     try {
       await runtime.start(controller.cwd === '' ? undefined : vscode.Uri.file(controller.cwd))
@@ -3183,6 +3848,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.configureApiKey', async () => {
     await configureApiKey(controller, context.secrets, output)
+  }))
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.configureTaskServices', async () => {
+    await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:fallleaves01.dsh-sidebar enable')
   }))
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.clearApiKey', async () => {

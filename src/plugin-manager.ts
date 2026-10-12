@@ -5,7 +5,14 @@ import { pickRuntimeSettingsNamespace } from './runtime-settings-picker.js'
 import { PLUGIN_STATUS_ICONS, PLUGIN_STATUS_LABELS, runtimePluginGroups } from './runtime-plugin-inventory.js'
 import { resolveLaunch } from './launch.js'
 import { terminateProcessTree } from './process-tree.js'
-import { isCurrentRuntimeTarget, restartAfterRuntimeChange, runtimeChangeTarget, type RuntimeChangeController, type RuntimeChangeTarget } from './runtime-change.js'
+import {
+  isCurrentRuntimeTarget,
+  restartAfterRuntimeChange,
+  runtimeChangeTarget,
+  runtimeIsNotOurs,
+  type RuntimeChangeController,
+  type RuntimeChangeTarget,
+} from './runtime-change.js'
 import {
   COMMUNITY_REGISTRY_URL,
   parseCommunityRuntimePlugins,
@@ -67,12 +74,12 @@ export class DshPluginManager {
   async show(): Promise<void> {
     while (true) {
       // An external server need not use this machine's web profile.
-      const external = this.controller.runtimeOwnership === 'external'
+      const external = runtimeIsNotOurs(this.controller.runtimeOwnership)
       const plugins = external ? [] : readInstalledPlugins(resolveDshHome())
       const inventory = await this.tryInventory()
       const selected = await vscode.window.showQuickPick(this.items(plugins, inventory), {
         title: 'DeepSeek Harness Runtime Plugins',
-        placeHolder: this.controller.runtimeOwnership === 'external'
+        placeHolder: runtimeIsNotOurs(this.controller.runtimeOwnership)
           ? 'Connected DSH runtime · use its CLI to install or remove plugins'
           : 'Tools, skills, MCP, memory, and agent hooks loaded by the DSH web profile',
         matchOnDescription: true,
@@ -113,7 +120,7 @@ export class DshPluginManager {
       {
         action: 'browse',
         label: '$(search) Find community runtime plugins…',
-        detail: this.controller.runtimeOwnership === 'external'
+        detail: runtimeIsNotOurs(this.controller.runtimeOwnership)
           ? 'Browse plugin sources; install using the external runtime’s CLI'
           : 'Search tools, skills, MCP integrations, memory, and agent hooks; install with one click',
       },
@@ -130,14 +137,14 @@ export class DshPluginManager {
       {
         action: 'refresh',
         label: '$(refresh) Refresh',
-        detail: this.controller.runtimeOwnership === 'external'
+        detail: runtimeIsNotOurs(this.controller.runtimeOwnership)
           ? 'Read the connected runtime’s Loader status again'
           : 'Read the current web profile and Loader status again',
       },
       { action: 'empty', label: 'Installed for the DSH web profile', kind: vscode.QuickPickItemKind.Separator },
     ]
 
-    if (this.controller.runtimeOwnership === 'external') {
+    if (runtimeIsNotOurs(this.controller.runtimeOwnership)) {
       return items.filter(item => item.action !== 'install' && item.action !== 'empty')
     }
     if (plugins.length === 0) {
@@ -248,7 +255,7 @@ export class DshPluginManager {
       location: vscode.ProgressLocation.Notification,
       title: 'Loading DSH community runtime plugins…',
     }, async () => this.loadCatalog())
-    const installed = new Set(this.controller.runtimeOwnership === 'external'
+    const installed = new Set(runtimeIsNotOurs(this.controller.runtimeOwnership)
       ? [] : readInstalledPlugins(resolveDshHome()).map(plugin => plugin.name))
     const selected = await vscode.window.showQuickPick(plugins.map(plugin => {
       const alreadyInstalled = installed.has(plugin.npm ?? plugin.name)
@@ -267,7 +274,7 @@ export class DshPluginManager {
       matchOnDetail: true,
     })
     if (selected === undefined) return
-    const actions = selected.alreadyInstalled || this.controller.runtimeOwnership === 'external'
+    const actions = selected.alreadyInstalled || runtimeIsNotOurs(this.controller.runtimeOwnership)
       ? [{ label: '$(github) Open on GitHub', action: 'open' as const }]
       : [
           { label: '$(cloud-download) Install', action: 'install' as const },
@@ -532,7 +539,7 @@ export class DshPluginManager {
   }
 
   private async runOfficialPluginCommand(args: readonly string[], title: string): Promise<RuntimeChangeTarget> {
-    if (this.controller.runtimeOwnership === 'external') {
+    if (runtimeIsNotOurs(this.controller.runtimeOwnership)) {
       throw new Error('Install or remove plugins using the CLI of the external DSH runtime, or switch to a managed runtime. No local profile was changed.')
     }
     if (!await this.requireIdle()) throw new Error('Plugin operation cancelled. Reconnect DSH or finish its running tasks before trying again.')
@@ -557,7 +564,7 @@ export class DshPluginManager {
       title,
       cancellable: true,
     }, async (_progress, token) => new Promise<void>((resolvePromise, rejectPromise) => {
-      if (!this.isCurrentTarget(target) || this.controller.runtimeOwnership === 'external'
+      if (!this.isCurrentTarget(target) || runtimeIsNotOurs(this.controller.runtimeOwnership)
         || this.controller.state.phase === 'loading' || this.controller.hasRunningTasks
         || (this.controller.runtimeOwnership !== undefined && this.controller.state.phase !== 'ready')) {
         rejectPromise(new Error('The runtime changed or a task started. Reopen plugin management before making changes.'))

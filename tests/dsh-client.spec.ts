@@ -40,7 +40,8 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
     ids.set(frame.endpoint, frame.streamId)
     queueMicrotask(() => {
       if (frame.endpoint === '$events') receive(frame.streamId, { type: 'ready', clientId: 'client-1', host: { home: '/isolated' } })
-      if (frame.endpoint === 'session/control') receive(frame.streamId, { type: 'baseline', value: { queues: {}, jobs: initialJobs, projections: {} } })
+      if (frame.endpoint === 'session/control') receive(frame.streamId, { type: 'baseline', value: jobList
+        ? { projections: {} } : { queues: {}, jobs: initialJobs, projections: {} } })
       if (frame.endpoint === 'workspace/follow') receive(frame.streamId, { type: 'baseline', value: { items: [], archivedSessionIds: ['archived'] } })
       // A conversation is addressed by id, or by parent for a subagent child.
       if (frame.endpoint === 'session/follow' && autoSnapshot) {
@@ -112,6 +113,61 @@ describe('DSH 0.1.2 chat transport', () => {
     // Every other subscription is still live.
     expect(h.socket.readyState).toBe(1)
     expect(h.errors).toEqual([])
+  })
+
+  describe('a conversation-scoped subscription that rejects its own frame', () => {
+    it('fails that conversation alone and leaves the runtime feed running', async () => {
+      const h = harness()
+      await h.client.startStreams()
+      const opening = await h.client.openSession('s')
+      opening.activate()
+      // A gap in this conversation's events. It used to terminate the socket and
+      // fail every stream, so the sidebar needed a manual reconnect that hit the
+      // same frame again; `optional` is what keeps it to this conversation.
+      h.push('session/follow', event(9))
+      expect(h.errors).toHaveLength(1)
+      expect(h.errors[0]?.message).toContain('Non-contiguous')
+      expect(h.socket.readyState).toBe(1)
+      // The runtime-wide subscriptions still deliver, and another conversation
+      // can still be opened.
+      h.push('$events', { type: 'emit', event: 'commands/change', args: [] })
+      expect(h.frames.some(frame => frame.payload.type === 'host/commands-changed')).toBe(true)
+      await expect(h.client.openSession('s2')).resolves.toBeDefined()
+      expect(h.errors).toHaveLength(1)
+    })
+
+    it('reports a conversation stream that ends after its snapshot was shown', async () => {
+      const h = harness()
+      await h.client.startStreams()
+      const opening = await h.client.openSession('s')
+      opening.activate()
+      const follow = h.outgoing.find(entry => entry.endpoint === 'session/follow')!
+      h.socket.emit('message', Buffer.from(JSON.stringify({ type: 'error', streamId: follow.streamId, error: { code: 'session/writer-held' } })), false)
+      // Silence here was the bug: the transcript stopped updating with no notice.
+      expect(h.errors).toHaveLength(1)
+      expect(h.errors[0]?.message).toContain('session/follow')
+      expect(opening.isCurrent()).toBe(false)
+      expect(h.socket.readyState).toBe(1)
+    })
+
+    it('reports one failure when the shared carrier goes down', async () => {
+      const h = harness()
+      await h.client.startStreams()
+      const opening = await h.client.openSession('s')
+      opening.activate()
+      h.socket.emit('close')
+      // The carrier reports itself; the stream it failed must not report again.
+      expect(h.errors).toHaveLength(1)
+    })
+
+    it('still tears the feed down when a runtime-wide handler rejects its frame', async () => {
+      const h = harness()
+      await h.client.startStreams()
+      h.push('session/control', { type: 'not-a-control-frame' })
+      expect(h.errors).toHaveLength(1)
+      expect(h.socket.readyState).toBe(3)
+      expect(h.connection.openStreamSocket).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('still tears the feed down when a runtime-wide subscription fails', async () => {
@@ -756,4 +812,171 @@ describe('packed DSH history', () => {
     expect(() => decodeHistory([{ type: 'chunks', event: { type: 'chunkrow/text-chunks', seq: 0, time: 0, data: { texts: ['a'], dt: [1] } } }])).toThrow()
     expect(() => decodeHistory([{ type: 'chunks', event: { type: 'chunkrow/unknown', seq: 0, time: 0, data: {} } }])).toThrow()
   })
+})
+
+describe('background task and delegated request lifecycle', () => {
+  const job = { id: 'bash-1', kind: 'bash', label: 'Tests', status: 'running', startedAt: 1 }
+
+  it('keeps the current job/list baseline when the conversation activates', async () => {
+    const h = harness(true, { s: [job] }, true)
+    await h.client.startStreams()
+    const opening = await h.client.openSession('s')
+    opening.activate()
+    expect(h.frames.filter(f => f.payload.type === 'session/jobs').at(-1)?.payload.jobs).toEqual([job])
+  })
+
+  it('continues watching live jobs after switching conversations and releases the stream when they finish', async () => {
+    const h = harness(true, { s: [job] }, true)
+    await h.client.startStreams()
+    ;(await h.client.openSession('s')).activate()
+    const first = h.outgoing.find(f => f.endpoint === 'job/list')!
+    ;(await h.client.openSession('other')).activate()
+    expect(h.outgoing.some(f => f.type === 'cancel' && f.streamId === first.streamId)).toBe(false)
+    h.receive(first.streamId, { type: 'rows', jobs: [{ ...job, status: 'completed', finishedAt: 10 }] })
+    expect(h.frames.filter(f => f.payload.type === 'session/jobs' && f.payload.sessionId === 's').at(-1)?.payload.jobs)
+      .toEqual([{ ...job, status: 'completed', finishedAt: 10 }])
+    expect(h.outgoing.some(f => f.type === 'cancel' && f.streamId === first.streamId)).toBe(true)
+  })
+
+  it('keeps a child approval pending when its parent is open and presents it on opening the child', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    ;(await h.client.openSession('parent')).activate()
+    h.push('$events', { type: 'emit', event: 'api-session/added', args: [{
+      sessionId: 'child', parentSessionId: 'parent', origin: 'subagent', updatedAt: 1, running: true, blank: false,
+    }] })
+    h.push('$events', { type: 'waterfall', eventId: 'child-approval', agentId: 'child', event: 'approval/request', request: { toolName: 'Write' } })
+    expect(h.requests.some(r => r.endpoint === '$events/result')).toBe(false)
+    expect(h.frames.at(-1)?.payload).toMatchObject({ type: 'host/session-attention', sessionId: 'child', approvals: 1 })
+    ;(await h.client.openSession('child', 'parent')).activate()
+    expect(h.frames.at(-1)).toMatchObject({ rpcId: 'child-approval', payload: { type: 'approval/requested' } })
+    await h.client.respond('child-approval', { sessionId: 'child', outcome: 'rejected' })
+    expect(h.requests.at(-1)?.args).toMatchObject({ outcome: { kind: 'result', value: 'rejected' } })
+  })
+
+  it('recognizes persisted descendants through the parent catalog without claiming unrelated approvals', async () => {
+    const h = harness(false)
+    await h.client.startStreams()
+    const pending = h.client.openSession('parent')
+    await Promise.resolve()
+    h.push('session/follow', snapshot('parent', 5, { subagentCatalog: [{ id: 'child', mode: 'continuable', createdAt: 1 }] }))
+    ;(await pending).activate()
+    h.push('session/control', { type: 'projection', sessionId: 'child', key: 'subagentCatalog', seq: 6,
+      value: [{ id: 'grandchild', mode: 'one-shot', createdAt: 2 }] })
+    h.push('$events', { type: 'waterfall', eventId: 'nested', agentId: 'grandchild', event: 'user-questions/request', request: { questions: [] } })
+    expect(h.frames.at(-1)?.payload).toMatchObject({ type: 'host/session-attention', sessionId: 'grandchild', questions: 1 })
+    h.push('$events', { type: 'waterfall', eventId: 'stranger', agentId: 'elsewhere', event: 'approval/request', request: {} })
+    await Promise.resolve()
+    expect(h.requests.filter(r => r.endpoint === '$events/result')).toEqual([
+      { endpoint: '$events/result', args: { clientId: 'client-1', eventId: 'stranger', outcome: { kind: 'next' } } },
+    ])
+  })
+})
+
+describe('task feature RPCs and project background discovery', () => {
+  it('sends published Goal, Schedule, search and output observer argument envelopes', async () => {
+    const h = harness(); h.results['goals/get'] = { id: 'g', revision: 2, objective: 'Review', phase: 'active', maxGoalRounds: 4, roundsStarted: 0, activation: 'armed' }
+    h.results['schedule/catalog'] = []; h.results['session/search'] = { items: [], hasMore: false }
+    expect((await h.client.goal('s'))?.activation).toBe('armed')
+    await h.client.changeGoal('s', 'edit', { id: 'g', revision: 2 }, { objective: 'New', maxGoalRounds: 6 })
+    await h.client.schedules(); await h.client.scheduleHistory('s', 'r', 'cursor'); await h.client.searchHistory('needle')
+    expect(h.requests).toEqual(expect.arrayContaining([
+      { endpoint: 'goals/get', args: { agentId: 's' } },
+      { endpoint: 'goals/edit', args: { agentId: 's', ref: { id: 'g', revision: 2 }, request: { objective: 'New', maxGoalRounds: 6 } } },
+      { endpoint: 'schedule/catalog', args: {} },
+      { endpoint: 'schedule/history', args: { request: { sessionId: 's', id: 'r', before: 'cursor', limit: 20 } } },
+      { endpoint: 'session/search', args: { request: { query: 'needle' } } },
+    ]))
+    const output: unknown[] = [], fail = vi.fn(); const cancel = h.client.observeJob('s', 'job', 99, frame => output.push(frame), fail)
+    await Promise.resolve(); await Promise.resolve()
+    expect(h.outgoing.find(frame => frame.endpoint === 'job/follow')?.payload.args).toEqual({ request: { sessionId: 's', jobId: 'job', from: 99 } })
+    h.push('job/follow', { type: 'output', chunks: [{ at: 1234, text: 'hello', channel: 'log' }], next: 104 })
+    expect(output).toHaveLength(1); cancel()
+    expect(h.outgoing.some(frame => frame.type === 'cancel')).toBe(true)
+    expect(h.requests.some(request => /job\/(read|collect)/.test(request.endpoint))).toBe(false)
+  })
+  it('discovers work in unvisited conversations with at most eight pending baselines', async () => {
+    const h = harness(false); await h.client.startStreams()
+    const ids = Array.from({ length: 20 }, (_, index) => 'owner-' + index)
+    h.client.monitorJobs(ids)
+    const opens = () => h.outgoing.filter(frame => frame.endpoint === 'job/list')
+    expect(opens()).toHaveLength(8)
+    const first = opens()[0]; h.receive(first.streamId, { type: 'rows', jobs: [{ id: 'j', kind: 'process', label: 'Unvisited job', status: 'running', startedAt: 1 }] })
+    expect(opens()).toHaveLength(9)
+    expect(h.frames.some(frame => frame.payload.type === 'session/jobs' && frame.payload.sessionId === 'owner-0' && (frame.payload.jobs as any[]).length === 1)).toBe(true)
+    expect(h.outgoing.some(frame => frame.type === 'cancel' && frame.streamId === first.streamId)).toBe(false)
+    h.receive(first.streamId, { type: 'rows', jobs: [{ id: 'j', kind: 'process', label: 'Unvisited job', status: 'completed', startedAt: 1 }] })
+    expect(h.outgoing.some(frame => frame.type === 'cancel' && frame.streamId === first.streamId)).toBe(true)
+  })
+  it('does not repeatedly rescan idle sessions and retries only after explicit Refresh', async () => {
+    const h = harness(false, {}, true); await h.client.startStreams()
+    h.client.monitorJobs(['one', 'two']); await Promise.resolve(); await Promise.resolve()
+    const count = h.outgoing.filter(frame => frame.endpoint === 'job/list').length
+    h.client.monitorJobs(['one', 'two']); await Promise.resolve()
+    expect(h.outgoing.filter(frame => frame.endpoint === 'job/list')).toHaveLength(count)
+    h.client.monitorJobs(['one', 'two'], true); await Promise.resolve(); await Promise.resolve()
+    expect(h.outgoing.filter(frame => frame.endpoint === 'job/list')).toHaveLength(count + 2)
+  })
+  it('reports failed task subscriptions while keeping the main event feed usable', async () => {
+    const h = harness(false); await h.client.startStreams(); h.client.monitorJobs(['owner'])
+    const stream = h.outgoing.find(frame => frame.endpoint === 'job/list')
+    h.socket.emit('message', Buffer.from(JSON.stringify({ type: 'error', streamId: stream.streamId, error: { code: 'gateway/not-found' } })), false)
+    expect(h.frames.some(frame => frame.payload.type === 'session/jobs-status' && String(frame.payload.error).includes('stale'))).toBe(true)
+    expect(h.errors).toEqual([])
+    h.push('$events', { type: 'emit', event: 'api-session/status', args: ['owner', true] })
+    expect(h.frames.some(frame => frame.payload.type === 'host/session-status')).toBe(true)
+  })
+  it('treats an idle live parent as available and a disposed parent as unavailable', async () => {
+    const h = harness(); await h.client.startStreams()
+    h.results['session/list'] = { items: [{ sessionId: 'p', cwd: '/project', running: false, blank: false, updatedAt: 0, agentAvailable: true }] }
+    h.push('$events', { type: 'emit', event: 'api-session/removed', args: ['p'] })
+    expect((await h.client.listSessions()).items[0]?.agentAvailable).toBe(false)
+    h.push('$events', { type: 'emit', event: 'api-session/status', args: ['p', false] })
+    expect((await h.client.listSessions()).items[0]?.agentAvailable).toBe(true)
+  })
+  it('forwards Goal activation and reminder invalidations using real emit frames', async () => {
+    const h = harness(); await h.client.startStreams()
+    h.push('$events', { type: 'emit', event: 'schedule/changed', args: [] })
+    h.push('$events', { type: 'emit', event: 'goal/activation-changed', args: [{ agentId: 's', activation: 'armed' }] })
+    expect(h.frames.some(frame => frame.payload.type === 'host/schedules-changed')).toBe(true)
+    expect(h.frames.some(frame => frame.payload.type === 'host/goal-activation-changed')).toBe(true)
+    expect(h.errors).toEqual([])
+  })
+})
+
+it('cancels a malformed optional output stream remotely without aborting the runtime feed', async () => {
+  const h = harness(); await h.client.startStreams()
+  const fail = vi.fn(); h.client.observeJob('s', 'job', 0, () => { throw new Error('Invalid output') }, fail)
+  const id = h.ids.get('job/follow')!
+  h.receive(id, { invalid: true })
+  expect(fail).toHaveBeenCalledOnce()
+  expect(h.outgoing).toContainEqual({ type: 'cancel', streamId: id })
+  expect(h.errors).toEqual([])
+})
+
+it('keeps an initially running but unvisited owner subscribed before its first job appears', async () => {
+  const h = harness(false, {}, true); await h.client.startStreams()
+  h.results['session/list'] = { items: [{ sessionId: 'unvisited', cwd: '/project', running: true, blank: false, updatedAt: 0, agentAvailable: true }] }
+  await h.client.listSessions(); h.client.monitorJobs(['unvisited']); await Promise.resolve(); await Promise.resolve()
+  const stream = h.outgoing.find(frame => frame.endpoint === 'job/list')
+  expect(h.outgoing.some(frame => frame.type === 'cancel' && frame.streamId === stream.streamId)).toBe(false)
+  h.receive(stream.streamId, { type: 'rows', jobs: [{ id: 'late', label: 'Born later', kind: 'process', status: 'running', startedAt: 1 }] })
+  expect(h.frames.some(frame => frame.payload.type === 'session/jobs' && (frame.payload.jobs as any[])[0]?.id === 'late')).toBe(true)
+})
+
+it('cancels all independent observers on client disposal and refuses new observations', async () => {
+  const h = harness(false)
+  const first = h.client.observeSession('one', undefined, () => {}, () => {})
+  const second = h.client.observeSession('two', undefined, () => {}, () => {})
+  const pending = Promise.allSettled([first.opening, second.opening])
+  h.client.dispose()
+  expect((await pending).every(result => result.status === 'rejected')).toBe(true)
+  expect(() => h.client.observeSession('three', undefined, () => {}, () => {})).toThrow()
+  first.dispose(); second.dispose()
+})
+
+it('creates a new Goal after completion without sending the old Goal ref to a strict endpoint', async () => {
+  const h = harness()
+  await h.client.changeGoal('s', 'create', { id: 'old', revision: 5 }, { objective: 'Next task', maxGoalRounds: 8 })
+  expect(h.requests.at(-1)).toEqual({ endpoint: 'goals/create', args: { agentId: 's', request: { objective: 'Next task', maxGoalRounds: 8 } } })
 })

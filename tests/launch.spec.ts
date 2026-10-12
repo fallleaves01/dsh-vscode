@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -17,7 +17,11 @@ describe('DSH launch resolution', () => {
     expect(parseDshWebUrl('dsh web: http://127.0.0.1:3080/path')).toBeUndefined()
     expect(parseDshWebUrl('dsh web: http://127.0.0.1:0')).toBeUndefined()
     expect(parseDshWebUrl('dsh web: http://127.0.0.1:999999')).toBeUndefined()
-    expect(parseDshWebUrl('dsh web: http://127.0.0.1/?token=token')).toBe('http://127.0.0.1/?token=token')
+    // A URL with no port is not the endpoint DSH bound: the parser erases a
+    // default port, so accepting this form would hand the launch token to whatever
+    // listens on loopback :80.
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1/?token=token')).toBeUndefined()
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1:80/?token=token')).toBeUndefined()
   })
 
   it('suppresses the rc.8 browser handoff while preserving older DSH launches', () => {
@@ -74,6 +78,31 @@ describe('DSH launch resolution', () => {
       args: ['web'],
       sourceCheckout: false,
     })
+  })
+
+  it.runIf(process.platform !== 'win32')('starts an npm-installed DSH with adjacent Node even when PATH contains no Node', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-posix-path-'))
+    const bin = join(root, 'bin'), pkg = join(root, 'lib/node_modules/@deepseek-ai/dsh')
+    mkdirSync(bin, { recursive: true }); mkdirSync(join(pkg, 'lib'), { recursive: true })
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', bin: { dsh: 'lib/bin.js' } }))
+    const entry = join(pkg, 'lib/bin.js'), executable = join(bin, 'dsh'), node = join(bin, 'node')
+    writeFileSync(entry, '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify(process.argv.slice(2)))\n')
+    chmodSync(entry, 0o755); symlinkSync(entry, executable); symlinkSync(process.execPath, node)
+    const launch = resolveLaunch(root, executable, ['--version', 'literal;argument'], { platform: 'linux', env: { PATH: '/no/node/here' } })
+    expect(launch).toEqual({ command: node, args: [realpathSync(entry), '--version', 'literal;argument'], sourceCheckout: false, env: { PATH: bin + ':/no/node/here' } })
+    const result = spawnSync(launch.command, launch.args, { encoding: 'utf8', env: { ...process.env, ...launch.env } })
+    expect(result.status).toBe(0); expect(JSON.parse(result.stdout)).toEqual(['--version', 'literal;argument'])
+  })
+
+  it.runIf(process.platform !== 'win32')('uses the extension host Node when an official install has no adjacent runtime', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-posix-fallback-'))
+    const pkg = join(root, 'node_modules/@deepseek-ai/dsh')
+    mkdirSync(join(pkg, 'lib'), { recursive: true })
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', bin: { dsh: 'lib/bin.js' } }))
+    const entry = join(pkg, 'lib/bin.js'); writeFileSync(entry, '#!/usr/bin/env node\n')
+    const launch = resolveLaunch(root, entry, ['web'], { platform: 'darwin', env: { PATH: '' } })
+    expect(launch.command).toBe(process.execPath); expect(launch.args).toEqual([realpathSync(entry), 'web'])
+    expect(launch.env?.ELECTRON_RUN_AS_NODE).toBe('1')
   })
 
   it('falls back to the installed DSH executable outside a source checkout', () => {

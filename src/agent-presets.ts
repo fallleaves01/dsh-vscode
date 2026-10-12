@@ -46,7 +46,13 @@ export function agentPresetStateOf(
 }
 
 export function selectAgentPresetState(state: AgentPresetState, id: string, busy = state.busy): AgentPresetState {
-  if (!state.options.some(option => option.id === id)) return state
+  // An id the roster does not offer cannot become the selection — but the busy
+  // flag still has to land. A failed select whose fallback id is unknown (the
+  // preset was removed, or broken) used to return the state untouched, leaving
+  // `busy` true and the dropdown disabled for the rest of the conversation.
+  if (!state.options.some(option => option.id === id)) {
+    return state.busy === busy ? state : { ...state, busy }
+  }
   return {
     ...state,
     current: id,

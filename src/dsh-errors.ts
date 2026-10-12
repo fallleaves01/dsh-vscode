@@ -6,6 +6,34 @@
  * shown as raw protocol text.
  */
 
+/**
+ * Whether a failure means "another DSH process holds this conversation".
+ *
+ * Two shapes reach the sidebar. A Remote call carries `session/writer-held`. The
+ * *agent* channel cannot: when opening a conversation makes the host try to resume
+ * it, the resume runs in the background and its failure is delivered as text only —
+ * `session "…" is already owned by an active write handle`, the message of the
+ * persistence layer's `SessionAlreadyOwnedError`. `messageFeedback` can leak the
+ * same text under `gateway/internal`. All three mean the same thing to a user, and
+ * all three must be recognised, because a held conversation is a normal state
+ * rather than a fault: a single-writer conversation is simply owned elsewhere.
+ */
+export function isConversationHeld(error: unknown): boolean {
+  const failure = dshFailure(error)
+  if (failure.code === 'session/writer-held') return true
+  return OWNED_ELSEWHERE.test(failure.message)
+}
+
+/**
+ * The persistence layer's wording for the same condition.
+ *
+ * Deliberately narrow. The friendlier "already in use" phrasing exists only in
+ * DSH's own client copy, and matching it here would also catch
+ * `EADDRINUSE: address already in use 127.0.0.1:3080` — a port conflict, which is
+ * a completely different problem and must keep its own wording.
+ */
+const OWNED_ELSEWHERE = /is already owned by an active write handle/i
+
 /** Codes the sidebar knows how to explain, keyed exactly as DSH reports them. */
 const MESSAGES: Readonly<Record<string, string>> = {
   'session/provider-credentials-unavailable':
@@ -45,6 +73,9 @@ const MESSAGES: Readonly<Record<string, string>> = {
   'subagent/delivery-unavailable':
     'This subagent cannot accept a follow-up right now. Try again in a moment.',
 }
+
+/** The one sentence the sidebar shows for a conversation it cannot write to. */
+export const CONVERSATION_HELD_TEXT: string = MESSAGES['session/writer-held'] as string
 
 /**
  * A path that is not on this machine.
@@ -113,7 +144,12 @@ export function dshErrorText(error: unknown): string {
   }
   const code = failure.code ?? leadingCode(failure.message)
   const known = code === undefined ? undefined : MESSAGES[code]
-  if (known === undefined || code === undefined) return failure.message
+  if (known === undefined || code === undefined) {
+    // A held conversation can arrive under a generic code (`gateway/internal` from
+    // message feedback) or as bare text (the background resume during `follow`).
+    // Both are the same ordinary condition, so neither gets raw protocol wording.
+    return isConversationHeld(failure) ? CONVERSATION_HELD_TEXT : failure.message
+  }
   // Drop the prefix we just consumed so the notice reads as one sentence.
   const body = failure.message.replace(/^\s*[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*\s*:\s*/, '')
   return `${known}${detailOf({ code, message: body })}`
