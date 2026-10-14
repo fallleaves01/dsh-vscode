@@ -62,6 +62,16 @@ function clickSummary(h: Harness): void {
 }
 
 describe('tool output disclosure', () => {
+  it('keeps the original conversation scope on a lazily opened tool diff', async () => {
+    const h = open()
+    await show(h, finishedTool({ resultView: { card: 'diff', diffs: [{ path: 'src/shared.ts', oldText: 'before', newText: 'after' }] } }))
+    clickSummary(h)
+    await tick()
+    const review = [...h.document.querySelectorAll<HTMLButtonElement>('.tool-action')].find(button => button.textContent === 'Review Changes')!
+    review.click()
+    expect(h.posts.at(-1)).toMatchObject({ type: 'review-file', path: 'src/shared.ts', sessionId: 'session-a', cwd: '/workspace' })
+  })
+
   it('opens while the tool runs and closes again once it has finished', async () => {
     const h = open()
     await show(h, runningTool())

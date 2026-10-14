@@ -32,6 +32,7 @@ import {
 } from './collaboration-state.js'
 import { configureApiKey, clearApiKey, watchDebugConfiguration } from './runtime-configuration.js'
 import { DiffReviewManager, type ChangedFileGroup } from './diff-review.js'
+import { dispatchChangeAction } from './change-actions.js'
 import { DebugRuntimeContribution } from './debug-runtime-contribution.js'
 import { TaskRuntimeContribution } from './task-runtime-contribution.js'
 import { DebugSessionManager } from './debug-session-manager.js'
@@ -867,17 +868,31 @@ export class DshChatController implements vscode.Disposable {
     await this.restart()
   }
 
-  async newSession(): Promise<void> {
+  async newSession(expected?: { cwd: string; sessionId: string }): Promise<string | undefined> {
     this.requireReady()
+    const generation = this.sessionLoadGeneration
+    if (expected !== undefined && (expected.cwd !== this.cwd || expected.sessionId !== this._state.sessionId)) {
+      throw new Error('The project or conversation changed. Start the draft again from the conversation list.')
+    }
     const client = this.requireClient()
     const created = await client.createSession(this.cwd)
-    if (this.client !== client) return
+    if (this.client !== client) {
+      if (expected !== undefined) throw new Error('The runtime changed before the new conversation opened. Your draft was retained.')
+      return
+    }
+    if (expected !== undefined && (expected.cwd !== this.cwd || generation !== this.sessionLoadGeneration)) {
+      throw new Error('The project or conversation changed before the new draft opened. Your text was retained.')
+    }
     // The runtime created it, so it has to be opened even when another load
     // started in the meantime: a conversation with no messages does not earn a row
     // in the list, so returning quietly left the user's click as a no-op and the
     // conversation unreachable. Opening it directly is what `forkConversation`
     // does for the same reason.
     await this.loadSession(created.sessionId)
+    if (expected !== undefined && (this.client !== client || this._state.sessionId !== created.sessionId || this._state.phase !== 'ready')) {
+      throw new Error('The new conversation could not be opened. Your draft was retained.')
+    }
+    return created.sessionId
   }
 
   async selectSession(sessionId: string): Promise<void> {
@@ -2478,14 +2493,16 @@ export class DshChatController implements vscode.Disposable {
 
   async revertFile(filePath: string, turn: number): Promise<void> {
     if (this._state.sessionId === '') return
+    const sessionId = this._state.sessionId, cwd = this.cwd, generation = this.sessionLoadGeneration
     const confirmed = await vscode.window.showWarningMessage(
       `Revert DeepSeek changes to ${filePath}?`,
       { modal: true, detail: 'This restores the file to its content before this turn. The revert is blocked if the file has changed since.' },
       'Revert',
     )
     if (confirmed !== 'Revert') return
+    if (this._state.sessionId !== sessionId || this.cwd !== cwd || generation !== this.sessionLoadGeneration) return
     try {
-      this.publish({ changedFiles: this.diffReviews.revertFile(this._state.sessionId, this.cwd, filePath, turn) })
+      this.publish({ changedFiles: this.diffReviews.revertFile(sessionId, cwd, filePath, turn) })
       await vscode.commands.executeCommand('workbench.files.action.refreshFilesExplorer')
       await vscode.window.showInformationMessage(`Reverted ${filePath}.`)
     } catch (error) {
@@ -2495,6 +2512,7 @@ export class DshChatController implements vscode.Disposable {
 
   async revertAll(): Promise<void> {
     if (this._state.sessionId === '') return
+    const sessionId = this._state.sessionId, cwd = this.cwd, generation = this.sessionLoadGeneration
     const count = this._state.changedFiles.reduce((total, group) => total + group.files.length, 0)
     if (count === 0) return
     const confirmed = await vscode.window.showWarningMessage(
@@ -2503,8 +2521,9 @@ export class DshChatController implements vscode.Disposable {
       'Revert All',
     )
     if (confirmed !== 'Revert All') return
+    if (this._state.sessionId !== sessionId || this.cwd !== cwd || generation !== this.sessionLoadGeneration) return
     try {
-      this.publish({ changedFiles: this.diffReviews.revertAll(this._state.sessionId) })
+      this.publish({ changedFiles: this.diffReviews.revertAll(sessionId) })
       await vscode.commands.executeCommand('workbench.files.action.refreshFilesExplorer')
       await vscode.window.showInformationMessage(`Reverted changes in ${String(count)} files.`)
     } catch (error) {
@@ -2565,6 +2584,7 @@ class DshSurface implements vscode.Disposable {
   private ready = false
   private pendingFocus = false
   private pendingPrompt: string | undefined
+  private creatingConversation = false
   private pendingState: ChatViewState | undefined
   private postedState: ChatViewState | undefined
   private stateTimer: NodeJS.Timeout | undefined
@@ -2935,6 +2955,29 @@ class DshSurface implements vscode.Disposable {
           await vscode.commands.executeCommand('deepseekHarness.configureApiKey')
           return
         case 'new-session': await this.controller.newSession(); return
+        case 'create-conversation': {
+          if (typeof value.cwd !== 'string' || typeof value.sessionId !== 'string' || typeof value.requestId !== 'string' || value.requestId.length > 128) return
+          const reply = (result: { sessionId: string } | { error: string }): Thenable<boolean> => this.webview.postMessage({ type: 'conversation-created', cwd: value.cwd, requestId: value.requestId, ...result })
+          if (this.creatingConversation) { await reply({ error: 'A new conversation is already being opened.' }); return }
+          this.creatingConversation = true
+          try {
+            const sessionId = await this.controller.newSession({ cwd: value.cwd, sessionId: value.sessionId })
+            if (sessionId === undefined || this.controller.state.sessionId !== sessionId || this.controller.state.cwd !== value.cwd || this.controller.state.phase !== 'ready') throw new Error('The conversation changed before the draft was ready. Your text was retained.')
+            const selection = typeof value.selection === 'object' && value.selection !== null ? value.selection as Record<string, unknown> : undefined
+            if (selection !== undefined) {
+              if (typeof selection.provider !== 'string' || typeof selection.model !== 'string') throw new Error('Choose a valid model for the new conversation.')
+              await this.controller.selectModel({ provider: selection.provider, model: selection.model,
+                ...(typeof selection.reasoningEffort === 'string' ? { reasoningEffort: selection.reasoningEffort } : {}) })
+            }
+            if (this.controller.state.sessionId !== sessionId || this.controller.state.cwd !== value.cwd || this.controller.state.phase !== 'ready') throw new Error('The conversation changed before the draft was ready. Your text was retained.')
+            await reply({ sessionId })
+          } catch (error) {
+            await reply({ error: dshErrorText(error) })
+          } finally {
+            this.creatingConversation = false
+          }
+          return
+        }
         case 'select-session':
           if (typeof value.sessionId === 'string') await this.controller.selectSession(value.sessionId)
           return
@@ -2969,7 +3012,7 @@ class DshSurface implements vscode.Disposable {
         }
         case 'rename-session':
           if (typeof value.sessionId === 'string') {
-            const session = this.controller.state.sessions.find(item => item.id === value.sessionId)
+            const session = [...this.controller.state.sessions, ...this.controller.state.archivedSessions].find(item => item.id === value.sessionId)
             if (session === undefined || session.blank) return
             const title = await vscode.window.showInputBox({
               title: 'Rename conversation',
@@ -2989,18 +3032,18 @@ class DshSurface implements vscode.Disposable {
         case 'archive-session':
           if (typeof value.sessionId === 'string') {
             const session = this.controller.state.sessions.find(item => item.id === value.sessionId)
-            if (session === undefined || session.blank) return
-            const confirmed = await vscode.window.showWarningMessage(
-              `Archive “${session.title}”?`,
-              { modal: true, detail: 'This removes the conversation from this sidebar. You can restore it later from the Archived section at the bottom of the conversation list; its DSH session data is not deleted.' },
-              'Archive',
-            )
-            if (confirmed !== 'Archive') return
+            if (session === undefined || session.blank || session.subagent !== undefined || session.parentId !== undefined) return
             try {
               await this.controller.archiveSession(session.id)
             } catch (error) {
               const detail = error instanceof Error ? error.message : String(error)
               await vscode.window.showErrorMessage(`Could not archive the conversation. ${detail} Update DSH if this method is unavailable.`)
+              return
+            }
+            const undo = await vscode.window.showInformationMessage('Conversation archived.', 'Undo')
+            if (undo === 'Undo') {
+              try { await this.controller.unarchiveSession(session.id) }
+              catch (error) { await vscode.window.showErrorMessage(`Could not restore the conversation. ${dshErrorText(error)}`) }
             }
           }
           return
@@ -3191,7 +3234,12 @@ class DshSurface implements vscode.Disposable {
           if (typeof value.sessionId === 'string') await this.addEncodedFiles(value.sessionId, value.files)
           return
         case 'attach-resources':
-          if (typeof value.sessionId === 'string') await this.attachResources(value.sessionId, value.uris)
+          if (typeof value.sessionId === 'string') {
+            try { await this.attachResources(value.sessionId, value.uris) }
+            finally {
+              if (typeof value.requestId === 'number' && Number.isSafeInteger(value.requestId)) await this.webview.postMessage({ type: 'context-updated', sessionId: value.sessionId, requestId: value.requestId })
+            }
+          }
           return
         case 'attachment-error':
           if (typeof value.message === 'string') await vscode.window.showWarningMessage(value.message)
@@ -3324,6 +3372,7 @@ class DshSurface implements vscode.Disposable {
           return
         case 'open-file':
           if (typeof value.path === 'string') {
+            if ('sessionId' in value && (value.sessionId !== this.controller.state.sessionId || value.cwd !== this.controller.state.cwd)) return
             await this.controller.openFile(
               value.path,
               typeof value.line === 'number' && Number.isInteger(value.line) ? value.line : undefined,
@@ -3331,28 +3380,15 @@ class DshSurface implements vscode.Disposable {
           }
           return
         case 'review-file':
-          if (typeof value.path === 'string') {
-            await this.controller.reviewFile(
-              value.path,
-              typeof value.turn === 'number' && Number.isSafeInteger(value.turn) ? value.turn : undefined,
-            )
-          }
-          return
-        case 'review-all': await this.controller.reviewAll(); return
+        case 'review-all':
         case 'keep-file':
-          if (typeof value.path === 'string' && typeof value.turn === 'number' && Number.isSafeInteger(value.turn)) {
-            this.controller.keepFile(value.path, value.turn)
-          }
+        case 'keep-all':
+        case 'revert-file':
+        case 'revert-all':
+          await dispatchChangeAction(value, this.controller)
           return
         case 'retry-occupancy': await this.controller.retryHeldConversation(); return
         case 'diagnose-occupancy': await vscode.commands.executeCommand('deepseekHarness.diagnoseOccupancy'); return
-        case 'keep-all': this.controller.keepAll(); return
-        case 'revert-file':
-          if (typeof value.path === 'string' && typeof value.turn === 'number' && Number.isSafeInteger(value.turn)) {
-            await this.controller.revertFile(value.path, value.turn)
-          }
-          return
-        case 'revert-all': await this.controller.revertAll(); return
         case 'select-model':
           if (typeof value.selection === 'object' && value.selection !== null) {
             const selection = value.selection as Record<string, unknown>

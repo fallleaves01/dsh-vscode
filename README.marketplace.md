@@ -21,6 +21,8 @@ DSH Sidebar gives you a project-aware assistant in the VS Code right sidebar, wi
 - **Work with the official DSH runtime.** Sessions, streaming responses, tool calls, approvals, and follow-up questions stay inside VS Code.
 - **Choose your file context.** Click `+` to search and add project files or folders, then remove individual references with `×`. The current editor and selected lines are optional suggestions. Use `@file`, `@folder` or **Add Selection to Chat** for explicit context.
 - **Control each session.** Switch Permission and Plan modes, choose Model and Reasoning Effort, and steer a task while it is running.
+- **Manage conversations.** Start a task from the full conversation directory, search recent or archived conversations, rename, archive and restore. Switch main conversations from the top picker; view subagents in Tasks.
+- **Compact change review.** Expand the file-count summary for individual diffs, or open Review. File and bulk actions retain safe Keep/Revert controls.
 - **Review edits natively.** Open changes in VS Code's Diff Editor, then Keep or safely Revert them. DSH stops before overwriting a file with unsaved editor changes.
 - **Extend DSH from the sidebar.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks loaded by DSH.
 

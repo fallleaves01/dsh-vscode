@@ -7,6 +7,43 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 versions follow [SemVer](https://semver.org/). The sidebar is distributed as a
 VSIX — see the README for installing one.
 
+## [0.1.5] - 2026-10-15
+
+### Fixed
+
+- Bind diff review, keep and revert messages to their originating conversation
+  and project. Reject stale messages at the extension host, and recheck the
+  conversation, project and load generation after a revert confirmation.
+- Preserve text typed after a homepage draft becomes visible while its creation
+  receipt is pending. Keep both drafts if sending is temporarily blocked.
+- Make Enter honor the pending-send gate used by the send button, preventing
+  repeated submission of image or file attachments before acknowledgement.
+- Return the created conversation ID directly and verify it before model
+  selection and delivery, rather than deriving the target from mutable state.
+
+## [0.1.4] - 2026-10-14
+
+### Changed
+
+- Add a full conversation directory with an independent new-task composer,
+  project-scoped drafts, recent/archived views, search and per-row action menus.
+  Keep the top picker as a compact recent list with a View all entry point.
+- Show main conversations in both lists and search results. Subagent details
+  remain in Tasks; archived children retain identity and ownership metadata.
+- Replace the large Changed Files card with a collapsed file-count and line-count
+  summary, Review entry point, compact file rows and overflow actions. Preserve
+  per-turn diff, keep and revert behavior and snapshot availability checks.
+- Archive without a modal confirmation and provide Undo. Archived conversations
+  support both rename and restore from the directory.
+
+### Fixed
+
+- Wait for the matching new conversation to open before sending a homepage
+  prompt. Keep creation failures and stale project/session replies from sending
+  the draft to another conversation.
+- Preserve keyboard navigation, reading position and disclosure state across
+  directory navigation and conversation updates.
+
 ## [0.1.3] - 2026-10-12
 
 ### Fixed

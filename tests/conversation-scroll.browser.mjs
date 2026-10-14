@@ -96,7 +96,7 @@ try {
   await page('Page.bringToFront')
   const { frameTree } = await page('Page.getFrameTree')
   await page('Page.setDocumentContent', { frameId: frameTree.frame.id, html: shell })
-  await evaluate(`window.sent = []; window.acquireVsCodeApi = () => ({postMessage: message => sent.push(message)});
+  await evaluate(`window.sent = []; window.webviewErrors = []; window.addEventListener('error', event => webviewErrors.push(event.message)); window.addEventListener('unhandledrejection', event => webviewErrors.push(String(event.reason))); window.acquireVsCodeApi = () => ({postMessage: message => sent.push(message)});
     document.documentElement.style.cssText = '--vscode-foreground:#cccccc;--vscode-sideBar-background:#181818;--vscode-editor-background:#202020;--vscode-font-family:Arial;--vscode-editor-font-family:monospace;--vscode-descriptionForeground:#999;--vscode-widget-border:#454545;--vscode-focusBorder:#4d6bfe;--vscode-button-secondaryBackground:#333;--vscode-button-secondaryForeground:#fff;--vscode-button-secondaryHoverBackground:#454545;--vscode-widget-shadow:#0006;--vscode-textLink-foreground:#65aaff';`)
   await evaluate(markdown); await evaluate(scrollBundle); await evaluate(inline)
   await evaluate(`window.tick = (ms = 90) => new Promise(resolve => setTimeout(resolve, ms));
@@ -712,6 +712,97 @@ try {
   await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
   assert.equal(await evaluate('elements.contextMenu.classList.contains("hidden") && document.activeElement.id==="prompt"'),true)
   console.log('PASS: explicit file picker, three viewport layouts, native keyboard add, send receipt gating, multiple removable files and optional editor context')
+
+  // Main conversations use a full directory and a compact recent switcher.
+  await page('Page.bringToFront'); await applyTheme(evaluate, themes.dark)
+  await evaluate(`document.documentElement.style.setProperty('--vscode-font-size','18px');
+    window.directoryDemo={...baseline,sessionId:'hub-a',workspaceName:'DSH Sidebar',cwd:'/demo/dsh-sidebar',running:false,
+      messages:[{id:'hub-reply',role:'assistant',text:'The runtime lifecycle review is complete. The implementation now preserves conversation ownership and validates shutdown before restarting.'}],
+      sessions:[{id:'hub-a',title:'Review runtime lifecycle',updatedAt:Date.now(),childCount:1},
+      {id:'hub-child',parentId:'hub-a',title:'Internal child review',subagent:{mode:'continuable',label:'Runtime tests'},running:false},
+      ...Array.from({length:15},(_,i)=>({id:'hub-'+i,title:['Improve task navigation','Inspect queue behavior','Review the file picker','Check startup handling'][i%4]+' '+(i+1),updatedAt:Date.now()-(i+1)*3600000,blank:false}))],
+      archivedSessions:[{id:'archived-main',title:'Completed conversation',updatedAt:Date.now()-86400000},
+        {id:'archived-child',parentId:'archived-main',title:'Archived child',subagent:{mode:'one-shot'}}],
+      models:[{provider:'deepseek',model:'deepseek-v4',label:'DeepSeek V4',selected:true,reasoningEffort:'high'}], changedFiles:[]};
+    showState(directoryDemo);`)
+  await evaluate('tick()')
+  await evaluate('elements.sessionTrigger.focus()')
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',windowsVirtualKeyCode:13})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});await evaluate('tick()')
+  assert.equal(await evaluate('document.activeElement.id'), 'sessionSearch')
+  assert.equal(await evaluate('elements.sessionList.querySelectorAll(".session-row").length'),12)
+  assert.equal(await evaluate('elements.sessionList.textContent.includes("Internal child review")'),false)
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40})
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowRight',code:'ArrowRight',windowsVirtualKeyCode:39})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'ArrowRight',code:'ArrowRight',windowsVirtualKeyCode:39})
+  assert.equal(await evaluate('document.activeElement.textContent'),'Rename')
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
+  assert.equal(await evaluate('elements.sessionMenu.classList.contains("hidden")'),false)
+  await evaluate('elements.viewAllSessions.click()'); await evaluate('tick()')
+  assert.equal(await evaluate('elements.homeSessionList.querySelectorAll(".session-row").length'),16)
+  assert.equal(await evaluate('elements.composerFooter.classList.contains("hidden") && document.activeElement.id==="homePrompt"'),true)
+  for(const [name,theme] of Object.entries(themes)) {
+    await applyTheme(evaluate,theme)
+    for(const [width,height] of [[320,400],[420,800],[650,800]]) {
+      await page('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+      const layout=await evaluate(`(() => {const view=elements.conversationHomeView.getBoundingClientRect(),list=elements.homeSessionList.getBoundingClientRect(),send=elements.homeSend.getBoundingClientRect();return {overflow:document.documentElement.scrollWidth>innerWidth,viewBottom:view.bottom,listHeight:list.height,sendBottom:send.bottom,sendVisible:send.width>0&&send.top>=0}})()`)
+      assert.equal(layout.overflow,false,`conversation directory overflow: ${name} ${width}`)
+      assert.ok(layout.sendVisible && layout.sendBottom<=height && layout.listHeight>=70,`directory controls or list clipped: ${name} ${width} ${JSON.stringify(layout)}`)
+      await evaluate(`elements.homeSessionList.querySelector('.session-more').click()`)
+      const bounds=await evaluate(`(() => {const r=elements.sessionActions.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom}})()`)
+      assert.ok(bounds.left>=0 && bounds.right<=width && bounds.top>=0 && bounds.bottom<=height,`conversation action menu clipped: ${name} ${width}`)
+      await evaluate('closeSessionActions(false)')
+    }
+  }
+  await applyTheme(evaluate,themes.dark);await page('Emulation.setDeviceMetricsOverride',{width:420,height:800,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+  if(process.env.DSH_TASK_SCREENSHOT_DIR) { const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'conversation-directory.png'),Buffer.from(data,'base64')) }
+  await evaluate('elements.homeArchiveToggle.click()')
+  assert.equal(await evaluate('elements.homeSessionList.querySelectorAll(".session-row").length'),1)
+  assert.equal(await evaluate('elements.homeSessionList.textContent.includes("Archived child")'),false)
+  await evaluate(`elements.homeSessionList.querySelector('.session-more').click();[...elements.sessionActions.querySelectorAll('button')].find(button=>button.textContent==='Restore').click()`)
+  assert.deepEqual(await evaluate('sent.at(-1)'),{type:'unarchive-session',sessionId:'archived-main'})
+  await evaluate('elements.homeArchiveToggle.click()')
+  console.log('PASS: full conversation directory, recent/archived main sessions, native keyboard actions and 9 theme/viewport layouts')
+
+  // Homepage Enter creates a fresh conversation first, and never queues into the old one.
+  await evaluate(`window.homeSendBefore=sent.filter(item=>item.type==='send').length;elements.homePrompt.value='Review a separate task';elements.homePrompt.dispatchEvent(new Event('input',{bubbles:true}));elements.homePrompt.focus()`)
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',windowsVirtualKeyCode:13})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+  assert.equal(await evaluate('sent.filter(item=>item.type==="send").length'),await evaluate('homeSendBefore'))
+  await evaluate(`window.homeRequest=sent.findLast(item=>item.type==='create-conversation');showState({...directoryDemo,sessionId:'new-home',messages:[],sessions:[...directoryDemo.sessions,{id:'new-home',title:'New conversation',blank:true}],changedFiles:[]});`)
+  await evaluate('tick()')
+  assert.equal(await evaluate('sent.filter(item=>item.type==="send").length'),await evaluate('homeSendBefore'))
+  await evaluate(`window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-created',requestId:homeRequest.requestId,cwd:homeRequest.cwd,sessionId:'new-home'}}))`)
+  assert.deepEqual(await evaluate('({type:sent.at(-1).type,sessionId:sent.at(-1).sessionId,text:sent.at(-1).text})'),{type:'send',sessionId:'new-home',text:'Review a separate task'})
+  await evaluate(`const delivery=sent.at(-1);window.dispatchEvent(new MessageEvent('message',{data:{type:'draft-sent',requestId:delivery.requestId,sessionId:'new-home'}}));`)
+  console.log('PASS: native homepage Enter waits for a matching conversation receipt before sending the isolated draft')
+
+  // Compact change review retains per-turn snapshots and remains small with 18px chat text.
+  await evaluate(`window.changesDemo={...directoryDemo,sessionId:'hub-a',changedFiles:[
+    {turn:1,files:[{path:'src/runtime.ts',additions:12,deletions:4,canRevert:true}]},
+    {turn:2,files:[{path:'src/runtime.ts',additions:3,deletions:1,canRevert:true},{path:'src/webview.ts',additions:18,deletions:6,canRevert:false},{path:'tests/webview-sessions.spec.ts',additions:32,deletions:12,canRevert:true}]}]};showState(changesDemo);`)
+  await evaluate('tick()')
+  for(const [width,height] of [[320,400],[420,800],[650,800]]) {
+    await page('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+    const compact=await evaluate(`(() => {const box=document.querySelector('.changed-files'),head=box.querySelector('.changed-files-head');return {height:box.getBoundingClientRect().height,font:getComputedStyle(head).fontSize,collapsed:box.querySelector('.changed-files-toggle').getAttribute('aria-expanded'),overflow:box.scrollWidth>box.clientWidth}})()`)
+    assert.equal(compact.collapsed,'false');assert.ok(compact.height<=40 && !compact.overflow,`change summary too large at ${width}: ${JSON.stringify(compact)}`)
+  }
+  await page('Emulation.setDeviceMetricsOverride',{width:420,height:800,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+  if(process.env.DSH_TASK_SCREENSHOT_DIR) { const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'changed-files-summary.png'),Buffer.from(data,'base64')) }
+  await evaluate(`document.querySelector('.changed-files-toggle').click()`)
+  const rows=await evaluate(`[...document.querySelectorAll('.changed-file')].map(row=>({height:row.getBoundingClientRect().height,overflow:row.scrollWidth>row.clientWidth}))`)
+  assert.ok(rows.every(row=>row.height<=34&&!row.overflow),JSON.stringify(rows))
+  await evaluate(`document.querySelectorAll('.changed-file-link')[1].click()`)
+  assert.deepEqual(await evaluate('sent.at(-1)'),{type:'review-file',path:'src/runtime.ts',turn:2,sessionId:'hub-a',cwd:'/demo/dsh-sidebar'})
+  await evaluate(`document.querySelectorAll('.changed-file .changed-more')[2].click()`)
+  assert.equal(await evaluate('[...elements.sessionActions.querySelectorAll("button")].find(button=>button.textContent==="Revert change").disabled'),true)
+  await evaluate('closeSessionActions(false)')
+  if(process.env.DSH_TASK_SCREENSHOT_DIR) { const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'changed-files-expanded.png'),Buffer.from(data,'base64')) }
+  console.log('PASS: collapsed change summary, compact file rows, per-turn diffs and guarded reversion at three viewport sizes')
+
+  assert.deepEqual(await evaluate('webviewErrors'),[], 'The production webview emitted an uncaught error')
 
 } finally {
   clearTimeout(timeout)

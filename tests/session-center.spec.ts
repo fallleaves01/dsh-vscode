@@ -65,6 +65,19 @@ describe('session center state', () => {
     ])
   })
 
+  it('preserves archived delegation metadata, including children with a missing parent', () => {
+    const items = archivedSessionItems([
+      summary({ sessionId: 'parent', projections: { values: { subagentCatalog: [{ id: 'catalog-child', mode: 'continuable', label: 'Research' }] } } }),
+      summary({ sessionId: 'catalog-child' }),
+      summary({ sessionId: 'orphan', origin: 'subagent', parentSessionId: 'missing' }),
+      summary({ sessionId: 'fork', parentSessionId: 'parent' }),
+    ], new Set(['catalog-child', 'orphan', 'fork']), new Set())
+    expect(items.find(item => item.id === 'catalog-child')).toMatchObject({ parentId: 'parent', subagent: { mode: 'continuable', label: 'Research' } })
+    expect(items.find(item => item.id === 'orphan')?.subagent).toEqual({ mode: 'unknown' })
+    expect(items.find(item => item.id === 'fork')?.subagent).toBeUndefined()
+    expect(items.find(item => item.id === 'fork')?.parentId).toBeUndefined()
+  })
+
   it('reports nothing archived when no conversation is archived', () => {
     expect(archivedSessionItems([summary({ sessionId: 'one' })], new Set(), new Set())).toEqual([])
   })
@@ -134,7 +147,7 @@ describe('subagent sessions', () => {
     ]
     const items = sessionItems(summaries, new Set(['kid']), 'parent', new Set())
     expect(items.map(item => item.id)).toEqual(['parent'])
-    // ...and it stays recoverable, because the Archived section is the only way back.
+    // Keep the child in the archived host catalog with its ownership intact.
     expect(archivedSessionItems(summaries, new Set(['kid']), new Set()).map(item => item.id)).toEqual(['kid'])
   })
 

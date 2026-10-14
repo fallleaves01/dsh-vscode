@@ -236,8 +236,8 @@ export function parentIdOf(summaries: readonly SessionSummary[], sessionId: stri
 /**
  * Archived conversations, newest first, so the sidebar can offer a way back.
  * Blank archived sessions stay hidden: there is nothing to recover from them.
- * A subagent archived with its parent is listed here like any other, because
- * the active list drops it and this is the only way back.
+ * Keep delegation metadata for archived children. Views can then exclude them
+ * from the main conversation directory without losing task ownership.
  */
 export function archivedSessionItems(
   summaries: readonly SessionSummary[],
@@ -245,9 +245,15 @@ export function archivedSessionItems(
   unreadSessionIds: ReadonlySet<string>,
   attention: ReadonlyMap<string, SessionAttention> = new Map(),
 ): SessionItem[] {
+  const { parentOf, identity } = partition(summaries)
   return summaries
     .filter(summary => archivedSessionIds.has(summary.sessionId) && !summary.blank)
-    .map(summary => toSessionItem(summary, unreadSessionIds, attention, undefined, undefined, 0))
+    .map(summary => {
+      const parentId = parentOf.get(summary.sessionId)
+      const child = parentId !== undefined || summary.origin === 'subagent'
+      return toSessionItem(summary, unreadSessionIds, attention, parentId,
+        child ? identity.get(summary.sessionId) ?? identityOf(summary) ?? { mode: 'unknown' } : undefined, 0)
+    })
     .sort((left, right) => right.updatedAt - left.updatedAt)
 }
 

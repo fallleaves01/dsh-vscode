@@ -40,14 +40,7 @@ describe('chat webview', () => {
     expect(() => new Function(script ?? '')).not.toThrow()
   })
 
-  it('offers a compact GitHub star action in the conversation toolbar', () => {
-    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
-    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
-    const html = chatHtml(webview, mark)
 
-    expect(html).toContain('aria-label="DSH Sidebar on GitHub"')
-    expect(html).toContain("href: 'https://github.com/fallleaves01/dsh-vscode'")
-  })
 
   it('binds queue actions to the rendered conversation and blocks actions during loading', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
@@ -80,8 +73,9 @@ describe('chat webview', () => {
     const html = chatHtml(webview, mark)
 
     expect(html).toContain('placeholder="Search titles and message history"')
-    expect(html).toContain("type: 'rename-session'")
-    expect(html).toContain("type: 'archive-session'")
+    expect(html).toContain('id="viewAllSessions"')
+    expect(html).toContain('id="homeSessionList"')
+    expect(html).toContain('id="sessionActions"')
     expect(html).toContain('const sessionDrafts = new Map()')
     expect(html).toContain('const draftImagesBySession = new Map()')
     expect(html).toContain('const pendingDraftSends = new Map()')
@@ -89,40 +83,7 @@ describe('chat webview', () => {
     expect(html).not.toContain('<select id="sessions"')
   })
 
-  it('renders a compact background-response badge and prioritizes pending requests over Running', () => {
-    const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
-    const source = html.slice(html.indexOf('function renderSessionCenter('), html.indexOf('function record('))
-    const node = (_tag: string, className = '', textContent = ''): any => ({
-      className, textContent, title: '', children: [] as any[], attributes: {} as Record<string, string>,
-      classList: { toggle(name: string, value: boolean) { this[name as keyof typeof this] = value as never } },
-      append(...items: any[]) { this.children.push(...items) }, replaceChildren() { this.children = [] },
-      setAttribute(name: string, value: string) { this.attributes[name] = value }, addEventListener() {},
-    })
-    const badge = node('span')
-    const elements = {
-      sessionTrigger: node('button'), sessionTriggerTitle: node('span'), sessionList: node('div'),
-      sessionSearch: { value: '' }, sessionAttentionCount: badge,
-    }
-    const render = new Function('elements', 'document', 'node', 'array', 'string', 'relativeSessionTime', 'sessionActionId', 'archivedOpen', 'expandedSubagents',
-      `${source}; return renderSessionCenter;`)(elements, { getElementById: () => badge }, node, (a: any) => (Array.isArray(a) ? a : []), (s: any) => s, () => 'Just now', undefined, false, new Set())
-    const current = { sessionId: 'a', sessions: [
-      { id: 'a', title: 'Current', blank: true },
-      { id: 'b', title: 'Work', blank: true, running: true, attention: { approvals: 2, questions: 1 } },
-      { id: 'c', title: 'Question', blank: true, attention: { approvals: 0, questions: 1 } },
-    ] }
-    render(current)
-    expect(badge.textContent).toBe('2')
-    expect(badge.classList.hidden).toBe(false)
-    expect(elements.sessionTrigger.attributes['aria-label']).toContain('2 other conversation(s) need your response')
-    expect(elements.sessionList.children[1].children[0].children[0].className).toBe('session-indicator attention')
-    expect(elements.sessionList.children[1].children[0].children[2].textContent).toBe('Awaiting approval')
-    expect(elements.sessionList.children[2].children[0].children[2].textContent).toBe('Awaiting your answer')
-    render({ ...current, sessionId: 'b', sessions: [current.sessions[1]] })
-    expect(badge.classList.hidden).toBe(true)
-    expect(elements.sessionTriggerTitle.textContent).toBe('Work')
-    render({ sessionId: 'a', sessions: [current.sessions[0]] })
-    expect(elements.sessionTrigger.attributes['aria-label']).toBe('Project conversations')
-  })
+
 
   it('attaches supported clipboard images without intercepting ordinary text paste', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
@@ -236,33 +197,9 @@ describe('chat webview', () => {
     expect(html).not.toContain('scheduleTailScroll(Boolean(current.approval || current.question))')
   })
 
-  it('offers a collapsed archived section that can restore a conversation', () => {
-    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
-    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
-    const html = chatHtml(webview, mark)
-    const source = html.slice(html.indexOf('function renderSessionCenter('), html.indexOf('function record('))
 
-    expect(source).toContain('const archived = array(current.archivedSessions)')
-    expect(source).toContain("'Archived ('")
-    expect(source).toContain('archivedOpen = !archivedOpen')
-    expect(source).toContain("type: 'unarchive-session'")
-    expect(source).toContain("node('button', 'session-restore', 'Restore')")
-    expect(source).toContain("if (!anyRows && !archived.length && !query)")
-  })
 
-  it('nests subagent sessions under their parent and offers a way back', () => {
-    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
-    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
-    const html = chatHtml(webview, mark)
-    const source = html.slice(html.indexOf('function renderSessionCenter('), html.indexOf('function record('))
 
-    expect(source).toContain("session.parentId")
-    expect(source).toContain("' session-child'")
-    expect(source).toContain("'session-subagent-badge '")
-    expect(source).toContain("'session-expander'")
-    expect(source).toContain("'session-row session-ancestor'")
-    expect(source).toContain("type: 'select-session', sessionId: parentRow.id")
-  })
 
   it('routes dropped resources, images and other files down separate paths', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview

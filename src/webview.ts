@@ -69,34 +69,50 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .runtime-indicator[data-phase="ready"] { background: var(--dsh-success); }
     .runtime-indicator[data-phase="error"] { background: var(--vscode-errorForeground); }
     .runtime-indicator[data-phase="starting"] { background: var(--dsh-warning); }
-    .session-control { min-width: 0; flex: 1; position: relative; }
-    .session-trigger { width: 100%; min-width: 0; height: 28px; padding: 0 6px; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; background: transparent; font-weight: 600; text-align: left; }
+    .session-control { min-width: 0; flex: 1; }
+    .session-trigger { width: 100%; min-width: 0; height: 28px; padding: 0 6px; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; background: transparent; font-size: 13px; line-height: 18px; font-weight: 500; text-align: left; }
     .session-trigger:hover, .session-trigger[aria-expanded="true"] { background: var(--vscode-toolbar-hoverBackground); }
     .session-trigger-title { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .session-trigger svg { width: 13px; height: 13px; flex: 0 0 auto; color: var(--vscode-descriptionForeground); }
-    .session-menu { position: absolute; z-index: 30; top: calc(100% + 8px); left: -34px; width: calc(100vw - 16px); max-width: 360px; max-height: min(430px, 72vh); padding: 8px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; border: 1px solid var(--dsh-border); border-radius: 12px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 8px 24px var(--vscode-widget-shadow); }
-    .session-menu-footer { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding: 6px 2px 0; border-top: .5px solid var(--dsh-border); color: var(--dsh-muted); font-size: 11px; }
-    .session-menu-footer .github-star { width: auto; padding: 0 6px; display: flex; gap: 6px; font-size: 11px; }
-    .session-search { width: 100%; height: 29px; padding: 0 8px; border: 1px solid var(--vscode-input-border, transparent); border-radius: 5px; outline: 0; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
-    .session-list { min-height: 0; margin-top: 5px; overflow: auto; }
-    .session-empty { padding: 18px 8px; color: var(--vscode-descriptionForeground); text-align: center; font-size: 11px; }
+    .session-menu { position: absolute; z-index: 30; top: 48px; left: 8px; width: calc(100% - 16px); max-width: 440px; max-height: min(480px, calc(100% - 64px)); padding: 6px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; border: 1px solid var(--dsh-border); border-radius: 10px; background: var(--vscode-menu-background, var(--dsh-surface)); box-shadow: 0 8px 24px var(--vscode-widget-shadow); font-size: 12px; line-height: 18px; }
+    .session-menu-footer { margin-top: 5px; padding-top: 4px; border-top: .5px solid var(--dsh-border); }
+    .session-directory-link { width: 100%; min-height: 28px; padding: 4px 8px; display: flex; justify-content: space-between; align-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--dsh-muted); text-align: left; font-size: 11px; }
+    .session-directory-link:hover { color: var(--vscode-foreground); background: var(--dsh-hover); }
+    .session-search { width: 100%; height: 30px; padding: 0 8px; border: 1px solid var(--vscode-input-border, transparent); border-radius: 6px; outline: 0; color: var(--vscode-input-foreground); background: var(--vscode-input-background); font-size: 12px; }
+    .session-list { min-height: 0; margin-top: 5px; overflow: auto; overscroll-behavior: contain; }
+    .session-empty { padding: 16px 8px; color: var(--dsh-muted); text-align: center; font-size: 11px; }
+    .session-group { padding: 10px 8px 4px; color: var(--dsh-muted); font-size: 10px; font-weight: 500; }
     .session-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 26px; align-items: center; border-radius: 6px; }
-    .session-row.with-expander { grid-template-columns: 20px minmax(0, 1fr) 26px; }
     .session-row:hover, .session-row.active { background: var(--vscode-list-hoverBackground); }
-    .session-row.active { color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground)); background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground)); }
-    .session-main { min-width: 0; min-height: 44px; padding: 5px 6px; display: grid; grid-template-columns: 9px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 7px; border: 0; background: transparent; text-align: left; }
-    .session-indicator { grid-row: 1 / 3; align-self: center; width: 6px; height: 6px; border-radius: 50%; background: transparent; }
+    .session-row.active { background: var(--vscode-list-inactiveSelectionBackground, var(--dsh-hover)); }
+    .session-row.active .session-name { font-weight: 500; }
+    .session-main { min-width: 0; min-height: 34px; padding: 6px 8px; display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; align-items: center; column-gap: 8px; border: 0; border-radius: 6px; background: transparent; text-align: left; font-size: 12px; line-height: 18px; }
+    .session-indicator { width: 5px; height: 5px; border-radius: 50%; background: transparent; }
     .session-indicator.running { background: var(--vscode-charts-blue, #4d6bfe); box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-charts-blue, #4d6bfe) 20%, transparent); }
     .session-indicator.unread { background: var(--vscode-notificationsInfoIcon-foreground, #4d6bfe); }
     .session-indicator.attention { background: var(--vscode-notificationsWarningIcon-foreground, #cca700); }
     .session-attention-count { flex: 0 0 auto; min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 10px; text-align: center; }
-    .session-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; font-weight: 600; }
-    .session-meta { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 10px; }
-    .session-more { width: 24px; height: 24px; min-width: 24px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 5px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 17px; line-height: 1; }
+    .session-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; font-weight: 400; }
+    .session-meta { min-width: 0; max-width: 104px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--dsh-muted); font-size: 10px; }
+    .session-more { width: 24px; height: 24px; min-width: 24px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 5px; color: var(--dsh-muted); background: transparent; font-size: 17px; line-height: 1; opacity: 0; }
+    .session-row:hover .session-more, .session-row:focus-within .session-more, .session-more[aria-expanded="true"] { opacity: 1; }
     .session-more:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
-    .session-archived-toggle { margin-top: 6px; padding: 6px 7px 4px; border: 0; border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 60%, transparent); border-radius: 0; color: var(--vscode-descriptionForeground); background: transparent; text-align: left; font-size: 10px; font-weight: 600; letter-spacing: .3px; }
-    .session-archived-toggle:hover { color: var(--vscode-foreground); }
-    .session-row.archived { grid-template-columns: minmax(0, 1fr) auto; }
+    .session-snippet { grid-column: 2 / -1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--dsh-muted); font-size: 11px; padding-top: 2px; }
+    .conversation-home { min-width: 0; min-height: 0; padding: 12px; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); gap: 12px; font-size: 12px; line-height: 18px; }
+    .home-heading, .home-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .home-heading h1 { margin: 0; font-size: 15px; font-weight: 600; }
+    .home-composer { min-width: 0; padding: 10px; border: 1px solid var(--dsh-border); border-radius: 12px; background: var(--dsh-surface); }
+    .home-composer textarea { width: 100%; min-height: 70px; max-height: 160px; padding: 0; border: 0; outline: 0; resize: none; background: transparent; font-size: 13px; line-height: 20px; }
+    .home-composer-row { min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 11px; }
+    .home-model { min-width: 0; max-width: 50%; padding: 3px 0; border: 0; background: transparent; font-size: 11px; text-overflow: ellipsis; }
+    .home-project { min-width: 0; flex: 1; padding: 3px 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; border: 0; background: transparent; color: var(--dsh-muted); text-align: left; font-size: 11px; }
+    .home-error { margin: 6px 0 0; color: var(--vscode-errorForeground); font-size: 11px; }
+    .home-runtime .status { font-size: 11px; line-height: 16px; }
+    .home-list-heading { font-size: 11px; color: var(--dsh-muted); }
+    .home-archive-toggle { min-height: 24px; padding: 3px 6px; border: 0; border-radius: 5px; background: transparent; color: inherit; font-size: 11px; }
+    .home-archive-toggle:hover, .home-archive-toggle[aria-pressed="true"] { background: var(--dsh-hover); color: var(--vscode-foreground); }
+    .home-directory { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 5px; }
+    .home-list { min-height: 0; overflow: auto; overscroll-behavior: contain; }
     .account-control { position: relative; display: flex; }
     .account-trigger { position: relative; }
     .account-dot { position: absolute; right: 3px; bottom: 3px; width: 6px; height: 6px; border-radius: 50%; background: transparent; }
@@ -164,23 +180,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .held-notice.hidden { display: none; }
     .held-notice-text { flex: 1 1 220px; }
     .held-action { padding: 0 6px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 3px; background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); font-size: 11px; cursor: pointer; }
-    .session-row.session-ancestor { margin-bottom: 4px; border-bottom: 1px solid color-mix(in srgb, var(--vscode-widget-border) 60%, transparent); border-radius: 0; grid-template-columns: minmax(0, 1fr); }
-    .session-ancestor-arrow { flex: 0 0 auto; color: var(--vscode-descriptionForeground); }
-    .session-row.session-child { margin-left: 14px; position: relative; grid-template-columns: minmax(0, 1fr); }
-    .session-row.session-child::before { content: ''; position: absolute; left: -9px; top: 50%; width: 7px; height: 1px; background: color-mix(in srgb, var(--vscode-widget-border) 90%, transparent); }
-    .session-row.session-child .session-main { min-height: 34px; padding-top: 2px; padding-bottom: 2px; }
-    .session-row.session-child .session-name { font-weight: 500; font-size: 11px; }
-    .session-subagent-badge { flex: 0 0 auto; padding: 1px 5px; border-radius: 999px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 9px; text-transform: uppercase; letter-spacing: .3px; }
-    .session-subagent-badge.continuable { background: var(--vscode-charts-blue, #4d6bfe); color: #fff; }
-    .session-subagent-badge.unknown { opacity: .6; }
-    .session-expander { width: 20px; height: 20px; min-width: 20px; margin-right: 4px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 9px; }
-    .session-expander:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }    .session-row.archived .session-name { color: var(--vscode-descriptionForeground); font-weight: 500; }
-    .session-restore { margin-right: 5px; padding: 3px 8px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-foreground); background: transparent; font-size: 10px; white-space: nowrap; }
-    .session-restore:hover { background: var(--vscode-toolbar-hoverBackground); }
-    .session-actions { grid-column: 1 / -1; margin: 0 5px 5px 22px; padding: 3px; display: flex; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-editor-background); }
-    .session-action { min-height: 25px; padding: 2px 7px; border: 0; border-radius: 4px; color: var(--vscode-foreground); background: transparent; font-size: 11px; }
-    .session-action:hover { background: var(--vscode-toolbar-hoverBackground); }
-    .session-action.danger { color: var(--vscode-errorForeground); }
+    .session-row.archived .session-name { color: var(--dsh-muted); }
+    .session-actions { position: absolute; z-index: 50; width: 170px; max-width: calc(100% - 16px); padding: 4px; display: grid; gap: 2px; border: 1px solid var(--dsh-border); border-radius: 8px; background: var(--vscode-menu-background, var(--dsh-surface)); box-shadow: 0 6px 20px var(--vscode-widget-shadow); font-size: 12px; line-height: 18px; }
+    .session-action { width: 100%; min-height: 28px; padding: 5px 8px; border: 0; border-radius: 4px; color: var(--vscode-foreground); background: transparent; text-align: left; font-size: 12px; }
+    .session-action:hover { background: var(--dsh-hover); }
     .icon-button { width: 28px; height: 28px; min-width: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--vscode-icon-foreground); }
     .icon-button:hover { background: var(--vscode-toolbar-hoverBackground); }
     .github-star:hover { color: var(--vscode-charts-yellow, #e3b341); }
@@ -490,21 +493,29 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .tool-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
     .tool-action { min-height: 24px; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: var(--dsh-radius-xs); color: var(--vscode-foreground); background: transparent; font-size: 11px; }
     .tool-action:hover { background: var(--vscode-toolbar-hoverBackground); }
-    .changed-files { margin: 14px 0 4px; padding: 10px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); }
-    .changed-files-head { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 7px; font-weight: 600; }
-    .changed-files-title { min-width: 0; flex: 1; }
-    .changed-files-actions, .changed-file-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
-    .changed-turn + .changed-turn { margin-top: 9px; }
-    .changed-turn-title { padding: 4px 0; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
-    .changed-file { min-width: 0; padding: 6px 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px 8px; border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 55%, transparent); }
-    .changed-file .file-link { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-    .changed-file-stats { display: flex; gap: 5px; font-family: var(--vscode-editor-font-family); font-size: 10px; }
-    .change-additions { color: var(--vscode-gitDecoration-addedResourceForeground); }
-    .change-deletions { color: var(--vscode-gitDecoration-deletedResourceForeground); }
-    .changed-file-actions { grid-column: 1 / -1; }
-    .changed-action { min-height: 21px; padding: 1px 5px; border: 0; border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 10px; }
-    .changed-action:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
-    .changed-action.danger { color: var(--vscode-errorForeground); }
+    .changed-files { margin: 10px 0 4px; border: 1px solid var(--dsh-border); border-radius: 8px; background: transparent; font-size: 12px; line-height: 16px; }
+    .changed-files-head { min-width: 0; min-height: 34px; padding: 4px 6px; display: flex; align-items: center; gap: 6px; }
+    .changed-files-toggle { min-width: 0; flex: 1; min-height: 26px; padding: 0 2px; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 4px; background: transparent; text-align: left; font-size: 11px; }
+    .changed-files-toggle:hover { background: var(--dsh-hover); }
+    .changed-files-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
+    .changes-chevron { flex: none; width: 12px; height: 12px; color: var(--dsh-muted); }
+    .changes-chevron svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+    .changes-chevron.expanded { transform: rotate(90deg); }
+    .changed-files-body { max-height: 220px; overflow: auto; padding: 0 6px 4px; border-top: .5px solid var(--dsh-border); }
+    .changed-turn-title { padding: 6px 4px 2px; color: var(--dsh-muted); font-size: 10px; }
+    .changed-file { min-width: 0; min-height: 30px; padding: 2px 4px; display: grid; grid-template-columns: minmax(0, 1fr) auto 24px; align-items: center; gap: 6px; border-radius: 4px; }
+    .changed-file:hover, .changed-file:focus-within { background: var(--dsh-hover); }
+    .changed-file-link { min-width: 0; padding: 4px 0; display: flex; align-items: baseline; gap: 6px; border: 0; border-radius: 4px; background: transparent; text-align: left; font-size: 11px; }
+    .changed-file-name, .changed-file-dir { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .changed-file-name { font-weight: 500; }
+    .changed-file-dir { max-width: 45%; color: var(--dsh-muted); font-size: 10px; }
+    .changed-file-stats { flex: none; display: flex; gap: 5px; font-size: 10px; font-variant-numeric: tabular-nums; }
+    .change-additions { color: var(--vscode-gitDecoration-addedResourceForeground, var(--dsh-success)); }
+    .change-deletions { color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-errorForeground)); }
+    .changed-files-head .changed-more, .changed-file:hover .changed-more, .changed-file:focus-within .changed-more { opacity: 1; }
+    .changed-action { min-height: 24px; padding: 2px 6px; border: 0; border-radius: 4px; color: var(--vscode-foreground); background: transparent; font-size: 11px; }
+    .changed-action:hover { background: var(--dsh-hover); }
+    .session-action.danger { color: var(--vscode-errorForeground); }
     .failed, .error-text { color: var(--vscode-errorForeground); }
     /**
      * No typing caret while a reply streams.
@@ -679,7 +690,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .send:disabled, textarea:disabled, button:disabled { opacity: .55; cursor: default; }
     .hidden { display: none !important; }
     @media (max-width: 380px) { .conversation { padding-inline: 12px; } .composer-row { grid-template-columns: 28px auto 20px minmax(0, 1fr) minmax(40px, .5fr) auto; } .project span { display: none; } }
-    @media (max-height: 500px) { .task-area { max-height: 24vh; } textarea { max-height: 28vh; } .command-menu { max-height: 26vh; } }
+    @media (max-height: 500px) { .conversation-home { gap: 8px; padding-block: 8px; grid-template-rows: auto auto minmax(0, 1fr); } .home-heading { display: none; } .home-composer { padding: 8px; } .home-composer textarea { height: 44px; min-height: 44px; } .task-area { max-height: 24vh; } textarea { max-height: 28vh; } .command-menu { max-height: 26vh; } }
     ${webviewThemeCss}
   </style>
 </head>
@@ -687,13 +698,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
   <div id="app">
     <div id="dropOverlay" class="drop-overlay hidden"><div class="drop-card">Drop files or folders to add them</div></div>
     <header class="toolbar">
+      <button id="conversationHome" class="icon-button" title="All conversations" aria-label="All conversations"><svg viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></svg></button>
       <span class="brand-mark deepseek-mark" aria-hidden="true"></span>
       <div id="sessionControl" class="session-control">
         <button id="sessionTrigger" class="session-trigger" aria-label="Project conversations" aria-haspopup="dialog" aria-expanded="false"><span id="sessionTriggerTitle" class="session-trigger-title">New conversation</span><span id="sessionAttentionCount" class="session-attention-count hidden"></span><svg viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5"/></svg></button>
         <div id="sessionMenu" class="session-menu hidden" role="dialog" aria-label="Project conversations">
           <input id="sessionSearch" class="session-search" type="search" placeholder="Search titles and message history" aria-label="Search conversations">
-          <div id="sessionList" class="session-list" role="listbox"></div>
-          <div class="session-menu-footer"><button id="githubStar" class="icon-button github-star" title="DSH Sidebar on GitHub" aria-label="DSH Sidebar on GitHub"><svg viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2-4.6-4.4 6.3-.9z"/></svg>DSH Sidebar on GitHub</button></div>
+          <div id="sessionList" class="session-list" role="list" aria-label="Recent conversations"></div>
+          <div class="session-menu-footer"><button id="viewAllSessions" class="session-directory-link" type="button"><span>View all conversations</span><span id="sessionTotal"></span></button></div>
         </div>
       </div>
       <div id="jobsControl" class="jobs-control hidden">
@@ -707,11 +719,30 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       <span id="runtimeIndicator" class="runtime-indicator" role="img" aria-label="Runtime disconnected"></span>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     </header>
-    <div class="conversation-pane">
+    <section id="conversationHomeView" class="conversation-home hidden" aria-label="Conversation directory">
+      <div class="home-heading"><h1>New conversation</h1></div>
+      <form id="homeForm" class="home-composer">
+        <textarea id="homePrompt" rows="3" placeholder="Ask DeepSeek to start a task" aria-label="New conversation message"></textarea>
+        <div class="home-composer-row">
+          <button id="homeOpenDraft" class="icon-button" type="button" title="Open a new draft to add files or images" aria-label="Open a new draft to add files or images"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+          <select id="homeModel" class="home-model" aria-label="Model for new conversation"></select>
+          <button id="homeProject" class="home-project" type="button" title="Choose DeepSeek project"></button>
+          <button id="homeSend" class="icon-button send" type="submit" title="Start conversation (Enter)" aria-label="Start conversation"><svg viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg></button>
+        </div>
+        <p id="homeError" class="home-error hidden" role="alert"></p>
+        <div id="homeRuntime" class="home-runtime hidden" role="status"></div>
+      </form>
+      <div class="home-list-heading"><span id="homeListTitle">Recent conversations</span><button id="homeArchiveToggle" class="home-archive-toggle" type="button" aria-pressed="false">Archived</button></div>
+      <div class="home-directory">
+        <input id="homeSessionSearch" class="session-search" type="search" placeholder="Search conversations" aria-label="Search all conversations">
+        <div id="homeSessionList" class="home-list" role="list" aria-label="Conversations"></div>
+      </div>
+    </section>
+    <div id="conversationPane" class="conversation-pane">
       <main id="scroll" class="scroll" tabindex="0" aria-label="Conversation"><div id="conversation" class="conversation"><div id="conversationStatus" class="conversation-slot"></div><div id="conversationHistory" class="conversation-slot"></div><div id="messages" class="messages"></div><div id="conversationTail" class="conversation-slot"></div></div></main>
       <button id="jumpLatest" class="jump-latest" type="button" aria-label="Jump to latest" aria-controls="scroll" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14m-5-5 5 5 5-5"/></svg>Jump to latest</button>
     </div>
-    <footer class="composer-wrap">
+    <footer id="composerFooter" class="composer-wrap">
       <div class="task-area">
       <details id="taskFeatures" class="task-panel task-features hidden"><summary id="taskFeaturesSummary">Goal &amp; reminders</summary><div class="feature-body"><div class="feature-actions"><button id="refreshTasks" class="feature-action" type="button">Refresh tasks</button><button id="configureTaskServices" class="feature-action" type="button">Configure task services</button></div><section id="goalPanel"></section><section id="schedulePanel"></section></div></details>
       <section id="taskPanel" class="task-panel hidden" aria-label="Tasks">
@@ -762,6 +793,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         </div>
       </div>
     </footer>
+    <div id="sessionActions" class="session-actions hidden" role="menu" aria-label="Conversation actions"></div>
   </div>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.script.toString(true))}"></script>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.scroll.toString(true))}"></script>
@@ -778,7 +810,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       runtimeIndicator: document.getElementById('runtimeIndicator'),
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
       conversationStatus: document.getElementById('conversationStatus'), conversationHistory: document.getElementById('conversationHistory'), messages: document.getElementById('messages'), conversationTail: document.getElementById('conversationTail'),
-      githubStar: document.getElementById('githubStar'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionAttentionCount: document.getElementById('sessionAttentionCount'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
+      conversationHome: document.getElementById('conversationHome'), conversationHomeView: document.getElementById('conversationHomeView'), conversationPane: document.getElementById('conversationPane'), composerFooter: document.getElementById('composerFooter'),
+      homeForm: document.getElementById('homeForm'), homePrompt: document.getElementById('homePrompt'), homeModel: document.getElementById('homeModel'), homeSend: document.getElementById('homeSend'), homeOpenDraft: document.getElementById('homeOpenDraft'), homeProject: document.getElementById('homeProject'), homeError: document.getElementById('homeError'), homeRuntime: document.getElementById('homeRuntime'), homeSessionSearch: document.getElementById('homeSessionSearch'), homeSessionList: document.getElementById('homeSessionList'), homeListTitle: document.getElementById('homeListTitle'), homeArchiveToggle: document.getElementById('homeArchiveToggle'), viewAllSessions: document.getElementById('viewAllSessions'), sessionTotal: document.getElementById('sessionTotal'), sessionActions: document.getElementById('sessionActions'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionAttentionCount: document.getElementById('sessionAttentionCount'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       modelControl: document.getElementById('modelControl'), modelTrigger: document.getElementById('modelTrigger'),
@@ -840,10 +873,21 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let searchTimer;
     let accountOpen = false;
     let sessionMenuOpen = false;
-    let sessionActionId;
-    let archivedOpen = false;
-    /** Parents the user collapsed; subagents show by default so they are discoverable. */
-    const collapsedSubagents = new Set();
+    let sessionAction;
+    let homeOpen = false;
+    let homeArchived = false;
+    let homeModelChoice;
+    let homeModelCatalog;
+    let homeCreation;
+    let homeCreationId = 0;
+    const homeRequestScope = Array.from(crypto.getRandomValues(new Uint32Array(2))).join('-');
+    let homeInitialized = false;
+    let homeCwd;
+    let homeRuntimeKey;
+    let lastHomeOpen = false;
+    let homeReading;
+    const homeDrafts = new Map();
+    const expandedChanges = new Set();
     let armedJobId;
     let armedJobTimer;
     let jobsTimer;
@@ -898,189 +942,305 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     }
 
     function relativeSessionTime(value) {
-      const elapsed = Math.max(0, Date.now() - Number(value || 0));
-      const minutes = Math.floor(elapsed / 60000);
+      if (!Number.isFinite(Number(value)) || Number(value) <= 0) return '';
+      const minutes = Math.floor(Math.max(0, Date.now() - Number(value)) / 60000);
       if (minutes < 1) return 'Just now';
-      if (minutes < 60) return minutes + 'm ago';
+      if (minutes < 60) return minutes + 'm';
       const hours = Math.floor(minutes / 60);
-      if (hours < 24) return hours + 'h ago';
+      if (hours < 24) return hours + 'h';
       const days = Math.floor(hours / 24);
-      return days === 1 ? 'Yesterday' : days + 'd ago';
+      return days === 1 ? '1d' : days + 'd';
+    }
+    function mainConversation(session) { return !session.parentId && !session.subagent; }
+    function conversationRoot(session, byId) {
+      const visited = new Set();
+      while (session && session.parentId && !visited.has(session.id)) {
+        visited.add(session.id);
+        const parent = byId.get(session.parentId);
+        if (!parent) return undefined;
+        session = parent;
+      }
+      return session && mainConversation(session) ? session : undefined;
+    }
+    function conversationActivity(current) {
+      const sessions = array(current.sessions), byId = new Map(sessions.map(item => [item.id, item])), activity = new Map();
+      for (const session of sessions) {
+        const root = conversationRoot(session, byId);
+        if (!root) continue;
+        const value = activity.get(root.id) || { running: false, unread: false, approvals: 0, questions: 0 };
+        value.running ||= session.running === true;
+        value.unread ||= session.unread === true;
+        value.approvals += Number(session.attention && session.attention.approvals) || 0;
+        value.questions += Number(session.attention && session.attention.questions) || 0;
+        activity.set(root.id, value);
+      }
+      return activity;
+    }
+    function sessionTimeGroup(value) {
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const date = new Date(Number(value)); date.setHours(0, 0, 0, 0);
+      const days = Math.round((today.getTime() - date.getTime()) / 86400000);
+      return days <= 0 ? 'Today' : days === 1 ? 'Yesterday' : days < 7 ? 'Previous 7 days' : 'Older';
+    }
+    function closeSessionActions(focus) {
+      const previous = sessionAction; sessionAction = undefined;
+      elements.sessionActions.classList.add('hidden');
+      document.querySelectorAll('.session-more[aria-expanded="true"]').forEach(button => button.setAttribute('aria-expanded', 'false'));
+      if (focus && previous && previous.anchor.isConnected) previous.anchor.focus();
+    }
+    function positionSessionActions() {
+      if (!sessionAction) return;
+      const app = document.getElementById('app').getBoundingClientRect(), anchor = sessionAction.anchor.getBoundingClientRect();
+      const menu = elements.sessionActions.getBoundingClientRect();
+      const left = Math.max(8, Math.min(anchor.right - app.left - menu.width, app.width - menu.width - 8));
+      const below = anchor.bottom - app.top + 4;
+      const top = Math.max(8, below + menu.height <= app.height - 8 ? below : anchor.top - app.top - menu.height - 4);
+      elements.sessionActions.style.left = left + 'px'; elements.sessionActions.style.top = top + 'px';
+    }
+    function openSessionActions(session, anchor, archived, focus = true) {
+      closeSessionActions(false);
+      sessionAction = { kind: 'conversation', id: session.id, anchor, archived, listId: anchor.closest('[role="list"]').id };
+      anchor.setAttribute('aria-expanded', 'true');
+      elements.sessionActions.replaceChildren();
+      const append = (label, type) => {
+        const button = node('button', 'session-action', label); button.type = 'button'; button.setAttribute('role', 'menuitem');
+        button.disabled = !state || state.phase !== 'ready';
+        button.addEventListener('click', () => {
+          closeSessionActions(false); closeSessionMenu(false);
+          vscode.postMessage({ type, sessionId: session.id });
+        }); elements.sessionActions.append(button);
+      };
+      append('Rename', 'rename-session');
+      append(archived ? 'Restore' : 'Archive', archived ? 'unarchive-session' : 'archive-session');
+      elements.sessionActions.setAttribute('aria-label', 'Actions for ' + string(session.title));
+      elements.sessionActions.classList.remove('hidden'); positionSessionActions();
+      if (focus) elements.sessionActions.querySelector('button:not(:disabled)')?.focus();
     }
     function closeSessionMenu(focusTrigger) {
-      sessionMenuOpen = false; sessionActionId = undefined;
+      sessionMenuOpen = false; closeSessionActions(false);
       if (searchTimer !== undefined) { clearTimeout(searchTimer); searchTimer = undefined; }
       elements.sessionSearch.value = '';
       elements.sessionMenu.classList.add('hidden'); elements.sessionTrigger.setAttribute('aria-expanded', 'false');
       if (focusTrigger) elements.sessionTrigger.focus();
+      if (homeOpen && elements.homeSessionSearch.value.trim() && state && string(state.historySearch && state.historySearch.query).trim() !== elements.homeSessionSearch.value.trim()) requestSessionSearch(elements.homeSessionSearch);
+    }
+    function openDirectory() {
+      if (homeCreation) return;
+      if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
+      closeSessionMenu(false); closeContextMenu(false); closeModelMenu(false);
+      policyMenuOpen = false; elements.policyMenu.classList.add('hidden');
+      homeOpen = true;
+      if (state) { renderNavigation(state); renderSessionCenter(state); }
+      elements.homePrompt.focus();
+    }
+    function sessionRow(session, current, activity, archived, snippet, selectedRootId) {
+      const active = session.id === selectedRootId && !archived;
+      const row = node('div', 'session-row' + (active ? ' active' : '') + (archived ? ' archived' : ''));
+      row.dataset.sessionId = session.id; row.setAttribute('role', 'listitem');
+      const main = node('button', 'session-main' + (snippet === undefined ? '' : ' search-hit')); main.type = 'button';
+      if (active) main.setAttribute('aria-current', 'page');
+      const status = activity.get(session.id) || {};
+      const waiting = status.approvals > 0 ? 'Awaiting approval' : status.questions > 0 ? 'Awaiting your answer' : '';
+      const detail = waiting || (status.running ? 'Running' : status.unread ? 'New activity' : relativeSessionTime(session.updatedAt));
+      const indicator = node('span', 'session-indicator' + (waiting ? ' attention' : status.running ? ' running' : status.unread ? ' unread' : ''));
+      indicator.title = waiting || (status.running ? 'Running' : status.unread ? 'New activity' : ''); indicator.setAttribute('aria-hidden', 'true');
+      const title = string(session.title, 'New conversation');
+      main.title = archived ? 'Restore “' + title + '”' : title + (detail ? ' · ' + detail : '');
+      main.setAttribute('aria-label', archived ? 'Restore ' + title : title + (detail ? ' — ' + detail : ''));
+      main.append(indicator, node('span', 'session-name', title), node('span', 'session-meta', archived && snippet !== undefined ? 'Archived' : detail));
+      if (snippet !== undefined) main.append(node('span', 'session-snippet', string(snippet)));
+      main.disabled = Boolean(homeCreation);
+      main.addEventListener('click', () => {
+        if (archived) { closeSessionActions(false); vscode.postMessage({ type: 'unarchive-session', sessionId: session.id }); return; }
+        if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
+        closeSessionMenu(false); homeOpen = false;
+        if (state) renderNavigation(state);
+        if (!state || session.id !== state.sessionId) vscode.postMessage({ type: 'select-session', sessionId: session.id });
+        else elements.prompt.focus();
+      });
+      row.append(main);
+      if (!session.blank) {
+        const more = node('button', 'session-more', '…'); more.type = 'button'; more.title = 'Conversation actions';
+        more.setAttribute('aria-label', 'Actions for ' + title); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
+        more.disabled = Boolean(homeCreation);
+        more.addEventListener('click', event => {
+          event.stopPropagation();
+          if (sessionAction && sessionAction.id === session.id && sessionAction.anchor === more) closeSessionActions(true);
+          else openSessionActions(session, more, archived);
+        });
+        row.addEventListener('contextmenu', event => { event.preventDefault(); if (!more.disabled) openSessionActions(session, more, archived); });
+        row.append(more);
+      }
+      return row;
+    }
+    function renderSessionDirectory(list, input, current, archivedOnly) {
+      const selected = conversationRoot(array(current.sessions).find(item => item.id === current.sessionId), new Map(array(current.sessions).map(item => [item.id, item])));
+      const selectedRootId = selected && selected.id;
+      const previousScroll = list.scrollTop;
+      const focused = document.activeElement, focusedRow = list.contains(focused) && focused.closest('.session-row');
+      const focusId = focusedRow && focusedRow.dataset.sessionId, focusMore = focused && focused.classList.contains('session-more');
+      const query = input.value.trim().toLocaleLowerCase(), activity = conversationActivity(current);
+      const recent = array(current.sessions).filter(mainConversation), archived = array(current.archivedSessions).filter(mainConversation);
+      const source = archivedOnly ? archived : recent;
+      const matching = source.filter(session => !query || string(session.title).toLocaleLowerCase().includes(query))
+        .sort((left, right) => (Number(right.updatedAt) || 0) - (Number(left.updatedAt) || 0))
+        .slice(0, list === elements.sessionList && !query ? 12 : source.length);
+      list.replaceChildren();
+      let group;
+      for (const session of matching) {
+        const next = query ? 'Title matches' : sessionTimeGroup(session.updatedAt);
+        if (next !== group) { list.append(node('div', 'session-group', next)); group = next; }
+        list.append(sessionRow(session, current, activity, archivedOnly, undefined, selectedRootId));
+      }
+      if (!query) {
+        if (!matching.length) list.append(node('div', 'session-empty', archivedOnly ? 'No archived conversations' : 'No conversations yet'));
+      } else {
+        const search = record(current.historySearch) || {}, rendered = new Set(matching.map(session => session.id));
+        const catalog = new Map((archivedOnly ? archived : [...recent, ...archived]).map(session => [session.id, session]));
+        const archivedIds = new Set(archived.map(session => session.id));
+        const ready = string(search.query).trim().toLocaleLowerCase() === query && !search.loading;
+        const hits = ready ? array(search.items).filter(hit => catalog.has(hit.sessionId) && !rendered.has(hit.sessionId) && (rendered.add(hit.sessionId), true)) : [];
+        if (hits.length) {
+          list.append(node('div', 'session-group', 'Message matches'));
+          for (const hit of hits) list.append(sessionRow(catalog.get(hit.sessionId), current, activity, archivedIds.has(hit.sessionId), hit.snippet, selectedRootId));
+        }
+        if (!ready) list.append(node('div', 'session-empty', 'Searching message history…'));
+        else if (search.error) {
+          list.append(node('div', 'session-empty', string(search.error)), featureButton('Configure task services', () => vscode.postMessage({ type: 'configure-task-services' })));
+        } else if (!matching.length && !hits.length) list.append(node('div', 'session-empty', 'No matching conversations'));
+        if (ready && search.hasMore) list.append(node('div', 'session-empty', 'DSH returns up to 20 matches across the runtime. Refine your query to find more in this project.'));
+      }
+      list.scrollTop = previousScroll;
+      if (focusId) {
+        const row = [...list.querySelectorAll('.session-row')].find(item => item.dataset.sessionId === focusId);
+        row?.querySelector(focusMore ? '.session-more' : '.session-main')?.focus({ preventScroll: true });
+      }
     }
     function renderSessionCenter(current) {
-      const sessions = array(current.sessions);
-      const selected = sessions.find(session => session.id === current.sessionId);
-      const waiting = sessions.filter(session => session.id !== current.sessionId && session.attention && (session.attention.approvals > 0 || session.attention.questions > 0)).length;
-      const attentionCount = elements.sessionAttentionCount;
-      attentionCount.textContent = String(waiting);
-      attentionCount.classList.toggle('hidden', waiting === 0);
-      attentionCount.title = waiting + ' other conversation(s) need your response';
-      elements.sessionTriggerTitle.textContent = selected ? selected.title : 'New conversation';
+      const sessions = array(current.sessions), selected = sessions.find(session => session.id === current.sessionId);
+      const byId = new Map(sessions.map(item => [item.id, item])), selectedRoot = conversationRoot(selected, byId), activity = conversationActivity(current);
+      const waiting = [...activity].filter(([id, status]) => id !== (selectedRoot && selectedRoot.id) && (status.approvals > 0 || status.questions > 0)).length;
+      elements.sessionAttentionCount.textContent = String(waiting); elements.sessionAttentionCount.classList.toggle('hidden', waiting === 0);
+      elements.sessionAttentionCount.title = waiting + ' other conversation(s) need your response';
+      elements.sessionTriggerTitle.textContent = homeOpen ? 'Conversations' : selected ? selected.title : 'New conversation';
       elements.sessionTrigger.title = selected ? selected.title : 'Project conversations';
-      elements.sessionTrigger.setAttribute('aria-label', waiting ? 'Project conversations — ' + attentionCount.title : 'Project conversations');
-      elements.sessionList.replaceChildren();
-      const query = elements.sessionSearch.value.trim().toLocaleLowerCase();
-      // A search flattens the tree: a matching subagent is more useful than the
-      // collapsed parent it hides behind, and delegation can nest arbitrarily.
-      const matching = session => !query || string(session.title).toLocaleLowerCase().includes(query)
-        || string(session.subagent && session.subagent.label).toLocaleLowerCase().includes(query);
-      const childrenOf = session => sessions.filter(child => child.parentId === session.id);
-      const visible = query
-        ? sessions.filter(matching).sort((left, right) => right.updatedAt - left.updatedAt)
-        : sessions.filter(session => !session.parentId);
-      const nested = query ? visible : sessions.filter(session => session.parentId);
-      const archived = array(current.archivedSessions).filter(session => !query || string(session.title).toLocaleLowerCase().includes(query));
-      const parentRow = current.parentSessionId ? sessions.find(session => session.id === current.parentSessionId) : undefined;
-      if (parentRow) {
-        const row = node('div', 'session-row session-ancestor');
-        const main = node('button', 'session-main'); main.type = 'button';
-        main.title = 'Back to “' + string(parentRow.title) + '”';
-        main.append(node('span', 'session-ancestor-arrow', '↩'), node('span', 'session-name', string(parentRow.title)), node('span', 'session-meta', 'Owning conversation'));
-        main.addEventListener('click', () => {
-          closeSessionMenu(false);
-          vscode.postMessage({ type: 'select-session', sessionId: parentRow.id });
-        });
-        row.append(main);
-        elements.sessionList.append(row);
+      elements.sessionTrigger.setAttribute('aria-label', waiting ? 'Project conversations — ' + elements.sessionAttentionCount.title : 'Project conversations');
+      elements.sessionTotal.textContent = String(sessions.filter(mainConversation).length);
+      const previousAction = sessionAction;
+      renderSessionDirectory(elements.sessionList, elements.sessionSearch, current, false);
+      renderSessionDirectory(elements.homeSessionList, elements.homeSessionSearch, current, homeArchived);
+      elements.homeListTitle.textContent = homeArchived ? 'Archived conversations' : 'Recent conversations';
+      elements.homeArchiveToggle.textContent = homeArchived ? 'Back to recent' : 'Archived (' + array(current.archivedSessions).filter(mainConversation).length + ')';
+      elements.homeArchiveToggle.setAttribute('aria-pressed', String(homeArchived));
+      if (previousAction && previousAction.kind === 'conversation') {
+        const list = document.getElementById(previousAction.listId);
+        const row = [...list.querySelectorAll('.session-row')].find(item => item.dataset.sessionId === previousAction.id);
+        const more = row && row.querySelector('.session-more');
+        const session = [...sessions, ...array(current.archivedSessions)].find(item => item.id === previousAction.id);
+        if (more && session) openSessionActions(session, more, previousAction.archived, elements.sessionActions.contains(document.activeElement));
+        else closeSessionActions(false);
+      } else if (previousAction && (previousAction.originSessionId !== current.sessionId || !previousAction.anchor.isConnected)) closeSessionActions(false);
+    }
+    function renderNavigation(current) {
+      const runtimeKey = JSON.stringify([current.phase, current.setup, current.statusText, current.canReconnect]);
+      if (runtimeKey !== homeRuntimeKey) {
+        homeRuntimeKey = runtimeKey;
+        elements.homeRuntime.replaceChildren();
+        elements.homeRuntime.classList.toggle('hidden', current.phase === 'ready');
+        if (current.phase !== 'ready') elements.homeRuntime.append(renderStatus(current));
       }
-      const anyRows = query ? visible.length > 0 : visible.length > 0 || nested.length > 0;
-      if (!anyRows && !archived.length && !query) {
-        if (!parentRow) elements.sessionList.append(node('div', 'session-empty', query ? 'No matching conversations' : 'No conversations yet'));
-        return;
+      if (homeCwd !== current.cwd) {
+        if (homeCwd !== undefined) homeDrafts.set(homeCwd, elements.homePrompt.value);
+        homeCwd = current.cwd; elements.homePrompt.value = homeDrafts.get(homeCwd) || ''; homeModelChoice = undefined;
+        elements.homeError.classList.add('hidden');
       }
-      const appendRow = (session, depth, ancestors) => {
-        if (ancestors.has(session.id)) return;
-        const seen = new Set(ancestors).add(session.id);
-        const isChild = depth > 0;
-        const active = session.id === current.sessionId;
-        const hasChildren = session.childCount > 0;
-        const row = node('div', 'session-row' + (active ? ' active' : '') + (isChild ? ' session-child' : '') + (hasChildren ? ' with-expander' : ''));
-        row.setAttribute('role', 'option'); row.setAttribute('aria-selected', String(active));
-        if (isChild) row.style.marginLeft = String(14 + (depth - 1) * 12) + 'px';
-        const main = node('button', 'session-main'); main.type = 'button';
-        const attention = session.attention;
-        const waitingFor = attention && attention.approvals > 0 ? 'Awaiting approval' : attention && attention.questions > 0 ? 'Awaiting your answer' : '';
-        const indicator = node('span', 'session-indicator' + (waitingFor ? ' attention' : session.running ? ' running' : session.unread ? ' unread' : ''));
-        indicator.title = waitingFor || (session.running ? 'Running' : session.unread ? 'New activity' : '');
-        if (session.subagent) {
-          const mode = session.subagent.mode;
-          main.append(node('span', 'session-subagent-badge ' + mode, mode === 'one-shot' ? 'One-shot' : mode === 'continuable' ? 'Subagent' : 'Subagent?'));
-        }
-        const title = node('span', 'session-name', string(session.subagent && session.subagent.label) || string(session.title, 'New conversation'));
-        const meta = node('span', 'session-meta', waitingFor || (session.running ? 'Running' : session.unread ? 'New activity' : relativeSessionTime(session.updatedAt)));
-        main.append(indicator, title, meta);
-        main.addEventListener('click', () => {
-          if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
-          closeSessionMenu(false);
-          if (!state || session.id !== state.sessionId) vscode.postMessage({ type: 'select-session', sessionId: session.id });
-        });
-        const children = childrenOf(session);
-        // Subagents are shown by default: hiding them behind a disclosure is
-        // what made delegated work invisible in the first place. A live or
-        // waiting child outranks a manual collapse so the active row is never
-        // the one that disappears.
-        const mustShow = children.some(child => child.id === current.sessionId
-          || child.running || (child.attention && (child.attention.approvals > 0 || child.attention.questions > 0)));
-        const expanded = hasChildren && (Boolean(query) || mustShow || !collapsedSubagents.has(session.id));
-        if (hasChildren) {
-          const toggle = node('button', 'session-expander', expanded ? '▾' : '▸');
-          toggle.type = 'button';
-          // A live or waiting child pins the list open, so the control would be
-          // inert; say why instead of accepting a click that does nothing. The
-          // same applies while a search is active: a query flattens the tree, so
-          // collapsing the parent could not change what is shown.
-          const pinnedOpen = expanded && mustShow && !query;
-          const searching = Boolean(query);
-          toggle.disabled = pinnedOpen || searching;
-          toggle.title = searching
-            ? 'A search shows every matching conversation, nested or not'
-            : pinnedOpen
-              ? 'A subagent here is running or needs you, so its row stays visible'
-              : expanded ? 'Hide subagents' : 'Show ' + String(session.childCount) + ' subagent session(s)';
-          toggle.setAttribute('aria-expanded', String(expanded));
-          toggle.addEventListener('click', event => {
-            event.stopPropagation();
-            if (expanded) collapsedSubagents.add(session.id); else collapsedSubagents.delete(session.id);
-            renderSessionCenter(current);
-          });
-          row.append(toggle);
-        }
-        row.append(main);
-        if (!session.blank && !isChild) {
-          const more = node('button', 'session-more', '…'); more.type = 'button'; more.title = 'Conversation actions'; more.setAttribute('aria-label', 'Actions for ' + string(session.title));
-          more.addEventListener('click', event => { event.stopPropagation(); sessionActionId = sessionActionId === session.id ? undefined : session.id; renderSessionCenter(current); });
-          row.append(more);
-          if (sessionActionId === session.id) {
-            const actions = node('div', 'session-actions');
-            const rename = node('button', 'session-action', 'Rename'); rename.type = 'button';
-            rename.addEventListener('click', () => { closeSessionMenu(false); vscode.postMessage({ type: 'rename-session', sessionId: session.id }); });
-            const archive = node('button', 'session-action danger', 'Archive'); archive.type = 'button';
-            archive.addEventListener('click', () => { closeSessionMenu(false); vscode.postMessage({ type: 'archive-session', sessionId: session.id }); });
-            actions.append(rename, archive); row.append(actions);
+      if (!homeInitialized && current.phase === 'ready') {
+        homeInitialized = true;
+        const active = array(current.sessions).find(item => item.id === current.sessionId);
+        if (active && active.blank && !array(current.messages).length) homeOpen = true;
+      }
+      if (homeCreation && (homeCreation.cwd !== current.cwd || current.phase === 'error')) {
+        homeCreation = undefined;
+        elements.homeError.textContent = 'The runtime or project changed. Your new conversation draft was retained.';
+        elements.homeError.classList.remove('hidden');
+      }
+      const creating = Boolean(homeCreation);
+      elements.sessionTrigger.disabled = creating || ![...array(current.sessions), ...array(current.archivedSessions)].some(mainConversation);
+      elements.newSession.disabled = creating || current.phase !== 'ready';
+      elements.homePrompt.disabled = creating || current.phase !== 'ready';
+      elements.homeSend.disabled = creating || current.phase !== 'ready' || !elements.homePrompt.value.trim();
+      elements.homeOpenDraft.disabled = creating || current.phase !== 'ready';
+      elements.homeProject.disabled = creating || current.running === true;
+      elements.homeModel.disabled = creating || current.phase !== 'ready';
+      elements.conversationHome.disabled = creating;
+      elements.homeProject.textContent = current.workspaceName || 'Workspace'; elements.homeProject.title = current.cwd || 'Choose DeepSeek project';
+      if (homeModelCatalog !== current.models || homeModelChoice === undefined) {
+        homeModelCatalog = current.models;
+        const previousChoice = homeModelChoice;
+        elements.homeModel.replaceChildren(new Option('Default model', ''));
+        for (const model of array(current.models)) elements.homeModel.append(new Option(model.label, JSON.stringify(selectionFor(model, model.reasoningEffort))));
+        const available = [...elements.homeModel.options].map(option => option.value);
+        const selected = array(current.models).find(model => model.selected);
+        homeModelChoice = previousChoice !== undefined && available.includes(previousChoice) ? previousChoice : selected ? JSON.stringify(selectionFor(selected, selected.reasoningEffort)) : '';
+        elements.homeModel.value = homeModelChoice;
+      }
+      if (homeOpen && !lastHomeOpen) {
+        homeReading = { sessionId: current.sessionId, top: elements.scroll.scrollTop, following: conversationScroller.following };
+        conversationScroller.pause();
+      }
+      elements.conversationHomeView.classList.toggle('hidden', !homeOpen);
+      elements.conversationPane.classList.toggle('hidden', homeOpen);
+      elements.composerFooter.classList.toggle('hidden', homeOpen);
+      elements.conversationHome.setAttribute('aria-pressed', String(homeOpen));
+      elements.conversationHome.title = homeOpen ? 'Return to current conversation' : 'All conversations';
+      elements.conversationHome.setAttribute('aria-label', elements.conversationHome.title);
+      elements.sessionTriggerTitle.textContent = homeOpen ? 'Conversations' : string(array(current.sessions).find(item => item.id === current.sessionId)?.title, 'New conversation');
+      if (!homeOpen && lastHomeOpen && homeReading && homeReading.sessionId === current.sessionId) {
+        const reading = homeReading;
+        requestAnimationFrame(() => {
+          if (!homeOpen && state && state.sessionId === reading.sessionId) {
+            elements.scroll.scrollTop = reading.top;
+            if (reading.following) conversationScroller.resume();
+            else conversationScroller.changed();
           }
-        }
-        elements.sessionList.append(row);
-        // Delegation nests, so descend as far as the payload goes. A search
-        // shows a flat list instead, because a matching grandchild is more
-        // useful than the two collapsed ancestors it would hide behind.
-        if (!query && hasChildren && expanded) {
-          for (const child of children) appendRow(child, depth + 1, seen);
-        }
-      };
-      for (const session of visible) appendRow(session, 0, new Set());
-      if (query) {
-        elements.sessionList.append(node('div', 'jobs-title', 'Message history'));
-        const search = record(current.historySearch) || {};
-        if (string(search.query).toLocaleLowerCase() !== query || search.loading) {
-          elements.sessionList.append(node('div', 'session-empty', 'Searching message history…'));
-        } else {
-          if (search.error) { elements.sessionList.append(node('div', 'session-empty', string(search.error)), featureButton('Configure task services', () => vscode.postMessage({ type: 'configure-task-services' }))); }
-          const hits = array(search.items);
-          for (const hit of hits) {
-            const session = [...sessions, ...array(current.archivedSessions)].find(item => item.id === hit.sessionId);
-            if (!session) continue;
-            const row = node('button', 'search-hit'); row.type = 'button';
-            const isArchived = array(current.archivedSessions).some(item => item.id === hit.sessionId);
-            row.append(node('strong', '', string(session.title)), node('div', 'search-snippet', string(hit.snippet)));
-            if (isArchived) row.append(node('span', 'session-meta', 'Restore archived conversation'));
-            row.addEventListener('click', () => { closeSessionMenu(false); vscode.postMessage({ type: isArchived ? 'unarchive-session' : 'select-session', sessionId: session.id }); });
-            elements.sessionList.append(row);
-          }
-          if (!hits.length && !search.error) elements.sessionList.append(node('div', 'session-empty', 'No message history matches in this project'));
-          if (search.hasMore) elements.sessionList.append(node('div', 'session-empty', 'DSH returns up to 20 matches across the runtime. Refine your query to find more in this project.'));
-        }
+        });
       }
-      if (archived.length) {
-        const toggle = node('button', 'session-archived-toggle', (archivedOpen ? '▾ ' : '▸ ') + 'Archived (' + archived.length + ')');
-        toggle.type = 'button';
-        toggle.setAttribute('aria-expanded', String(archivedOpen));
-        toggle.title = archivedOpen ? 'Hide archived conversations' : 'Show archived conversations';
-        toggle.addEventListener('click', () => { archivedOpen = !archivedOpen; renderSessionCenter(current); });
-        elements.sessionList.append(toggle);
+      lastHomeOpen = homeOpen;
+      if (homeCreation && homeCreation.sessionId === current.sessionId && current.phase === 'ready') {
+        const draft = homeCreation; homeCreation = undefined; homeOpen = false;
+        elements.homePrompt.value = ''; homeDrafts.set(current.cwd, '');
+        renderNavigation(current); renderSessionCenter(current);
+        const followUp = elements.prompt.value;
+        const combined = draft.text && followUp && draft.text !== followUp ? draft.text + String.fromCharCode(10, 10) + followUp : draft.text || followUp;
+        elements.prompt.value = draft.text;
+        if (draft.send && !draft.drop) {
+          const sent = send(); elements.prompt.value = sent ? followUp : combined;
+        } else elements.prompt.value = combined;
+        sessionDrafts.set(current.sessionId, elements.prompt.value); resizePrompt(); elements.prompt.focus();
+        if (draft.drop) void acceptDrop({ dataTransfer: draft.drop });
+        else if (!draft.send) elements.attach.click();
       }
-      if (archivedOpen) {
-        for (const session of archived) {
-          const title = string(session.title, 'New conversation');
-          const row = node('div', 'session-row archived');
-          const main = node('button', 'session-main'); main.type = 'button';
-          main.title = 'Restore “' + title + '” to the conversation list';
-          main.setAttribute('aria-label', 'Restore ' + title);
-          main.append(node('span', 'session-indicator'), node('span', 'session-name', title), node('span', 'session-meta', relativeSessionTime(session.updatedAt)));
-          const restore = node('button', 'session-restore', 'Restore'); restore.type = 'button';
-          restore.title = main.title;
-          const restoreSession = () => { sessionActionId = undefined; vscode.postMessage({ type: 'unarchive-session', sessionId: session.id }); };
-          main.addEventListener('click', restoreSession);
-          restore.addEventListener('click', restoreSession);
-          row.append(main, restore);
-          elements.sessionList.append(row);
-        }
+    }
+    function startHomeConversation(sendPrompt) {
+      if (!state || state.phase !== 'ready' || homeCreation) return;
+      const text = elements.homePrompt.value.trim(); if (sendPrompt && !text) return;
+      homeCreation = { requestId: homeRequestScope + '-' + (++homeCreationId), cwd: state.cwd, text, send: sendPrompt };
+      elements.homeError.classList.add('hidden'); closeSessionActions(false);
+      const selection = elements.homeModel.value ? JSON.parse(elements.homeModel.value) : undefined;
+      vscode.postMessage({ type: 'create-conversation', requestId: homeCreation.requestId, cwd: state.cwd, sessionId: state.sessionId, ...(selection ? { selection } : {}) });
+      renderNavigation(state); renderSessionCenter(state);
+    }
+    function navigateSessionList(event, list, search) {
+      if (event.isComposing) return;
+      const buttons = [...list.querySelectorAll('.session-main:not(:disabled)')]; if (!buttons.length) return;
+      const index = buttons.indexOf(document.activeElement);
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Home' || event.key === 'End') {
+        event.preventDefault();
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : index < 0 ? (event.key === 'ArrowUp' ? buttons.length - 1 : 0) : index + (event.key === 'ArrowDown' ? 1 : -1);
+        if (next < 0) search.focus(); else buttons[Math.min(next, buttons.length - 1)].focus();
+      } else if ((event.key === 'ArrowRight' || event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && index >= 0) {
+        const more = buttons[index].closest('.session-row').querySelector('.session-more');
+        if (more) { event.preventDefault(); more.click(); }
       }
     }
 
@@ -1226,7 +1386,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       for (const value of values) appendItem(container, value);
       parent.append(container);
     }
-    function renderToolBody(message, callView, resultView) {
+    function renderToolBody(message, callView, resultView, context) {
       const body = node('div', 'tool-body');
       const view = resultView || callView;
       const card = string(view && view.card, 'generic');
@@ -1257,7 +1417,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           open.type = 'button'; open.addEventListener('click', () => vscode.postMessage({ type: 'open-file', path: filePath })); actions.append(open);
           if (!message.streaming && !message.failed) {
             const review = node('button', 'tool-action', paths.length === 1 ? 'Review Changes' : 'Review ' + filePath);
-            review.type = 'button'; review.addEventListener('click', () => vscode.postMessage({ type: 'review-file', path: filePath })); actions.append(review);
+            review.type = 'button'; review.addEventListener('click', () => postChangeAction('review-file', { path: filePath }, context)); actions.append(review);
           }
           body.append(actions);
         }
@@ -1389,6 +1549,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return message.streaming === true || message.failed === true;
     }
     function renderTool(message) {
+      const context = { sessionId: state && state.sessionId, cwd: state && state.cwd };
       const callView = record(message.callView);
       const resultView = record(message.resultView);
       const item = document.createElement('details');
@@ -1408,8 +1569,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         if (contentInitialized) return;
         contentInitialized = true;
         if (message.deferredBody === true) {
-          const body = node('div', 'tool-body'); item.append(body); attachDeferredOutput(message, body, page => renderToolBody(page, record(page.callView), record(page.resultView)));
-        } else item.append(renderToolBody(message, callView, resultView));
+          const body = node('div', 'tool-body'); item.append(body); attachDeferredOutput(message, body, page => renderToolBody(page, record(page.callView), record(page.resultView), context));
+        } else item.append(renderToolBody(message, callView, resultView, context));
       };
       if (item.open) initializeContent();
       // What this code chose, so the queued echo of it is not read as a click.
@@ -1423,6 +1584,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return item;
     }
     function renderCommand(message) {
+      const context = { sessionId: state && state.sessionId, cwd: state && state.cwd };
       const item = node('div', 'command-card' + (message.failed ? ' failed' : ''));
       const head = node('div', 'command-head');
       head.append(node('span', 'tool-icon', message.streaming ? '●' : (message.failed ? '!' : '✓')));
@@ -1430,31 +1592,69 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       head.append(node('span', 'tool-detail', message.detail || ''));
       item.append(head);
       if (message.deferredBody === true) {
-        const result = node('div', 'command-result'); item.append(result); attachDeferredOutput(message, result, page => renderToolBody(page, record(page.callView), record(page.resultView)), false, 'Show command output');
+        const result = node('div', 'command-result'); item.append(result); attachDeferredOutput(message, result, page => renderToolBody(page, record(page.callView), record(page.resultView), context), false, 'Show command output');
       } else if (message.rawResult) { const result = node('div', 'command-result'); appendPre(result, message.rawResult); item.append(result); }
       return item;
     }
+    function postChangeAction(type, details, context) {
+      if (!state || !context || !context.sessionId || state.sessionId !== context.sessionId || state.cwd !== context.cwd) return;
+      vscode.postMessage({ type, ...details, sessionId: context.sessionId, cwd: context.cwd });
+    }
+    function openChangeActions(groups, anchor, file, turn, context) {
+      closeSessionActions(false);
+      if (!state || state.sessionId !== context.sessionId || state.cwd !== context.cwd) return;
+      sessionAction = { kind: 'changes', originSessionId: context.sessionId, anchor };
+      anchor.setAttribute('aria-expanded', 'true'); elements.sessionActions.replaceChildren();
+      const append = (label, type, disabled, danger) => {
+        const button = node('button', 'session-action' + (danger ? ' danger' : ''), label); button.type = 'button'; button.setAttribute('role', 'menuitem');
+        button.disabled = disabled || !state || state.phase !== 'ready';
+        if (disabled) button.title = 'Full snapshots are unavailable for this change';
+        button.addEventListener('click', () => {
+          closeSessionActions(false);
+          postChangeAction(type, file ? { path: file.path, ...(type === 'open-file' ? {} : { turn }) } : {}, context);
+        }); elements.sessionActions.append(button);
+      };
+      if (file) { append('Open file', 'open-file', false, false); append('Keep change', 'keep-file', false, false); append('Revert change', 'revert-file', file.canRevert !== true, true); }
+      else { append('Keep all', 'keep-all', false, false); append('Revert all', 'revert-all', !groups.flatMap(group => group.files || []).every(item => item.canRevert === true), true); }
+      elements.sessionActions.setAttribute('aria-label', file ? 'Actions for ' + file.path : 'Actions for all changes');
+      elements.sessionActions.classList.remove('hidden'); positionSessionActions();
+      elements.sessionActions.querySelector('button:not(:disabled)')?.focus();
+    }
     function renderChangedFiles(groups) {
-      const box = node('section', 'changed-files'); const head = node('div', 'changed-files-head');
-      head.append(node('span', 'changed-files-title', 'Changed Files'));
-      const allFiles = groups.flatMap(group => group.files || []); const allRevertible = allFiles.length > 0 && allFiles.every(file => file.canRevert === true);
-      const actions = node('div', 'changed-files-actions');
-      const reviewAll = node('button', 'changed-action', 'Open All'); reviewAll.type = 'button'; reviewAll.addEventListener('click', () => vscode.postMessage({ type: 'review-all' })); actions.append(reviewAll);
-      const keepAll = node('button', 'changed-action', 'Keep All'); keepAll.type = 'button'; keepAll.addEventListener('click', () => vscode.postMessage({ type: 'keep-all' })); actions.append(keepAll);
-      const revertAll = node('button', 'changed-action danger', 'Revert All'); revertAll.type = 'button'; revertAll.disabled = !allRevertible; if (!allRevertible) revertAll.title = 'Full snapshots are unavailable for one or more files'; revertAll.addEventListener('click', () => vscode.postMessage({ type: 'revert-all' })); actions.append(revertAll); head.append(actions); box.append(head);
+      const origin = state && state.sessionId, context = { sessionId: origin, cwd: state && state.cwd }, files = groups.flatMap(group => group.files || []);
+      const count = new Set(files.map(file => file.path)).size;
+      const stats = (additions, deletions) => {
+        const result = node('span', 'changed-file-stats'); result.append(node('span', 'change-additions', '+' + additions), node('span', 'change-deletions', '−' + deletions)); return result;
+      };
+      const box = node('section', 'changed-files'); box.setAttribute('aria-label', 'File changes');
+      const head = node('div', 'changed-files-head'), toggle = node('button', 'changed-files-toggle'); toggle.type = 'button';
+      const chevron = node('span', 'changes-chevron'); chevron.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
+      toggle.append(chevron, node('span', 'changed-files-title', count + (count === 1 ? ' file changed' : ' files changed')));
+      const totals = stats(files.reduce((sum, file) => sum + (file.additions || 0), 0), files.reduce((sum, file) => sum + (file.deletions || 0), 0));
+      head.append(toggle, totals);
+      const review = node('button', 'changed-action', 'Review'); review.type = 'button'; review.title = 'Review all changes'; review.addEventListener('click', () => postChangeAction('review-all', {}, context)); head.append(review);
+      const more = node('button', 'session-more changed-more', '…'); more.type = 'button'; more.setAttribute('aria-label', 'Actions for all changes'); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
+      more.addEventListener('click', event => { event.stopPropagation(); if (sessionAction && sessionAction.anchor === more) closeSessionActions(true); else openChangeActions(groups, more, undefined, undefined, context); }); head.append(more); box.append(head);
+      const body = node('div', 'changed-files-body');
+      const sync = () => { const expanded = expandedChanges.has(origin); toggle.setAttribute('aria-expanded', String(expanded)); toggle.title = expanded ? 'Hide changed files' : 'Show changed files'; body.classList.toggle('hidden', !expanded); chevron.classList.toggle('expanded', expanded); };
+      toggle.addEventListener('click', () => { if (expandedChanges.has(origin)) expandedChanges.delete(origin); else expandedChanges.add(origin); sync(); conversationScroller.changed(); });
       for (const group of groups) {
-        const section = node('div', 'changed-turn'); section.append(node('div', 'changed-turn-title', group.turn > 0 ? 'Turn ' + String(group.turn) : 'Earlier changes'));
+        const section = node('div', 'changed-turn');
+        if (groups.length > 1) section.append(node('div', 'changed-turn-title', group.turn > 0 ? 'Turn ' + group.turn : 'Earlier changes'));
         for (const file of group.files || []) {
-          const row = node('div', 'changed-file'); row.append(fileButton(file.path, undefined, file.path));
-          const stats = node('span', 'changed-file-stats'); stats.append(node('span', 'change-additions', '+' + String(file.additions || 0)), node('span', 'change-deletions', '−' + String(file.deletions || 0))); row.append(stats);
-          const fileActions = node('div', 'changed-file-actions');
-          const review = node('button', 'changed-action', 'Open Diff'); review.type = 'button'; review.addEventListener('click', () => vscode.postMessage({ type: 'review-file', path: file.path, turn: group.turn })); fileActions.append(review);
-          const keep = node('button', 'changed-action', 'Keep'); keep.type = 'button'; keep.addEventListener('click', () => vscode.postMessage({ type: 'keep-file', path: file.path, turn: group.turn })); fileActions.append(keep);
-          const revert = node('button', 'changed-action danger', 'Revert'); revert.type = 'button'; revert.disabled = file.canRevert !== true; if (revert.disabled) revert.title = 'Full snapshot unavailable after reloading this session'; revert.addEventListener('click', () => vscode.postMessage({ type: 'revert-file', path: file.path, turn: group.turn })); fileActions.append(revert); row.append(fileActions); section.append(row);
+          const row = node('div', 'changed-file'), open = node('button', 'changed-file-link'); open.type = 'button';
+          const normalized = string(file.path).split(String.fromCharCode(92)).join('/'), index = normalized.lastIndexOf('/');
+          open.append(node('span', 'changed-file-name', normalized.slice(index + 1)), node('span', 'changed-file-dir', index > 0 ? normalized.slice(0, index) : ''));
+          open.title = 'Review ' + file.path + (groups.length > 1 ? ' · Turn ' + group.turn : ''); open.setAttribute('aria-label', open.title);
+          open.addEventListener('click', () => { postChangeAction('review-file', { path: file.path, turn: group.turn }, context); });
+          const actions = node('button', 'session-more changed-more', '…'); actions.type = 'button'; actions.setAttribute('aria-label', 'Actions for ' + file.path + ' in turn ' + group.turn); actions.setAttribute('aria-haspopup', 'menu'); actions.setAttribute('aria-expanded', 'false');
+          actions.addEventListener('click', event => { event.stopPropagation(); if (sessionAction && sessionAction.anchor === actions) closeSessionActions(true); else openChangeActions(groups, actions, file, group.turn, context); });
+          row.addEventListener('contextmenu', event => { event.preventDefault(); openChangeActions(groups, actions, file, group.turn, context); });
+          row.append(open, stats(file.additions || 0, file.deletions || 0), actions); section.append(row);
         }
-        box.append(section);
+        body.append(section);
       }
-      return box;
+      sync(); box.append(body); return box;
     }
     function renderPendingSteering(item) {
       const bubble = node('article', 'message user pending-steering');
@@ -3161,6 +3361,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       reconcileMessages(array(current.messages), current);
 
       if (renderedTail.queue !== current.queue || renderedTail.changedFiles !== current.changedFiles || renderedTail.approval !== current.approval || renderedTail.question !== current.question) {
+        if (sessionAction && sessionAction.kind === 'changes') closeSessionActions(false);
         renderedTail = { queue: current.queue, changedFiles: current.changedFiles, approval: current.approval, question: current.question };
         elements.conversationTail.replaceChildren();
         // The turn clock is not one of these cards but it lives in the same slot,
@@ -3194,7 +3395,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
         elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
       }
-      if (renderedChrome.sessions !== current.sessions || renderedChrome.archivedSessions !== current.archivedSessions || renderedChrome.historySearch !== current.historySearch || renderedChrome.sessionId !== current.sessionId) renderSessionCenter(current);
+      if (renderedChrome.sessions !== current.sessions || renderedChrome.archivedSessions !== current.archivedSessions || renderedChrome.historySearch !== current.historySearch || renderedChrome.sessionId !== current.sessionId || renderedChrome.phase !== current.phase || renderedChrome.cwd !== current.cwd) renderSessionCenter(current);
       if (renderedChrome.models !== current.models) {
         elements.models.replaceChildren();
         // Group by provider, the way DSH's own picker does: two providers can
@@ -3252,6 +3453,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // there is nothing to switch to, and a click it does accept reports its own
       // failure rather than doing nothing.
       elements.sessionTrigger.disabled = array(current.sessions).length === 0 && array(current.archivedSessions).length === 0;
+      elements.sessionTrigger.disabled ||= Boolean(homeCreation);
+      elements.newSession.disabled ||= Boolean(homeCreation);
       // The picker answers a different question from the composer. When the
       // selected model is unavailable but another provider can route, disabling
       // the picker would leave the user with no way back: they cannot send and
@@ -3273,7 +3476,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.cancel.disabled = stopping;
       elements.cancel.title = stopping ? 'Stopping…' : 'Stop';
       elements.cancel.setAttribute('aria-label', stopping ? 'Stopping…' : 'Stop');
-      elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue();
+      elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue(); renderNavigation(current);
       if (renderedChrome.commands !== current.commands || renderedChrome.skills !== current.skills || renderedChrome.permissions !== current.permissions) renderCommandMenu();
       renderedChrome = {
         workspaceName: current.workspaceName, cwd: current.cwd, sessions: current.sessions, sessionId: current.sessionId, models: current.models,
@@ -3431,6 +3634,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function canSend() {
       if (!composerReady()) return false;
       const sessionId = state.sessionId;
+      if ([...pendingDraftSends.values()].some(draft => draft.sessionId === sessionId)) return false;
       if ([...pendingAttachmentRequests.values()].some(request => request.sessionId === sessionId)) return false;
       if ([...pendingContextRequests.values()].some(origin => origin === sessionId)) return false;
       // Enter must honour the same gate the button uses, or a message can leave
@@ -3438,8 +3642,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return (pendingUploadsBySession.get(sessionId) || 0) === 0;
     }
     function send(mode) {
-      const text = elements.prompt.value.trim(); if (!text && !draftImages.length && !draftFiles.length) return;
-      if (!canSend()) return;
+      const text = elements.prompt.value.trim(); if (!text && !draftImages.length && !draftFiles.length) return false;
+      if (!canSend()) return false;
       const sessionId = state.sessionId;
       const requestId = ++draftSendRequestId;
       pendingDraftSends.set(requestId, { sessionId, text, scrollVersion: conversationScroller.intentVersion });
@@ -3449,6 +3653,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         renderQueue(true);
       }
       vscode.postMessage({ type: 'send', sessionId, requestId, text, mode: mode || 'queue' }); elements.prompt.value = ''; sessionDrafts.set(sessionId, ''); commandIndex = 0; resetPrompt();
+      return true;
     }
     function clipboardImage(file, index) {
       const mediaType = String(file.type || '').toLowerCase();
@@ -3560,6 +3765,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       const dataTransfer = event.dataTransfer;
       if (!dataTransfer) return;
+      if (homeOpen) {
+        if (homeCreation) { elements.homeError.textContent = 'Wait for the new draft to open before adding more files.'; elements.homeError.classList.remove('hidden'); return; }
+        const types = Array.from(dataTransfer.types || []);
+        const data = new Map(types.filter(type => [...DROP_URI_TYPES_LOWER, 'text/uri-list'].includes(String(type).toLowerCase())).map(type => [String(type).toLowerCase(), dataTransfer.getData(type)]));
+        const files = Array.from(dataTransfer.files || []);
+        startHomeConversation(false);
+        if (homeCreation) homeCreation.drop = { types, files, getData: type => data.get(String(type).toLowerCase()) || '' };
+        return;
+      }
       const sessionId = state.sessionId;
       const osFiles = Array.from(dataTransfer.files || []);
       // Resources first: an Explorer drop carries only URIs, while an OS drop
@@ -3567,7 +3781,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const resources = droppedResources(dataTransfer, osFiles.length > 0);
       const imageFiles = osFiles.filter(file => IMAGE_DROP_TYPES.includes(String(file.type || '').toLowerCase()));
       const otherFiles = osFiles.filter(file => !IMAGE_DROP_TYPES.includes(String(file.type || '').toLowerCase()));
-      if (resources.length > 0) vscode.postMessage({ type: 'attach-resources', sessionId, uris: resources });
+      if (resources.length > 0) {
+        const requestId = ++contextChangeId; pendingContextRequests.set(requestId, sessionId); updateSend();
+        vscode.postMessage({ type: 'attach-resources', sessionId, requestId, uris: resources });
+      }
       if (imageFiles.length > 0) {
         const requestId = ++attachmentRequestId;
         pendingAttachmentRequests.set(requestId, { sessionId }); updateSend();
@@ -3754,21 +3971,59 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     elements.refreshTasks.addEventListener('click', () => vscode.postMessage({ type: 'refresh-tasks' }));
     elements.configureTaskServices.addEventListener('click', () => vscode.postMessage({ type: 'configure-task-services' }));
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
-    elements.githubStar.addEventListener('click', () => vscode.postMessage({ type: 'open-link', href: 'https://github.com/fallleaves01/dsh-vscode' }));
+    elements.conversationHome.addEventListener('click', () => {
+      if (homeCreation) return;
+      if (homeOpen) { homeOpen = false; if (state) { renderNavigation(state); renderSessionCenter(state); } elements.prompt.focus(); }
+      else openDirectory();
+    });
+    elements.viewAllSessions.addEventListener('click', openDirectory);
+    elements.homeForm.addEventListener('submit', event => { event.preventDefault(); startHomeConversation(true); });
+    elements.homePrompt.addEventListener('input', () => {
+      if (state) { homeDrafts.set(state.cwd, elements.homePrompt.value); elements.homeSend.disabled = state.phase !== 'ready' || Boolean(homeCreation) || !elements.homePrompt.value.trim(); }
+    });
+    elements.homePrompt.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); startHomeConversation(true); }
+    });
+    elements.homePrompt.addEventListener('paste', event => {
+      const files = clipboardImageFiles(event);
+      if (!files.length) return;
+      event.preventDefault(); void acceptDrop({ dataTransfer: { types: ['Files'], files, getData: () => '' } });
+    });
+    elements.homeModel.addEventListener('change', () => { homeModelChoice = elements.homeModel.value; });
+    elements.homeOpenDraft.addEventListener('click', () => startHomeConversation(false));
+    elements.homeProject.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
+    elements.homeArchiveToggle.addEventListener('click', () => { homeArchived = !homeArchived; closeSessionActions(false); if (state) renderSessionCenter(state); });
     elements.sessionTrigger.addEventListener('click', event => {
       event.stopPropagation();
       if (sessionMenuOpen) { closeSessionMenu(false); return; }
-      sessionMenuOpen = true; sessionActionId = undefined; elements.sessionMenu.classList.remove('hidden'); elements.sessionTrigger.setAttribute('aria-expanded', 'true');
+      sessionMenuOpen = true; closeSessionActions(false); elements.sessionMenu.classList.remove('hidden'); elements.sessionTrigger.setAttribute('aria-expanded', 'true');
       renderSessionCenter(state || { sessions: [] }); requestAnimationFrame(() => elements.sessionSearch.focus());
     });
-    elements.sessionSearch.addEventListener('input', () => {
-      sessionActionId = undefined; if (searchTimer !== undefined) clearTimeout(searchTimer);
-      const query = elements.sessionSearch.value.trim();
+    function requestSessionSearch(input) {
+      closeSessionActions(false); if (searchTimer !== undefined) clearTimeout(searchTimer);
+      const query = input.value.trim();
       searchTimer = setTimeout(() => { searchTimer = undefined; vscode.postMessage({ type: 'search-history', query }); }, 250);
       if (state) renderSessionCenter(state);
+    }
+    elements.sessionSearch.addEventListener('input', () => requestSessionSearch(elements.sessionSearch));
+    elements.homeSessionSearch.addEventListener('input', () => requestSessionSearch(elements.homeSessionSearch));
+    for (const [list, search] of [[elements.sessionList, elements.sessionSearch], [elements.homeSessionList, elements.homeSessionSearch]]) {
+      list.addEventListener('keydown', event => navigateSessionList(event, list, search));
+      search.addEventListener('keydown', event => navigateSessionList(event, list, search));
+      list.addEventListener('scroll', () => closeSessionActions(false));
+    }
+    elements.sessionActions.addEventListener('click', event => event.stopPropagation());
+    elements.sessionActions.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeSessionActions(true); return; }
+      const items = [...elements.sessionActions.querySelectorAll('button:not(:disabled)')];
+      if (items.length && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault(); const index = items.indexOf(document.activeElement);
+        items[event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
+      }
     });
+    window.addEventListener('resize', positionSessionActions);
     elements.sessionMenu.addEventListener('click', event => event.stopPropagation());
-    elements.newSession.addEventListener('click', () => { if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value); closeSessionMenu(false); vscode.postMessage({ type: 'new-session' }); });
+    elements.newSession.addEventListener('click', () => { homeArchived = false; openDirectory(); });
     elements.models.addEventListener('change', () => { applyModelSelection(elements.models.value); });
     elements.modelTrigger.addEventListener('click', event => {
       event.stopPropagation();
@@ -3799,6 +4054,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     });
     elements.efforts.addEventListener('change', () => { if (!elements.models.value) return; const selected = JSON.parse(elements.models.value); const model = (state.models || []).find(item => item.provider === selected.provider && item.model === selected.model); if (model) vscode.postMessage({ type: 'select-model', selection: selectionFor(model, elements.efforts.value) }); });
     document.addEventListener('click', event => {
+      if (sessionAction && !elements.sessionActions.contains(event.target) && !sessionAction.anchor.contains(event.target)) closeSessionActions(false);
       if (contextMenuOpen && !elements.contextMenu.contains(event.target) && !elements.attach.contains(event.target)) closeContextMenu(false);
       if (policyMenuOpen && !elements.policyMenu.contains(event.target) && !elements.policyTrigger.contains(event.target)) {
         policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false');
@@ -3813,10 +4069,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (jobsOpen && !elements.jobsMenu.contains(event.target) && !elements.jobsTrigger.contains(event.target)) {
         jobsOpen = false; elements.jobsMenu.classList.add('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'false'); renderJobs();
       }
-      if (sessionMenuOpen && !elements.sessionControl.contains(event.target)) closeSessionMenu(false);
+      if (sessionMenuOpen && !elements.sessionControl.contains(event.target) && !elements.sessionActions.contains(event.target)) closeSessionMenu(false);
     });
     document.addEventListener('keydown', event => {
-      if (event.key === 'Escape' && contextMenuOpen) {
+      if (event.key === 'Escape' && sessionAction) {
+        event.preventDefault(); closeSessionActions(true);
+      } else if (event.key === 'Escape' && contextMenuOpen) {
         event.preventDefault(); closeContextMenu(true);
       } else if (event.key === 'Escape' && sessionMenuOpen) {
         event.preventDefault(); closeSessionMenu(true);
@@ -3828,6 +4086,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     });
     window.addEventListener('message', event => {
       if (!event.data) return;
+      if (event.data.type === 'conversation-created' && homeCreation && event.data.requestId === homeCreation.requestId && event.data.cwd === homeCreation.cwd) {
+        if (typeof event.data.sessionId === 'string' && !event.data.error) {
+          homeCreation.sessionId = event.data.sessionId;
+        } else {
+          homeCreation = undefined; elements.homeError.textContent = string(event.data.error, 'Could not start the conversation. Your draft was retained.'); elements.homeError.classList.remove('hidden');
+        }
+        if (state) { renderNavigation(state); renderSessionCenter(state); }
+      }
       if (event.data.type === 'state') { pendingMessageAppends.clear(); scheduleRender(event.data.state); }
       if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
       if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && typeof event.data.messageId === 'string') {
@@ -3897,8 +4163,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (event.data.type === 'ide-context') {
         const incoming = event.data.state || { pinned: [] };
         const sessionId = incoming.sessionId || (state && state.sessionId);
+        const previousIds = new Set(array(ideContextBySession.get(sessionId)?.pinned).map(item => item.id));
+        const explicitlyAdded = array(incoming.pinned).some(item => !previousIds.has(item.id));
         if (sessionId) ideContextBySession.set(sessionId, incoming);
         if (state && sessionId === state.sessionId) { ideContext = incoming; renderIdeContext(); }
+        if (homeOpen && explicitlyAdded && state && sessionId === state.sessionId) { homeOpen = false; renderNavigation(state); renderSessionCenter(state); elements.prompt.focus(); }
       }
       if (event.data.type === 'context-files' && state && event.data.sessionId === state.sessionId && event.data.requestId === contextRequestId && event.data.query === elements.contextSearch.value) {
         contextCandidates = array(event.data.candidates); contextLoading = false; contextError = string(event.data.error); renderContextMenu();
@@ -3908,8 +4177,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const mention = currentMentionQuery();
         if (mention && mention.query === event.data.query) { mentionCandidates = event.data.candidates || []; mentionIndex = 0; renderMentionMenu(); }
       }
-      if (event.data.type === 'focus-prompt') elements.prompt.focus();
+      if (event.data.type === 'focus-prompt') (homeOpen ? elements.homePrompt : elements.prompt).focus();
       if (event.data.type === 'set-prompt' && typeof event.data.text === 'string') {
+        homeOpen = false; if (state) { renderNavigation(state); renderSessionCenter(state); }
         elements.prompt.value = event.data.text; if (state && state.sessionId) sessionDrafts.set(state.sessionId, event.data.text); resizePrompt(); requestMentions(); renderCommandMenu(); elements.prompt.focus();
         const cursor = elements.prompt.value.length; elements.prompt.setSelectionRange(cursor, cursor);
       }

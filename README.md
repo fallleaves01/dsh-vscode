@@ -33,7 +33,9 @@ Ask DeepSeek to inspect, change, and verify code without switching between your 
 - **Session controls where you need them.** Switch Permission and Plan modes, choose Model and Reasoning Effort, or steer an active task.
 - **Native review and safe revert.** Review changes in VS Code's Diff Editor, Keep or Revert edits, and stop DSH before it overwrites a file with unsaved changes.
 - **Sign in with your DeepSeek account.** Start browser sign-in from the sidebar, see your profile and balance, and sign out again — no API key needed. Works on a remote host too, by forwarding the runtime's port.
-- **Drag anything in.** Drop a file from the Explorer to reference it, an image to attach it, or any other file to upload it. Subagent sessions appear nested under the conversation that spawned them.
+- **Drag anything in.** Drop a file from the Explorer to reference it, an image to attach it, or any other file to upload it. Subagents are available in the owning conversation’s Tasks panel.
+- **Manage conversations.** Return to the conversation directory to start a new task, search recent or archived conversations, rename, archive or restore. The top picker provides fast switching between main conversations.
+- **Review compact change summaries.** Expand the file count to inspect individual files, or use Review to open diffs. File and bulk actions retain snapshot-based keep and revert controls.
 - **Keyboard-first.** `Cmd/Ctrl+Alt+D` opens the sidebar, `Cmd/Ctrl+Alt+L` adds the selection, `Cmd/Ctrl+Alt+F` fixes the file you are in.
 - **Extend DSH from the sidebar.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks loaded by DSH.
 

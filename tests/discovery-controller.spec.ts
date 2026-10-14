@@ -22,8 +22,11 @@ vi.mock('vscode', () => ({
   },
   Uri: { file: (fsPath: string) => ({ fsPath, scheme: 'file' }) },
   env: { language: 'en' },
+  window: { showWarningMessage: vi.fn(), showInformationMessage: vi.fn(async () => undefined), showErrorMessage: vi.fn(async () => undefined) },
+  commands: { executeCommand: vi.fn(async () => undefined) },
 }))
 import { DshChatController } from '../src/extension.js'
+import * as vscode from 'vscode'
 
 const controllers: DshChatController[] = []
 const connections: DshConnection[] = []
@@ -99,7 +102,7 @@ async function harness(connection?: DshConnection) {
     externalRuntimeUrlToRemember: () => undefined,
     rememberExternalRuntime: vi.fn(async () => true),
   }
-  const reviews = { clear: vi.fn(), rebuild: vi.fn(() => []), accept: () => false, dispose() {} }
+  const reviews = { clear: vi.fn(), rebuild: vi.fn(() => [] as any[]), accept: () => false, dispose() {}, revertFile: vi.fn(() => []), revertAll: vi.fn(() => []) }
   const controller = new DshChatController(runtime as any,
     output as any, {} as any, reviews as any,
     { get: () => [], update: async () => {} } as any, '/workspace', '0.0.11')
@@ -1560,6 +1563,75 @@ describe('state that may not outlive its conversation or its connection', () => 
     h.client.putMessageFeedback.mockRejectedValueOnce(new DshConnectionError('transport-error', 'socket closed'))
     await expect(h.controller.submitFeedback('a', 'm1', 'positive')).resolves.toBeUndefined()
     expect(h.output.appendLine).toHaveBeenCalledWith(expect.stringContaining('[chat]'))
+  })
+
+  it('does not revert another conversation after the user confirms an older request', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    const confirmation = Promise.withResolvers<string>()
+    vi.mocked(vscode.window.showWarningMessage).mockReturnValueOnce(confirmation.promise as never)
+    const reverting = h.controller.revertFile('src/shared.ts', 1)
+    await h.controller.selectSession('b')
+    confirmation.resolve('Revert')
+    await reverting
+    expect(h.reviews.revertFile).not.toHaveBeenCalled()
+  })
+
+  it('does not revert all changes from a different conversation after confirmation', async () => {
+    const h = await harness()
+    h.reviews.rebuild.mockReturnValue([{ turn: 1, files: [{ path: 'src/shared.ts', additions: 1, deletions: 0, canRevert: true }] }])
+    await h.controller.selectSession('a')
+    const confirmation = Promise.withResolvers<string>()
+    vi.mocked(vscode.window.showWarningMessage).mockReturnValueOnce(confirmation.promise as never)
+    const reverting = h.controller.revertAll()
+    await h.controller.selectSession('b')
+    confirmation.resolve('Revert All')
+    await reverting
+    expect(h.reviews.revertAll).not.toHaveBeenCalled()
+  })
+
+  it.each(['file', 'all'] as const)('still reverts %s when the confirmation target remains unchanged', async kind => {
+    const h = await harness()
+    h.reviews.rebuild.mockReturnValue([{ turn: 1, files: [{ path: 'src/shared.ts', additions: 1, deletions: 0, canRevert: true }] }])
+    await h.controller.selectSession('a')
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce((kind === 'file' ? 'Revert' : 'Revert All') as never)
+    if (kind === 'file') {
+      await h.controller.revertFile('src/shared.ts', 1)
+      expect(h.reviews.revertFile).toHaveBeenCalledWith('a', '/workspace', 'src/shared.ts', 1)
+    } else {
+      await h.controller.revertAll()
+      expect(h.reviews.revertAll).toHaveBeenCalledWith('a')
+    }
+  })
+
+  it('rejects a stale homepage origin before creating a conversation', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    await expect(h.controller.newSession({ cwd: '/elsewhere', sessionId: 'a' })).rejects.toThrow('project or conversation changed')
+    expect(h.client.createSession).not.toHaveBeenCalled()
+  })
+
+  it('does not replace a later user selection when a homepage create finishes', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    const create = Promise.withResolvers<{ sessionId: string }>()
+    h.client.createSession.mockReturnValueOnce(create.promise)
+    const preparing = h.controller.newSession({ cwd: '/workspace', sessionId: 'a' })
+    const rejected = expect(preparing).rejects.toThrow('changed before the new draft opened')
+    await h.controller.selectSession('b')
+    create.resolve({ sessionId: 'fresh' })
+    await rejected
+    expect(h.controller.state.sessionId).toBe('b')
+    expect(h.client.prompt).not.toHaveBeenCalled()
+  })
+
+  it('prepares the requested homepage conversation without dispatching a prompt', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    const createdId = await h.controller.newSession({ cwd: '/workspace', sessionId: 'a' })
+    expect(createdId).toBe('created')
+    expect(h.controller.state).toMatchObject({ sessionId: 'created', phase: 'ready' })
+    expect(h.client.prompt).not.toHaveBeenCalled()
   })
 
   it('opens the conversation it created even when another load started in the meantime', async () => {
