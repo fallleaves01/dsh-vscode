@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { harness, type Harness } from './webview-harness.js'
 
 const live: Harness[] = []
@@ -91,25 +91,12 @@ describe('main conversation directory and quick switcher', () => {
   })
 })
 
-describe('conversation homepage drafts', () => {
+describe('conversation directory navigation and existing drafts', () => {
   it('opens View all without creating a session or copying the current conversation draft', () => {
     const h = open(); h.sendState({ sessionId: 'parent', sessions: [parent] }); input(h, 'prompt', 'Draft for the current conversation'); h.posts.length = 0; h.click('#sessionTrigger'); h.click('#viewAllSessions')
     expect(h.document.getElementById('conversationHomeView')!.classList.contains('hidden')).toBe(false)
-    expect((h.document.getElementById('homePrompt') as HTMLTextAreaElement).value).toBe(''); expect(h.posts).toEqual([])
+    expect(h.document.getElementById('homePrompt')).toBeNull(); expect(h.posts).toEqual([])
     h.click('#conversationHome'); expect((h.document.getElementById('prompt') as HTMLTextAreaElement).value).toBe('Draft for the current conversation')
-  })
-  it('starts from the homepage for a new empty main conversation', async () => {
-    const h = open(); h.sendState({ sessionId: 'parent', sessions: [{ ...parent, blank: true }] }); await h.settle()
-    expect(h.document.getElementById('conversationHomeView')!.classList.contains('hidden')).toBe(false)
-  })
-  it('creates once, then sends only after the matching new conversation is ready', async () => {
-    const h = open(); h.sendState({ sessionId: 'parent', sessions: [parent], running: true }); await h.settle(); h.click('#conversationHome'); const draft = input(h, 'homePrompt', 'A separate new task'); key(draft, 'Enter'); key(draft, 'Enter')
-    const requests = h.posts.filter(item => item.type === 'create-conversation'); expect(requests).toHaveLength(1); expect(h.posts.filter(item => item.type === 'send')).toHaveLength(0)
-    const request = requests[0]!; h.send({ type: 'conversation-created', requestId: request.requestId, cwd: '/workspace', sessionId: 'created' })
-    expect(h.posts.filter(item => item.type === 'send')).toHaveLength(0)
-    h.sendState({ sessionId: 'created', sessions: [{ id: 'created', title: 'New conversation', blank: true }] }); await h.settle()
-    expect(h.posts.at(-1)).toMatchObject({ type: 'send', sessionId: 'created', text: 'A separate new task', mode: 'queue' })
-    expect(h.document.getElementById('conversationHomeView')!.classList.contains('hidden')).toBe(true)
   })
   it('blocks repeated Enter submissions until the first send is acknowledged', async () => {
     const h = open()
@@ -125,57 +112,7 @@ describe('conversation homepage drafts', () => {
     h.enter('Second message')
     expect(h.posts.filter(item => item.type === 'send')).toHaveLength(2)
   })
-  it('retains follow-up text typed after an editor reference reveals the new draft', async () => {
-    const h = open()
-    h.sendState({ sessionId: 'parent', sessions: [parent] })
-    await h.settle()
-    h.click('#conversationHome')
-    key(input(h, 'homePrompt', 'Original homepage task'), 'Enter')
-    const request = h.posts.findLast(item => item.type === 'create-conversation')!
-    h.sendState({ sessionId: 'created', sessions: [{ id: 'created', title: 'New conversation' }] })
-    await h.settle()
-    h.send({ type: 'ide-context', state: { sessionId: 'created', pinned: [{ id: 'pin', kind: 'file', path: 'src/runtime.ts' }] } })
-    input(h, 'prompt', 'A later follow-up draft')
-    h.send({ type: 'conversation-created', requestId: request.requestId, cwd: '/workspace', sessionId: 'created' })
-    expect(h.posts.findLast(item => item.type === 'send')).toMatchObject({ sessionId: 'created', text: 'Original homepage task' })
-    expect((h.document.getElementById('prompt') as HTMLTextAreaElement).value).toBe('A later follow-up draft')
-  })
-  it('keeps both drafts when sending the prepared homepage prompt is temporarily blocked', async () => {
-    const h = open()
-    h.sendState({ sessionId: 'parent', sessions: [parent] })
-    await h.settle()
-    h.click('#conversationHome')
-    key(input(h, 'homePrompt', 'Original homepage task'), 'Enter')
-    h.sendState({ sessionId: 'created', sessions: [{ id: 'created', title: 'New conversation' }], routable: false })
-    await h.settle()
-    input(h, 'prompt', 'A later draft')
-    const request = h.posts.findLast(item => item.type === 'create-conversation')!
-    h.send({ type: 'conversation-created', requestId: request.requestId, cwd: '/workspace', sessionId: 'created' })
-    expect(h.posts.some(item => item.type === 'send')).toBe(false)
-    expect((h.document.getElementById('prompt') as HTMLTextAreaElement).value).toContain('Original homepage task')
-    expect((h.document.getElementById('prompt') as HTMLTextAreaElement).value).toContain('A later draft')
-  })
-  it('ignores stale creation receipts and retains the draft on creation failure', () => {
-    const h = open(); h.sendState({ sessionId: 'parent', sessions: [parent] }); h.click('#conversationHome'); key(input(h, 'homePrompt', 'Retain this draft'), 'Enter'); const request = h.posts.at(-1)!
-    h.send({ type: 'conversation-created', requestId: 'stale-' + request.requestId, cwd: '/workspace', sessionId: 'wrong' }); expect(h.posts.filter(item => item.type === 'send')).toHaveLength(0)
-    h.send({ type: 'conversation-created', requestId: request.requestId, cwd: '/workspace', error: 'Failed to open' })
-    expect((h.document.getElementById('homePrompt') as HTMLTextAreaElement).value).toBe('Retain this draft'); expect(h.document.getElementById('homeError')!.textContent).toBe('Failed to open')
-    expect((h.document.getElementById('homeSend') as HTMLButtonElement).disabled).toBe(false)
-  })
-  it('separates home drafts by project and rejects an old project receipt', async () => {
-    const h = open(); h.sendState({ sessionId: 'parent', sessions: [parent] }); await h.settle(); h.click('#conversationHome'); key(input(h, 'homePrompt', 'First project draft'), 'Enter'); const request = h.posts.at(-1)!
-    h.sendState({ cwd: '/other', workspaceName: 'Other project', sessionId: 'other', sessions: [{ id: 'other', title: 'Other' }] }); await h.settle(); expect((h.document.getElementById('homePrompt') as HTMLTextAreaElement).value).toBe('')
-    h.send({ type: 'conversation-created', requestId: request.requestId, cwd: '/workspace', sessionId: 'created' }); expect(h.posts.filter(item => item.type === 'send')).toHaveLength(0)
-    h.sendState({ sessionId: 'parent', sessions: [parent] }); await h.settle(); expect((h.document.getElementById('homePrompt') as HTMLTextAreaElement).value).toBe('First project draft')
-  })
-  it('does not submit on IME Enter or Shift+Enter', () => {
-    const h = open(); h.sendState({ sessions: [parent] }); h.click('#conversationHome'); const draft = input(h, 'homePrompt', 'Input method draft'); key(draft, 'Enter', true); draft.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true })); expect(h.posts.filter(item => item.type === 'create-conversation')).toHaveLength(0)
-  })
-  it('stages a model choice for the new session without changing the current model', () => {
-    const h = open(); h.sendState({ sessionId: 'parent', sessions: [parent], models: [{ provider: 'provider', model: 'model', label: 'Model', selected: true }] }); h.click('#conversationHome'); key(input(h, 'homePrompt', 'New model task'), 'Enter')
-    expect(h.posts.at(-1)).toMatchObject({ type: 'create-conversation', selection: { provider: 'provider', model: 'model' } }); expect(h.posts.some(item => item.type === 'select-model')).toBe(false)
-  })
-  it('keeps runtime recovery controls reachable on the homepage', async () => {
+  it('keeps runtime recovery controls reachable on the directory', async () => {
     const h = open()
     h.sendState({ sessionId: 'parent', sessions: [parent] })
     h.click('#conversationHome')
@@ -184,49 +121,7 @@ describe('conversation homepage drafts', () => {
     const configure = [...h.document.querySelectorAll<HTMLButtonElement>('#homeRuntime button')].find(button => button.textContent === 'Configure API Key')!
     configure.click()
     expect(h.posts.at(-1)).toEqual({ type: 'configure-api-key' })
-    expect((h.document.getElementById('homePrompt') as HTMLTextAreaElement).disabled).toBe(true)
-  })
-  it('keeps the home model options intact when only conversation output changes', async () => {
-    const h = open()
-    const models = [{ provider: 'p', model: 'm', label: 'Model', selected: true }]
-    h.sendState({ sessions: [parent], models })
-    h.click('#conversationHome')
-    const option = h.document.getElementById('homeModel')!.children[1]
-    h.sendState({ sessions: [parent], models, messages: [{ id: 'm', role: 'assistant', text: 'New output' }] })
-    await h.settle()
-    expect(h.document.getElementById('homeModel')!.children[1]).toBe(option)
-  })
-  it('holds an Explorer drop until a fresh conversation opens', async () => {
-    const h = open()
-    h.sendState({ sessionId: 'parent', sessions: [parent] })
-    h.click('#conversationHome')
-    h.drop({ types: ['resourceurls'], data: { resourceurls: JSON.stringify(['file:///workspace/src/runtime.ts']) } })
-    const request = h.posts.findLast(item => item.type === 'create-conversation')!
-    expect(h.posts.some(item => item.type === 'attach-resources')).toBe(false)
-    h.sendState({ sessionId: 'created', sessions: [{ id: 'created', title: 'New conversation' }] })
-    await h.settle()
-    h.send({ type: 'conversation-created', requestId: request.requestId, cwd: '/workspace', sessionId: 'created' })
-    const attachment = h.posts.at(-1)!
-    expect(attachment).toMatchObject({ type: 'attach-resources', sessionId: 'created', uris: [{ uri: 'file:///workspace/src/runtime.ts' }] })
-    h.enter('Wait for the file')
-    expect(h.posts.some(item => item.type === 'send')).toBe(false)
-    h.send({ type: 'context-updated', sessionId: 'created', requestId: attachment.requestId })
-    h.enter('Send with the file')
-    expect(h.posts.at(-1)).toMatchObject({ type: 'send', sessionId: 'created', text: 'Send with the file' })
-  })
-  it('attaches a pasted image to the created draft rather than the previous conversation', async () => {
-    const h = open()
-    h.sendState({ sessionId: 'parent', sessions: [parent] })
-    h.click('#conversationHome')
-    const paste = new Event('paste', { bubbles: true, cancelable: true })
-    Object.defineProperty(paste, 'clipboardData', { value: { files: [new File([new Uint8Array([1])], 'test.png', { type: 'image/png' })], items: [] } })
-    h.document.getElementById('homePrompt')!.dispatchEvent(paste)
-    const request = h.posts.findLast(item => item.type === 'create-conversation')!
-    expect(h.posts.some(item => item.type === 'attach-images')).toBe(false)
-    h.sendState({ sessionId: 'created', sessions: [{ id: 'created', title: 'New conversation' }] })
-    await h.settle()
-    h.send({ type: 'conversation-created', requestId: request.requestId, cwd: '/workspace', sessionId: 'created' })
-    await vi.waitFor(() => expect(h.posts.findLast(item => item.type === 'attach-images')).toMatchObject({ sessionId: 'created' }))
+    expect((h.document.getElementById('newSession') as HTMLButtonElement).disabled).toBe(true)
   })
   it('reveals an explicitly pinned editor reference without treating editor suggestions as additions', () => {
     const h = open()
@@ -237,10 +132,5 @@ describe('conversation homepage drafts', () => {
     h.send({ type: 'ide-context', state: { sessionId: 'parent', pinned: [{ id: 'pin', kind: 'file', path: 'src/runtime.ts' }] } })
     expect(h.document.getElementById('conversationHomeView')!.classList.contains('hidden')).toBe(true)
     expect(h.document.querySelector('.context-name')!.textContent).toContain('runtime.ts')
-  })
-  it('opens an attachment draft after creation without automatically sending it', async () => {
-    const h = open(); h.sendState({ sessionId: 'parent', sessions: [parent] }); await h.settle(); h.click('#conversationHome'); input(h, 'homePrompt', 'Draft with files'); h.click('#homeOpenDraft'); const request = h.posts.at(-1)!
-    h.sendState({ sessionId: 'created', sessions: [{ id: 'created', title: 'New conversation', blank: true }] }); await h.settle(); h.send({ type: 'conversation-created', requestId: request.requestId, cwd: '/workspace', sessionId: 'created' })
-    expect(h.posts.some(item => item.type === 'send')).toBe(false); expect((h.document.getElementById('prompt') as HTMLTextAreaElement).value).toBe('Draft with files'); expect(h.document.getElementById('contextMenu')!.classList.contains('hidden')).toBe(false)
   })
 })

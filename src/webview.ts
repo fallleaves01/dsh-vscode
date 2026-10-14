@@ -98,14 +98,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .session-row:hover .session-more, .session-row:focus-within .session-more, .session-more[aria-expanded="true"] { opacity: 1; }
     .session-more:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .session-snippet { grid-column: 2 / -1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--dsh-muted); font-size: 11px; padding-top: 2px; }
-    .conversation-home { min-width: 0; min-height: 0; padding: 12px; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); gap: 12px; font-size: 12px; line-height: 18px; }
-    .home-heading, .home-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .home-heading h1 { margin: 0; font-size: 15px; font-weight: 600; }
-    .home-composer { min-width: 0; padding: 10px; border: 1px solid var(--dsh-border); border-radius: 12px; background: var(--dsh-surface); }
-    .home-composer textarea { width: 100%; min-height: 70px; max-height: 160px; padding: 0; border: 0; outline: 0; resize: none; background: transparent; font-size: 13px; line-height: 20px; }
-    .home-composer-row { min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 11px; }
-    .home-model { min-width: 0; max-width: 50%; padding: 3px 0; border: 0; background: transparent; font-size: 11px; text-overflow: ellipsis; }
-    .home-project { min-width: 0; flex: 1; padding: 3px 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; border: 0; background: transparent; color: var(--dsh-muted); text-align: left; font-size: 11px; }
+    .conversation-home { min-width: 0; min-height: 0; padding: 10px 12px; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; font-size: 12px; line-height: 18px; }
+    .home-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .home-error { margin: 6px 0 0; color: var(--vscode-errorForeground); font-size: 11px; }
     .home-runtime .status { font-size: 11px; line-height: 16px; }
     .home-list-heading { font-size: 11px; color: var(--dsh-muted); }
@@ -690,7 +684,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .send:disabled, textarea:disabled, button:disabled { opacity: .55; cursor: default; }
     .hidden { display: none !important; }
     @media (max-width: 380px) { .conversation { padding-inline: 12px; } .composer-row { grid-template-columns: 28px auto 20px minmax(0, 1fr) minmax(40px, .5fr) auto; } .project span { display: none; } }
-    @media (max-height: 500px) { .conversation-home { gap: 8px; padding-block: 8px; grid-template-rows: auto auto minmax(0, 1fr); } .home-heading { display: none; } .home-composer { padding: 8px; } .home-composer textarea { height: 44px; min-height: 44px; } .task-area { max-height: 24vh; } textarea { max-height: 28vh; } .command-menu { max-height: 26vh; } }
+    @media (max-height: 500px) { .conversation-home { gap: 8px; padding-block: 8px; grid-template-rows: auto minmax(0, 1fr); } .task-area { max-height: 24vh; } textarea { max-height: 28vh; } .command-menu { max-height: 26vh; } }
     ${webviewThemeCss}
   </style>
 </head>
@@ -720,19 +714,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     </header>
     <section id="conversationHomeView" class="conversation-home hidden" aria-label="Conversation directory">
-      <div class="home-heading"><h1>New conversation</h1></div>
-      <form id="homeForm" class="home-composer">
-        <textarea id="homePrompt" rows="3" placeholder="Ask DeepSeek to start a task" aria-label="New conversation message"></textarea>
-        <div class="home-composer-row">
-          <button id="homeOpenDraft" class="icon-button" type="button" title="Open a new draft to add files or images" aria-label="Open a new draft to add files or images"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
-          <select id="homeModel" class="home-model" aria-label="Model for new conversation"></select>
-          <button id="homeProject" class="home-project" type="button" title="Choose DeepSeek project"></button>
-          <button id="homeSend" class="icon-button send" type="submit" title="Start conversation (Enter)" aria-label="Start conversation"><svg viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg></button>
-        </div>
+      <div class="home-directory-header">
+        <div class="home-list-heading"><span id="homeListTitle">Recent conversations</span><button id="homeArchiveToggle" class="home-archive-toggle" type="button" aria-pressed="false">Archived</button></div>
         <p id="homeError" class="home-error hidden" role="alert"></p>
         <div id="homeRuntime" class="home-runtime hidden" role="status"></div>
-      </form>
-      <div class="home-list-heading"><span id="homeListTitle">Recent conversations</span><button id="homeArchiveToggle" class="home-archive-toggle" type="button" aria-pressed="false">Archived</button></div>
+      </div>
       <div class="home-directory">
         <input id="homeSessionSearch" class="session-search" type="search" placeholder="Search conversations" aria-label="Search all conversations">
         <div id="homeSessionList" class="home-list" role="list" aria-label="Conversations"></div>
@@ -743,6 +729,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       <button id="jumpLatest" class="jump-latest" type="button" aria-label="Jump to latest" aria-controls="scroll" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14m-5-5 5 5 5-5"/></svg>Jump to latest</button>
     </div>
     <footer id="composerFooter" class="composer-wrap">
+      <p id="conversationCreationError" class="home-error hidden" role="alert"></p>
       <div class="task-area">
       <details id="taskFeatures" class="task-panel task-features hidden"><summary id="taskFeaturesSummary">Goal &amp; reminders</summary><div class="feature-body"><div class="feature-actions"><button id="refreshTasks" class="feature-action" type="button">Refresh tasks</button><button id="configureTaskServices" class="feature-action" type="button">Configure task services</button></div><section id="goalPanel"></section><section id="schedulePanel"></section></div></details>
       <section id="taskPanel" class="task-panel hidden" aria-label="Tasks">
@@ -811,7 +798,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
       conversationStatus: document.getElementById('conversationStatus'), conversationHistory: document.getElementById('conversationHistory'), messages: document.getElementById('messages'), conversationTail: document.getElementById('conversationTail'),
       conversationHome: document.getElementById('conversationHome'), conversationHomeView: document.getElementById('conversationHomeView'), conversationPane: document.getElementById('conversationPane'), composerFooter: document.getElementById('composerFooter'),
-      homeForm: document.getElementById('homeForm'), homePrompt: document.getElementById('homePrompt'), homeModel: document.getElementById('homeModel'), homeSend: document.getElementById('homeSend'), homeOpenDraft: document.getElementById('homeOpenDraft'), homeProject: document.getElementById('homeProject'), homeError: document.getElementById('homeError'), homeRuntime: document.getElementById('homeRuntime'), homeSessionSearch: document.getElementById('homeSessionSearch'), homeSessionList: document.getElementById('homeSessionList'), homeListTitle: document.getElementById('homeListTitle'), homeArchiveToggle: document.getElementById('homeArchiveToggle'), viewAllSessions: document.getElementById('viewAllSessions'), sessionTotal: document.getElementById('sessionTotal'), sessionActions: document.getElementById('sessionActions'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionAttentionCount: document.getElementById('sessionAttentionCount'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
+      conversationCreationError: document.getElementById('conversationCreationError'), homeError: document.getElementById('homeError'), homeRuntime: document.getElementById('homeRuntime'), homeSessionSearch: document.getElementById('homeSessionSearch'), homeSessionList: document.getElementById('homeSessionList'), homeListTitle: document.getElementById('homeListTitle'), homeArchiveToggle: document.getElementById('homeArchiveToggle'), viewAllSessions: document.getElementById('viewAllSessions'), sessionTotal: document.getElementById('sessionTotal'), sessionActions: document.getElementById('sessionActions'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionAttentionCount: document.getElementById('sessionAttentionCount'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       modelControl: document.getElementById('modelControl'), modelTrigger: document.getElementById('modelTrigger'),
@@ -876,17 +863,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let sessionAction;
     let homeOpen = false;
     let homeArchived = false;
-    let homeModelChoice;
-    let homeModelCatalog;
-    let homeCreation;
-    let homeCreationId = 0;
-    const homeRequestScope = Array.from(crypto.getRandomValues(new Uint32Array(2))).join('-');
-    let homeInitialized = false;
-    let homeCwd;
+    let pendingConversationCreation;
+    let conversationCreationId = 0;
+    const conversationRequestScope = Array.from(crypto.getRandomValues(new Uint32Array(2))).join('-');
     let homeRuntimeKey;
     let lastHomeOpen = false;
     let homeReading;
-    const homeDrafts = new Map();
     const expandedChanges = new Set();
     let armedJobId;
     let armedJobTimer;
@@ -1025,13 +1007,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (homeOpen && elements.homeSessionSearch.value.trim() && state && string(state.historySearch && state.historySearch.query).trim() !== elements.homeSessionSearch.value.trim()) requestSessionSearch(elements.homeSessionSearch);
     }
     function openDirectory() {
-      if (homeCreation) return;
+      if (pendingConversationCreation) return;
       if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
       closeSessionMenu(false); closeContextMenu(false); closeModelMenu(false);
       policyMenuOpen = false; elements.policyMenu.classList.add('hidden');
       homeOpen = true;
       if (state) { renderNavigation(state); renderSessionCenter(state); }
-      elements.homePrompt.focus();
+      elements.homeSessionSearch.focus(); updateSend(); setDropActive(false);
     }
     function sessionRow(session, current, activity, archived, snippet, selectedRootId) {
       const active = session.id === selectedRootId && !archived;
@@ -1049,20 +1031,21 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       main.setAttribute('aria-label', archived ? 'Restore ' + title : title + (detail ? ' — ' + detail : ''));
       main.append(indicator, node('span', 'session-name', title), node('span', 'session-meta', archived && snippet !== undefined ? 'Archived' : detail));
       if (snippet !== undefined) main.append(node('span', 'session-snippet', string(snippet)));
-      main.disabled = Boolean(homeCreation);
+      main.disabled = Boolean(pendingConversationCreation);
       main.addEventListener('click', () => {
+        if (pendingConversationCreation) return;
         if (archived) { closeSessionActions(false); vscode.postMessage({ type: 'unarchive-session', sessionId: session.id }); return; }
         if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
         closeSessionMenu(false); homeOpen = false;
         if (state) renderNavigation(state);
         if (!state || session.id !== state.sessionId) vscode.postMessage({ type: 'select-session', sessionId: session.id });
-        else elements.prompt.focus();
+        else { if (state) render(state); elements.prompt.focus(); }
       });
       row.append(main);
       if (!session.blank) {
         const more = node('button', 'session-more', '…'); more.type = 'button'; more.title = 'Conversation actions';
         more.setAttribute('aria-label', 'Actions for ' + title); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
-        more.disabled = Boolean(homeCreation);
+        more.disabled = Boolean(pendingConversationCreation);
         more.addEventListener('click', event => {
           event.stopPropagation();
           if (sessionAction && sessionAction.id === session.id && sessionAction.anchor === more) closeSessionActions(true);
@@ -1149,41 +1132,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         elements.homeRuntime.classList.toggle('hidden', current.phase === 'ready');
         if (current.phase !== 'ready') elements.homeRuntime.append(renderStatus(current));
       }
-      if (homeCwd !== current.cwd) {
-        if (homeCwd !== undefined) homeDrafts.set(homeCwd, elements.homePrompt.value);
-        homeCwd = current.cwd; elements.homePrompt.value = homeDrafts.get(homeCwd) || ''; homeModelChoice = undefined;
-        elements.homeError.classList.add('hidden');
-      }
-      if (!homeInitialized && current.phase === 'ready') {
-        homeInitialized = true;
-        const active = array(current.sessions).find(item => item.id === current.sessionId);
-        if (active && active.blank && !array(current.messages).length) homeOpen = true;
-      }
-      if (homeCreation && (homeCreation.cwd !== current.cwd || current.phase === 'error')) {
-        homeCreation = undefined;
-        elements.homeError.textContent = 'The runtime or project changed. Your new conversation draft was retained.';
-        elements.homeError.classList.remove('hidden');
-      }
-      const creating = Boolean(homeCreation);
+      const creating = Boolean(pendingConversationCreation);
       elements.sessionTrigger.disabled = creating || ![...array(current.sessions), ...array(current.archivedSessions)].some(mainConversation);
       elements.newSession.disabled = creating || current.phase !== 'ready';
-      elements.homePrompt.disabled = creating || current.phase !== 'ready';
-      elements.homeSend.disabled = creating || current.phase !== 'ready' || !elements.homePrompt.value.trim();
-      elements.homeOpenDraft.disabled = creating || current.phase !== 'ready';
-      elements.homeProject.disabled = creating || current.running === true;
-      elements.homeModel.disabled = creating || current.phase !== 'ready';
+      elements.newSession.title = creating ? 'Opening new conversation…' : 'New conversation';
+      elements.newSession.setAttribute('aria-label', elements.newSession.title);
+      elements.newSession.setAttribute('aria-busy', String(creating));
       elements.conversationHome.disabled = creating;
-      elements.homeProject.textContent = current.workspaceName || 'Workspace'; elements.homeProject.title = current.cwd || 'Choose DeepSeek project';
-      if (homeModelCatalog !== current.models || homeModelChoice === undefined) {
-        homeModelCatalog = current.models;
-        const previousChoice = homeModelChoice;
-        elements.homeModel.replaceChildren(new Option('Default model', ''));
-        for (const model of array(current.models)) elements.homeModel.append(new Option(model.label, JSON.stringify(selectionFor(model, model.reasoningEffort))));
-        const available = [...elements.homeModel.options].map(option => option.value);
-        const selected = array(current.models).find(model => model.selected);
-        homeModelChoice = previousChoice !== undefined && available.includes(previousChoice) ? previousChoice : selected ? JSON.stringify(selectionFor(selected, selected.reasoningEffort)) : '';
-        elements.homeModel.value = homeModelChoice;
-      }
       if (homeOpen && !lastHomeOpen) {
         homeReading = { sessionId: current.sessionId, top: elements.scroll.scrollTop, following: conversationScroller.following };
         conversationScroller.pause();
@@ -1206,29 +1161,35 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         });
       }
       lastHomeOpen = homeOpen;
-      if (homeCreation && homeCreation.sessionId === current.sessionId && current.phase === 'ready') {
-        const draft = homeCreation; homeCreation = undefined; homeOpen = false;
-        elements.homePrompt.value = ''; homeDrafts.set(current.cwd, '');
-        renderNavigation(current); renderSessionCenter(current);
-        const followUp = elements.prompt.value;
-        const combined = draft.text && followUp && draft.text !== followUp ? draft.text + String.fromCharCode(10, 10) + followUp : draft.text || followUp;
-        elements.prompt.value = draft.text;
-        if (draft.send && !draft.drop) {
-          const sent = send(); elements.prompt.value = sent ? followUp : combined;
-        } else elements.prompt.value = combined;
-        sessionDrafts.set(current.sessionId, elements.prompt.value); resizePrompt(); elements.prompt.focus();
-        if (draft.drop) void acceptDrop({ dataTransfer: draft.drop });
-        else if (!draft.send) elements.attach.click();
+    }
+    function creationError(message) {
+      for (const element of [elements.homeError, elements.conversationCreationError]) {
+        element.textContent = message || ''; element.classList.toggle('hidden', !message);
       }
     }
-    function startHomeConversation(sendPrompt) {
-      if (!state || state.phase !== 'ready' || homeCreation) return;
-      const text = elements.homePrompt.value.trim(); if (sendPrompt && !text) return;
-      homeCreation = { requestId: homeRequestScope + '-' + (++homeCreationId), cwd: state.cwd, text, send: sendPrompt };
-      elements.homeError.classList.add('hidden'); closeSessionActions(false);
-      const selection = elements.homeModel.value ? JSON.parse(elements.homeModel.value) : undefined;
-      vscode.postMessage({ type: 'create-conversation', requestId: homeCreation.requestId, cwd: state.cwd, sessionId: state.sessionId, ...(selection ? { selection } : {}) });
-      renderNavigation(state); renderSessionCenter(state);
+    function reconcileConversationCreation(current) {
+      if (!pendingConversationCreation) return false;
+      if (pendingConversationCreation.cwd !== current.cwd || current.phase === 'error') {
+        pendingConversationCreation = undefined;
+        creationError('The runtime or project changed. Reopen New conversation for the intended project.');
+      } else if (pendingConversationCreation.sessionId === current.sessionId && current.phase === 'ready') {
+        pendingConversationCreation = undefined; homeOpen = false; creationError('');
+        return true;
+      } else if (pendingConversationCreation.sessionId && current.phase === 'ready' && current.sessionId !== pendingConversationCreation.originSessionId) {
+        pendingConversationCreation = undefined;
+        creationError('Another conversation was selected. The new conversation was not opened here.');
+      }
+      return false;
+    }
+    function startNewConversation() {
+      if (!state || state.phase !== 'ready' || pendingConversationCreation) return;
+      if (state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
+      closeSessionMenu(false); closeContextMenu(false); closeModelMenu(false);
+      policyMenuOpen = false; elements.policyMenu.classList.add('hidden');
+      pendingConversationCreation = { requestId: conversationRequestScope + '-' + (++conversationCreationId), cwd: state.cwd, originSessionId: state.sessionId };
+      creationError(''); setDropActive(false);
+      vscode.postMessage({ type: 'create-conversation', requestId: pendingConversationCreation.requestId, cwd: state.cwd, sessionId: state.sessionId });
+      render(state);
     }
     function navigateSessionList(event, list, search) {
       if (event.isComposing) return;
@@ -3392,10 +3353,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.runtimeIndicator.title = runtimeLabel; elements.runtimeIndicator.setAttribute('aria-label', runtimeLabel);
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
       state = current;
+      const createdConversation = reconcileConversationCreation(current);
       if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
         elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
       }
-      if (renderedChrome.sessions !== current.sessions || renderedChrome.archivedSessions !== current.archivedSessions || renderedChrome.historySearch !== current.historySearch || renderedChrome.sessionId !== current.sessionId || renderedChrome.phase !== current.phase || renderedChrome.cwd !== current.cwd) renderSessionCenter(current);
+      if (renderedChrome.sessions !== current.sessions || renderedChrome.archivedSessions !== current.archivedSessions || renderedChrome.historySearch !== current.historySearch || renderedChrome.sessionId !== current.sessionId || renderedChrome.phase !== current.phase || renderedChrome.cwd !== current.cwd || renderedChrome.creatingConversation !== Boolean(pendingConversationCreation)) renderSessionCenter(current);
       if (renderedChrome.models !== current.models) {
         elements.models.replaceChildren();
         // Group by provider, the way DSH's own picker does: two providers can
@@ -3445,7 +3407,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       renderHeldNotice(current);
       renderConversation(current);
       const enabled = composerReady() && Boolean(current.sessionId);
-      elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready';
+      elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true || Boolean(pendingConversationCreation); elements.newSession.disabled = current.phase !== 'ready'; elements.policyTrigger.disabled = current.phase !== 'ready' || Boolean(pendingConversationCreation);
       if (!enabled) closeContextMenu(false);
       // The conversation list is the way out of a conversation that will not
       // open, so no phase may lock it: a conversation stuck in loading is
@@ -3453,13 +3415,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // there is nothing to switch to, and a click it does accept reports its own
       // failure rather than doing nothing.
       elements.sessionTrigger.disabled = array(current.sessions).length === 0 && array(current.archivedSessions).length === 0;
-      elements.sessionTrigger.disabled ||= Boolean(homeCreation);
-      elements.newSession.disabled ||= Boolean(homeCreation);
+      elements.sessionTrigger.disabled ||= Boolean(pendingConversationCreation);
+      elements.newSession.disabled ||= Boolean(pendingConversationCreation);
       // The picker answers a different question from the composer. When the
       // selected model is unavailable but another provider can route, disabling
       // the picker would leave the user with no way back: they cannot send and
       // cannot switch. So it follows "any provider", not "this one".
-      const canPickModel = current.phase === 'ready' && current.anyRoutable !== false && Boolean(current.sessionId);
+      const canPickModel = !pendingConversationCreation && current.phase === 'ready' && current.anyRoutable !== false && Boolean(current.sessionId);
       elements.models.disabled = !canPickModel || !(current.models || []).length;
       elements.modelTrigger.disabled = elements.models.disabled;
       if (elements.models.disabled && modelMenuOpen) {
@@ -3479,6 +3441,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue(); renderNavigation(current);
       if (renderedChrome.commands !== current.commands || renderedChrome.skills !== current.skills || renderedChrome.permissions !== current.permissions) renderCommandMenu();
       renderedChrome = {
+        creatingConversation: Boolean(pendingConversationCreation),
         workspaceName: current.workspaceName, cwd: current.cwd, sessions: current.sessions, sessionId: current.sessionId, models: current.models,
         agentPreset: current.agentPreset, permissions: current.permissions, plan: current.plan, running: current.running,
         account: current.account, accountNotice: current.accountNotice, accountFailed: current.accountFailed,
@@ -3491,6 +3454,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         anchor.restore();
       }
       conversationScroller.changed();
+      if (createdConversation) { resizePrompt(); elements.prompt.focus(); }
     }
     function scheduleRender(current) {
       state = current; pendingRenderState = current;
@@ -3614,7 +3578,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function composerReady() {
       const active = state && array(state.sessions).find(item => item.id === state.sessionId);
       const readOnly = Boolean(state && state.childReadOnlyReason) || active && active.subagent && active.subagent.mode !== 'continuable';
-      return Boolean(state) && state.phase === 'ready' && state.routable !== false && !conversationHeld(state) && !readOnly;
+      return !homeOpen && !pendingConversationCreation && Boolean(state) && state.phase === 'ready' && state.routable !== false && !conversationHeld(state) && !readOnly;
     }
     function updateSend() {
       const pendingSend = state && [...pendingDraftSends.values()].some(draft => draft.sessionId === state.sessionId);
@@ -3759,21 +3723,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       });
     }
     async function acceptDrop(event) {
+      if (homeOpen || pendingConversationCreation) return;
       if (!state || state.phase !== 'ready' || !state.sessionId) {
         vscode.postMessage({ type: 'attachment-error', message: 'Wait for DeepSeek to reconnect before adding files.' });
         return;
       }
       const dataTransfer = event.dataTransfer;
       if (!dataTransfer) return;
-      if (homeOpen) {
-        if (homeCreation) { elements.homeError.textContent = 'Wait for the new draft to open before adding more files.'; elements.homeError.classList.remove('hidden'); return; }
-        const types = Array.from(dataTransfer.types || []);
-        const data = new Map(types.filter(type => [...DROP_URI_TYPES_LOWER, 'text/uri-list'].includes(String(type).toLowerCase())).map(type => [String(type).toLowerCase(), dataTransfer.getData(type)]));
-        const files = Array.from(dataTransfer.files || []);
-        startHomeConversation(false);
-        if (homeCreation) homeCreation.drop = { types, files, getData: type => data.get(String(type).toLowerCase()) || '' };
-        return;
-      }
       const sessionId = state.sessionId;
       const osFiles = Array.from(dataTransfer.files || []);
       // Resources first: an Explorer drop carries only URIs, while an OS drop
@@ -3855,12 +3811,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     }
     document.addEventListener('dragenter', event => {
       if (!dragCarriesPayload(event)) return;
-      event.preventDefault(); dropDepth += 1; setDropActive(true);
+      event.preventDefault(); if (homeOpen || pendingConversationCreation) return; dropDepth += 1; setDropActive(true);
     });
     document.addEventListener('dragover', event => {
       if (!dragCarriesPayload(event)) return;
       event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+      if (event.dataTransfer) event.dataTransfer.dropEffect = homeOpen || pendingConversationCreation ? 'none' : 'copy';
     });
     document.addEventListener('dragleave', event => {
       if (!dragCarriesPayload(event)) return;
@@ -3882,7 +3838,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const files = clipboardImageFiles(event);
       if (!files.length) return;
       event.preventDefault();
-      if (!state || state.phase !== 'ready' || !state.sessionId) return;
+      if (!composerReady() || !state.sessionId) return;
       const sessionId = state.sessionId;
       const requestId = ++attachmentRequestId;
       pendingAttachmentRequests.set(requestId, { sessionId });
@@ -3972,26 +3928,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     elements.configureTaskServices.addEventListener('click', () => vscode.postMessage({ type: 'configure-task-services' }));
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
     elements.conversationHome.addEventListener('click', () => {
-      if (homeCreation) return;
-      if (homeOpen) { homeOpen = false; if (state) { renderNavigation(state); renderSessionCenter(state); } elements.prompt.focus(); }
+      if (pendingConversationCreation) return;
+      if (homeOpen) { homeOpen = false; if (state) render(state); elements.prompt.focus(); }
       else openDirectory();
     });
     elements.viewAllSessions.addEventListener('click', openDirectory);
-    elements.homeForm.addEventListener('submit', event => { event.preventDefault(); startHomeConversation(true); });
-    elements.homePrompt.addEventListener('input', () => {
-      if (state) { homeDrafts.set(state.cwd, elements.homePrompt.value); elements.homeSend.disabled = state.phase !== 'ready' || Boolean(homeCreation) || !elements.homePrompt.value.trim(); }
-    });
-    elements.homePrompt.addEventListener('keydown', event => {
-      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); startHomeConversation(true); }
-    });
-    elements.homePrompt.addEventListener('paste', event => {
-      const files = clipboardImageFiles(event);
-      if (!files.length) return;
-      event.preventDefault(); void acceptDrop({ dataTransfer: { types: ['Files'], files, getData: () => '' } });
-    });
-    elements.homeModel.addEventListener('change', () => { homeModelChoice = elements.homeModel.value; });
-    elements.homeOpenDraft.addEventListener('click', () => startHomeConversation(false));
-    elements.homeProject.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
     elements.homeArchiveToggle.addEventListener('click', () => { homeArchived = !homeArchived; closeSessionActions(false); if (state) renderSessionCenter(state); });
     elements.sessionTrigger.addEventListener('click', event => {
       event.stopPropagation();
@@ -4023,7 +3964,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     });
     window.addEventListener('resize', positionSessionActions);
     elements.sessionMenu.addEventListener('click', event => event.stopPropagation());
-    elements.newSession.addEventListener('click', () => { homeArchived = false; openDirectory(); });
+    elements.newSession.addEventListener('click', startNewConversation);
     elements.models.addEventListener('change', () => { applyModelSelection(elements.models.value); });
     elements.modelTrigger.addEventListener('click', event => {
       event.stopPropagation();
@@ -4086,13 +4027,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     });
     window.addEventListener('message', event => {
       if (!event.data) return;
-      if (event.data.type === 'conversation-created' && homeCreation && event.data.requestId === homeCreation.requestId && event.data.cwd === homeCreation.cwd) {
+      if (event.data.type === 'conversation-created' && pendingConversationCreation && event.data.requestId === pendingConversationCreation.requestId && event.data.cwd === pendingConversationCreation.cwd) {
         if (typeof event.data.sessionId === 'string' && !event.data.error) {
-          homeCreation.sessionId = event.data.sessionId;
+          pendingConversationCreation.sessionId = event.data.sessionId;
         } else {
-          homeCreation = undefined; elements.homeError.textContent = string(event.data.error, 'Could not start the conversation. Your draft was retained.'); elements.homeError.classList.remove('hidden');
+          pendingConversationCreation = undefined; creationError(string(event.data.error, 'Could not open the new conversation. Your previous draft was retained.'));
         }
-        if (state) { renderNavigation(state); renderSessionCenter(state); }
+        if (state) render(state);
       }
       if (event.data.type === 'state') { pendingMessageAppends.clear(); scheduleRender(event.data.state); }
       if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
@@ -4167,7 +4108,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const explicitlyAdded = array(incoming.pinned).some(item => !previousIds.has(item.id));
         if (sessionId) ideContextBySession.set(sessionId, incoming);
         if (state && sessionId === state.sessionId) { ideContext = incoming; renderIdeContext(); }
-        if (homeOpen && explicitlyAdded && state && sessionId === state.sessionId) { homeOpen = false; renderNavigation(state); renderSessionCenter(state); elements.prompt.focus(); }
+        if (homeOpen && explicitlyAdded && state && sessionId === state.sessionId) { homeOpen = false; render(state); elements.prompt.focus(); }
       }
       if (event.data.type === 'context-files' && state && event.data.sessionId === state.sessionId && event.data.requestId === contextRequestId && event.data.query === elements.contextSearch.value) {
         contextCandidates = array(event.data.candidates); contextLoading = false; contextError = string(event.data.error); renderContextMenu();
@@ -4177,9 +4118,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const mention = currentMentionQuery();
         if (mention && mention.query === event.data.query) { mentionCandidates = event.data.candidates || []; mentionIndex = 0; renderMentionMenu(); }
       }
-      if (event.data.type === 'focus-prompt') (homeOpen ? elements.homePrompt : elements.prompt).focus();
+      if (event.data.type === 'focus-prompt' && !pendingConversationCreation) { homeOpen = false; if (state) render(state); elements.prompt.focus(); }
       if (event.data.type === 'set-prompt' && typeof event.data.text === 'string') {
-        homeOpen = false; if (state) { renderNavigation(state); renderSessionCenter(state); }
+        homeOpen = false; if (state) render(state);
         elements.prompt.value = event.data.text; if (state && state.sessionId) sessionDrafts.set(state.sessionId, event.data.text); resizePrompt(); requestMentions(); renderCommandMenu(); elements.prompt.focus();
         const cursor = elements.prompt.value.length; elements.prompt.setSelectionRange(cursor, cursor);
       }

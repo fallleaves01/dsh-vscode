@@ -7,7 +7,7 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review. This source version is **0.1.5**.
+DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review. This source version is **0.1.6**.
 
 <p align="center">
   <img src="media/demo.gif" alt="DeepSeek Harness working in the VS Code sidebar">
@@ -16,7 +16,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 ## ✨ What you can do
 
 - **Conversations and history.** Stream responses, inspect tool calls, answer approvals and questions, and load earlier messages through the official DSH runtime.
-- **Conversation directory.** Start a task from the directory composer, search recent or archived conversations, rename, archive with Undo, and restore. The top picker switches main conversations; subagents remain in the owning conversation's Tasks panel.
+- **Conversation directory.** Use the directory for recent and archived conversation lists, search, rename, archive with Undo, and restore. New conversation opens the full chat composer with model, reasoning effort, agent composition, and permission controls. The top picker switches main conversations; subagents remain in the owning conversation's Tasks panel.
 - **Independent subagent details.** Open a child task beside the main chat to inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer.
 - **Background tasks and task services.** Inspect bounded process output, Goal status and round limits, Schedule reminders and delivery history, and Workflow phases and job logs when the runtime exposes these services. Search conversation message bodies when history search is enabled.
 - **Explicit file context.** Use `+` to search and add files or folders, remove each reference with `×`, or use typed `@` references and **Add Selection to Chat**. The current editor and selected lines are optional suggestions. Drop resources or paste images to attach them.
@@ -44,10 +44,10 @@ Download this fork's `.vsix` from [GitHub Releases](https://github.com/fallleave
 1. Open a trusted project folder in VS Code.
 2. Select **DeepSeek** in the right sidebar. If it is hidden, find it under **Other Views**.
 3. Configure `DEEPSEEK_API_KEY` with the key button, or run **DeepSeek Harness: Sign In to DeepSeek Account**.
-4. Start a task from the conversation directory, select Model and Reasoning Effort, add explicit file references, and send.
+4. Select New conversation to open the full chat composer, choose Model and Reasoning Effort, add explicit file references, and send.
 5. Use Tasks for child details and the compact change summary for native diff review. Return to the directory to manage conversations.
 
-Use the conversation-settings menu for Permission, Plan, and agent composition, `/` for official DSH commands, `@` for files and folders, and the plugins button to manage runtime extensions.
+Use the conversation-settings menu for Permission and agent composition, `/plan` to enter Plan mode, `/` for official DSH commands, `@` for files and folders, and the plugins button to manage runtime extensions.
 
 Run **DeepSeek Harness: Configure Task Services** to enable history search and Schedule in a standard managed Web runtime. Restart that runtime to apply these options. Custom and external profiles must provide the corresponding services themselves.
 

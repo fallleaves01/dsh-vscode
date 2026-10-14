@@ -7,6 +7,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 versions follow [SemVer](https://semver.org/). The sidebar is distributed as a
 VSIX — see the README for installing one.
 
+## [0.1.6] - 2026-10-15
+
+### Changed
+
+- Keep the conversation directory focused on recent/archived lists, search and
+  management. New conversation opens the full chat composer with model,
+  reasoning effort, agent composition, permission and attachment controls.
+- Open blank conversations directly in chat. Remove the directory's simplified
+  composer and automatic create/send behavior for directory drops or pastes.
+- Refresh the English, Chinese, Japanese and packaged feature documentation,
+  VSIX installation instructions, Remote SSH requirements and privacy notes.
+
+### Fixed
+
+- Wait for a matching creation receipt and ready conversation before enabling
+  submission. Preserve existing drafts, reject stale project or conversation
+  receipts, and avoid automatic prompt delivery after creation.
+- Refresh directory selection and composer controls when creation starts or
+  finishes, including returning to the current conversation after a list update.
+
 ## [0.1.5] - 2026-10-15
 
 ### Fixed

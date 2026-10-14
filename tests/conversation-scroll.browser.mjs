@@ -742,14 +742,14 @@ try {
   assert.equal(await evaluate('elements.sessionMenu.classList.contains("hidden")'),false)
   await evaluate('elements.viewAllSessions.click()'); await evaluate('tick()')
   assert.equal(await evaluate('elements.homeSessionList.querySelectorAll(".session-row").length'),16)
-  assert.equal(await evaluate('elements.composerFooter.classList.contains("hidden") && document.activeElement.id==="homePrompt"'),true)
+  assert.equal(await evaluate('elements.composerFooter.classList.contains("hidden") && document.activeElement.id==="homeSessionSearch"'),true)
   for(const [name,theme] of Object.entries(themes)) {
     await applyTheme(evaluate,theme)
     for(const [width,height] of [[320,400],[420,800],[650,800]]) {
       await page('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
-      const layout=await evaluate(`(() => {const view=elements.conversationHomeView.getBoundingClientRect(),list=elements.homeSessionList.getBoundingClientRect(),send=elements.homeSend.getBoundingClientRect();return {overflow:document.documentElement.scrollWidth>innerWidth,viewBottom:view.bottom,listHeight:list.height,sendBottom:send.bottom,sendVisible:send.width>0&&send.top>=0}})()`)
+      const layout=await evaluate(`(() => {const view=elements.conversationHomeView.getBoundingClientRect(),list=elements.homeSessionList.getBoundingClientRect(),create=elements.newSession.getBoundingClientRect();return {overflow:document.documentElement.scrollWidth>innerWidth,viewBottom:view.bottom,listHeight:list.height,createVisible:create.width>0&&create.top>=0&&create.bottom<=innerHeight,composerCount:elements.conversationHomeView.querySelectorAll('textarea,form,select').length}})()`)
       assert.equal(layout.overflow,false,`conversation directory overflow: ${name} ${width}`)
-      assert.ok(layout.sendVisible && layout.sendBottom<=height && layout.listHeight>=70,`directory controls or list clipped: ${name} ${width} ${JSON.stringify(layout)}`)
+      assert.equal(layout.composerCount,0);assert.ok(layout.createVisible && layout.viewBottom<=height && layout.listHeight>=150,`directory controls or list clipped: ${name} ${width} ${JSON.stringify(layout)}`)
       await evaluate(`elements.homeSessionList.querySelector('.session-more').click()`)
       const bounds=await evaluate(`(() => {const r=elements.sessionActions.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom}})()`)
       assert.ok(bounds.left>=0 && bounds.right<=width && bounds.top>=0 && bounds.bottom<=height,`conversation action menu clipped: ${name} ${width}`)
@@ -766,18 +766,32 @@ try {
   await evaluate('elements.homeArchiveToggle.click()')
   console.log('PASS: full conversation directory, recent/archived main sessions, native keyboard actions and 9 theme/viewport layouts')
 
-  // Homepage Enter creates a fresh conversation first, and never queues into the old one.
-  await evaluate(`window.homeSendBefore=sent.filter(item=>item.type==='send').length;elements.homePrompt.value='Review a separate task';elements.homePrompt.dispatchEvent(new Event('input',{bubbles:true}));elements.homePrompt.focus()`)
+  // New conversation opens the full composer only after matching state and receipt.
+  await evaluate(`window.newSendBefore=sent.filter(item=>item.type==='send').length;elements.newSession.focus()`)
   await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',windowsVirtualKeyCode:13})
   await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
-  assert.equal(await evaluate('sent.filter(item=>item.type==="send").length'),await evaluate('homeSendBefore'))
-  await evaluate(`window.homeRequest=sent.findLast(item=>item.type==='create-conversation');showState({...directoryDemo,sessionId:'new-home',messages:[],sessions:[...directoryDemo.sessions,{id:'new-home',title:'New conversation',blank:true}],changedFiles:[]});`)
+  assert.equal(await evaluate('sent.filter(item=>item.type==="send").length'),await evaluate('newSendBefore'))
+  await evaluate(`window.newRequest=sent.findLast(item=>item.type==='create-conversation');window.newConversationDemo={...directoryDemo,sessionId:'new-chat',messages:[],sessions:[...directoryDemo.sessions,{id:'new-chat',title:'New conversation',blank:true}],changedFiles:[],
+    models:[{provider:'deepseek',model:'deepseek-v4',label:'DeepSeek V4',selected:true,reasoningEffort:'high',reasoningEfforts:[{id:'low',label:'Low',selected:false},{id:'high',label:'High',selected:true}]}],
+    permissions:[{value:'read-only',label:'Read Only',selected:false},{value:'workspace-write',label:'Workspace',selected:true}],
+    agentPreset:{available:true,locked:false,busy:false,current:'standard',options:[{id:'standard',label:'Standard',selected:true},{id:'ptc',label:'Programmatic Tool Calling',selected:false}]}};
+    showState(newConversationDemo);`)
   await evaluate('tick()')
-  assert.equal(await evaluate('sent.filter(item=>item.type==="send").length'),await evaluate('homeSendBefore'))
-  await evaluate(`window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-created',requestId:homeRequest.requestId,cwd:homeRequest.cwd,sessionId:'new-home'}}))`)
-  assert.deepEqual(await evaluate('({type:sent.at(-1).type,sessionId:sent.at(-1).sessionId,text:sent.at(-1).text})'),{type:'send',sessionId:'new-home',text:'Review a separate task'})
-  await evaluate(`const delivery=sent.at(-1);window.dispatchEvent(new MessageEvent('message',{data:{type:'draft-sent',requestId:delivery.requestId,sessionId:'new-home'}}));`)
-  console.log('PASS: native homepage Enter waits for a matching conversation receipt before sending the isolated draft')
+  assert.equal(await evaluate('elements.composerFooter.classList.contains("hidden")'),true)
+  assert.equal(await evaluate('sent.filter(item=>item.type==="send").length'),await evaluate('newSendBefore'))
+  await evaluate(`window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-created',requestId:newRequest.requestId,cwd:newRequest.cwd,sessionId:'new-chat'}}))`)
+  assert.deepEqual(await evaluate('({directory:!elements.conversationHomeView.classList.contains("hidden"),composer:!elements.composerFooter.classList.contains("hidden"),promptDisabled:elements.prompt.disabled,modelDisabled:elements.modelTrigger.disabled,effortDisabled:elements.efforts.disabled,permissionDisabled:elements.policyTrigger.disabled,effort:elements.efforts.value})'),
+    {directory:false,composer:true,promptDisabled:false,modelDisabled:false,effortDisabled:false,permissionDisabled:false,effort:'high'})
+  await evaluate(`elements.policyTrigger.click()`)
+  assert.equal(await evaluate('elements.policyMenu.textContent.includes("Read Only") && elements.policyMenu.textContent.includes("Programmatic Tool Calling")'),true)
+  await evaluate(`elements.policyTrigger.click()`)
+  if(process.env.DSH_TASK_SCREENSHOT_DIR) { const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'new-conversation-composer.png'),Buffer.from(data,'base64')) }
+  await evaluate(`elements.prompt.value='Review a separate task with all options';elements.prompt.dispatchEvent(new Event('input',{bubbles:true}));elements.prompt.focus()`)
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',windowsVirtualKeyCode:13})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+  assert.deepEqual(await evaluate('({type:sent.at(-1).type,sessionId:sent.at(-1).sessionId,text:sent.at(-1).text})'),{type:'send',sessionId:'new-chat',text:'Review a separate task with all options'})
+  await evaluate(`const delivery=sent.at(-1);window.dispatchEvent(new MessageEvent('message',{data:{type:'draft-sent',requestId:delivery.requestId,sessionId:'new-chat'}}));`)
+  console.log('PASS: new conversation waits for a matching receipt and exposes the full composer with model, effort, permissions and agent composition')
 
   // Compact change review retains per-turn snapshots and remains small with 18px chat text.
   await evaluate(`window.changesDemo={...directoryDemo,sessionId:'hub-a',changedFiles:[
