@@ -7,9 +7,7 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-Bring DeepSeek Harness into the place where you already write, run, and review code.
-
-DSH Sidebar gives you a project-aware assistant in the VS Code right sidebar, with an experience familiar to Claude Code and Codex. Ask DeepSeek to inspect a repository, change files, run tools, and verify the result without leaving your editor.
+DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review. This source version is **0.1.5**.
 
 <p align="center">
   <img src="media/demo.gif" alt="DeepSeek Harness working in the VS Code sidebar">
@@ -17,14 +15,17 @@ DSH Sidebar gives you a project-aware assistant in the VS Code right sidebar, wi
 
 ## ✨ What you can do
 
-- **Autonomous VS Code debugging.** Let DeepSeek launch the current project from `.vscode/launch.json`, manage breakpoints, step through execution, and inspect stack frames and local variables using VS Code's native debugger.
-- **Work with the official DSH runtime.** Sessions, streaming responses, tool calls, approvals, and follow-up questions stay inside VS Code.
-- **Choose your file context.** Click `+` to search and add project files or folders, then remove individual references with `×`. The current editor and selected lines are optional suggestions. Use `@file`, `@folder` or **Add Selection to Chat** for explicit context.
-- **Control each session.** Switch Permission and Plan modes, choose Model and Reasoning Effort, and steer a task while it is running.
-- **Manage conversations.** Start a task from the full conversation directory, search recent or archived conversations, rename, archive and restore. Switch main conversations from the top picker; view subagents in Tasks.
-- **Compact change review.** Expand the file-count summary for individual diffs, or open Review. File and bulk actions retain safe Keep/Revert controls.
-- **Review edits natively.** Open changes in VS Code's Diff Editor, then Keep or safely Revert them. DSH stops before overwriting a file with unsaved editor changes.
-- **Extend DSH from the sidebar.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks loaded by DSH.
+- **Conversations and history.** Stream responses, inspect tool calls, answer approvals and questions, and load earlier messages through the official DSH runtime.
+- **Conversation directory.** Start a task from the directory composer, search recent or archived conversations, rename, archive with Undo, and restore. The top picker switches main conversations; subagents remain in the owning conversation's Tasks panel.
+- **Independent subagent details.** Open a child task beside the main chat to inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer.
+- **Background tasks and task services.** Inspect bounded process output, Goal status and round limits, Schedule reminders and delivery history, and Workflow phases and job logs when the runtime exposes these services. Search conversation message bodies when history search is enabled.
+- **Explicit file context.** Use `+` to search and add files or folders, remove each reference with `×`, or use typed `@` references and **Add Selection to Chat**. The current editor and selected lines are optional suggestions. Drop resources or paste images to attach them.
+- **Conversation controls and queues.** Select agent composition, Permission and Plan modes, Model, and Reasoning Effort. Queue follow-up messages, steer an active task, and inspect or remove held slash commands.
+- **Compact change review.** Expand the file-count and line-count summary, or open Review in VS Code's Diff Editor. Keep/Revert actions retain per-turn snapshots and are bound to their originating conversation and project; confirmation rechecks the target before a revert.
+- **DeepSeek authentication.** Configure an API key or use browser account sign-in, inspect account state and balance, and sign out. Remote sign-in uses VS Code port forwarding.
+- **Runtime plugins and configuration.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks. The plugin manager also provides a runtime-settings picker for the namespaces exposed by DSH.
+- **Runtime recovery.** Reuse a managed runtime across VS Code windows, reconnect, diagnose conversation ownership, and end a verified leftover managed runtime. Saved external runtimes are attach-only.
+- **Native debugging and keyboard access.** Enable autonomous debugging for `.vscode/launch.json`, including breakpoints, stepping, stack frames, and variables. `Cmd/Ctrl+Alt+D` opens chat, `Cmd/Ctrl+Alt+L` adds the selection, and `Cmd/Ctrl+Alt+F` requests a file fix. Chat and task details support dark, light, and high-contrast themes.
 
 ## 📦 Before you start
 
@@ -34,16 +35,21 @@ DSH Sidebar runs the official DeepSeek Harness CLI on your machine. Install it f
 npm install -g @deepseek-ai/dsh
 ```
 
-You need VS Code 1.100 or newer and Node.js `^22.19` or `>=24`.
+Install DSH on the extension host; for Remote SSH, install it on the remote host. You need VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`.
+
+Download this fork's `.vsix` from [GitHub Releases](https://github.com/fallleaves01/dsh-vscode/releases) and run **Extensions: Install from VSIX...**. Its extension ID is `fallleaves01.dsh-sidebar`. Release assets can lag behind the source version; build from the repository when the desired version is not yet available.
 
 ## 🚀 Get started
 
 1. Open a trusted project folder in VS Code.
 2. Select **DeepSeek** in the right sidebar. If it is hidden, find it under **Other Views**.
-3. Select the key button and enter your `DEEPSEEK_API_KEY`.
-4. Choose a Permission mode, Model, and Reasoning Effort, then send your first task.
+3. Configure `DEEPSEEK_API_KEY` with the key button, or run **DeepSeek Harness: Sign In to DeepSeek Account**.
+4. Start a task from the conversation directory, select Model and Reasoning Effort, add explicit file references, and send.
+5. Use Tasks for child details and the compact change summary for native diff review. Return to the directory to manage conversations.
 
-Use the Shield menu for Permission and Plan modes, `/` for official DSH commands, `@` for files and folders, and the plugins button to manage runtime extensions.
+Use the conversation-settings menu for Permission, Plan, and agent composition, `/` for official DSH commands, `@` for files and folders, and the plugins button to manage runtime extensions.
+
+Run **DeepSeek Harness: Configure Task Services** to enable history search and Schedule in a standard managed Web runtime. Restart that runtime to apply these options. Custom and external profiles must provide the corresponding services themselves.
 
 ### Autonomous debugging
 
@@ -51,7 +57,11 @@ Enable **DeepSeek Harness: Autonomous Debugging** in VS Code Settings and add a 
 
 DeepSeek can then start the debugger, set breakpoints, step through execution, inspect runtime values, fix the code, and verify the result directly from the sidebar.
 
-Targets DeepSeek Harness `0.2.0-rc.2`, and is wire-compatible with `0.1.7-rc.1` and `0.1.7-rc.2`. The upstream v0.0.5 release targets `0.1.5-rc.1`, so install a matching runtime.
+Validated against DeepSeek Harness `0.2.0-rc.2`; core protocol compatibility also covers `0.1.7-rc.1` and `0.1.7-rc.2`. Optional services depend on the runtime version and profile.
+
+## Privacy
+
+API keys configured with the key button use VS Code SecretStorage. Remembered runtime launch URLs stay in owner-only local storage and are not synchronized. Adding file references gives DSH access to the selected context; prompts and context can be sent to the configured model service.
 
 ## 💬 Feedback
 

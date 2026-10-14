@@ -7,11 +7,9 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-Bring DeepSeek Harness into the same place you write code. dsh-vscode gives DSH a Claude Code/Codex-style right sidebar with project context and explicit file and code selection.
+DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review.
 
-Ask DeepSeek to inspect, change, and verify code without switching between your editor, terminal, and a separate chat window.
-
-👋 Originally built by [Lixxx1](https://github.com/Lixxx1), who wanted DSH right beside the editor. This fork continues that work against a newer DSH runtime.
+The current source version is **0.1.5**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md) | [日本語](README.ja.md)
 
@@ -27,17 +25,17 @@ Ask DeepSeek to inspect, change, and verify code without switching between your 
 
 ## ✨ Features
 
-- **Autonomous VS Code debugging.** Let DeepSeek launch the current project from `.vscode/launch.json`, manage breakpoints, step through execution, and inspect stack frames and local variables using VS Code's native debugger.
-- **Official DSH inside VS Code.** Sessions, streaming responses, tool calls, approvals, and follow-up questions run through the official DSH runtime.
-- **Choose your file context.** Click `+` to search and add project files or folders; remove references with `×`. The current editor and selected lines are optional suggestions, never automatically attached. Typed `@file`/`@folder` references and **Add Selection to Chat** remain available.
-- **Session controls where you need them.** Switch Permission and Plan modes, choose Model and Reasoning Effort, or steer an active task.
-- **Native review and safe revert.** Review changes in VS Code's Diff Editor, Keep or Revert edits, and stop DSH before it overwrites a file with unsaved changes.
-- **Sign in with your DeepSeek account.** Start browser sign-in from the sidebar, see your profile and balance, and sign out again — no API key needed. Works on a remote host too, by forwarding the runtime's port.
-- **Drag anything in.** Drop a file from the Explorer to reference it, an image to attach it, or any other file to upload it. Subagents are available in the owning conversation’s Tasks panel.
-- **Manage conversations.** Return to the conversation directory to start a new task, search recent or archived conversations, rename, archive or restore. The top picker provides fast switching between main conversations.
-- **Review compact change summaries.** Expand the file count to inspect individual files, or use Review to open diffs. File and bulk actions retain snapshot-based keep and revert controls.
-- **Keyboard-first.** `Cmd/Ctrl+Alt+D` opens the sidebar, `Cmd/Ctrl+Alt+L` adds the selection, `Cmd/Ctrl+Alt+F` fixes the file you are in.
-- **Extend DSH from the sidebar.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks loaded by DSH.
+- **Conversations and history.** Stream responses, inspect tool calls, answer approvals and questions, and load earlier messages through the official DSH runtime.
+- **Conversation directory.** Start a task from the directory composer, search recent or archived conversations, rename, archive with Undo, and restore. The top picker switches main conversations; subagents remain in the owning conversation's Tasks panel.
+- **Independent subagent details.** Open a child task beside the main chat to inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer.
+- **Background tasks and task services.** Inspect bounded process output, Goal status and round limits, Schedule reminders and delivery history, and Workflow phases and job logs when the runtime exposes these services. Search conversation message bodies when history search is enabled.
+- **Explicit file context.** Use `+` to search and add files or folders, remove each reference with `×`, or use typed `@` references and **Add Selection to Chat**. The current editor and selected lines are optional suggestions. Drop resources or paste images to attach them.
+- **Conversation controls and queues.** Select agent composition, Permission and Plan modes, Model, and Reasoning Effort. Queue follow-up messages, steer an active task, and inspect or remove held slash commands.
+- **Compact change review.** Expand the file-count and line-count summary, or open Review in VS Code's Diff Editor. Keep/Revert actions retain per-turn snapshots and are bound to their originating conversation and project; confirmation rechecks the target before a revert.
+- **DeepSeek authentication.** Configure an API key or use browser account sign-in, inspect account state and balance, and sign out. Remote sign-in uses VS Code port forwarding.
+- **Runtime plugins and configuration.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks. The plugin manager also provides a runtime-settings picker for the namespaces exposed by DSH.
+- **Runtime recovery.** Reuse a managed runtime across VS Code windows, reconnect, diagnose conversation ownership, and end a verified leftover managed runtime. Saved external runtimes are attach-only.
+- **Native debugging and keyboard access.** Enable autonomous debugging for `.vscode/launch.json`, including breakpoints, stepping, stack frames, and variables. `Cmd/Ctrl+Alt+D` opens chat, `Cmd/Ctrl+Alt+L` adds the selection, and `Cmd/Ctrl+Alt+F` requests a file fix. Chat and task details support dark, light, and high-contrast themes.
 
 ## 📦 Install
 
@@ -47,15 +45,17 @@ Install the official DeepSeek Harness CLI:
 npm install -g @deepseek-ai/dsh
 ```
 
-Then choose the extension channel that fits you:
+Install DSH on the host where the extension runs. For Remote SSH, this is the remote host.
 
 ### Published release
 
-Open **Extensions** in VS Code, search for **DSH Sidebar**, and select **Install**. (The Marketplace listing is the upstream one; this fork is installed from a VSIX.)
+Download the desired `.vsix` asset from [GitHub Releases](https://github.com/fallleaves01/dsh-vscode/releases). In VS Code, run **Extensions: Install from VSIX...** and select that file. The extension ID for this fork is `fallleaves01.dsh-sidebar`.
+
+Published assets can lag behind `main`. Build the source below if the required version is not yet attached to a release. The Marketplace listing linked by the upstream project uses its own publisher and release schedule.
 
 ### Latest development build
 
-To try features already available on `main` but not yet published, build and install the latest VSIX:
+Build the current source using the pnpm version specified in `package.json`:
 
 ```sh
 git clone https://github.com/fallleaves01/dsh-vscode.git
@@ -64,9 +64,9 @@ pnpm install --frozen-lockfile
 pnpm run package
 ```
 
-In VS Code, run **Extensions: Install from VSIX...** from the Command Palette and select `dsh-vscode.vsix`. Development builds move faster and may be less stable; pull the latest changes and rebuild the VSIX to update. The Extensions view shows the version you have installed, and `CHANGELOG.md` records what each release changed.
+Run **Extensions: Install from VSIX...** and select the generated `dsh-vscode.vsix`. To update a source build, pull the changes and rebuild. Check the installed version in the Extensions view.
 
-Requires VS Code 1.100 or newer and Node.js `^22.19` or `>=24`.
+Requires VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`.
 
 Installing community runtime plugins also requires `pnpm` on your PATH.
 
@@ -74,9 +74,14 @@ Installing community runtime plugins also requires `pnpm` on your PATH.
 
 1. Open a trusted project folder in VS Code.
 2. Select **DeepSeek** in the right sidebar. If it is hidden, find it under **Other Views**.
-3. Use the key button to configure `DEEPSEEK_API_KEY`.
-4. Choose the Permission mode, Model, and Reasoning Effort, then start working. Use the Shield menu for Permission and Plan modes, `/` for official DSH commands, and `@` to add files or folders.
-5. Use the plugins button in the sidebar title to search, install, inspect, or remove community runtime plugins.
+3. Configure `DEEPSEEK_API_KEY` with the key button, or run **DeepSeek Harness: Sign In to DeepSeek Account**.
+4. Start a task from the conversation directory. Select Model and Reasoning Effort, add explicit file references, and send a prompt. The conversation-settings menu controls Permission, Plan, and agent composition; `/` opens official DSH commands.
+5. Use Tasks to open subagent details, and the change summary to review edits. Return to the directory to search, rename, archive, or restore conversations.
+6. Use the plugins button to manage runtime plugins or open the existing runtime-settings picker.
+
+### Optional task services
+
+Run **DeepSeek Harness: Configure Task Services** to access the extension's `enableHistorySearch` and `enableSchedule` settings. They enable message-body search and Schedule in a standard managed DSH Web runtime. Restart that runtime to apply the change. Custom and external runtimes must expose the corresponding services in their own profile.
 
 ### Autonomous debugging
 
@@ -84,7 +89,13 @@ Enable **DeepSeek Harness: Autonomous Debugging** in VS Code Settings and add a 
 
 DeepSeek can then start the debugger, set breakpoints, step through execution, inspect runtime values, fix the code, and verify the result directly from the sidebar.
 
-Targets DeepSeek Harness `0.2.0-rc.2`, and is wire-compatible with `0.1.7-rc.1` and `0.1.7-rc.2` (upstream v0.0.5 targets `0.1.5-rc.1`).
+Validated against DeepSeek Harness `0.2.0-rc.2`; core protocol compatibility also covers `0.1.7-rc.1` and `0.1.7-rc.2`. Optional services depend on the installed runtime version and profile.
+
+## Privacy and verification
+
+API keys configured with the key button use VS Code SecretStorage. Remembered runtime launch URLs are stored locally with owner-only permissions and are not synchronized. File references are explicit; adding a file gives DSH access to that context, and prompts and selected context can be sent to the configured model service.
+
+The [0.1.5 review](docs/RELEASE-REVIEW-2026-10-15.md) records bug fixes, privacy checks, test coverage, and verification limits. The development-only `braces` dependency retains a version-based security alert; its local depth-limit patch covers the reported recursion failure and is excluded from the VSIX with the dependency.
 
 💬 Found a rough edge or have an idea for what should come next? [Open an issue](https://github.com/fallleaves01/dsh-vscode/issues).
 
