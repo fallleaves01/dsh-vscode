@@ -8,7 +8,7 @@
 
 DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目会话、独立子代理详情、显式文件引用和原生差异审阅。
 
-当前源码版本为 **0.1.6**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.1.7**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文** | [日本語](README.ja.md)
 
@@ -32,7 +32,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 - **会话控制与队列。** 选择代理组合、Permission、Plan、模型和推理强度；排队发送后续消息，向运行中的任务发送 Steer，并检查或删除等待执行的斜杠命令。
 - **紧凑的变更审阅。** 默认折叠显示文件数与增删行数；展开查看文件，或通过 Review 打开 VS Code Diff Editor。Keep/Revert 保留逐回合快照，并校验来源会话和项目；确认回退后再次检查目标。
 - **DeepSeek 认证。** 配置 API key 或使用浏览器登录，查看账户状态与余额并退出。远程登录通过 VS Code 端口转发完成。
-- **runtime 插件与配置。** 查找和管理 Tools、Skills、MCP、Memory 与 Agent Hooks。插件管理器还提供 runtime 设置选择器，用于编辑 DSH 暴露的设置命名空间。
+- **runtime 插件与配置。** 查找和管理 Tools、Skills、MCP、Memory 与 Agent Hooks。聊天工具栏齿轮打开独立设置页，包含模型提供商、Shell、Agent 循环、子代理、网页搜索和通用设置。支持模型目录编辑及只写凭据管理。
 - **runtime 恢复。** 多个 VS Code 窗口复用受管 runtime，支持重连、会话占用诊断，以及停止已验证身份的遗留受管进程。已保存的外部 runtime 仅用于连接。
 - **原生调试与键盘操作。** 可对 `.vscode/launch.json` 启用自主调试，管理断点、单步执行、调用栈和变量。`Cmd/Ctrl+Alt+D` 打开会话，`Cmd/Ctrl+Alt+L` 添加选区，`Cmd/Ctrl+Alt+F` 请求修复文件。会话与任务详情支持深色、浅色和高对比度主题。
 
@@ -76,11 +76,26 @@ pnpm run package
 3. 点击钥匙按钮配置 `DEEPSEEK_API_KEY`，或运行 **DeepSeek Harness: Sign In to DeepSeek Account** 登录。
 4. 点击新建会话进入完整对话页，选择模型与推理强度，添加文件引用并发送。会话设置菜单控制权限与代理组合；使用 `/plan` 进入计划模式，输入 `/` 打开 DSH 官方命令。
 5. 使用 Tasks 打开子代理详情，使用变更摘要检查改动；返回目录搜索、重命名、归档或恢复会话。
-6. 使用标题栏插件按钮管理 runtime 插件，或打开现有的 runtime 设置选择器。
+6. 点击聊天工具栏齿轮，或运行 **DeepSeek Harness: Open Settings** 调整 runtime 设置。插件管理器也提供该页面入口。
 
 ### 可选任务服务
 
 运行 **DeepSeek Harness: Configure Task Services**，调整扩展的 `enableHistorySearch` 与 `enableSchedule` 设置。它们在标准受管 DSH Web runtime 中启用消息正文搜索与 Schedule；修改后需重启该 runtime。自定义或外部 runtime 需要在其自己的 profile 中提供相应服务。
+
+### DSH 设置页
+
+点击聊天工具栏齿轮，或运行 **DeepSeek Harness: Open Settings**。页面按官方
+DSH 设置卡片组织：账户状态与会话日志上传、提供商端点与模型目录、Shell 超时和
+输出上限、并行工具调用数、子代理限制与可选模型，以及网页搜索。外观和快捷键使用
+VS Code 原生设置入口。
+
+提供商修改在点击保存后提交；模型查询只返回候选列表，选择后仍需保存。逐项重置恢复
+继承值；冲突时保留草稿，切换 runtime 时清空旧草稿。外部 attach-only runtime 可查看设置。
+
+在设置页录入的提供商密钥通过 DSH 凭据服务保存，默认本地文件为
+`$DSH_HOME/.credentials.yaml`，POSIX 权限仅允许所有者访问。该存储独立于提供商
+profile，也不同于原有的 VS Code SecretStorage 密钥。它不是加密保管库，不能隔离同一
+OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX 打包规则排除该凭据文件及备份。
 
 ### 自主调试
 

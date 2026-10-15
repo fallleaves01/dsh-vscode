@@ -20,3 +20,6 @@ artifacts/
 *.pem
 *.key
 *.jsonl
+# DSH's separate credential store and its local backups must never be tracked.
+**/.credentials.yaml
+**/.credentials.yaml.*

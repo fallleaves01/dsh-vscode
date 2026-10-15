@@ -5,6 +5,7 @@ import { wireRecord } from './dsh-streams.js'
 import type { DshEvent } from './conversation.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
 import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
+import type { ConfigurableProvider, CredentialState, DiscoveredModel, ModelDiscoveryRequest } from './settings-page-state.js'
 import { RemoteRead } from './remote-read.js'
 import { DshCommandTransport } from './dsh-command-transport.js'
 import { goalOf, schedulesOf, type GoalView, type ScheduleEntry } from './task-features.js'
@@ -403,6 +404,15 @@ export class DshClient {
   }
   mutateSettings(ns: string, ops: SettingsMutation[], expectedRevision: number): Promise<SettingsNamespace> {
     return this.call('settings/mutate', { ns, ops, expectedRevision })
+  }
+  listLlmProviders(): Promise<{ id: string; name: string }[]> { return this.call('llm/listProviders', {}) }
+  listConfigurableProviders(): Promise<ConfigurableProvider[]> { return this.call('llm/listConfigurableProviders', {}) }
+  describeCredentials(refs: string[]): Promise<Record<string, CredentialState>> { return this.call('credentials/describe', { refs }) }
+  setCredential(ref: string, value: string): Promise<void> { return this.call('credentials/set', { ref, value }) }
+  unsetCredential(ref: string): Promise<void> { return this.call('credentials/unset', { ref }) }
+  discoverModels(settingsNs: string, request: ModelDiscoveryRequest, signal?: AbortSignal): Promise<DiscoveredModel[]> {
+    return this.connection.call('llm/discoverModels', { settingsNs, request }, 30_000,
+      signal ? AbortSignal.any([this.lifetime.signal, signal]) : this.lifetime.signal)
   }
   prompt(
     sessionId: string,

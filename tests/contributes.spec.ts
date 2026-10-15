@@ -74,6 +74,10 @@ describe('launch configuration scope', () => {
 })
 
 describe('account contributions', () => {
+  it('exposes and activates the dedicated settings page', () => {
+    expect(commandIds).toContain('deepseekHarness.openSettings')
+    expect(manifest.activationEvents).toContain('onCommand:deepseekHarness.openSettings')
+  })
   it('exposes sign-in and sign-out in the palette', () => {
     expect(commandIds).toContain('deepseekHarness.signIn')
     expect(commandIds).toContain('deepseekHarness.signOut')

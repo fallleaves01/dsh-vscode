@@ -9,7 +9,7 @@
 
 DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review.
 
-The current source version is **0.1.6**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.1.7**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md) | [日本語](README.ja.md)
 
@@ -33,7 +33,7 @@ The current source version is **0.1.6**. See [CHANGELOG.md](CHANGELOG.md) for ve
 - **Conversation controls and queues.** Select agent composition, Permission and Plan modes, Model, and Reasoning Effort. Queue follow-up messages, steer an active task, and inspect or remove held slash commands.
 - **Compact change review.** Expand the file-count and line-count summary, or open Review in VS Code's Diff Editor. Keep/Revert actions retain per-turn snapshots and are bound to their originating conversation and project; confirmation rechecks the target before a revert.
 - **DeepSeek authentication.** Configure an API key or use browser account sign-in, inspect account state and balance, and sign out. Remote sign-in uses VS Code port forwarding.
-- **Runtime plugins and configuration.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks. The plugin manager also provides a runtime-settings picker for the namespaces exposed by DSH.
+- **Runtime plugins and configuration.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks. Open the settings gear for Models, Shell, Agent loop, Subagents, Web search and General settings. Add providers, edit model catalogs and manage write-only credentials through DSH.
 - **Runtime recovery.** Reuse a managed runtime across VS Code windows, reconnect, diagnose conversation ownership, and end a verified leftover managed runtime. Saved external runtimes are attach-only.
 - **Native debugging and keyboard access.** Enable autonomous debugging for `.vscode/launch.json`, including breakpoints, stepping, stack frames, and variables. `Cmd/Ctrl+Alt+D` opens chat, `Cmd/Ctrl+Alt+L` adds the selection, and `Cmd/Ctrl+Alt+F` requests a file fix. Chat and task details support dark, light, and high-contrast themes.
 
@@ -77,11 +77,31 @@ Installing community runtime plugins also requires `pnpm` on your PATH.
 3. Configure `DEEPSEEK_API_KEY` with the key button, or run **DeepSeek Harness: Sign In to DeepSeek Account**.
 4. Select New conversation to open the full chat composer. Select Model and Reasoning Effort, add explicit file references, and send a prompt. The conversation-settings menu controls Permission and agent composition; `/plan` enters Plan mode, and `/` opens official DSH commands.
 5. Use Tasks to open subagent details, and the change summary to review edits. Return to the directory to search, rename, archive, or restore conversations.
-6. Use the plugins button to manage runtime plugins or open the existing runtime-settings picker.
+6. Use the settings gear or **DeepSeek Harness: Open Settings** for runtime configuration. The plugins button manages runtime plugins and also links to the settings page.
 
 ### Optional task services
 
 Run **DeepSeek Harness: Configure Task Services** to access the extension's `enableHistorySearch` and `enableSchedule` settings. They enable message-body search and Schedule in a standard managed DSH Web runtime. Restart that runtime to apply the change. Custom and external runtimes must expose the corresponding services in their own profile.
+
+### DSH settings
+
+Open the gear in the chat toolbar, or run **DeepSeek Harness: Open Settings**.
+The page follows the official DSH settings cards: account status and session-log
+upload, provider endpoints and model catalogs, Shell timeout/output limits,
+parallel tool calls, subagent limits and allowed model routes, and web search.
+Appearance and keyboard shortcuts use VS Code's native settings.
+
+Provider changes are staged until Save. Model lookup returns selectable
+candidates without storing them. Per-field Reset restores inherited values;
+conflicts retain drafts, and a changed runtime clears drafts before accepting
+new writes. External attach-only runtimes remain available for inspection.
+
+Provider keys entered on this page use DSH's credential service, whose default
+local store is `$DSH_HOME/.credentials.yaml` with owner-only permissions on POSIX.
+This is separate from the provider profile and from the extension's existing
+SecretStorage key. It is not an encrypted vault or an isolation boundary against
+tools running as the same OS user. Stored key values are never read back into the
+page, and this repository and its VSIX exclude the credential file and backups.
 
 ### Autonomous debugging
 

@@ -3,7 +3,7 @@
   "displayName": "DSH Sidebar",
   "description": "A project-aware VS Code chat sidebar powered by the official DeepSeek Harness runtime.",
   "icon": "media/deepseek.png",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "publisher": "fallleaves01",
   "license": "MIT",
@@ -49,6 +49,7 @@
     "onCommand:deepseekHarness.connectExistingRuntime",
     "onCommand:deepseekHarness.startManagedRuntime",
     "onCommand:deepseekHarness.managePlugins",
+    "onCommand:deepseekHarness.openSettings",
     "onCommand:deepseekHarness.configureApiKey",
     "onCommand:deepseekHarness.signIn",
     "onCommand:deepseekHarness.signOut",
@@ -109,6 +110,11 @@
       {
         "command": "deepseekHarness.startManagedRuntime",
         "title": "DeepSeek Harness: Start Managed Runtime"
+      },
+      {
+        "command": "deepseekHarness.openSettings",
+        "title": "DeepSeek Harness: Open Settings",
+        "icon": "$(settings-gear)"
       },
       {
         "command": "deepseekHarness.managePlugins",
@@ -327,6 +333,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "test:scroll-browser": "node tests/conversation-scroll.browser.mjs",
+    "test:settings-browser": "node tests/settings-page.browser.mjs",
+    "test:settings-runtime": "node tests/settings-page.runtime.mjs",
     "check": "tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts && node scripts/build.mjs",
     "package": "vsce package --readme-path README.marketplace.md --out dsh-vscode.vsix",
     "publish:marketplace": "vsce publish --readme-path README.marketplace.md",

@@ -7,6 +7,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 versions follow [SemVer](https://semver.org/). The sidebar is distributed as a
 VSIX — see the README for installing one.
 
+## [0.1.7] - 2026-10-15
+
+### Added
+
+- A dedicated settings page from the chat toolbar, command palette and plugin
+  manager. Forms follow the official DSH settings cards instead of exposing all
+  YAML fields: General, Models, Shell, Agent loop, Subagents and Web search.
+- Provider creation/editing/removal, protocol and endpoint controls, model rows
+  with capacities and input types, and selectable endpoint model discovery.
+- Write-only provider/search credentials with capability checks, retained drafts
+  after partial saves, and explicit confirmation before clearing a stored key.
+- Shell timeout/output limits, parallel tool calls, delegation limits, allowed
+  subagent model routes, account status and the official session-log upload switch.
+- Browser coverage for the settings forms and isolated official-runtime checks
+  for settings, credential storage, provider editing and model discovery.
+
+### Security
+
+- Fence writes by runtime client, namespace revision and credential reference;
+  preserve unshown model/provider fields and reject stale or read-only targets.
+- Clear secret drafts on runtime changes and abort outstanding model discovery
+  when closing the page. Keep credential literals out of profile YAML and replies.
+- Exclude DSH's separate `.credentials.yaml` store and backups from Git and VSIX.
+  The official local credential provider uses owner-only files on POSIX; this is
+  not an encrypted vault or isolation from tools running as the same OS user.
+
 ## [0.1.6] - 2026-10-15
 
 ### Changed

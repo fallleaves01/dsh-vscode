@@ -69,6 +69,7 @@ export class DshPluginManager {
     private readonly context: vscode.ExtensionContext,
     private readonly controller: PluginController,
     private readonly output: vscode.OutputChannel,
+    private readonly openSettingsPage?: () => void,
   ) {}
 
   async show(): Promise<void> {
@@ -91,6 +92,7 @@ export class DshPluginManager {
         return
       }
       if (selected.action === 'configure') {
+        if (this.openSettingsPage) { this.openSettingsPage(); return }
         await this.configureSettings()
         continue
       }

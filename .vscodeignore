@@ -36,3 +36,6 @@ dist/**/*.map
 **/*.key
 **/*.jsonl
 **/*.log
+# DSH stores provider credentials separately from the profile.
+**/.credentials.yaml
+**/.credentials.yaml.*

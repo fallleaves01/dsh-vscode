@@ -38,4 +38,7 @@ jobs:
       - name: Check chat scrolling in Chromium
         if: runner.os == 'Linux'
         run: pnpm run test:scroll-browser
+      - name: Check settings forms in Chromium
+        if: runner.os == 'Linux'
+        run: pnpm run test:settings-browser
       - run: pnpm run package

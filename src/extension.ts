@@ -75,6 +75,8 @@ import { toolWriteIntents } from './tool-write-guard.js'
 import { pageConversationMessage } from './tool-output-page.js'
 import { chatHtml } from './webview.js'
 import { DshPluginManager } from './plugin-manager.js'
+import { SettingsPanelManager } from './settings-panel.js'
+import { runtimeIsNotOurs } from './runtime-change.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
 import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
 import { setupKindFor, type SetupKind } from './setup-state.js'
@@ -1377,8 +1379,16 @@ export class DshChatController implements vscode.Disposable {
     return description
   }
 
+  /** Bind a settings surface to the exact client that supplied its namespace. */
+  settingsClient(namespace?: SettingsNamespace): DshClient {
+    const client = this.requireClient()
+    if (namespace && this.settingsOwners.get(namespace) !== client) throw new Error('The DSH runtime changed. Refresh settings before continuing.')
+    return client
+  }
+
   mutateSettings(namespace: SettingsNamespace, ops: SettingsMutation[]): Promise<SettingsNamespace> {
     this.requireReady()
+    if (runtimeIsNotOurs(this.runtimeOwnership)) throw new Error('This external runtime is attach-only. Use a managed runtime to edit settings.')
     const client = this.requireClient()
     if (this.settingsOwners.get(namespace) !== client) throw new Error('The DSH runtime changed. Reopen runtime settings before saving.')
     if (namespace.applies === 'restart' && this.hasRunningTasks) {
@@ -2005,7 +2015,7 @@ export class DshChatController implements vscode.Disposable {
         this.runtimeActivity.set(sessionId, { running: type !== 'host/session-removed' && payload.running === true,
           revision: ++this.activityRevision })
       }
-      if (type === 'host/settings-changed' || type === 'host/credentials-changed') this.settingsChanges.fire()
+      if (type === 'host/settings-changed' || type === 'host/credentials-changed' || type === 'host/models-changed' || type === 'host/account-changed') this.settingsChanges.fire()
       if (this.client !== undefined && this._state.phase === 'ready' && this._state.sessionId !== '') {
         const activeId = this._state.sessionId
         if (type === 'host/commands-changed') void this.loadCommands(this.client, activeId)
@@ -2950,6 +2960,7 @@ class DshSurface implements vscode.Disposable {
           await vscode.commands.executeCommand('deepseekHarness.startManagedRuntime')
           return
         case 'output': this.output.show(true); return
+        case 'open-settings': await vscode.commands.executeCommand('deepseekHarness.openSettings'); return
         case 'open-workspace': await this.chooseWorkspace(); return
         case 'configure-api-key':
           await vscode.commands.executeCommand('deepseekHarness.configureApiKey')
@@ -3629,7 +3640,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const diffReviews = new DiffReviewManager()
   const controller = new DshChatController(runtime, output, new DirtyFileGuard(), diffReviews, context.workspaceState, cwd,
     String(context.extension.packageJSON.version ?? ''))
-  const pluginManager = new DshPluginManager(context, controller, output)
+  const settingsPanel = new SettingsPanelManager(controller, context.extensionUri, String(context.extension.packageJSON.version ?? ''))
+  context.subscriptions.push(settingsPanel)
+  const pluginManager = new DshPluginManager(context, controller, output, () => settingsPanel.open())
   const editorContext = new EditorContextBridge(() => controller.cwd, () => controller.state.sessionId)
   const provider = new DshViewProvider(controller, output, editorContext, context.extensionUri)
   const panels = new Set<{ panel: vscode.WebviewPanel; surface: DshSurface }>()
@@ -3666,6 +3679,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.openChat', openChat))
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.openSettings', () => settingsPanel.open()))
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.openInEditor', async () => {
     const panel = vscode.window.createWebviewPanel(

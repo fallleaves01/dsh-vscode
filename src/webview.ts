@@ -711,6 +711,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         <div id="accountMenu" class="account-menu hidden" role="menu" aria-label="DeepSeek account"></div>
       </div>
       <span id="runtimeIndicator" class="runtime-indicator" role="img" aria-label="Runtime disconnected"></span>
+      <button id="openSettings" class="icon-button" title="DeepSeek settings" aria-label="DeepSeek settings"><svg viewBox="0 0 24 24"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3z"/><circle cx="12" cy="12" r="3"/></svg></button>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     </header>
     <section id="conversationHomeView" class="conversation-home hidden" aria-label="Conversation directory">
@@ -797,7 +798,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       runtimeIndicator: document.getElementById('runtimeIndicator'),
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
       conversationStatus: document.getElementById('conversationStatus'), conversationHistory: document.getElementById('conversationHistory'), messages: document.getElementById('messages'), conversationTail: document.getElementById('conversationTail'),
-      conversationHome: document.getElementById('conversationHome'), conversationHomeView: document.getElementById('conversationHomeView'), conversationPane: document.getElementById('conversationPane'), composerFooter: document.getElementById('composerFooter'),
+      openSettings: document.getElementById('openSettings'), conversationHome: document.getElementById('conversationHome'), conversationHomeView: document.getElementById('conversationHomeView'), conversationPane: document.getElementById('conversationPane'), composerFooter: document.getElementById('composerFooter'),
       conversationCreationError: document.getElementById('conversationCreationError'), homeError: document.getElementById('homeError'), homeRuntime: document.getElementById('homeRuntime'), homeSessionSearch: document.getElementById('homeSessionSearch'), homeSessionList: document.getElementById('homeSessionList'), homeListTitle: document.getElementById('homeListTitle'), homeArchiveToggle: document.getElementById('homeArchiveToggle'), viewAllSessions: document.getElementById('viewAllSessions'), sessionTotal: document.getElementById('sessionTotal'), sessionActions: document.getElementById('sessionActions'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionAttentionCount: document.getElementById('sessionAttentionCount'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
@@ -3927,6 +3928,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     elements.refreshTasks.addEventListener('click', () => vscode.postMessage({ type: 'refresh-tasks' }));
     elements.configureTaskServices.addEventListener('click', () => vscode.postMessage({ type: 'configure-task-services' }));
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
+    elements.openSettings.addEventListener('click', () => vscode.postMessage({ type: 'open-settings' }));
     elements.conversationHome.addEventListener('click', () => {
       if (pendingConversationCreation) return;
       if (homeOpen) { homeOpen = false; if (state) render(state); elements.prompt.focus(); }

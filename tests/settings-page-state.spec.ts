@@ -1,0 +1,82 @@
+import { describe, expect, it } from 'vitest'
+import { credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerViews, settingsForms, validProviderId } from '../src/settings-page-state.js'
+import { fixture } from './settings-page.fixture.js'
+
+describe('official settings form boundaries', () => {
+  it('offers the official shell fields and excludes YAML-only fields', () => {
+    const { description } = fixture()
+    const shell = settingsForms(description).find(form => form.section === 'shell')!
+    expect(shell.fields.map(field => field.key)).toEqual(['timeoutMs', 'maxOutputBytes'])
+    expect(settingsForms(description).some(form => form.ns === 'llm-pi-ai')).toBe(false)
+  })
+  it('rejects arbitrary fields while keeping zero valid for delegation depth', () => {
+    const ns = fixture().description.namespaces.find(item => item.ns === 'subagent')!
+    expect(fieldMutations(ns, { maxDepth: 0 })).toEqual([{ op: 'set', path: ['maxDepth'], value: 0 }])
+    expect(fieldMutations(ns, { maxDepth: null })).toEqual([{ op: 'unset', path: ['maxDepth'] }])
+    expect(() => fieldMutations(ns, { arbitrary: true })).toThrow('not part')
+    expect(() => fieldMutations(ns, { maxDepth: 1.5 })).toThrow('integer')
+    expect(() => fieldMutations(ns, { maxActiveSubagents: 0 })).toThrow('minimum')
+  })
+  it('does not publish an invalid object or a schema-declared secret as a numeric field value', () => {
+    const { description } = fixture(), ns = description.namespaces.find(item => item.ns === 'bash-sandbox')!
+    ;(ns.value as any).timeoutMs = { private: 'hidden-marker' }
+    expect(JSON.stringify(settingsForms(description))).not.toContain('hidden-marker')
+    ns.secrets.push({ path: ['maxOutputBytes'], set: true })
+    expect(settingsForms(description).find(form => form.ns === ns.ns)!.fields.map(field => field.key)).not.toContain('maxOutputBytes')
+  })
+  it('does not expose legacy endpoint credentials through values or inherited placeholders', () => {
+    const { description } = fixture(), ns = description.namespaces.find(item => item.ns === 'web-search-deepseek')!
+    ;(ns.value as any).baseURL = 'https://search.example?api_key=hidden-marker'
+    ;(ns.base as any).baseURL = 'https://user:hidden-marker@search.example'
+    expect(JSON.stringify(settingsForms(description))).not.toContain('hidden-marker')
+    expect(settingsForms(description).find(form => form.ns === ns.ns)!.fields[0]).toMatchObject({ value: undefined, inherited: undefined })
+  })
+  it.each(['file:///tmp/config', 'https://name:pass@example.test', 'https://example.test?api_key=value', 'invalid'])('rejects an unsafe or invalid endpoint %s', url => {
+    expect(() => endpoint(url)).toThrow()
+  })
+  it('allows local endpoints, IPv6 and version query parameters', () => {
+    expect(endpoint('http://[::1]:1234/v1?api-version=v1')).toBe('http://[::1]:1234/v1?api-version=v1')
+  })
+  it('matches the official Shell number fields without inventing integer or minimum limits', () => {
+    const ns = fixture().description.namespaces.find(item => item.ns === 'bash-sandbox')!
+    expect(fieldMutations(ns, { timeoutMs: 0, maxOutputBytes: 1.5 })).toEqual([
+      { op: 'set', path: ['timeoutMs'], value: 0 }, { op: 'set', path: ['maxOutputBytes'], value: 1.5 },
+    ])
+  })
+})
+describe('provider settings edits', () => {
+  it('projects provider rows without headers, secret literals or unshown model properties', () => {
+    const { description, directory } = fixture()
+    const rows = providerViews(description.namespaces, directory, [], { ANTHROPIC_API_KEY: { configured: true, writable: false, value: 'not-a-key' } as any })
+    expect(rows.map(row => row.id)).toEqual(['deepseek-official', 'anthropic'])
+    expect(JSON.stringify(rows)).not.toContain('hidden-marker')
+    expect(JSON.stringify(rows)).not.toContain('not-a-key')
+    expect(JSON.stringify(rows)).not.toContain('compat')
+  })
+  it('derives protocols from the adapter schema and reuses the actual credential reference', () => {
+    const { description, directory } = fixture()
+    expect(protocols(description.namespaces.find(ns => ns.ns === 'llm-pi-ai'))).toEqual(['openai-completions', 'openai-responses', 'anthropic-messages'])
+    expect(credentialRef(description.namespaces.find(ns => ns.ns === 'llm-pi-ai')!, directory[1]!)).toBe('ANTHROPIC_API_KEY')
+    expect(credentialRef(description.namespaces.find(ns => ns.ns === 'llm-deepseek')!, directory[0]!)).toBe('DEEPSEEK_API_KEY')
+  })
+  it('retains unshown model compatibility fields and avoids replacing the provider', () => {
+    const { description, directory } = fixture(), ns = description.namespaces.find(item => item.ns === 'llm-pi-ai')!
+    const ops = providerMutations(ns, directory[1]!, { models: [{ id: 'renamed', originalId: 'existing', name: 'Renamed', contextWindow: 20000, input: ['text', 'image'] }] })
+    expect(ops).toEqual([{ op: 'set', path: ['providers', 'anthropic', 'models'], value: [{ id: 'renamed', name: 'Renamed', contextWindow: 20000, input: ['text', 'image'], compat: { keep: true } }] }])
+    expect(providerMutations(ns, directory[1]!, { baseURL: null })).toEqual([{ op: 'unset', path: ['providers', 'anthropic', 'baseURL'] }])
+  })
+  it('removes incompatible image limits when a DeepSeek model becomes text-only', () => {
+    const { description, directory } = fixture(), ns = description.namespaces.find(item => item.ns === 'llm-deepseek')!
+    const ops = providerMutations(ns, directory[0]!, { models: [{ id: 'deepseek', originalId: 'deepseek', input: ['text'] }] })
+    expect(JSON.stringify(ops)).not.toContain('imageMaxBytes')
+  })
+  it.each([
+    [{ id: '' }], [{ id: 'duplicate' }, { id: 'duplicate' }], [{ id: 'x', maxTokens: -1 }], [{ id: 'x', contextWindow: 2.5 }], [{ id: 'x', input: [] }], [{ id: 'x', input: ['audio'] }],
+  ])('rejects invalid model declarations %#', models => {
+    const { description, directory } = fixture()
+    expect(() => providerMutations(description.namespaces.find(item => item.ns === 'llm-pi-ai')!, directory[1]!, { models })).toThrow()
+  })
+  it.each(['__proto__', 'constructor', 'with/slash', '123provider', ''])('rejects a dangerous or ambiguous new provider ID %s', id => {
+    expect(() => validProviderId(id)).toThrow()
+  })
+})
