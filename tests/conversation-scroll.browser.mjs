@@ -816,6 +816,38 @@ try {
   if(process.env.DSH_TASK_SCREENSHOT_DIR) { const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'changed-files-expanded.png'),Buffer.from(data,'base64')) }
   console.log('PASS: collapsed change summary, compact file rows, per-turn diffs and guarded reversion at three viewport sizes')
 
+  // Failed settlements retain the received body and expose the provider reason.
+  const retainedReply={id:'failed-reply',role:'assistant',text:'## Warp cooperation\n\nEach warp processes one assigned chunk.\n\n```cpp\nwhile (iterator.next()) {\n    process_chunk();\n}\n```\n\nThis output was received before the provider ended the request.'}
+  await evaluate(`document.documentElement.style.setProperty('--vscode-errorForeground','#f48771');showState({...baseline,sessionId:'failure-review',messages:[{id:'question',role:'user',text:'Explain the chunk iteration.'},{...${JSON.stringify(retainedReply)},streaming:true}],messageMeta:[{id:'failed-reply',time:Date.now(),turnEnd:true,turnDurationMs:65000}]});`)
+  await evaluate('tick()')
+  const failedReply={...retainedReply,streaming:false,failed:true,detail:'PI_AI_ERROR: Provider finish_reason: content_filter'}
+  await evaluate(`window.dispatchEvent(new MessageEvent('message',{data:{type:'state-update',update:{messages:{upserts:[${JSON.stringify(failedReply)}]}}}}));`)
+  await evaluate('tick()')
+  for(const width of [320,420,650]) {
+    await page('Emulation.setDeviceMetricsOverride',{width,height:800,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+    assert.equal(await evaluate('document.documentElement.scrollWidth>innerWidth'),false)
+    assert.equal(await evaluate(`document.querySelector('.assistant-failure-detail').textContent`),failedReply.detail)
+    assert.equal(await evaluate(`document.querySelector('.message-duration').textContent`),'Failed after 1m 5s')
+    assert.equal(await evaluate(`document.querySelector('[data-scroll-id="failed-reply"] .message-body').textContent.includes('process_chunk();')`),true)
+  }
+  if(process.env.DSH_FAILURE_SCREENSHOT_DIR) {
+    await page('Emulation.setDeviceMetricsOverride',{width:420,height:800,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+    const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_FAILURE_SCREENSHOT_DIR,'failed-response.png'),Buffer.from(data,'base64'))
+  }
+  console.log('PASS: failed streaming response retains Markdown and displays the precise error and failed duration at three widths')
+
+  await detailEvaluate(`document.documentElement.style.setProperty('--vscode-errorForeground','#f48771');showTask({kind:'subagent',status:'Failed',running:false,requests:[],chunks:[],messages:[${JSON.stringify(failedReply)}],readOnlyReason:null,hasMore:false});`)
+  for(const width of [320,420,650]) {
+    await detailPage('Emulation.setDeviceMetricsOverride',{width,height:800,deviceScaleFactor:1,mobile:false})
+    assert.equal(await detailEvaluate('document.documentElement.scrollWidth>innerWidth'),false)
+    assert.equal(await detailEvaluate(`document.querySelector('.assistant-failure-detail').textContent`),failedReply.detail)
+    assert.equal(await detailEvaluate(`document.getElementById('messages').textContent.includes('process_chunk();')`),true)
+  }
+  if(process.env.DSH_FAILURE_SCREENSHOT_DIR) {
+    const {data}=await detailPage('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_FAILURE_SCREENSHOT_DIR,'failed-subagent.png'),Buffer.from(data,'base64'))
+  }
+  console.log('PASS: independent subagent details retain failed output and show the same error without horizontal overflow')
+
   assert.deepEqual(await evaluate('webviewErrors'),[], 'The production webview emitted an uncaught error')
 
 } finally {

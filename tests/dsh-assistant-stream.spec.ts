@@ -80,15 +80,19 @@ describe('DSH 0.1.5 assistant presentation stream', () => {
     expect(h.projector.messages()).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Complete' }])
   })
 
-  it.each(['abandoned', 'failed'])('discards an %s attempt before retrying the same step', outcome => {
+  it.each(['abandoned', 'failed'])('keeps an %s attempt separate from the next retry of the same step', outcome => {
     const h = harness()
-    h.stream.frame(start(), 5); h.stream.frame(chunk('Wrong prefix'), 5)
-    if (outcome === 'failed') h.stream.durable(message('', 6, 'assistant/attempt'))
+    h.stream.frame(start(), 5); h.stream.frame(chunk('Received prefix'), 5)
+    if (outcome === 'failed') h.stream.durable({ event: {
+      type: 'assistant/attempt', seq: 6, time: 200, data: { turn: 1, step: 1,
+        stream: [{ type: 'text-chunks', time0: 100, index: 0, texts: ['Received prefix'], dt: [] }],
+      },
+    } })
     h.stream.frame(end(1, outcome === 'failed' ? 'committed' : 'abandoned', 'assistant/attempt'), 6)
-    expect(h.projector.messages()).toEqual([])
+    expect(h.projector.messages()).toMatchObject([{ text: 'Received prefix', failed: true }])
     h.stream.frame(start('retry', 4), 6)
     h.stream.frame(chunk('Correct', 0, 'retry', 5), 6)
-    expect(h.projector.messages().map(m => m.text)).toEqual(['Correct'])
+    expect(h.projector.messages().map(m => m.text)).toEqual(['Received prefix', 'Correct'])
     expect(h.durable).toHaveLength(outcome === 'failed' ? 1 : 0)
   })
 
@@ -99,6 +103,38 @@ describe('DSH 0.1.5 assistant presentation stream', () => {
     h.stream.durable({ event: { ...settled.event, data: { ...(settled.event.data as object), interrupted: true } } })
     h.stream.frame(end(), 6)
     expect(h.projector.messages()).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Delivered prefix' }])
+  })
+
+  it('keeps the precise error when turn/end arrives before the failed settlement is released', () => {
+    const h = harness()
+    h.stream.frame(start(), 5); h.stream.frame(chunk('Received prefix'), 5)
+    h.stream.durable({ event: { type: 'assistant/attempt', seq: 6, time: 200, data: { turn: 1, step: 1, stream: [
+      { type: 'text-chunks', time0: 100, index: 0, texts: ['Received prefix'], dt: [] },
+    ] } } })
+    h.stream.durable({ event: { type: 'turn/end', seq: 8, time: 300, data: { turn: 1,
+      reason: { kind: 'error', error: { message: 'Provider finish_reason: content_filter', code: 'PI_AI_ERROR' } },
+    } } })
+    expect(h.projector.messages()).toMatchObject([{ text: 'Received prefix', failed: true, detail: expect.stringContaining('content_filter') }])
+    h.stream.frame(end(1, 'committed', 'assistant/attempt'), 8)
+    expect(h.projector.messages()).toEqual([{ id: 'assistant-attempt:6', role: 'assistant', text: 'Received prefix', failed: true, streaming: false,
+      detail: 'PI_AI_ERROR: Provider finish_reason: content_filter' }])
+  })
+
+  it('keeps a retry reason that arrives before its failed settlement is released', () => {
+    const h = harness()
+    h.stream.frame(start(), 5); h.stream.frame(chunk('Received prefix'), 5)
+    h.stream.durable({ event: { type: 'assistant/attempt', seq: 6, time: 200, data: { turn: 1, step: 1, stream: [
+      { type: 'text-chunks', time0: 100, index: 0, texts: ['Received prefix'], dt: [] },
+    ] } } })
+    h.stream.durable({ event: { type: 'llm/retry', seq: 7, time: 300, data: { turn: 1, step: 1,
+      failure: { message: 'Stream idle timeout', code: 'TIMEOUT' },
+    } } })
+    h.stream.frame(end(1, 'committed', 'assistant/attempt'), 7)
+    h.stream.frame(start('retry', 4), 7); h.stream.frame(chunk('New response', 0, 'retry', 5), 7)
+    expect(h.projector.messages()).toMatchObject([
+      { id: 'assistant-attempt:6', text: 'Received prefix', failed: true, detail: 'TIMEOUT: Stream idle timeout' },
+      { text: 'New response', streaming: true },
+    ])
   })
 
   it('does not hide unrelated durable messages behind an active attempt', () => {

@@ -9,7 +9,7 @@
 
 DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review.
 
-The current source version is **0.1.7**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.1.8**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md) | [日本語](README.ja.md)
 
@@ -26,6 +26,7 @@ The current source version is **0.1.7**. See [CHANGELOG.md](CHANGELOG.md) for ve
 ## ✨ Features
 
 - **Conversations and history.** Stream responses, inspect tool calls, answer approvals and questions, and load earlier messages through the official DSH runtime.
+- **Failed response recovery.** Keep received output when a request fails, show its error code and reason in chat and subagent details, and restore saved failed attempts when reopening history. Retries remain separate; output that could not be saved is marked as available only in the current view.
 - **Conversation directory.** Use the directory for recent and archived conversation lists, search, rename, archive with Undo, and restore. New conversation opens the full chat composer with model, reasoning effort, agent composition, and permission controls. The top picker switches main conversations; subagents remain in the owning conversation's Tasks panel.
 - **Independent subagent details.** Open a child task beside the main chat to inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer.
 - **Background tasks and task services.** Inspect bounded process output, Goal status and round limits, Schedule reminders and delivery history, and Workflow phases and job logs when the runtime exposes these services. Search conversation message bodies when history search is enabled.

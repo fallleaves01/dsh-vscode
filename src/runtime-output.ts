@@ -6,6 +6,7 @@ export function redactDshSecrets(value: string, secrets: readonly string[] = [])
     if (secret !== '') text = text.split(secret).join('[redacted]')
   }
   return text
+    .replace(/(https?:\/\/)[^\s/?#@]+@/gi, '$1[redacted]@')
     .replace(/([?&](?:token|access_token|refresh_token|api[_-]?key|client_secret)=)[^\s&#"']*/gi, '$1[redacted]')
     // A *quoted* value: `"cookie":"…"`, `'authorization': 'Bearer …'`. The whole
     // value goes, including a `Bearer ` prefix, which is why this runs before the

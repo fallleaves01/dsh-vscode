@@ -3,6 +3,7 @@ import { tokenUsageOf, turnUsageOf, type TokenUsage, type TurnTokenUsage } from 
 import type { ImageMediaType } from './dsh-client.js'
 import { presentToolCall, presentToolResult } from './tool-presentation.js'
 import type { AssistantAttempt, AssistantStreamUpdate } from './dsh-assistant-stream.js'
+import { redactDshSecrets } from './runtime-output.js'
 
 export type ConversationRole = 'user' | 'assistant' | 'tool' | 'command' | 'notice'
 
@@ -234,6 +235,52 @@ function toolView(value: unknown, expected: 'call' | 'result'): unknown {
   return wrapper?.for === expected ? wrapper.view : undefined
 }
 
+const missingFailureReason = 'Error details are not available in this part of the conversation history.'
+
+function failureDetail(value: unknown): string {
+  const failure = record(value)
+  const message = typeof failure?.message === 'string' && failure.message !== '' ? failure.message
+    : typeof value === 'string' && value !== '' ? value : missingFailureReason
+  return redactDshSecrets(typeof failure?.code === 'string' && failure.code !== '' ? `${failure.code}: ${message}` : message)
+}
+
+/** Recover the durable failed stream without treating tool arguments as reply text. */
+function attemptedContent(value: unknown): Pick<ConversationMessage, 'text' | 'reasoning' | 'images'> {
+  const blocks = new Map<number, { type: 'text' | 'reasoning'; parts: string[] }>()
+  const images: ConversationImage[] = []
+  const append = (index: number, type: 'text' | 'reasoning', parts: string[]): void => {
+    const current = blocks.get(index)
+    if (current?.type === type) {
+      for (const part of parts) current.parts.push(part)
+    } else blocks.set(index, { type, parts })
+  }
+  for (const raw of Array.isArray(value) ? value : []) {
+    const run = record(raw)
+    if (run === undefined) continue
+    if ((run.type === 'text-chunks' || run.type === 'reasoning-chunks') && typeof run.index === 'number'
+      && Number.isSafeInteger(run.index) && run.index >= 0 && Array.isArray(run.texts)) {
+      append(run.index, run.type === 'text-chunks' ? 'text' : 'reasoning', run.texts.filter((text): text is string => typeof text === 'string'))
+      continue
+    }
+    const chunk = run.type === 'chunk' ? record(run.chunk) : undefined
+    if (chunk === undefined || typeof chunk.index !== 'number' || !Number.isSafeInteger(chunk.index) || chunk.index < 0) continue
+    if ((chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') && typeof chunk.text === 'string') {
+      append(chunk.index, chunk.type === 'text-delta' ? 'text' : 'reasoning', [chunk.text])
+    } else if (chunk.type === 'block-end') {
+      const block = record(chunk.block)
+      // A completed block replaces its deltas; appending it would duplicate the answer.
+      if ((block?.type === 'text' || block?.type === 'reasoning') && typeof block.text === 'string') {
+        blocks.set(chunk.index, { type: block.type, parts: [block.text] })
+      }
+      images.push(...imageContent(block))
+    }
+  }
+  const ordered = [...blocks].sort(([left], [right]) => left - right).map(([, block]) => block)
+  const text = ordered.filter(block => block.type === 'text').map(block => block.parts.join('')).join('\n')
+  const reasoning = ordered.filter(block => block.type === 'reasoning').map(block => block.parts.join('')).join('\n')
+  return { text, ...(reasoning === '' ? {} : { reasoning }), ...(images.length === 0 ? {} : { images: mergeImages(undefined, images) }) }
+}
+
 /** Projects the official append-only DSH event log into the small chat surface. */
 export class ConversationProjector {
   private readonly orderedIds: string[] = []
@@ -246,6 +293,10 @@ export class ConversationProjector {
   private readonly meta = new Map<string, MessageMeta>()
   /** When each turn opened, from its `turn/start` event: the only start there is. */
   private readonly turnStarts = new Map<number, number>()
+  private readonly turnSteps = new Map<number, { step: number; assistantId?: string }>()
+  /** A terminal event can reach the view before the live stream releases its settlement. */
+  private readonly turnFailures = new Map<number, { id: string; seq: number; time: number; step?: number; detail: string }>()
+  private readonly pendingRetryFailures = new Map<string, { seq: number; detail: string }>()
   private readonly hiddenCommandIds = new Set<string>()
   private liveAttempt: (AssistantAttempt & { message?: ConversationMessage }) | undefined
 
@@ -256,20 +307,35 @@ export class ConversationProjector {
     this.byId.clear()
     this.meta.clear()
     this.turnStarts.clear()
+    this.turnSteps.clear()
+    this.turnFailures.clear()
+    this.pendingRetryFailures.clear()
     this.hiddenCommandIds.clear()
     for (const entry of entries) {
       if ('event' in entry) this.apply(entry.event, entry.view)
       else this.apply(entry)
     }
     this.liveAttempt = live
+    if (live !== undefined) this.turnSteps.set(live.turn, { step: live.step, assistantId: `assistant-live:${live.attemptId}` })
   }
 
-  /** A process-local prefix is not history; retry/abandonment must be able to discard it. */
+  /** Live text is replaced by its durable settlement, including failed attempts. */
   applyStream(update: AssistantStreamUpdate): void {
-    if (update.kind === 'start') { this.liveAttempt = { ...update }; return }
+    if (update.kind === 'start') {
+      this.liveAttempt = { ...update }
+      this.turnSteps.set(update.turn, { step: update.step, assistantId: `assistant-live:${update.attemptId}` })
+      return
+    }
     const active = this.liveAttempt
     if (active?.attemptId !== update.attemptId) return
-    if (update.kind === 'end') { this.liveAttempt = undefined; return }
+    if (update.kind === 'end') {
+      if (active.message !== undefined) this.set(active.message.id, {
+        ...active.message, streaming: false, failed: true,
+        detail: 'The response ended before it could be saved. The received output is retained in this view only.',
+      })
+      this.liveAttempt = undefined
+      return
+    }
     const chunk = update.chunk
     const current = active.message
     const images = chunk.type === 'block-end' ? imageContent(chunk.block) : []
@@ -301,6 +367,60 @@ export class ConversationProjector {
       && this.liveAttempt?.turn === data.turn && this.liveAttempt?.step === data.step
       && (event.type === 'assistant/attempt' || event.surfaceOp === 'append')) this.liveAttempt = undefined
 
+    if (event.type === 'step/start' && typeof data.turn === 'number' && typeof data.step === 'number') {
+      this.turnSteps.set(data.turn, { step: data.step })
+      return
+    }
+
+    if (event.type === 'assistant/attempt' && typeof data.turn === 'number' && typeof data.step === 'number') {
+      // Every attempt has its own durable sequence, even when the next retry uses the same step.
+      const id = `assistant-attempt:${String(event.seq)}`
+      const ended = this.turnFailures.get(data.turn)
+      const terminal = ended !== undefined && event.seq < ended.seq && (ended.step === undefined || ended.step === data.step) ? ended : undefined
+      const retryKey = `${data.turn}:${data.step}`
+      const queuedRetry = this.pendingRetryFailures.get(retryKey)
+      const retry = queuedRetry !== undefined && event.seq < queuedRetry.seq ? queuedRetry : undefined
+      this.pendingRetryFailures.delete(retryKey)
+      if (terminal !== undefined && terminal.id !== id && (terminal.id.startsWith('assistant-live:') || terminal.id.startsWith('assistant-error:'))) {
+        this.byId.delete(terminal.id); this.meta.delete(terminal.id)
+        const index = this.orderedIds.indexOf(terminal.id)
+        if (index >= 0) this.orderedIds.splice(index, 1)
+        terminal.id = id
+      }
+      this.set(id, {
+        id, role: 'assistant', ...attemptedContent(data.stream), failed: true,
+        detail: terminal?.detail ?? retry?.detail ?? this.byId.get(id)?.detail ?? missingFailureReason,
+        ...(terminal === undefined ? {} : { streaming: false }),
+      })
+      this.meta.set(id, { seq: event.seq, time: terminal?.time ?? event.time, turn: data.turn, step: data.step })
+      this.turnSteps.set(data.turn, { step: data.step, assistantId: id })
+      return
+    }
+
+    if (event.type === 'llm/retry' && typeof data.turn === 'number' && typeof data.step === 'number') {
+      const step = this.turnSteps.get(data.turn)
+      const current = step?.assistantId === undefined ? undefined : this.byId.get(step.assistantId)
+      if (step?.step === data.step && current?.failed === true) this.set(current.id, { ...current, detail: failureDetail(data.failure) })
+      else this.pendingRetryFailures.set(`${data.turn}:${data.step}`, { seq: event.seq, detail: failureDetail(data.failure) })
+      return
+    }
+
+    if (event.type === 'turn/end' && typeof data.turn === 'number') {
+      const reason = record(data.reason)
+      if (reason?.kind !== 'error') return
+      const step = this.turnSteps.get(data.turn)
+      const saved = step?.assistantId === undefined ? undefined : this.byId.get(step.assistantId)
+      const live = this.liveAttempt?.turn === data.turn ? this.liveAttempt.message : undefined
+      const current = live ?? (saved?.failed === true || saved?.streaming === true ? saved : undefined)
+      const id = current?.id ?? `assistant-error:${String(event.seq)}`
+      const detail = failureDetail(reason.error)
+      this.set(id, { ...(current ?? { id, role: 'assistant', text: '' }), streaming: false, failed: true, detail })
+      this.turnFailures.set(data.turn, { id, seq: event.seq, time: event.time, ...(step === undefined ? {} : { step: step.step }), detail })
+      this.meta.set(id, { seq: this.meta.get(id)?.seq ?? event.seq, time: event.time, turn: data.turn, ...(step === undefined ? {} : { step: step.step }) })
+      if (this.liveAttempt?.turn === data.turn) this.liveAttempt = undefined
+      return
+    }
+
     if (event.type === 'user/message') {
       const source = record(data.source)
       if (source?.kind !== 'user') return
@@ -318,6 +438,7 @@ export class ConversationProjector {
       const chunk = record(data.chunk)
       const id = `assistant:${String(data.turn)}:${String(data.step)}`
       const current = this.byId.get(id)
+      if (typeof data.turn === 'number' && typeof data.step === 'number') this.turnSteps.set(data.turn, { step: data.step, assistantId: id })
       if (chunk?.type === 'block-end') {
         const images = imageContent(chunk.block)
         if (images.length === 0) return
@@ -353,6 +474,7 @@ export class ConversationProjector {
     if (event.type === 'assistant/message') {
       const message = record(data.message)
       const id = `assistant:${String(data.turn)}:${String(data.step)}`
+      if (typeof data.turn === 'number' && typeof data.step === 'number') this.turnSteps.set(data.turn, { step: data.step, assistantId: id })
       const current = this.byId.get(id)
       const text = textContent(message?.content)
       const reasoning = reasoningContent(message?.content)

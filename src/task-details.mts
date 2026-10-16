@@ -87,7 +87,7 @@ export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void 
       const key = JSON.stringify([message, body])
       if (cached.key !== key) {
         const thinkingOpen = cached.row.querySelector('details')?.open ?? false
-        const label = message.detail || ({ user: 'You', assistant: 'DeepSeek', tool: 'Tool', command: 'Command' } as Record<string, string>)[message.role] || message.role
+        const label = (message.role === 'assistant' ? undefined : message.detail) || ({ user: 'You', assistant: 'DeepSeek', tool: 'Tool', command: 'Command' } as Record<string, string>)[message.role] || message.role
         cached.key = key; cached.row.replaceChildren(node('div', label, 'role'))
         const append = (item: ConversationMessage): void => {
           if (item.reasoning) { const thinking = node('details', '', 'thinking') as HTMLDetailsElement; thinking.open = thinkingOpen; thinking.append(node('summary', 'Thinking'), markdown(item.reasoning)); cached!.row.append(thinking) }
@@ -110,6 +110,11 @@ export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void 
             })
             button.disabled = Boolean(body?.pending); cached.row.append(button)
           }
+        }
+        if (message.role === 'assistant' && message.failed === true) {
+          const failure = node('div', '', 'assistant-failure'); failure.setAttribute('role', 'status')
+          failure.append(node('div', 'Response failed', 'assistant-failure-title'), node('div', message.detail || 'Error details are not available in the loaded history.', 'assistant-failure-detail'))
+          cached.row.append(failure)
         }
       }
       messages.append(cached.row)

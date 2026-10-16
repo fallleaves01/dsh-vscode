@@ -41,6 +41,17 @@ describe('runtime output and launch-token privacy', () => {
       .toBe('url?token=[redacted]&x=1\nAuthorization: [redacted]\nCookie: [redacted]\n[redacted]')
   })
 
+  it('redacts URL user credentials without hiding an address in a path or query', () => {
+    expect(redactDshSecrets('Cannot connect: https://fixture-user:fixture-password@example.invalid/v1'))
+      .toBe('Cannot connect: https://[redacted]@example.invalid/v1')
+    expect(redactDshSecrets('https://fixture-key@example.invalid/v1'))
+      .toBe('https://[redacted]@example.invalid/v1')
+    expect(redactDshSecrets('https://example.invalid/path/user@example.invalid?email=user@example.invalid'))
+      .toBe('https://example.invalid/path/user@example.invalid?email=user@example.invalid')
+    const once = redactDshSecrets('https://fixture-user:fixture-password@example.invalid/v1')
+    expect(redactDshSecrets(once)).toBe(once)
+  })
+
   it('redacts the shapes a runtime log line actually uses', () => {
     // A quote or an equals sign between the name and the colon used to slip past
     // the header rule, so a JSON field, an assignment or a quoted value reached

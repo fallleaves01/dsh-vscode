@@ -7,6 +7,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 versions follow [SemVer](https://semver.org/). The sidebar is distributed as a
 VSIX — see the README for installing one.
 
+## [0.1.8] - 2026-10-16
+
+### Fixed
+
+- Retain received output from failed model requests, including durable failed
+  attempts restored from conversation history. Show the failure status, error
+  code and reason in chat and subagent details, and keep retries separate.
+- Label failed response duration as "Failed after" instead of "Completed in".
+
+### Security
+
+- Redact embedded URL credentials from runtime diagnostics, including the
+  failure reasons displayed beside retained responses. Render errors as literal
+  text and keep conversation captures and audit files out of the VSIX.
+
 ## [0.1.7] - 2026-10-15
 
 ### Added

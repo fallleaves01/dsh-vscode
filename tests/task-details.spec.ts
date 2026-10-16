@@ -17,6 +17,20 @@ beforeEach(() => {
 })
 afterEach(() => { dispose(); document.body.replaceChildren(); vi.restoreAllMocks() })
 describe('independent task detail interactions', () => {
+  it('retains failed assistant text and shows the precise reason without interpreting error HTML', () => {
+    const detail = 'PI_AI_ERROR: <img src=x onerror=bad()> content_filter'
+    sendState({ messages: [{ id: 'failed', role: 'assistant', text: 'Received answer', failed: true, detail }] })
+    expect(document.querySelector('#messages .role')?.textContent).toBe('DeepSeek')
+    expect(document.querySelector('.assistant-failure-title')?.textContent).toBe('Response failed')
+    expect(document.querySelector('.assistant-failure-detail')?.textContent).toBe(detail)
+    expect(document.querySelector('.assistant-failure img')).toBeNull()
+    expect(document.getElementById('messages')?.textContent).toContain('Received answer')
+  })
+  it('shows failure before a deferred assistant response is expanded', () => {
+    sendState({ messages: [{ id: 'large', role: 'assistant', text: '', failed: true, detail: 'TIMEOUT: Request timed out', deferredBody: true, deferredBodyRevision: 'rev' }] })
+    expect(document.querySelector('.assistant-failure-detail')?.textContent).toBe('TIMEOUT: Request timed out')
+    expect(document.querySelector('#messages button')?.textContent).toBe('Show full message')
+  })
   it('ignores unsolicited output pages that have no matching pending request', () => {
     message({ type: 'body', messageId: 'unknown' })
     message({ type: 'body', messageId: 'unknown', requestId: 'unknown' })

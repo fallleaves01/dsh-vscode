@@ -153,7 +153,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .message-end { display: inline-flex; align-items: center; gap: 8px; margin-left: 8px; color: inherit; }
     .message-clock { color: inherit; font-size: calc(var(--dsh-content-font-size-secondary) - 1px); line-height: var(--dsh-line); white-space: nowrap; font-variant-numeric: tabular-nums; }
     /* The wait, in DSH's duration face: code, tabular, so it never jitters. */
-    .message-duration { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; color: inherit; font-size: calc(var(--dsh-content-font-size-secondary) - 1px); line-height: var(--dsh-line-secondary); white-space: nowrap; }
+    .message-duration { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; color: inherit; font-size: calc(var(--dsh-content-font-size-secondary) - 1px); line-height: var(--dsh-line-secondary); white-space: nowrap; }
     .message-duration .duration-number { font-family: var(--dsh-code-font); font-variant-numeric: tabular-nums; }
     /* A user row leads with its own clock, 12px clear of the copy beside it, and
        DSH's user row sits the actions 6px under the bubble rather than the 16px
@@ -511,6 +511,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .changed-action:hover { background: var(--dsh-hover); }
     .session-action.danger { color: var(--vscode-errorForeground); }
     .failed, .error-text { color: var(--vscode-errorForeground); }
+    .assistant-failure { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); border-radius: 6px; font-size: 12px; line-height: 1.5; }
+    .assistant-failure-title { color: var(--vscode-errorForeground); font-weight: 600; }
+    .assistant-failure-detail { margin-top: 2px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
     /**
      * No typing caret while a reply streams.
      *
@@ -2173,7 +2176,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // sat through, measured from the prompt that opened the turn.
       if (typeof meta.turnDurationMs === 'number' && meta.turnDurationMs >= 1000) {
         const duration = node('span', 'message-duration');
-        duration.append(document.createTextNode('Completed in '));
+        duration.append(document.createTextNode(message.failed ? 'Failed after ' : 'Completed in '));
         duration.append(node('span', 'duration-number', formatLiveDuration(meta.turnDurationMs)));
         end.append(duration);
       }
@@ -2197,6 +2200,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       else appendImages(body, message.images);
       if (thinking) item.append(thinking.root);
       item.append(body);
+      if (message.role === 'assistant' && message.failed === true) {
+        const failure = node('div', 'assistant-failure'); failure.setAttribute('role', 'status');
+        failure.append(node('div', 'assistant-failure-title', 'Response failed'));
+        failure.append(node('div', 'assistant-failure-detail', message.detail || 'Error details are not available in the loaded history.'));
+        item.append(failure);
+      }
       const meta = messageMetaFor(message.id);
       if (meta !== undefined && message.role === 'assistant' && meta.turnEnd === true) item.append(renderMessageActions(message, meta));
       else if (meta !== undefined && message.role === 'user') item.append(renderUserActions(message, meta));
@@ -2214,8 +2223,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
      */
     function messageRowKey(message) {
       const meta = messageMetaFor(message.id);
-      if (meta === undefined) return '';
-      if (message.role === 'assistant' ? meta.turnEnd !== true : message.role !== 'user') return '';
+      const failure = message.role === 'assistant' && message.failed === true ? [message.failed, message.detail] : [];
+      if (meta === undefined) return JSON.stringify(failure);
+      if (message.role === 'assistant' ? meta.turnEnd !== true : message.role !== 'user') return JSON.stringify(failure);
       const feedback = feedbackFor(message.id);
       return JSON.stringify([
         feedback === undefined ? null : [feedback.rating, feedback.version],
@@ -2223,6 +2233,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         typeof meta.turnDurationMs === 'number' ? meta.turnDurationMs : null,
         typeof meta.seq === 'number' ? meta.seq : null,
         typeof meta.time === 'number' ? meta.time : null,
+        failure,
       ]);
     }
     function messageNode(message) {
