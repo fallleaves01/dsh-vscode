@@ -1,9 +1,12 @@
 import type { ModelDraft, ProviderView, SettingsFieldView, SettingsFormView, SettingsPageState, DiscoveredModel } from './settings-page-state.js'
+import { secretIcon, updateSecretIcon } from './secret-icon.mjs'
+import { settingsIcon } from './settings-ui.js'
+export { createSettingsModal } from './settings-modal.mjs'
 
 interface Api { postMessage(value: unknown): void }
 declare function acquireVsCodeApi(): Api
 interface FieldsDraft { revision: number; values: Record<string, unknown> }
-interface EditableModel { id: string; originalId?: string; name: string; context: string; output: string; input?: string[] }
+interface EditableModel { id: string; originalId?: string; name: string; context: string; output: string; input?: string[]; reasoning?: [string, string | null][]; reasoningTouched?: boolean }
 interface ProviderDraft {
   id: string; revision: number; ns: string; creating: boolean; custom: boolean
   baseURL: string; api: string; displayName: string; apiKey: string
@@ -12,13 +15,18 @@ interface ProviderDraft {
 type Message = Record<string, unknown>
 
 /** Settings drafts live only in this Webview's memory. Secrets are never persisted. */
-export function mountSettingsPage(document: Document, api: Api): { dispose(): void } {
-  const content = document.getElementById('content')!, navigation = document.getElementById('navigation')!
-  const banner = document.getElementById('banner')!, refresh = document.getElementById('refresh') as HTMLButtonElement
+export function mountSettingsPage(document: Document, api: Api, options: { root?: HTMLElement; externalMessages?: boolean; onClose?: () => void } = {}): { dispose(): void; receive(value: unknown): void } {
+  const root = options.root ?? document.getElementById('settingsRoot')!
+  const content = root.querySelector<HTMLElement>('#content')!, navigation = root.querySelector<HTMLElement>('#navigation')!
+  const banner = root.querySelector<HTMLElement>('#banner')!, refresh = root.querySelector<HTMLButtonElement>('#refresh')!
   const NEW_PROVIDER = Symbol('new-provider'), CATALOG_DRAFT = Symbol('catalog-draft'), CUSTOM_DRAFT = Symbol('custom-draft')
   let state: SettingsPageState | undefined, section = 'general', selectedProvider: string | typeof NEW_PROVIDER | undefined, serial = 0
+  let inventorySearch = ''
   const fields = new Map<string, FieldsDraft>(), providerDrafts = new Map<string | symbol, ProviderDraft>(), errors = new Map<string, string>()
+  const advancedProviders = new Set<string>()
   let searchKey = '', searchKeyRevision: number | undefined
+  let searchMode: { revision: number; enabled: boolean } | undefined, searchSelectionRevision: number | undefined
+  let searchKeyTarget: { ns: string; revision: number } | undefined
   let allowed: { revision: number; enabled: boolean; routes: { provider: string; model: string }[]; reset?: boolean } | undefined
   let pending: { id: string; scope: string; type: string; provider?: string; section: string } | undefined
   let queue: Message[] = [], candidates: DiscoveredModel[] = [], selectedModels = new Set<string>(), modelSearch = '', allowSearch = ''
@@ -40,6 +48,9 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
     const row = el('label', 'check'), control = el('input'); control.type = 'checkbox'; control.checked = checked; control.dataset.focusKey = key
     control.addEventListener('change', () => { update(control.checked); updateSaveButtons() }); row.append(control, el('span', 'choice-label', label)); return row
   }
+  const toggle = (label: string, checked: boolean, update: (value: boolean) => void, key: string): HTMLLabelElement => {
+    const row = check(label, checked, update, key); row.classList.add('switch-row'); row.querySelector('input')!.setAttribute('role', 'switch'); return row
+  }
   const native = (action: string): void => api.postMessage({ type: 'native-action', action, scope: state?.scope })
   const formDraft = (form: SettingsFormView): FieldsDraft => {
     let draft = fields.get(form.ns)
@@ -47,6 +58,11 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
     return draft
   }
   const activeForms = (): SettingsFormView[] => state?.forms.filter(form => form.section === section) ?? []
+  const revealSection = (): void => { root.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }) }
+  const searchForm = (): SettingsFormView | undefined => state?.forms.find(form => form.ns === ((searchMode?.enabled ?? state?.search?.selection?.enabled) ? 'web-deepseek-api' : 'web-search-deepseek'))
+  const captureSearchSelection = (): void => { searchSelectionRevision ??= state?.search?.selection?.revision }
+  const searchConflict = (): boolean => !!state?.search && ((searchSelectionRevision !== undefined && searchSelectionRevision !== state.search.selection?.revision)
+    || !!(searchKeyTarget && searchKeyTarget.revision !== state.search.profiles.find(profile => profile.ns === searchKeyTarget!.ns)?.revision))
   const conflict = (revision: number, latest: number): boolean => !pending && revision !== latest
   const start = (body: Message): void => {
     if (!state || pending) return
@@ -62,7 +78,8 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
     return number
   }
   const editable = (model: ModelDraft): EditableModel => ({ id: model.id, ...(model.originalId ? { originalId: model.originalId } : {}), name: model.name ?? '',
-    context: model.contextWindow === undefined ? '' : String(model.contextWindow), output: model.maxTokens === undefined ? '' : String(model.maxTokens), ...(model.input ? { input: [...model.input] } : {}) })
+    context: model.contextWindow === undefined ? '' : String(model.contextWindow), output: model.maxTokens === undefined ? '' : String(model.maxTokens), ...(model.input ? { input: [...model.input] } : {}),
+    ...(model.reasoningEfforts && typeof model.reasoningEfforts === 'object' ? { reasoning: Object.entries(model.reasoningEfforts) } : {}) })
   const newDraft = (): ProviderDraft => ({ id: '', revision: state?.piRevision ?? 0, ns: 'llm-pi-ai', creating: true, custom: false, baseURL: '', api: '', displayName: '', apiKey: '', models: [], inheritModels: true, touched: new Set() })
   const getProviderDraft = (): ProviderDraft | undefined => {
     if (!selectedProvider || !state) return
@@ -80,13 +97,14 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
     const draft = getProviderDraft(); return !!draft && (draft.creating || draft.touched.size > 0 || !!draft.apiKey.trim())
   }
   const dirtySection = (): boolean => activeForms().some(form => Object.keys(fields.get(form.ns)?.values ?? {}).length > 0)
-    || (section === 'search' && !!searchKey.trim()) || (section === 'subagents' && !!allowed)
+    || (section === 'search' && (!!searchKey.trim() || !!searchMode)) || (section === 'subagents' && !!allowed)
   function updateSaveButtons(): void {
-    for (const control of document.querySelectorAll<HTMLButtonElement>('[data-save]')) {
+    for (const control of root.querySelectorAll<HTMLButtonElement>('[data-save]')) {
       const dirty = control.dataset.save === 'provider' ? dirtyProvider() : dirtySection()
-      control.disabled = locked() || !dirty || control.dataset.conflicted === 'true'
+      const invalid = control.dataset.save === 'provider' && getProviderDraft()?.models.some(model => reasoningError(model) !== undefined)
+      control.disabled = locked() || !dirty || !!invalid || control.dataset.conflicted === 'true'
     }
-    for (const control of document.querySelectorAll<HTMLButtonElement>('[data-discover]')) control.disabled = locked() || !getProviderDraft()?.id
+    for (const control of root.querySelectorAll<HTMLButtonElement>('[data-discover]')) control.disabled = locked() || !getProviderDraft()?.id
   }
   const parsedFields = (form: SettingsFormView, values: Record<string, unknown>): Record<string, unknown> => {
     return Object.fromEntries(Object.entries(values).map(([key, raw]) => {
@@ -103,6 +121,20 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
   const saveSection = (): void => {
     if (!state || locked()) return
     try {
+      if (section === 'search' && state.search) {
+        if (searchConflict()) throw new Error('The search selection or credential target changed elsewhere. Discard the draft first.')
+        const changes = activeForms().flatMap(form => {
+          const draft = fields.get(form.ns)
+          if (!draft || !Object.keys(draft.values).length) return []
+          if (draft.revision !== form.revision) throw new Error('These settings changed elsewhere. Discard the draft first.')
+          return [{ ns: form.ns, revision: draft.revision, values: parsedFields(form, draft.values) }]
+        })
+        start({ type: 'save-search', changes,
+          ...(state.search.selection ? { selectionRevision: searchSelectionRevision ?? state.search.selection.revision } : {}),
+          ...(searchMode ? { selection: { enabled: searchMode.enabled } } : {}),
+          ...(searchKey ? { apiKey: searchKey, keyNamespace: searchKeyTarget?.ns, keyRevision: searchKeyTarget?.revision } : {}) })
+        return
+      }
       const changes = activeForms().flatMap(form => {
         const draft = fields.get(form.ns)
         if (!draft && !(section === 'search' && searchKey)) return []
@@ -120,7 +152,7 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
     } catch (cause) { queue = []; errors.set(section, String((cause as Error).message)); render() }
   }
   const discardSection = (): void => {
-    activeForms().forEach(form => fields.delete(form.ns)); if (section === 'search') { searchKey = ''; searchKeyRevision = undefined }
+    activeForms().forEach(form => fields.delete(form.ns)); if (section === 'search') { searchKey = ''; searchKeyRevision = undefined; searchKeyTarget = undefined; searchMode = undefined; searchSelectionRevision = undefined }
     if (section === 'subagents') allowed = undefined
     errors.delete(section); message = ''; render()
   }
@@ -128,42 +160,53 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
     const row = el('div', 'field'), copy = el('div', 'field-copy'), draft = fields.get(form.ns)
     const touched = !!draft && Object.hasOwn(draft.values, field.key)
     const value = touched ? draft.values[field.key] : field.value
-    copy.append(el('span', 'field-name', field.label), el('span', 'hint', touched && value === null ? 'Use inherited value on save' : touched || field.overridden ? 'Customized' : 'Inherited'))
-    if (field.description) copy.append(el('span', 'hint', field.description))
+    copy.append(el('span', 'field-name', field.label))
+    if (touched || field.overridden) copy.append(el('span', 'hint', touched && value === null ? 'Use default on save' : 'Customized'))
     row.append(copy)
-    if (field.type === 'boolean') row.append(check('Enabled', (value === null ? field.inherited : value) === true, checked => {
+    if (field.type === 'boolean') row.append(toggle(field.label, (value === null ? field.inherited : value) === true, checked => {
+      if (form.section === 'search') captureSearchSelection()
       formDraft(form).values[field.key] = checked
       if (form.section === 'general') saveSection()
     }, form.ns + ':' + field.key))
     else {
-      const control = input(value === undefined || value === null ? '' : String(value), form.ns + ':' + field.key, raw => { formDraft(form).values[field.key] = raw })
+      const control = input(value === undefined || value === null ? '' : String(value), form.ns + ':' + field.key, raw => { if (form.section === 'search') captureSearchSelection(); formDraft(form).values[field.key] = raw })
       control.setAttribute('aria-label', field.label)
       if (field.type === 'number') control.inputMode = field.integer ? 'numeric' : 'decimal'
       if (field.inherited !== undefined) control.placeholder = 'Default: ' + String(field.inherited)
       row.append(control)
     }
-    row.append(button('Reset', () => { formDraft(form).values[field.key] = null; if (form.section === 'general') saveSection(); else render() }, 'quiet', locked() || (!touched && !field.overridden)))
+    const reset = button('Reset', () => { if (form.section === 'search') captureSearchSelection(); formDraft(form).values[field.key] = null; if (form.section === 'general') saveSection(); else render() }, 'quiet', locked() || (!touched && !field.overridden))
+    reset.hidden = !touched && !field.overridden; row.append(reset)
+    if (field.description) row.append(el('span', 'hint field-description', field.description))
     return row
   }
-  const keyControl = (value: string, update: (value: string) => void, capability: { configured: boolean; writable: boolean } | undefined, extensionKey: boolean, clear: () => void): HTMLElement => {
-    const box = el('div'), row = el('div', 'field'), copy = el('div', 'field-copy')
-    copy.append(el('span', 'field-name', 'API key'), el('span', 'hint', !capability ? 'Credential status unavailable' : capability.configured ? capability.writable ? 'Configured; leave blank to keep it' : 'Configured by a read-only source' : 'Not configured; optional for native provider authentication'))
+  const keyControl = (value: string, update: (value: string) => void, capability: { configured: boolean; writable: boolean } | undefined, extensionKey: boolean, clear: () => void, clearDisabled = false, missingHint = 'Not configured; optional for native provider authentication'): HTMLElement => {
+    const box = el('div', 'key-control'), row = el('div', 'field'), copy = el('div', 'field-copy')
+    copy.append(el('span', 'field-name', 'API key'))
+    const status = el('p', 'hint key-status', !capability ? 'Credential status unavailable' : capability.configured ? capability.writable ? 'Configured; leave blank to keep it' : 'Configured by a read-only source' : missingHint)
     const control = input(value, 'api-key', update, 'password'); control.setAttribute('aria-label', 'API key'); control.disabled = locked() || capability?.writable === false || !capability
-    row.append(copy, control, button('Clear key', clear, 'quiet danger', locked() || !capability?.writable || !capability.configured)); box.append(row)
+    control.spellcheck = false; control.setAttribute('autocapitalize', 'off')
+    const keyInput = el('div', 'key-input'), eye = secretIcon(document), reveal = button('', () => {
+      const hidden = control.type === 'password'; control.type = hidden ? 'text' : 'password'
+      reveal.title = hidden ? 'Hide API key' : 'Show API key'; reveal.setAttribute('aria-label', reveal.title); reveal.setAttribute('aria-pressed', String(hidden)); updateSecretIcon(eye, hidden)
+    }, 'quiet', control.disabled)
+    reveal.title = 'Show API key'; reveal.setAttribute('aria-label', reveal.title); reveal.setAttribute('aria-pressed', 'false'); reveal.append(eye); keyInput.append(control, reveal)
+    const clearButton = button('Clear key', clear, 'quiet danger', locked() || clearDisabled || !capability?.writable || !capability.configured); clearButton.hidden = !capability?.configured
+    row.append(copy, keyInput, clearButton); box.append(row, status)
     if (extensionKey) box.append(button('Configure extension API key…', () => native('extension-key'), 'quiet', locked()))
     return box
   }
   const footer = (provider = false, stale = false): HTMLElement => {
     const box = el('div', 'actions section-save')
-    box.append(el('span', 'hint', pending ? 'Saving…' : stale ? 'Changed elsewhere. Discard to reload.' : 'Changes apply when saved.'))
+    box.append(el('span', 'hint', pending ? 'Saving…' : stale ? 'Changed elsewhere. Discard to reload.' : ''))
     const save = button('Save changes', provider ? saveProvider : saveSection, 'primary'); save.dataset.save = provider ? 'provider' : 'section'; save.dataset.conflicted = String(stale)
     box.append(button('Discard', provider ? () => { if (selectedProvider) providerDrafts.delete(selectedProvider); if (selectedProvider === NEW_PROVIDER) { providerDrafts.delete(CATALOG_DRAFT); providerDrafts.delete(CUSTOM_DRAFT); selectedProvider = undefined } candidates = []; errors.delete('models'); render() } : discardSection, '', !!pending), save)
     return box
   }
   const renderFields = (): void => {
     for (const form of activeForms()) {
-      const card = el('section', 'card'); card.append(el('h3', '', form.title))
-      if (form.ns === 'session-log-deepseek') card.append(el('p', 'hint', 'Controls session metadata uploaded alongside official DeepSeek model requests.'))
+      const card = el('section', 'card' + (form.section === 'general' ? ' general-form' : '')); card.append(el('h3', '', form.title))
+      if (form.ns === 'session-log-deepseek') card.append(el('p', 'hint', 'Help improve DeepSeek models and products.'))
       if (form.restart) card.append(el('p', 'notice', 'A runtime restart is required after saving. Active tasks are protected.'))
       const fieldset = el('fieldset'); fieldset.disabled = locked()
       for (const field of form.fields) fieldset.append(fieldControl(form, field))
@@ -173,6 +216,38 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
       if (fields.get(form.ns)?.revision !== undefined && conflict(fields.get(form.ns)!.revision, form.revision)) card.append(el('p', 'error', 'These values changed elsewhere. Your draft is retained.'))
       content.append(card)
     }
+  }
+  const renderSearch = (): void => {
+    const view = state?.search
+    if (!view) { renderFields(); return }
+    const card = el('section', 'card'), fieldset = el('fieldset'), modeFieldset = el('fieldset'); fieldset.disabled = locked(); modeFieldset.disabled = locked()
+    const enabled = searchMode?.enabled ?? view.selection?.enabled ?? false
+    const switchControl = toggle('Use the new Web Search API', enabled, value => {
+      if (!view.selection?.available) return
+      captureSearchSelection(); searchMode = { revision: searchSelectionRevision ?? view.selection.revision, enabled: value }
+      if (searchKey) { const form = searchForm(); searchKeyTarget = form ? { ns: form.ns, revision: form.revision } : undefined }
+      render()
+    }, 'search-api-mode')
+    switchControl.querySelector('input')!.disabled = locked() || !view.selection?.available
+    modeFieldset.append(switchControl, el('p', 'hint', 'Off by default: use the Messages API for search. Turning this on selects the Search and Fetch APIs together.'))
+    card.append(modeFieldset, button('Search API guide ↗', () => native('search-guide'), 'quiet'))
+    const form = searchForm(), profile = view.profiles.find(item => item.ns === form?.ns)
+    if (form && profile) {
+      fieldset.append(keyControl(searchKey, value => {
+        searchKey = value; captureSearchSelection()
+        if (value) searchKeyTarget ??= { ns: form.ns, revision: form.revision }; else searchKeyTarget = undefined
+      }, profile.credential, profile.extensionKey, () => start({ type: 'clear-key', provider: 'web-search', ns: form.ns, revision: fields.get(form.ns)?.revision ?? searchKeyTarget?.revision ?? form.revision,
+        ...(view.selection ? { selectionRevision: searchSelectionRevision ?? view.selection.revision } : {}) }), searchConflict() || activeForms().some(item => fields.has(item.ns) && fields.get(item.ns)!.revision !== item.revision),
+        'No key is configured; only conversations using a DeepSeek Account model can search through the default endpoint.'))
+      for (const field of form.fields) {
+        const description = field.key === 'baseURL'
+          ? enabled ? 'Include the API prefix, such as https://api.deepseek.com/v1/tools. The provider appends /search or /fetch. Leave blank to restore the default.' : 'Include the API version prefix. The provider appends /messages. Leave blank to restore the default.'
+          : enabled ? 'Results returned per query: an integer from 1 to 50, default 10. This controls result count, not search calls.' : 'Maximum searches in each Messages API request. Leave blank to restore the default.'
+        fieldset.append(fieldControl(form, { ...field, description: [field.description, description].filter(Boolean).join(' ') }))
+      }
+    } else fieldset.append(el('p', 'notice', 'The selected search provider settings are unavailable in this runtime.'))
+    card.append(fieldset); content.append(card)
+    if (searchConflict()) content.append(el('p', 'error', 'The search selection or credential target changed elsewhere. Your draft is retained.'))
   }
   const renderAllowed = (): void => {
     const view = state?.allowedModels
@@ -204,11 +279,14 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
   const saveProvider = (): void => {
     const draft = getProviderDraft(); if (!draft || locked()) return
     try {
+      const invalid = draft.models.map(reasoningError).find(Boolean)
+      if (invalid) throw new Error(invalid)
       const changes: Record<string, unknown> = {}
       for (const key of draft.touched) {
         if (key === 'models') changes.models = draft.inheritModels ? null : draft.models.map(model => ({ id: model.id, ...(model.originalId ? { originalId: model.originalId } : {}),
           ...(model.name ? { name: model.name } : {}), ...(model.context ? { contextWindow: positive(model.context, 'Context window') } : {}),
-          ...(model.output ? { maxTokens: positive(model.output, 'Output limit') } : {}), ...(model.input ? { input: model.input } : {}) }))
+          ...(model.output ? { maxTokens: positive(model.output, 'Output limit') } : {}), ...(model.input ? { input: model.input } : {}),
+          ...(model.reasoningTouched ? { reasoningEfforts: model.reasoning === undefined ? null : Object.fromEntries(model.reasoning) } : {}) }))
         else if (key === 'baseURL' || key === 'api' || key === 'displayName') changes[key] = draft[key] || null
       }
       start({ type: draft.creating ? 'create-provider' : 'save-provider', provider: draft.id, revision: draft.revision, fields: changes, ...(draft.apiKey ? { apiKey: draft.apiKey } : {}) })
@@ -216,6 +294,48 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
   }
   const providerField = (label: string, value: string, key: string, update: (value: string) => void): HTMLElement => {
     const row = el('div', 'field'); row.append(el('span', 'field-name', label), input(value, key, update)); return row
+  }
+  function reasoningError(model: EditableModel): string | undefined {
+    if (model.reasoning === undefined) return
+    if (!model.reasoning.some(([level]) => level !== 'off')) return 'Add at least one level besides Off, or turn reasoning levels off.'
+    if (model.reasoning.some(([level, wire]) => !(level === 'off' && wire === null) && (typeof wire !== 'string' || !wire.length))) return 'Every level besides Off needs an API value, and no value can be empty.'
+  }
+  const renderReasoning = (model: EditableModel, draft: ProviderDraft, position: number, levels: string[]): HTMLElement => {
+    const group = el('div', 'model-reasoning'); group.setAttribute('role', 'group'); group.setAttribute('aria-label', `Reasoning levels ${position + 1}`)
+    const changed = (): void => { model.reasoningTouched = true; draft.touched.add('models'); draft.inheritModels = false }
+    group.append(toggle('Reasoning levels', model.reasoning !== undefined, enabled => {
+      if (enabled) model.reasoning = ['off', 'low', 'medium', 'high'].filter(level => levels.includes(level)).map(level => [level, level === 'off' ? null : level])
+      else delete model.reasoning
+      changed(); render()
+    }, `reasoning:${position}:enabled`))
+    if (model.reasoning === undefined) return group
+    const entries = model.reasoning, used = entries.map(([level]) => level)
+    const header = el('div', 'reasoning-row reasoning-labels'); header.setAttribute('aria-hidden', 'true')
+    header.append(el('span', 'hint', 'Level'), el('span', 'hint', 'API value')); group.append(header)
+    const error = el('p', 'error', reasoningError(model)); error.hidden = !reasoningError(model)
+    entries.forEach(([level, wire], index) => {
+      const row = el('div', 'reasoning-row'), select = el('select'); select.setAttribute('aria-label', `Reasoning level ${index + 1}`); select.dataset.focusKey = `reasoning:${position}:${index}:level`
+      for (const choice of [...levels.includes(level) ? [] : [level], ...levels.filter(choice => choice === level || !used.includes(choice))]) select.append(new Option(choice, choice))
+      select.value = level
+      select.addEventListener('change', () => {
+        const next = select.value
+        entries[index] = [next, typeof wire === 'string' && wire.length > 0 && wire !== level && level !== 'off' && next !== 'off' ? wire : next === 'off' ? null : next]
+        changed(); render()
+      })
+      const value = input(typeof wire === 'string' ? wire : '', `reasoning:${position}:${index}:value`, raw => {
+        entries[index] = [level, raw.trim() || (level === 'off' ? null : level)]; changed()
+        error.textContent = reasoningError(model) ?? ''; error.hidden = !error.textContent
+      })
+      value.placeholder = level === 'off' ? 'Not sent' : level; value.disabled = locked() || level === 'off'; value.setAttribute('aria-label', `${level} API value`)
+      row.append(select, value, button('×', () => { entries.splice(index, 1); changed(); render() }, 'quiet danger', locked()))
+      row.querySelector('button')!.setAttribute('aria-label', `Delete level ${level}`); group.append(row)
+    })
+    group.append(error, button('+ Add level', () => {
+      const highest = Math.max(-1, ...used.map(level => levels.indexOf(level)))
+      const level = levels.find((candidate, index) => index > highest && !used.includes(candidate)) ?? levels.find(candidate => !used.includes(candidate))
+      if (level) { entries.push([level, level === 'off' ? null : level]); changed(); render() }
+    }, 'quiet', locked() || levels.every(level => used.includes(level))))
+    return group
   }
   const renderModelRows = (draft: ProviderDraft): HTMLElement => {
     const box = el('section'); box.append(el('h3', '', 'Model options'), el('p', 'hint', draft.inheritModels ? 'Uses the provider catalog. Adding or editing models creates an explicit list.' : 'Only the fields shown here are edited; other existing model properties are retained.'))
@@ -232,7 +352,10 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
         model.input = [...values]; draft.touched.add('models'); draft.inheritModels = false
       }, 'model:' + index + ':' + modality))
       actions.append(button('Remove', () => { draft.models.splice(index, 1); draft.touched.add('models'); draft.inheritModels = false; render() }, 'quiet danger', locked()))
-      row.append(grid, actions); box.append(row)
+      row.append(grid)
+      const levels = state?.providers.find(provider => provider.id === draft.id)?.reasoningLevels ?? (draft.ns === 'llm-pi-ai' && draft.custom ? state?.reasoningLevels : undefined) ?? []
+      if (levels.length) row.append(renderReasoning(model, draft, index, levels))
+      row.append(actions); box.append(row)
     })
     const actions = el('div', 'actions')
     actions.append(button('Add model', () => { draft.models.push({ id: '', name: '', context: '', output: '' }); draft.inheritModels = false; draft.touched.add('models'); render() }, '', locked()),
@@ -259,9 +382,9 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
     }, 'primary'))
     box.append(list, actions); if (matches.length > 300) box.append(el('p', 'hint', 'Showing 300 matches. Refine the search.')); return box
   }
-  const renderProvider = (draft: ProviderDraft, provider: ProviderView | undefined): void => {
+  const renderProvider = (draft: ProviderDraft, provider: ProviderView | undefined, target: HTMLElement = content): void => {
     const card = el('section', 'card'), fieldset = el('fieldset'); fieldset.disabled = locked()
-    card.append(el('h3', '', draft.creating ? 'Add model provider' : provider?.name ?? draft.id))
+    if (draft.creating) card.append(el('h3', '', 'Add model provider'))
     if (provider?.error) card.append(el('p', 'error', provider.error))
     if (draft.creating) {
       const kind = el('select'); kind.setAttribute('aria-label', 'Provider source')
@@ -295,72 +418,128 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
       const lookup = button('Get available models', () => discover(draft), '', locked() || !draft.id); lookup.dataset.discover = 'true'
       fieldset.append(el('p', 'hint', 'Model lookup uses the key entered here, without storing it. Installed provider catalogs do not require an endpoint request.'), lookup)
     }
-    fieldset.append(renderModelRows(draft)); card.append(fieldset)
+    fieldset.append(renderModelRows(draft))
+    if (!draft.creating && !provider?.account) {
+      const key = fieldset.querySelector<HTMLElement>(':scope > .key-control')!, advanced = el('details', 'provider-customized'), summary = el('summary', '', 'Custom settings')
+      advanced.open = advancedProviders.has(draft.id); advanced.append(summary)
+      for (const child of [...fieldset.children]) if (child !== key) advanced.append(child)
+      advanced.addEventListener('toggle', () => { if (advanced.open) advancedProviders.add(draft.id); else advancedProviders.delete(draft.id) })
+      const keepOpen = (): void => { advancedProviders.add(draft.id) }
+      advanced.addEventListener('input', keepOpen, true); advanced.addEventListener('change', keepOpen, true)
+      advanced.addEventListener('click', () => { if (advanced.open) keepOpen() }, true)
+      fieldset.append(key, advanced)
+    }
+    card.append(fieldset)
     const latest = draft.creating ? state?.piRevision : provider?.revision
     const stale = latest === undefined || conflict(draft.revision, latest)
     if (stale) card.append(el('p', 'error', 'This provider changed elsewhere. Discard the draft to load its latest configuration.'))
     if (candidates.length) card.append(renderCandidates(draft))
-    card.append(footer(true, stale)); content.append(card)
-    if (provider?.removable) content.append(button('Remove provider…', () => start({ type: 'remove-provider', provider: draft.id, revision: draft.revision }), 'danger', locked()))
+    card.append(footer(true, stale)); target.append(card)
+    if (provider?.removable) target.append(button('Remove provider…', () => start({ type: 'remove-provider', provider: draft.id, revision: draft.revision }), 'danger', locked()))
   }
   const renderModels = (): void => {
     if (state?.modelsError) content.append(el('p', 'notice', state.modelsError))
     for (const provider of state?.providers ?? []) {
+      const shell = el('section', 'provider-shell')
       const row = button('', () => { selectedProvider = selectedProvider === provider.id ? undefined : provider.id; candidates = []; errors.delete('models'); render() }, 'provider', !!pending)
       row.dataset.provider = provider.id
-      row.append(el('span', 'dot' + (provider.active && (provider.account ? state?.signedIn : provider.credential?.configured) ? ' active' : '')),
+      row.setAttribute('aria-expanded', String(selectedProvider === provider.id))
+      row.append(el('span', 'dot' + ((provider.account ? state?.signedIn : provider.credential?.configured) ? ' active' : '')),
         el('span', 'provider-label', provider.name), el('span', 'hint', provider.account ? state?.signedIn ? 'Signed in' : 'Account sign-in' : provider.credential?.configured ? 'Configured' : 'Not configured'))
-      content.append(row)
-      if (selectedProvider === provider.id) { const draft = getProviderDraft(); if (draft) renderProvider(draft, provider) }
+      shell.append(row); content.append(shell)
+      if (selectedProvider === provider.id) { const draft = getProviderDraft(); if (draft) renderProvider(draft, provider, shell) }
     }
-    content.append(button('Add model provider', () => { selectedProvider = NEW_PROVIDER; if (!providerDrafts.has(NEW_PROVIDER)) providerDrafts.set(NEW_PROVIDER, newDraft()); candidates = []; render() }, '', locked() || state?.piRevision === undefined))
+    content.append(button('Add model provider', () => { selectedProvider = NEW_PROVIDER; if (!providerDrafts.has(NEW_PROVIDER)) providerDrafts.set(NEW_PROVIDER, newDraft()); candidates = []; render() }, 'provider-add', locked() || state?.piRevision === undefined))
     if (selectedProvider === NEW_PROVIDER) { const draft = providerDrafts.get(NEW_PROVIDER); if (draft) renderProvider(draft, undefined) }
     if (!state?.providers.length && state?.piRevision === undefined) content.append(el('p', 'empty', 'No configurable model adapter is available in this runtime.'))
+  }
+  const renderInventory = (): void => {
+    const search = input(inventorySearch, 'plugin-search', value => { inventorySearch = value; render() }); search.placeholder = 'Search plugins'; search.setAttribute('aria-label', 'Search plugins'); content.append(search)
+    const groups = state?.inventory ?? []
+    for (const group of groups) {
+      const rows = group.rows.filter(row => (row.name + ' ' + row.status).toLowerCase().includes(inventorySearch.toLowerCase()))
+      if (!rows.length) continue
+      content.append(el('h3', 'inventory-heading', group.label))
+      const grid = el('div', 'plugin-inventory')
+      for (const row of rows) {
+        const card = el('article', 'inventory-card'); card.append(el('div', 'inventory-name', row.name.replace(/^@deepseek-ai\/dsh-/, '')), el('span', 'hint', row.status), el('code', 'inventory-module', row.name)); grid.append(card)
+      }
+      content.append(grid)
+    }
+    if (!groups.some(group => group.rows.length)) content.append(el('p', 'empty', 'Plugin inventory is unavailable in this runtime.'))
+    content.append(button('Manage runtime plugins', () => native('plugins'), 'quiet'))
   }
   function render(): void {
     const active = document.activeElement as HTMLInputElement | null
     const focusKey = active?.dataset.focusKey, selectionStart = active?.selectionStart, selectionEnd = active?.selectionEnd
     banner.textContent = state?.error ?? state?.reason ?? ''
     if (!banner.textContent && state?.loading) banner.textContent = 'Refreshing settings…'
-    document.getElementById('version')!.textContent = state ? 'DSH Sidebar ' + state.version : ''
     refresh.disabled = !!pending || state?.loading === true
-    const sections = [['general', 'General'], ['models', 'Models'], ['shell', 'Shell'], ['agent', 'Agent loop'], ['subagents', 'Subagents'], ['search', 'Web search']] as const
+    const pluginSections = [['subagents', 'Subagents'], ['agent', 'Agent loop'], ['search', 'Web search'], ['shell', 'Shell']].filter(([id]) => state?.forms.some(form => form.section === id) || (id === 'subagents' && state?.allowedModels)) as [string, string][]
+    const isPlugin = section === 'inventory' || pluginSections.some(([id]) => id === section)
+    const sections = [['general', 'General'], ['models', 'Models'], ...(pluginSections.length || state?.inventory?.length ? [['plugins', 'Built-in plugins']] : [])]
     navigation.replaceChildren()
     for (const [id, label] of sections) {
-      if (!['general', 'models'].includes(id) && !state?.forms.some(form => form.section === id) && !(id === 'subagents' && state?.allowedModels)) continue
-      const control = button(label, () => { section = id; message = ''; render() }, '', !!pending); control.dataset.section = id
-      if (section === id) control.setAttribute('aria-current', 'page'); navigation.append(control)
+      const control = button('', () => { section = id === 'plugins' ? 'inventory' : id!; message = ''; render() }, '', !!pending); control.dataset.section = id!
+      control.innerHTML = settingsIcon(id!); control.append(el('span', 'nav-label', label!)); control.title = label!; control.setAttribute('aria-label', label!)
+      control.dataset.focusKey = 'section:' + id
+      if (section === id || (id === 'plugins' && isPlugin)) control.setAttribute('aria-current', 'page'); navigation.append(control)
     }
-    content.replaceChildren(el('h2', '', sections.find(([id]) => id === section)?.[1] ?? 'Settings'), el('p', 'hint', 'Runtime options are shared by windows using the same DSH profile.'))
+    content.replaceChildren()
+    if (isPlugin) {
+      content.append(el('h2', '', 'Built-in plugins'))
+      const tabs = el('div', 'settings-plugin-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Plugin settings')
+      const views: [string, string][] = [['inventory', 'Plugins'], ...pluginSections]
+      views.forEach(([id, label], index) => {
+        const selected = section === id, tab = button(label, () => { section = id; message = ''; render() }, '', !!pending)
+        tab.dataset.section = id; tab.dataset.focusKey = 'section:' + id; tab.id = 'plugin-tab-' + id; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(selected)); tab.setAttribute('aria-controls', 'plugin-panel'); tab.tabIndex = selected ? 0 : -1
+        tab.addEventListener('keydown', event => {
+          const target = event.key === 'ArrowRight' ? (index + 1) % views.length : event.key === 'ArrowLeft' ? (index + views.length - 1) % views.length : event.key === 'Home' ? 0 : event.key === 'End' ? views.length - 1 : undefined
+          if (target === undefined || pending) return
+          event.preventDefault(); section = views[target]![0]; render(); root.querySelector<HTMLButtonElement>('#plugin-tab-' + section)!.focus()
+        }); tabs.append(tab)
+      }); content.append(tabs)
+    } else if (section !== 'general') content.append(el('h2', '', sections.find(([id]) => id === section)?.[1] ?? 'Settings'))
     if (!state || (!state.forms.length && !state.providers.length && state.phase !== 'ready')) {
       content.append(el('p', 'empty', 'Connect to DSH to load its available settings.'), button('Connect runtime', () => native('connect'), 'primary', !!pending), button('VS Code extension settings', () => native('extension-settings'), 'quiet'))
       return
     }
     if (section === 'models') renderModels()
+    else if (section === 'inventory') renderInventory()
     else {
-      if (section === 'general') {
+      if (section === 'account') {
         const account = el('section', 'card'); account.append(el('h3', '', 'DeepSeek account'), el('p', 'hint', state.accountText ?? (state.signedIn ? 'Signed in' : 'Not signed in')),
           button(state.signedIn ? 'Sign out' : 'Sign in', () => native(state!.signedIn ? 'sign-out' : 'sign-in'), '', locked()))
-        const nativeOptions = el('section', 'card'); nativeOptions.append(el('h3', '', 'Appearance and keyboard shortcuts'), el('p', 'hint', 'This extension follows VS Code appearance and keyboard settings.'),
-          button('Color theme', () => native('theme')), button('Keyboard shortcuts', () => native('shortcuts')), button('Extension settings', () => native('extension-settings')))
-        content.append(account, nativeOptions)
+        content.append(account)
       }
-      renderFields()
+      if (section === 'general') {
+        for (const [label, description, action, value] of [['Appearance', 'Use the VS Code color theme.', 'theme', 'Color theme'], ['Keyboard shortcuts', 'Configure shortcuts in VS Code.', 'shortcuts', 'Keyboard shortcuts'], ['Extension settings', 'Configure VS Code integration.', 'extension-settings', 'Extension settings']]) {
+          const row = el('section', 'general-row'), copy = el('div'); copy.append(el('span', '', label), el('p', 'hint', description)); row.append(copy, button(value!, () => native(action!))); content.append(row)
+        }
+        const account = el('section', 'general-row'), copy = el('div'); copy.append(el('span', '', 'DeepSeek account'), el('p', 'hint', state.accountText ?? (state.signedIn ? 'Signed in' : 'Not signed in'))); account.append(copy, button(state.signedIn ? 'Sign out' : 'Sign in', () => native(state!.signedIn ? 'sign-out' : 'sign-in'), '', locked())); content.append(account)
+      }
+      if (section === 'search') renderSearch(); else renderFields()
       if (section === 'subagents') renderAllowed()
       if (section !== 'general' && (activeForms().length || (section === 'subagents' && state.allowedModels))) {
         const stale = activeForms().some(form => fields.has(form.ns) && conflict(fields.get(form.ns)!.revision, form.revision))
           || !!(allowed && state.allowedModels && conflict(allowed.revision, state.allowedModels.revision))
+          || (section === 'search' && searchConflict())
         content.append(footer(false, stale))
       }
       if (section === 'general') {
         if (dirtySection()) content.append(footer(false, activeForms().some(form => fields.has(form.ns) && conflict(fields.get(form.ns)!.revision, form.revision))))
-        content.append(el('p', 'hint', 'Provider keys are saved through DSH’s credential provider. Their stored values are never returned to this page.'), button('Manage runtime plugins', () => native('plugins'), 'quiet'))
+        content.append(el('p', 'general-row', 'DSH Sidebar ' + state.version), button('Manage runtime plugins', () => native('plugins'), 'quiet'))
       }
     }
     content.append(el('p', 'error', errors.get(section) ?? ''), el('p', 'success', message))
+    if (isPlugin) {
+      const panel = el('div'); panel.id = 'plugin-panel'; panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', 'plugin-tab-' + section)
+      panel.append(...[...content.children].slice(2)); content.append(panel)
+    }
     updateSaveButtons()
+    if (document.activeElement === root) navigation.querySelector<HTMLButtonElement>('[aria-current]')?.focus({ preventScroll: true })
     if (focusKey) {
-      const target = [...content.querySelectorAll<HTMLInputElement>('[data-focus-key]')].find(control => control.dataset.focusKey === focusKey)
+      const target = [...root.querySelectorAll<HTMLInputElement>('[data-focus-key]')].find(control => control.dataset.focusKey === focusKey)
       if (target && !target.disabled) {
         target.focus({ preventScroll: true })
         if (target.type !== 'checkbox' && target.tagName === 'INPUT' && selectionStart !== null && selectionStart !== undefined) {
@@ -368,13 +547,14 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
         }
       }
     }
+    revealSection()
   }
   const receive = (event: MessageEvent): void => {
     const value = event.data
     if (value?.type === 'state') {
       const previous = state; state = value.state as SettingsPageState
       if (previous && previous.scope !== state.scope) {
-        fields.clear(); providerDrafts.clear(); searchKey = ''; searchKeyRevision = undefined; allowed = undefined; pending = undefined; queue = []; selectedProvider = undefined; candidates = []; errors.clear(); message = ''
+        fields.clear(); providerDrafts.clear(); advancedProviders.clear(); searchKey = ''; searchKeyRevision = undefined; searchKeyTarget = undefined; searchMode = undefined; searchSelectionRevision = undefined; allowed = undefined; pending = undefined; queue = []; selectedProvider = undefined; candidates = []; errors.clear(); message = ''
       }
       if (state.loading && previous?.scope === state.scope) { banner.textContent = state.reason || state.error || 'Refreshing settings…'; refresh.disabled = true; return }
       render(); return
@@ -383,6 +563,14 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
     const request = pending; pending = undefined
     if (request.type === 'discover-models') {
       if (value.ok && Array.isArray(value.models)) { candidates = value.models; selectedModels.clear(); modelSearch = '' }
+    } else if (request.type === 'save-search') {
+      if (Array.isArray(value.results)) for (const result of value.results) {
+        if (!result.ok) continue
+        fields.delete(result.ns)
+        if (searchKeyTarget && searchKeyTarget.ns === result.ns && Number.isSafeInteger(result.revision)) searchKeyTarget.revision = result.revision
+      }
+      if (value.ok || value.keySaved) { searchKey = ''; searchKeyTarget = undefined }
+      if (value.ok || value.selectionSaved) { searchMode = undefined; searchSelectionRevision = undefined }
     } else if (request.type === 'save-fields') {
       if (Array.isArray(value.results)) for (const result of value.results) { if (result.ok) fields.delete(result.ns) }
       if (value.ok || value.keySaved) { searchKey = ''; searchKeyRevision = undefined }
@@ -403,9 +591,23 @@ export function mountSettingsPage(document: Document, api: Api): { dispose(): vo
     render(); next()
   }
   const refreshPage = (): void => { if (!pending) api.postMessage({ type: 'refresh' }) }
-  refresh.addEventListener('click', refreshPage); document.defaultView!.addEventListener('message', receive)
+  const close = (): void => { if (options.onClose) options.onClose(); else api.postMessage({ type: 'close' }) }
+  const keydown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(); return }
+    if (event.key !== 'Tab') return
+    const controls = [...root.querySelectorAll<HTMLElement>('button,input,select,textarea,summary,[tabindex="0"]')].filter(node => !(node as HTMLInputElement).disabled && !node.closest('fieldset:disabled,[hidden],.hidden') && (!node.closest('details:not([open])') || node.matches('summary')) && node.tabIndex >= 0)
+    const first = controls[0], last = controls.at(-1)
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === root)) { event.preventDefault(); last?.focus() }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+  }
+  const closeButton = root.querySelector<HTMLButtonElement>('#settingsClose')!
+  refresh.addEventListener('click', refreshPage); closeButton.addEventListener('click', close); root.addEventListener('keydown', keydown)
+  if (!options.externalMessages) document.defaultView!.addEventListener('message', receive)
+  document.defaultView!.addEventListener('resize', revealSection)
   api.postMessage({ type: 'ready' })
-  return { dispose(): void { document.defaultView!.removeEventListener('message', receive); refresh.removeEventListener('click', refreshPage); fields.clear(); providerDrafts.clear(); searchKey = ''; queue = [] } }
+  return { receive(value: unknown): void { receive({ data: value } as MessageEvent) }, dispose(): void { document.defaultView!.removeEventListener('message', receive); document.defaultView!.removeEventListener('resize', revealSection); refresh.removeEventListener('click', refreshPage); closeButton.removeEventListener('click', close); root.removeEventListener('keydown', keydown); fields.clear(); providerDrafts.clear(); searchKey = ''; searchKeyTarget = undefined; queue = [] } }
 }
 
-if (typeof acquireVsCodeApi === 'function') mountSettingsPage(document, acquireVsCodeApi())
+if (typeof acquireVsCodeApi === 'function' && document.getElementById('settingsRoot')) {
+  mountSettingsPage(document, acquireVsCodeApi()); document.getElementById('settingsRoot')!.focus({ preventScroll: true })
+}

@@ -18,20 +18,38 @@ export interface SettingsFieldView {
 export interface SettingsFormView { ns: string; title: string; section: string; revision: number; fields: SettingsFieldView[]; restart: boolean }
 export interface ModelDraft {
   id: string; originalId?: string; name?: string; contextWindow?: number; maxTokens?: number; input?: string[]
+  reasoningEfforts?: Record<string, string | null> | false
 }
 export interface ProviderView {
   id: string; name: string; ns: string; revision: number; declared: boolean; removable: boolean; account: boolean
   active: boolean; baseURL: string; api: string; models: ModelDraft[]; modelsOverridden: boolean; credential?: CredentialState
   error?: string; extensionKey: boolean
+  reasoningLevels?: string[]
+}
+export interface SearchSettingsView {
+  selection?: { revision: number; enabled: boolean; available: boolean }
+  profiles: { ns: string; revision: number; credential?: CredentialState; extensionKey: boolean }[]
 }
 export interface SettingsPageState {
   scope: string; version: string; phase: string; writable: boolean; reason: string; loading: boolean
   forms: SettingsFormView[]; providers: ProviderView[]; availableProviders: { id: string; name: string; credential?: CredentialState }[]
   protocols: string[]; piRevision?: number; catalog: { provider: string; model: string; label: string }[]
+  reasoningLevels?: string[]
   allowedModels?: { ns: string; revision: number; enabled: boolean; overridden: boolean; routes: { provider: string; model: string }[] }
   searchCredential?: CredentialState
   searchExtensionKey?: boolean
+  search?: SearchSettingsView
+  inventory?: { label: string; rows: { name: string; status: string }[] }[]
   signedIn: boolean; accountText?: string; error?: string; modelsError?: string
+}
+
+/** Project the read-only roster without configuration, conditions, paths, or errors. */
+export function publicPluginInventory(value: unknown): NonNullable<SettingsPageState['inventory']> {
+  if (!record(value) || !Array.isArray(value.entries)) return []
+  const group = (label: string, rows: unknown[]): NonNullable<SettingsPageState['inventory']>[number] => ({ label: label.slice(0, 300), rows: rows.filter(record).filter(row => typeof row.moduleName === 'string').slice(0, 1000).map(row => ({
+    name: (row.moduleName as string).slice(0, 300), status: row.enabled === false ? 'Disabled' : row.enabled === 'conditional' ? 'Conditional' : row.fiberPhase === 'failed' ? 'Failed' : row.fiberPhase === 'active' ? 'Active' : row.fiberPhase === 'loading' ? 'Loading' : 'Configured',
+  })) })
+  return [...(Array.isArray(value.agentPresets) ? value.agentPresets.filter(record).slice(0, 100).map(preset => group('Agent preset: ' + String(preset.name ?? preset.id ?? ''), Array.isArray(preset.rows) ? preset.rows : [])) : []), group('Global runtime', value.entries)]
 }
 
 export const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -71,7 +89,28 @@ const forms = [
     { key: 'baseURL', label: 'Endpoint', type: 'string' },
     { key: 'maxUses', label: 'Searches per request', type: 'number', min: 1, integer: true },
   ] },
+  { ns: 'web-deepseek-api', section: 'search', title: 'Search / Fetch API', fields: [
+    { key: 'baseURL', label: 'Search / Fetch API base URL', type: 'string' },
+    { key: 'count', label: 'Results per search', type: 'number', min: 1, max: 50, integer: true },
+  ] },
 ] as const
+
+export const SEARCH_PROFILES = ['web-search-deepseek', 'web-deepseek-api'] as const
+export function searchSettings(description: SettingsDescription, credentials: Record<string, CredentialState>): SearchSettingsView {
+  const web = description.namespaces.find(ns => ns.ns === 'web')
+  const profiles = description.namespaces.filter(ns => (SEARCH_PROFILES as readonly string[]).includes(ns.ns))
+  return {
+    ...(web ? { selection: { revision: web.revision, enabled: at(web.value, ['searchProvider']) === 'deepseek-search-api',
+      available: profiles.some(ns => ns.ns === 'web-deepseek-api') && ['searchProvider', 'fetchProvider'].every(key => schemaAt(web, [key])?.type === 'string') } } : {}),
+    profiles: profiles.map(ns => ({ ns: ns.ns, revision: ns.revision, extensionKey: credentialRef(ns) === 'DEEPSEEK_API_KEY',
+      ...(credentials[credentialRef(ns)] ? { credential: { configured: credentials[credentialRef(ns)]!.configured === true, writable: credentials[credentialRef(ns)]!.writable === true } } : {}) })),
+  }
+}
+export function searchSelectionMutations(namespace: SettingsNamespace, enabled: unknown): SettingsMutation[] {
+  if (namespace.ns !== 'web' || typeof enabled !== 'boolean' || !['searchProvider', 'fetchProvider'].every(key => schemaAt(namespace, [key])?.type === 'string')) throw new Error('Search / Fetch selection is unavailable.')
+  return Object.entries(enabled ? { searchProvider: 'deepseek-search-api', fetchProvider: 'deepseek-fetch-api' } : { searchProvider: 'deepseek-official', fetchProvider: 'http' })
+    .map(([key, value]) => at(namespace.base, [key]) === value ? { op: 'unset', path: [key] } : { op: 'set', path: [key], value })
+}
 
 export function settingsForms(description: SettingsDescription): SettingsFormView[] {
   return forms.flatMap(spec => {
@@ -147,6 +186,8 @@ export function publicModels(models: unknown): ModelDraft[] {
     ...(typeof item.contextWindow === 'number' ? { contextWindow: item.contextWindow } : {}),
     ...(typeof item.maxTokens === 'number' ? { maxTokens: item.maxTokens } : {}),
     ...(Array.isArray(item.inputModalities ?? item.input) ? { input: ((item.inputModalities ?? item.input) as unknown[]).filter((value): value is string => value === 'text' || value === 'image') } : {}),
+    ...(item.reasoningEfforts === false ? { reasoningEfforts: false as const } : record(item.reasoningEfforts)
+      ? { reasoningEfforts: Object.fromEntries(Object.entries(item.reasoningEfforts).filter(([key, value]) => safeSegment(key) && (typeof value === 'string' || value === null))) as Record<string, string | null> } : {}),
   })) : []
 }
 export function providerViews(namespaces: SettingsNamespace[], directory: ConfigurableProvider[], registered: { id: string; name: string }[], credentials: Record<string, CredentialState>): ProviderView[] {
@@ -164,6 +205,7 @@ export function providerViews(namespaces: SettingsNamespace[], directory: Config
       account, active: registered.some(item => item.id === entry.provider), baseURL, api: typeof profile.api === 'string' ? profile.api : '',
       models: publicModels(profile.models), modelsOverridden: at(ns.user, [...entry.settingsPath, 'models']) !== undefined,
       extensionKey: !account && credentialRef(ns, entry) === 'DEEPSEEK_API_KEY',
+      reasoningLevels: entry.declared === true ? reasoningLevels(ns) : [],
       ...(account || !credential ? {} : { credential: { configured: credential.configured === true, writable: credential.writable === true } }),
       ...(typeof entry.error === 'string' ? { error: 'This provider has a configuration error. Review its settings.' } : {}),
     }]
@@ -205,8 +247,41 @@ function modelChanges(namespace: SettingsNamespace, entry: ConfigurableProvider,
       model[key] = [...new Set(item.input)]
       if (namespace.ns !== 'llm-pi-ai' && !item.input.includes('image')) { delete model.imagePixelBudget; delete model.imageMaxBytes }
     }
+    if (Object.hasOwn(item, 'reasoningEfforts')) {
+      const efforts = item.reasoningEfforts
+      if (entry.declared !== true || !reasoningLevels(namespace).length) throw new Error('This provider does not support custom reasoning levels.')
+      if (efforts === null) delete model.reasoningEfforts
+      else if (efforts === false) model.reasoningEfforts = false
+      else {
+        if (!record(efforts)) throw new Error('Invalid reasoning levels.')
+        const known = new Set(reasoningLevels(namespace))
+        const previous = record(model.reasoningEfforts) ? model.reasoningEfforts : {}
+        const rows = Object.entries(efforts)
+        if (!rows.some(([level]) => level !== 'off')) throw new Error('Keep at least one reasoning level other than off.')
+        for (const [level, wire] of rows) {
+          if (!safeSegment(level) || (!known.has(level) && !Object.hasOwn(previous, level))) throw new Error('Select a supported reasoning level.')
+          if (!(wire === null && level === 'off') && (typeof wire !== 'string' || !wire.length || wire.length > 4096)) throw new Error('Enter a request value for each reasoning level; only off can omit it.')
+        }
+        model.reasoningEfforts = Object.fromEntries(rows)
+      }
+    }
     return model
   })
+}
+
+/** Read the adapter's own declaration, including the supported escalation order. */
+export function reasoningLevels(namespace: SettingsNamespace | undefined): string[] {
+  if (!namespace) return []
+  const refs = namespace.schema.refs
+  const providers = schemaAt(namespace, ['providers'])
+  const profile = namespace.ns === 'llm-pi-ai' ? refs[String(providers?.inner)] : refs[String(namespace.schema.uid)]
+  const models = refs[String(profile?.dict?.models)]
+  const model = refs[String(models?.inner)]
+  const choice = refs[String(model?.dict?.reasoningEfforts)]
+  const dict = choice?.type === 'dict' ? choice : choice?.list?.map(uid => refs[String(uid)]).find(node => node?.type === 'dict')
+  const key = refs[String(dict?.sKey)]
+  return (key?.type === 'const' ? [key] : key?.list?.map(uid => refs[String(uid)]) ?? [])
+    .flatMap(node => node?.type === 'const' && typeof node.value === 'string' && safeSegment(node.value) ? [node.value] : [])
 }
 export function providerMutations(namespace: SettingsNamespace, entry: ConfigurableProvider, changes: unknown): SettingsMutation[] {
   if (!record(changes)) throw new Error('Invalid provider changes.')

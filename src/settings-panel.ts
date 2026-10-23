@@ -6,10 +6,11 @@ import type { SettingsDescription, SettingsNamespace, SettingsMutation } from '.
 import { runtimeIsOurs } from './runtime-change.js'
 import { redactDshSecrets } from './runtime-output.js'
 import { settingsPageHtml } from './settings-page-html.js'
-import { at, credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerProfile, providerViews, record, settingsForms, validProviderId,
+import { at, credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerProfile, providerViews, publicPluginInventory, reasoningLevels, record, searchSettings, searchSelectionMutations, SEARCH_PROFILES, settingsForms, validProviderId,
   type ConfigurableProvider, type CredentialState, type ModelDiscoveryRequest, type SettingsPageState } from './settings-page-state.js'
 
 type Host = Pick<DshChatController, 'state' | 'cwd' | 'runtimeIdentity' | 'runtimeOwnership' | 'onDidChangeState' | 'onDidChangeRuntimeSettings' | 'settings' | 'settingsClient' | 'mutateSettings' | 'start'>
+type SettingsSurface = { webview: Pick<vscode.Webview, 'postMessage' | 'onDidReceiveMessage'>; onDidDispose: vscode.Event<void> }
 const text = (value: unknown): string => value instanceof Error ? value.message : String(value)
 const ALLOWLIST_NS = 'subagent-model-selection-settings'
 function apiKey(value: unknown): string {
@@ -24,20 +25,41 @@ function apiKey(value: unknown): string {
 export class SettingsPanelManager implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined
   private close: (() => void) | undefined
+  private embedded: { webview: vscode.Webview; id: string } | undefined
   constructor(private readonly host: Host, private readonly extensionUri: vscode.Uri, private readonly version: string) {}
-  dispose(): void { this.close?.(); this.panel?.dispose(); this.panel = undefined }
+  dispose(): void { this.close?.(); this.panel?.dispose(); this.panel = undefined; this.embedded = undefined }
+  /** Reuse the same fenced settings controller in the chat's modal surface. */
+  openEmbedded(webview: vscode.Webview): void {
+    if (this.embedded?.webview === webview) { void webview.postMessage({ type: 'settings-open', settingsId: this.embedded.id }); return }
+    this.dispose()
+    const id = randomUUID(); this.embedded = { webview, id }
+    this.bind({ webview: {
+      postMessage: value => webview.postMessage({ type: 'settings-message', settingsId: id, message: value }),
+      onDidReceiveMessage: listener => webview.onDidReceiveMessage(packet => {
+        if (!record(packet) || packet.type !== 'settings-message' || packet.settingsId !== id || !record(packet.message)) return
+        if (packet.message.type === 'close') { this.dispose(); return }
+        listener(packet.message)
+      }),
+    }, onDidDispose: () => ({ dispose() {} }) })
+    void webview.postMessage({ type: 'settings-open', settingsId: id })
+  }
   open(): void {
     if (this.panel) { this.panel.reveal(); return }
+    this.dispose()
     const panel = vscode.window.createWebviewPanel('deepseekHarness.settings', 'DeepSeek Settings', vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true })
     this.panel = panel
     const assets = vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview')
     panel.webview.options = { enableScripts: true, localResourceRoots: [assets] }
     panel.webview.html = settingsPageHtml(panel.webview, panel.webview.asWebviewUri(vscode.Uri.joinPath(assets, 'settings-page.js')))
+    this.bind(panel)
+  }
+  private bind(panel: SettingsSurface): void {
     let disposed = false, ready = false, loading = false, busy = false, pendingRefresh = false, generation = 0
     let client: DshClient | undefined, identity: object | undefined, cwd = this.host.cwd, scope = randomUUID()
     let description: SettingsDescription = { writable: false, hasDocument: false, namespaces: [] }
     let directory: ConfigurableProvider[] = [], registered: { id: string; name: string }[] = [], credentials: Record<string, CredentialState> = {}
     let catalog: SettingsPageState['catalog'] = [], error: string | undefined, modelsError: string | undefined
+    let inventory: NonNullable<SettingsPageState['inventory']> = []
     let timer: NodeJS.Timeout | undefined, lifetime = new AbortController()
     const clean = (value: unknown, secrets: string[] = []): string => redactDshSecrets(text(value), secrets).slice(0, 1500)
     const connected = (): boolean => {
@@ -74,12 +96,14 @@ export class SettingsPanelManager implements vscode.Disposable {
         forms: settingsForms(description), providers: providerViews(description.namespaces, directory, registered, credentials),
         availableProviders: directory.filter(entry => entry.settingsNs === 'llm-pi-ai' && pi && !providerProfile(pi, entry)).map(entry => ({ id: entry.provider, name: entry.displayName,
           ...(pi && credentials[credentialRef(pi, entry)] ? { credential: credentials[credentialRef(pi, entry)]! } : {}) })),
-        protocols: protocols(pi), ...(pi ? { piRevision: pi.revision } : {}), catalog,
+        protocols: protocols(pi), reasoningLevels: reasoningLevels(pi), ...(pi ? { piRevision: pi.revision } : {}), catalog,
         ...(allowed ? { allowedModels: { ns: allowed.ns, revision: allowed.revision, enabled: at(allowed.value, ['enabled']) === true,
           overridden: at(allowed.user, ['enabled']) !== undefined || at(allowed.user, ['allowedModels']) !== undefined,
           routes: Array.isArray(routes) ? routes.filter(record).filter(row => typeof row.provider === 'string' && typeof row.model === 'string').map(row => ({ provider: row.provider as string, model: row.model as string })) : [] } } : {}),
         ...(search && credentials[credentialRef(search)] ? { searchCredential: credentials[credentialRef(search)]! } : {}),
         ...(search ? { searchExtensionKey: credentialRef(search) === 'DEEPSEEK_API_KEY' } : {}),
+        search: searchSettings(description, credentials),
+        inventory,
         signedIn: this.host.state.account?.signedIn === true,
         ...(this.host.state.accountNotice ? { accountText: this.host.state.accountNotice.slice(0, 600) } : {}),
         ...(error ? { error } : {}), ...(modelsError ? { modelsError } : {}),
@@ -92,22 +116,23 @@ export class SettingsPanelManager implements vscode.Disposable {
       const request = ++generation
       let next: DshClient
       try { next = this.host.settingsClient() } catch (cause) {
-        if (client) { lifetime.abort(); lifetime = new AbortController(); client = undefined; scope = randomUUID(); description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; catalog = [] }
+        if (client) { lifetime.abort(); lifetime = new AbortController(); client = undefined; scope = randomUUID(); description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; catalog = []; inventory = [] }
         error = clean(cause); loading = false; post(); return
       }
       if (next !== client || this.host.runtimeIdentity !== identity || this.host.cwd !== cwd) {
         lifetime.abort(); lifetime = new AbortController(); client = next; identity = this.host.runtimeIdentity; cwd = this.host.cwd; scope = randomUUID()
-        description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; registered = []; credentials = {}; catalog = []
+        description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; registered = []; credentials = {}; catalog = []; inventory = []
       }
       const readScope = scope
       loading = true; error = undefined; modelsError = undefined; post()
       try {
-        const [settings, providers, live, models] = await Promise.allSettled([
-          this.host.settings(), next.listConfigurableProviders(), next.listLlmProviders(), next.models(''),
+        const [settings, providers, live, models, roster] = await Promise.allSettled([
+          this.host.settings(), next.listConfigurableProviders(), next.listLlmProviders(), next.models(''), next.pluginInventory?.(),
         ])
         if (disposed || request !== generation || scope !== readScope || !connected()) return
         if (settings.status === 'rejected') throw settings.reason
         description = settings.value
+        inventory = roster.status === 'fulfilled' ? publicPluginInventory(roster.value) : []
         directory = providers.status === 'fulfilled' && Array.isArray(providers.value) ? providers.value : []
         registered = live.status === 'fulfilled' && Array.isArray(live.value) ? live.value : []
         if (providers.status === 'rejected' || live.status === 'rejected') modelsError = 'The provider directory is unavailable. Refresh or check the DSH version.'
@@ -119,8 +144,7 @@ export class SettingsPanelManager implements vscode.Disposable {
           const ns = description.namespaces.find(item => item.ns === entry.settingsNs)
           if (ns && ns.ns !== 'llm-deepseek-account') refs.add(credentialRef(ns, entry))
         }
-        const search = description.namespaces.find(item => item.ns === 'web-search-deepseek')
-        if (search) refs.add(credentialRef(search))
+        for (const search of description.namespaces.filter(item => (SEARCH_PROFILES as readonly string[]).includes(item.ns))) refs.add(credentialRef(search))
         credentials = {}
         const list = [...refs]
         for (let index = 0; index < list.length; index += 16) {
@@ -151,16 +175,22 @@ export class SettingsPanelManager implements vscode.Disposable {
       if (!saved || saved.ns !== view.ns || !Number.isSafeInteger(saved.revision)) throw new Error('DSH did not confirm the saved settings. Reload before retrying.')
       return saved
     }
-    const storeKey = async (name: string, provider: ConfigurableProvider | undefined, ref: string, value: string, revision: number): Promise<void> => {
+    const checkSearchRevision = (fresh: SettingsDescription, revision: number | undefined): void => {
+      if (revision !== undefined && fresh.namespaces.find(item => item.ns === 'web')?.revision !== revision) throw new Error('The search selection changed. Discard the draft before retrying.')
+    }
+    const storeKey = async (name: string, provider: ConfigurableProvider | undefined, ref: string, value: string, revision: number, selectionRevision?: number): Promise<void> => {
       if (!value || value !== value.trim() || !/^[\x21-\x7E]+$/.test(value) || value.length > 16384) throw new Error('Enter the API key itself, without quotes, whitespace or an environment assignment.')
       if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(value) || /^["']|["']$/.test(value)) throw new Error('Enter the API key itself, without quotes or an environment assignment.')
       const current = requireWrite()
       const fresh = await this.host.settings(); assertCurrent()
+      checkSearchRevision(fresh, selectionRevision)
       const ns = fresh.namespaces.find(item => item.ns === name)
       if (!ns || ns.revision !== revision || credentialRef(ns, provider) !== ref) throw new Error('The credential target changed. Reload this provider before retrying.')
       const state = await current.describeCredentials([ref]); requireWrite()
       if (!state[ref]?.writable) throw new Error('This key is supplied by a read-only credential source.')
-      const checked = (await this.host.settings()).namespaces.find(item => item.ns === name); requireWrite()
+      const checkedDescription = await this.host.settings(); requireWrite()
+      checkSearchRevision(checkedDescription, selectionRevision)
+      const checked = checkedDescription.namespaces.find(item => item.ns === name)
       if (!checked || checked.revision !== revision || credentialRef(checked, provider) !== ref) throw new Error('The credential target changed. Reload this provider before retrying.')
       await current.setCredential(ref, value); assertCurrent()
     }
@@ -177,6 +207,43 @@ export class SettingsPanelManager implements vscode.Disposable {
       try {
         const current = assertCurrent()
         const keyInput = apiKey(message.apiKey)
+        if (message.type === 'save-search') {
+          requireWrite()
+          if (!Array.isArray(message.changes) || message.changes.length > 2) throw new Error('Invalid search settings changes.')
+          const web = description.namespaces.some(ns => ns.ns === 'web') ? namespace('web', message.selectionRevision) : undefined
+          if (!web && message.selection !== undefined) throw new Error('Search / Fetch selection is unavailable.')
+          const selection = message.selection
+          if (selection !== undefined && (!record(selection) || typeof selection.enabled !== 'boolean')) throw new Error('Invalid search selection.')
+          const selectionOps = web && record(selection) ? searchSelectionMutations(web, selection.enabled) : []
+          const selectedApi = record(selection) ? selection.enabled === true : at(web?.value, ['searchProvider']) === 'deepseek-search-api'
+          if (selectedApi && !description.namespaces.some(ns => ns.ns === 'web-deepseek-api')) throw new Error('Search / Fetch API is unavailable.')
+          const names = new Set<string>()
+          const plans = message.changes.map(change => {
+            if (!record(change) || !(SEARCH_PROFILES as readonly unknown[]).includes(change.ns) || names.has(String(change.ns))) throw new Error('Invalid search settings changes.')
+            const ns = namespace(change.ns, change.revision); names.add(ns.ns)
+            return { ns, ops: fieldMutations(ns, change.values) }
+          }).sort((a, b) => SEARCH_PROFILES.indexOf(a.ns.ns as typeof SEARCH_PROFILES[number]) - SEARCH_PROFILES.indexOf(b.ns.ns as typeof SEARCH_PROFILES[number]))
+          const keyTarget = keyInput ? namespace(message.keyNamespace, message.keyRevision) : undefined
+          if (keyTarget && keyTarget.ns !== (selectedApi ? 'web-deepseek-api' : 'web-search-deepseek')) throw new Error('The search credential target does not match the selected API.')
+          const ref = keyTarget ? credentialRef(keyTarget) : undefined
+          const results: { ns: string; ok: boolean; revision?: number }[] = []
+          let keySaved = false, selectionSaved = false, failure: string | undefined
+          try {
+            for (const plan of plans) {
+              try { const saved = await write(plan.ns, plan.ops); results.push({ ns: plan.ns.ns, ok: true, revision: saved.revision }) }
+              catch (cause) { results.push({ ns: plan.ns.ns, ok: false }); throw cause }
+            }
+            if (keyTarget && ref) {
+              const revision = results.find(result => result.ns === keyTarget.ns && result.ok)?.revision ?? keyTarget.revision
+              await storeKey(keyTarget.ns, undefined, ref, keyInput, revision, web?.revision); keySaved = true
+            }
+            if (web && selectionOps.length) { await write(web, selectionOps); selectionSaved = true }
+          } catch (cause) { failure = clean(cause, secrets) }
+          await refresh(true); assertCurrent()
+          void panel.webview.postMessage({ type: 'result', requestId, ok: failure === undefined, results, keySaved, selectionSaved,
+            ...(failure ? { error: failure } : {}) })
+          return
+        }
         if (message.type === 'save-fields') {
           requireWrite()
           if (!Array.isArray(message.changes) || message.changes.length > 4) throw new Error('Invalid settings changes.')
@@ -270,18 +337,24 @@ export class SettingsPanelManager implements vscode.Disposable {
         } else if (message.type === 'clear-key') {
           requireWrite()
           const entry = directory.find(item => item.provider === message.provider)
-          const ns = namespace(message.provider === 'web-search' ? 'web-search-deepseek' : entry?.settingsNs, message.revision)
+          const search = message.provider === 'web-search'
+          if (search && message.ns !== undefined && !(SEARCH_PROFILES as readonly unknown[]).includes(message.ns)) throw new Error('Invalid search credential target.')
+          const selectionRevision = search && message.ns !== undefined && description.namespaces.some(item => item.ns === 'web') ? namespace('web', message.selectionRevision).revision : undefined
+          const ns = namespace(search ? message.ns ?? 'web-search-deepseek' : entry?.settingsNs, message.revision)
           if (message.provider !== 'web-search' && (!entry || ns.ns === 'llm-deepseek-account')) throw new Error('This credential target is unavailable.')
           const ref = credentialRef(ns, entry)
           const choice = await vscode.window.showWarningMessage('Clear this saved API key?', { modal: true, detail: 'A model provider and web search can share a key. This clears only a writable stored key, not an environment credential.' }, 'Clear key')
           requireWrite()
           if (choice !== 'Clear key') { void panel.webview.postMessage({ type: 'result', requestId, ok: false, cancelled: true }); return }
           const fresh = await this.host.settings(); requireWrite()
+          checkSearchRevision(fresh, selectionRevision)
           const latest = fresh.namespaces.find(item => item.ns === ns.ns)
           if (!latest || latest.revision !== ns.revision || credentialRef(latest, entry) !== ref) throw new Error('The credential target changed. Reload this page.')
           const capability = await current.describeCredentials([ref]); requireWrite()
           if (!capability[ref]?.writable) throw new Error('This credential source is read-only.')
-          const checked = (await this.host.settings()).namespaces.find(item => item.ns === ns.ns); requireWrite()
+          const checkedDescription = await this.host.settings(); requireWrite()
+          checkSearchRevision(checkedDescription, selectionRevision)
+          const checked = checkedDescription.namespaces.find(item => item.ns === ns.ns)
           if (!checked || checked.revision !== ns.revision || credentialRef(checked, entry) !== ref) throw new Error('The credential target changed. Reload this page.')
           await current.unsetCredential(ref); assertCurrent()
         } else if (message.type === 'discover-models') {
@@ -314,12 +387,14 @@ export class SettingsPanelManager implements vscode.Disposable {
     const disposables = [
       panel.webview.onDidReceiveMessage((value: unknown) => {
         if (!record(value) || typeof value.type !== 'string') return
+        if (value.type === 'close') { this.panel?.dispose(); return }
         if (value.type === 'ready') { ready = true; void refresh(); return }
         if (value.type === 'refresh') { void refresh(); return }
         if (value.type === 'native-action') {
           const commands: Record<string, string> = { theme: 'workbench.action.selectTheme', shortcuts: 'workbench.action.openGlobalKeybindings', 'extension-settings': 'workbench.action.openSettings', plugins: 'deepseekHarness.managePlugins' }
           const command = typeof value.action === 'string' ? commands[value.action] : undefined
           if (command) void vscode.commands.executeCommand(command, ...(value.action === 'extension-settings' ? ['@ext:fallleaves01.dsh-sidebar'] : []))
+          else if (value.action === 'search-guide') void vscode.env.openExternal(vscode.Uri.parse('https://api-docs.deepseek.com/guides/search'))
           else if (value.action === 'connect') void this.host.start().then(() => refresh(), cause => { error = clean(cause); post() })
           else if (!busy && value.scope === scope && writable() && ['sign-in', 'sign-out', 'extension-key'].includes(String(value.action))) {
             void vscode.commands.executeCommand(value.action === 'sign-in' ? 'deepseekHarness.signIn' : value.action === 'sign-out' ? 'deepseekHarness.signOut' : 'deepseekHarness.configureApiKey')
@@ -334,7 +409,7 @@ export class SettingsPanelManager implements vscode.Disposable {
         const accountChanged = lastAccountText !== this.host.state.accountNotice
         lastPhase = this.host.state.phase; lastSignedIn = this.host.state.account?.signedIn; lastAccountText = this.host.state.accountNotice
         if (!connected() && client) {
-          ++generation; lifetime.abort(); client = undefined; scope = randomUUID(); description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; catalog = []; post(); schedule()
+          ++generation; lifetime.abort(); client = undefined; scope = randomUUID(); description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; catalog = []; inventory = []; post(); schedule()
         } else if (changed || (!client && lastPhase === 'ready')) { post(); if (lastPhase === 'ready') schedule() }
         else if (accountChanged) post()
       }),

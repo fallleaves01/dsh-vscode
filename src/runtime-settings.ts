@@ -10,6 +10,8 @@ export interface SettingsSchemaNode {
   }
   dict?: Record<string, number>
   list?: number[]
+  inner?: number
+  sKey?: number
   value?: unknown
 }
 
