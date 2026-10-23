@@ -13,7 +13,7 @@ const {outputFiles}=await build({stdin:{contents:"export {DshClient} from './src
 const mod={exports:{}};new Function('module','exports','require',outputFiles[0].text)(mod,mod.exports,createRequire(root+'/package.json'))
 const {DshClient,DshConnection}=mod.exports
 const home=await mkdtemp(join(tmpdir(),'dsh-task-smoke-'));await mkdir(home+'/project')
-const child=spawn(process.env.DSH_TEST_EXECUTABLE || 'dsh',['web','--patch',root+'/docs/dsh-task-services.patch.yml','--port','0','--no-open'],{env:{PATH:process.env.PATH,HOME:process.env.HOME,DSH_HOME:home,LANG:'en_US.UTF-8'},stdio:['ignore','pipe','pipe']})
+const child=spawn(process.env.DSH_TEST_EXECUTABLE || 'dsh',['web','--patch',root+'/docs/dsh-task-services.patch.yml','--port','0','--no-open'],{env:{PATH:process.env.PATH,HOME:home,DSH_HOME:home,LANG:'en_US.UTF-8'},stdio:['ignore','pipe','pipe']})
 const exited=once(child,'exit');let client,connection
 try{
  const launch=await new Promise((resolve,reject)=>{let log='';const timer=setTimeout(()=>reject(new Error('Isolated DSH startup timed out')),45000)
@@ -27,6 +27,7 @@ try{
  assert.deepEqual(reads.map(describe),['ok','ok','ok']); assert.equal(main.isCurrent(),true); assert.equal(snapshot.isCurrent(),false)
  const checks=[
   ['sessions',()=>client.listSessions()],['workspace',()=>client.listWorkspaces()],
+  ['sessionProjections',()=>client.sessionProjections(sessionId)],
   ['history',()=>client.history(sessionId,Number.MAX_SAFE_INTEGER)],['models',()=>client.models(sessionId)],
   ['commands',()=>client.listCommands(sessionId)],['skills',()=>client.listSkills(sessionId)],
   ['agentPresets',()=>client.listAgentPresets()],['settings',()=>client.settings()],

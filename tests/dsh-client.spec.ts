@@ -74,6 +74,29 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
 }
 
 describe('DSH 0.1.2 chat transport', () => {
+  it.each(['archived', 'replace'])('replaces archived IDs from a %s workspace update', async type => {
+    const h = harness(); await h.client.startStreams()
+    const update = (ids: string[]) => h.push('workspace/follow', type === 'replace'
+      ? { type, value: { items: [], archivedSessionIds: ids } }
+      : { type, archivedSessionIds: ids })
+    update(['newly-archived'])
+    expect(await h.client.listWorkspaces()).toEqual({ archivedSessionIds: ['newly-archived'] })
+    expect(h.frames).toContainEqual(expect.objectContaining({ channel: 'host', payload: {
+      type: 'host/archived-sessions-changed', archivedSessionIds: ['newly-archived'],
+    } }))
+    update([])
+    expect(await h.client.listWorkspaces()).toEqual({ archivedSessionIds: [] })
+    expect(h.errors).toEqual([])
+  })
+
+  it.each([null, { archivedSessionIds: [1] }])('rejects malformed workspace replacement snapshots: %j', async value => {
+    const h = harness(); await h.client.startStreams()
+    h.push('workspace/follow', { type: 'replace', value })
+    expect(h.errors).toEqual([expect.objectContaining({ name: 'DshStreamError', retryable: false })])
+    expect(h.errors[0]?.message).toContain('invalid event stream frame')
+    expect(h.frames.some(frame => frame.payload.type === 'host/archived-sessions-changed')).toBe(false)
+  })
+
   it('separates "this model cannot route" from "nothing can route"', async () => {
     const h = harness()
     await h.client.startStreams()
@@ -871,6 +894,18 @@ describe('background task and delegated request lifecycle', () => {
       { endpoint: '$events/result', args: { clientId: 'client-1', eventId: 'stranger', outcome: { kind: 'next' } } },
     ])
   })
+  it('does not claim local approval requests merely because an external execution has the same id', async () => {
+    const h = harness(false); await h.client.startStreams()
+    const pending = h.client.openSession('parent'); await Promise.resolve()
+    h.push('session/follow', snapshot('parent', 5, { subagentCatalog: [{ id: 'external-id', mode: 'external', createdAt: 1 }] }))
+    ;(await pending).activate()
+    h.push('$events', { type: 'waterfall', eventId: 'unrelated-local-approval', agentId: 'external-id', event: 'approval/request', request: {} })
+    await Promise.resolve()
+    expect(h.requests.filter(r => r.endpoint === '$events/result')).toEqual([
+      { endpoint: '$events/result', args: { clientId: 'client-1', eventId: 'unrelated-local-approval', outcome: { kind: 'next' } } },
+    ])
+    expect(h.frames.some(frame => frame.payload.type === 'host/session-attention' && frame.payload.sessionId === 'external-id')).toBe(false)
+  })
 })
 
 describe('task feature RPCs and project background discovery', () => {
@@ -979,4 +1014,29 @@ it('creates a new Goal after completion without sending the old Goal ref to a st
   const h = harness()
   await h.client.changeGoal('s', 'create', { id: 'old', revision: 5 }, { objective: 'Next task', maxGoalRounds: 8 })
   expect(h.requests.at(-1)).toEqual({ endpoint: 'goals/create', args: { agentId: 's', request: { objective: 'Next task', maxGoalRounds: 8 } } })
+})
+
+describe('read-only cold catalog projections',()=>{
+  it('reads the exact metadata endpoint without replacing an active conversation follow',async()=>{
+    const h=harness();await h.client.startStreams();const opening=await h.client.openSession('main');opening.activate()
+    const before=h.outgoing.filter(frame=>frame.endpoint==='session/follow').length
+    h.results['session/projections']={kind:'sequenced',asOfSeq:5,values:{subagentCatalog:[{id:'child',mode:'continuable'}]}}
+    expect(await h.client.sessionProjections('parent')).toMatchObject({kind:'sequenced',values:{subagentCatalog:[{id:'child'}]}})
+    expect(h.requests.at(-1)).toMatchObject({endpoint:'session/projections',args:{request:{sessionId:'parent'}}})
+    expect(h.outgoing.filter(frame=>frame.endpoint==='session/follow')).toHaveLength(before)
+    expect(opening.isCurrent()).toBe(true)
+  })
+  it('preserves newer live projections when a stale read completes later',async()=>{
+    const h=harness(),read=Promise.withResolvers<any>();await h.client.startStreams()
+    h.results['session/projections']=read.promise;const result=h.client.sessionProjections('s')
+    h.push('session/control',{type:'projection',sessionId:'s',key:'title',seq:20,value:'New live title'})
+    read.resolve({kind:'sequenced',asOfSeq:5,values:{title:'Old title',subagentCatalog:[]}})
+    expect(await result).toMatchObject({values:{title:'New live title',subagentCatalog:[]}})
+  })
+  it('returns migration notices and rejects malformed metadata',async()=>{
+    const h=harness();h.results['session/projections']={kind:'migration-required',values:{title:'Legacy'}}
+    expect(await h.client.sessionProjections('s')).toMatchObject({kind:'migration-required'})
+    h.results['session/projections']={kind:'sequenced',asOfSeq:'bad',values:{}}
+    await expect(h.client.sessionProjections('s')).rejects.toThrow('projection sequence')
+  })
 })

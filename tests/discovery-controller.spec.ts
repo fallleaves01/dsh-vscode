@@ -49,6 +49,8 @@ function testClient() {
     monitorJobs: vi.fn(), goal: vi.fn(async () => null), schedules: vi.fn(async () => []), searchHistory: vi.fn(async () => ({ items: [], hasMore: false })),
     scheduleHistory: vi.fn(), changeGoal: vi.fn(), pendingRequests: vi.fn(() => []),
     listWorkspaces: vi.fn(async () => ({ archivedSessionIds: [] })),
+    sessionProjections: vi.fn(async (): Promise<any> => ({kind:'sequenced',asOfSeq:1,values:{}})),
+    adoptSessionProjections: vi.fn((_id:string,_seq:number,values:Record<string,unknown>)=>values),
     listSessions: vi.fn(async () => ({ items: ['a', 'b'].map(sessionId => ({ sessionId, cwd: '/workspace', updatedAt: 1,
       blank: true, running: false, agentAvailable: true, agentPreset: 'standard', projections: { values: { ...projections } } })) })),
     openSession: vi.fn(async () => ({ events: [], hasMore: false, projections: { ...projections }, isCurrent: () => true, activate() {} })),
@@ -88,13 +90,14 @@ function testClient() {
   return { client, emit, fail }
 }
 
-async function harness(connection?: DshConnection) {
+async function harness(connection?: DshConnection, start = true) {
   if (connection !== undefined) connections.push(connection)
   const { client, emit, fail } = testClient()
   mocks.client = client
   const output = { appendLine: vi.fn() }
   const runtime = {
-    start: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+    start: vi.fn(async () => {}), stop: vi.fn(async () => {}), assertCanRestart: vi.fn(async () => {}),
+    prepareRestart: vi.fn(async (): Promise<any> => undefined),
     connection: connection ?? { canReauthenticate: true, reauthenticate: vi.fn(async () => {}) },
     state: { kind: 'ready' },
     // Selecting an external runtime offers to save it; these tests never reach the
@@ -107,8 +110,10 @@ async function harness(connection?: DshConnection) {
     output as any, {} as any, reviews as any,
     { get: () => [], update: async () => {} } as any, '/workspace', '0.0.11')
   controllers.push(controller)
-  await controller.start()
-  await vi.waitFor(() => expect(controller.state.commands).toHaveLength(1))
+  if (start) {
+    await controller.start()
+    await vi.waitFor(() => expect(controller.state.commands).toHaveLength(1))
+  }
   const next = () => { const next = testClient(); mocks.client = next.client; return next }
   return { client, controller, output, emit, fail, runtime, reviews, next }
 }
@@ -243,6 +248,40 @@ describe('diagnostics and notices', () => {
 })
 
 describe('sending in a subagent conversation', () => {
+  it('resolves a catalog-only child and opens it with its durable parent address', async () => {
+    const h=await harness()
+    h.emit({type:'session/projection',sessionId:'a',key:'subagentCatalog',value:[{id:'cold',mode:'continuable',label:'Cold review'}]},'mux')
+    expect(h.controller.state.sessions.find(item=>item.id==='cold')?.catalogOnly).toBe(true)
+    const item=await h.controller.resolveSubagent('a','cold');expect(item.parentId).toBe('a')
+    h.client.openSession.mockClear();await h.controller.selectSession(item.id)
+    expect(h.client.openSession).toHaveBeenCalledWith('cold','a')
+    expect(h.controller.state.parentSessionId).toBe('a')
+    expect(h.client.prompt).not.toHaveBeenCalled()
+  })
+  it('loads only the owning catalog when a tool result arrives before the list entry', async () => {
+    const h=await harness();h.client.openSession.mockClear()
+    h.client.sessionProjections.mockResolvedValueOnce({kind:'sequenced',asOfSeq:5,values:{subagentCatalog:[{id:'cold',mode:'one-shot',label:'Historical review'}]}})
+    const item=await h.controller.resolveSubagent('a','cold')
+    expect(item.id).toBe('cold');expect(h.client.sessionProjections).toHaveBeenCalledWith('a')
+    expect(h.client.openSession).not.toHaveBeenCalled();expect(h.controller.state.sessionId).toBe('a')
+  })
+  it('refuses unrelated project conversations and external execution ids', async () => {
+    const h=await harness()
+    h.emit({type:'host/session-added',sessionId:'other',cwd:'/workspace',blank:false})
+    await expect(h.controller.resolveSubagent('a','other')).rejects.toThrow('not present')
+    h.emit({type:'session/projection',sessionId:'a',key:'subagentCatalog',value:[{id:'external-id',mode:'external',label:'Remote'}]},'mux')
+    await expect(h.controller.resolveSubagent('a','external-id')).rejects.toThrow('no local conversation')
+    expect(h.controller.state.sessionId).toBe('a')
+  })
+  it('does not apply an old catalog response after the runtime client changes', async () => {
+    const h=await harness(),read=Promise.withResolvers<any>()
+    h.client.sessionProjections.mockReturnValueOnce(read.promise)
+    const resolving=h.controller.resolveSubagent('a','cold')
+    h.next();await h.controller.restart()
+    read.resolve({kind:'sequenced',asOfSeq:8,values:{subagentCatalog:[{id:'cold',mode:'continuable'}]}})
+    await expect(resolving).rejects.toThrow('runtime or project changed')
+    expect(h.controller.state.sessions.some(item=>item.id==='cold')).toBe(false)
+  })
   it.each(['one-shot', 'unknown'])('rejects follow-ups to a %s child before calling the runtime', async mode => {
     const h = await harness()
     h.emit({ type: 'host/session-added', sessionId: 'child', cwd: '/workspace', origin: 'subagent', parentSessionId: 'a' })
@@ -482,6 +521,7 @@ describe('runtime selection', () => {
     const h = await harness(), stopped = Promise.withResolvers<void>()
     h.runtime.stop.mockReturnValueOnce(stopped.promise)
     const earlier = h.controller.restart()
+    await vi.waitFor(() => expect(h.runtime.stop).toHaveBeenCalledTimes(1))
     expect(h.controller.state.phase).toBe('loading')
     const latest = h.controller.restart()
     expect(await latest).toBe(true)
@@ -489,6 +529,59 @@ describe('runtime selection', () => {
     expect(await earlier).toBe(false)
     h.controller.dispose()
     expect(await h.controller.restart()).toBe(false)
+  })
+
+  it('keeps the conversation connected when another window prevents restart', async () => {
+    const h = await harness(), previous = h.controller.state
+    h.runtime.assertCanRestart.mockRejectedValueOnce(new Error('Another VS Code window uses DSH'))
+    await expect(h.controller.restart()).rejects.toThrow('Another VS Code window')
+    expect(h.controller.state).toBe(previous)
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+    expect(h.runtime.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the current conversation and runtime intact when shared restart is cancelled', async () => {
+    const h = await harness(), previous = h.controller.state
+    h.runtime.prepareRestart.mockResolvedValueOnce({ otherWindows: ['other-window'], descriptor: {} })
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce(undefined)
+    expect(await h.controller.restart()).toBe(false)
+    expect(vscode.window.showWarningMessage).toHaveBeenLastCalledWith(
+      expect.stringContaining('interrupts all running conversations'), { modal: true }, 'Restart Shared Runtime')
+    expect(h.controller.state).toBe(previous)
+    expect(h.runtime.assertCanRestart).not.toHaveBeenCalled()
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+    expect(h.runtime.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('reattaches only this window when switching projects instead of offering a global restart', async () => {
+    const h = await harness()
+    h.runtime.prepareRestart.mockClear()
+    await h.controller.switchWorkspace('/other-project')
+    expect(h.runtime.prepareRestart).not.toHaveBeenCalled()
+    expect(h.runtime.stop).toHaveBeenLastCalledWith(false, false, undefined)
+    expect(h.runtime.start).toHaveBeenLastCalledWith(expect.objectContaining({ fsPath: '/other-project' }), { kind: 'managed' })
+  })
+
+  it('passes the reviewed runtime and affected windows to the confirmed shared restart', async () => {
+    const h = await harness(), plan = { otherWindows: ['other-window'], descriptor: {} }
+    h.runtime.prepareRestart.mockResolvedValueOnce(plan)
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce('Restart Shared Runtime' as never)
+    expect(await h.controller.restart()).toBe(true)
+    expect(h.runtime.assertCanRestart).toHaveBeenLastCalledWith(plan)
+    expect(h.runtime.stop).toHaveBeenLastCalledWith(false, true, plan)
+    expect(h.runtime.start).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not execute a shared restart after its confirmation was superseded', async () => {
+    const h = await harness(), confirmation = Promise.withResolvers<any>()
+    h.runtime.prepareRestart.mockResolvedValueOnce({ otherWindows: ['other-window'], descriptor: {} })
+    vi.mocked(vscode.window.showWarningMessage).mockReturnValueOnce(confirmation.promise)
+    const restart = h.controller.restart()
+    await vi.waitFor(() => expect(vscode.window.showWarningMessage).toHaveBeenCalled())
+    h.controller.dispose()
+    confirmation.resolve('Restart Shared Runtime')
+    expect(await restart).toBe(false)
+    expect(h.runtime.stop).not.toHaveBeenCalled()
   })
 
   it('does not report an old restart as current when a reconnect supersedes its session load', async () => {
@@ -688,6 +781,35 @@ describe('runtime selection', () => {
 })
 
 describe('starting again', () => {
+  it('does not display starting before an automatic or manual connection begins', async () => {
+    const h = await harness(undefined, false)
+    expect(h.controller.state).toMatchObject({ phase: 'idle', runtimeConnection: null })
+    expect(h.controller.state.statusText).toContain('Connect to DSH')
+    expect(h.runtime.start).not.toHaveBeenCalled()
+  })
+
+  it('publishes only ownership and PID for a shared connection, never the launch URL', async () => {
+    const h = await harness()
+    h.controller.observeRuntime({ kind: 'ready', ownership: 'adopted', pid: 43210,
+      localUri: { toString: () => 'http://127.0.0.1:39000/?token=fixture-secret' } as any })
+    expect(h.controller.state.runtimeConnection).toEqual({ ownership: 'adopted', pid: 43210 })
+    expect(JSON.stringify(h.controller.state)).not.toContain('fixture-secret')
+    h.controller.observeRuntime({ kind: 'failed', message: 'Connection lost' })
+    expect(h.controller.state.runtimeConnection).toBeNull()
+  })
+
+  it('distinguishes an established runtime from pending event subscriptions', async () => {
+    const h = await harness(), next = h.next()
+    let release!: () => void
+    next.client.startStreams.mockImplementation(() => new Promise<void>(resolve => { release = resolve }))
+    const starting = h.controller.start()
+    await vi.waitFor(() => expect(next.client.startStreams).toHaveBeenCalled())
+    expect(h.controller.state).toMatchObject({ phase: 'loading', statusText: 'Connected to DSH. Opening event streams…' })
+    release(); await starting
+    expect(h.controller.state.phase).toBe('ready')
+    expect(h.output.appendLine).toHaveBeenCalledWith(expect.stringContaining('conversation ready after'))
+  })
+
   it('keeps the conversation the user was reading', async () => {
     const h = await harness()
     await h.controller.selectSession('b')
@@ -713,9 +835,57 @@ describe('starting again', () => {
     expect(h.controller.state.setup).toBeNull()
     expect(h.controller.state.running).toBe(false)
   })
+
+  it('does not report success when starting the replacement fails', async () => {
+    const h = await harness()
+    h.runtime.start.mockRejectedValueOnce(new Error('replacement failed'))
+    expect(await h.controller.restart()).toBe(false)
+    expect(h.controller.state).toMatchObject({ phase: 'error', statusText: 'replacement failed' })
+  })
+
+  it.each(['ready', 'open-failed'])('creates at most one session when the replacement catalog is empty (%s)', async outcome => {
+    const h = await harness(), next = h.next()
+    next.client.listSessions.mockResolvedValue({ items: [] })
+    next.client.createSession.mockImplementation(async () => {
+      if (next.client.createSession.mock.calls.length > 1) throw new Error('Unexpected repeated session creation')
+      return { sessionId: 'created' }
+    })
+    if (outcome === 'open-failed') next.client.openSession.mockRejectedValueOnce(new Error('Could not open new session'))
+    expect(await h.controller.restart()).toBe(outcome === 'ready')
+    expect(next.client.listSessions).toHaveBeenCalledTimes(1)
+    expect(next.client.createSession).toHaveBeenCalledTimes(1)
+    expect(next.client.openSession).toHaveBeenCalledTimes(1)
+    expect(h.controller.state).toMatchObject({ sessionId: 'created', phase: outcome === 'ready' ? 'ready' : 'error' })
+  })
 })
 
 describe('sidebar reconnect', () => {
+  it('keeps a failed external connection on its URL retry path instead of starting a managed runtime', async () => {
+    const h = await harness()
+    h.runtime.state = { kind: 'failed', reason: 'runtime-auth' } as any; h.runtime.start.mockClear()
+    await h.controller.reconnect()
+    expect(h.runtime.start).not.toHaveBeenCalled(); expect(h.runtime.stop).not.toHaveBeenCalled()
+    expect(h.controller.state).toMatchObject({ phase: 'error', setup: 'runtime-auth' })
+    expect(h.controller.state.statusText).toContain('Connect Existing Runtime')
+  })
+
+  it('retries discovery after a failed connection without stopping the saved runtime', async () => {
+    const h = await harness(); await h.controller.selectSession('b'); h.next()
+    h.runtime.state = { kind: 'failed' }
+    h.runtime.start.mockImplementation(async () => { h.runtime.state = { kind: 'ready' } })
+    h.runtime.start.mockClear()
+    await h.controller.reconnect()
+    expect(h.runtime.start).toHaveBeenCalledTimes(1)
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+    expect(h.controller.state).toMatchObject({ phase: 'ready', sessionId: 'b' })
+  })
+
+  it('does not initiate discovery automatically when the runtime is not ready', async () => {
+    const h = await harness(); h.runtime.state = { kind: 'failed' }; h.runtime.start.mockClear()
+    await h.controller.reconnect(true)
+    expect(h.runtime.start).not.toHaveBeenCalled(); expect(h.runtime.stop).not.toHaveBeenCalled()
+  })
+
   it.each(['healthy', 'disconnected'])('manually reconnects a %s tokenless runtime without authenticating or resending', async state => {
     const connection = new DshConnection(new URL('http://127.0.0.1:3080'))
     const reauthenticate = vi.spyOn(connection, 'reauthenticate')
