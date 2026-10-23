@@ -12,6 +12,7 @@ artifacts/
 .probe-home/
 .drift/
 .npm-cache/
+.dsh-vscode/
 # Local credentials and conversation transcripts must never be published.
 .env
 .env.*

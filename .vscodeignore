@@ -30,6 +30,7 @@ dist/**/*.map
 .probe-home/**
 .drift/**
 .npm-cache/**
+.dsh-vscode/**
 **/.env
 **/.env.*
 **/*.pem

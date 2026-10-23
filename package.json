@@ -3,7 +3,7 @@
   "displayName": "DSH Sidebar",
   "description": "A project-aware VS Code chat sidebar powered by the official DeepSeek Harness runtime.",
   "icon": "media/deepseek.png",
-  "version": "0.1.8",
+  "version": "0.1.16",
   "private": true,
   "publisher": "fallleaves01",
   "license": "MIT",
@@ -252,7 +252,7 @@
           "type": "string",
           "scope": "machine",
           "default": "",
-          "markdownDescription": "DSH executable. Leave empty to use a source checkout when nested inside deepseek-harness, otherwise `dsh` from PATH. This is a per-machine path, so the setting is machine-scoped: Settings Sync never carries it to another host, and — unlike a workspace-overridable setting — a repository cannot redirect it by shipping a `.vscode/settings.json`. Set it separately on each host."
+          "markdownDescription": "DSH executable. Leave empty to use a source checkout when nested inside deepseek-harness, otherwise `dsh` from PATH. This is a per-machine path, so the setting is machine-scoped: Settings Sync never carries it to another host, and \u2014 unlike a workspace-overridable setting \u2014 a repository cannot redirect it by shipping a `.vscode/settings.json`. Set it separately on each host."
         },
         "deepseekHarness.arguments": {
           "type": "array",
@@ -284,19 +284,19 @@
           "type": "boolean",
           "scope": "machine",
           "default": true,
-          "markdownDescription": "Offer to save a runtime you connect to with its launch URL, so every VS Code window and every later session attaches to it instead of starting another one. Saving writes that URL — which authenticates the runtime — into this extension's global storage, owner-only (`0600`); it is never logged, shown or synced, and \"DSH: Forget the Saved Runtime\" removes it. A saved runtime is **attach-only**: no plugins are installed into it, no settings or credentials are written to it, and it is never ended by this extension. Turn this off to connect per window without being asked."
+          "markdownDescription": "Offer to remember a runtime connected with its launch URL so later windows can attach. The authentication URL is stored in host/account/DSH-home-local private storage (`0600` on POSIX), outside VS Code profiles, and is never logged, shown or synced. A saved runtime is attach-only: this extension never installs plugins, writes settings or credentials, or stops it. A failed connection retains the record and reports an error. Use DeepSeek Harness: Forget the Saved Runtime to remove that record explicitly. Disable this setting to connect per window without the offer."
         },
         "deepseekHarness.reuseAcrossWindows": {
           "type": "boolean",
           "scope": "machine",
           "default": true,
-          "markdownDescription": "Attach this window to a DSH runtime that another VS Code window **of this extension** already started, instead of starting a second one. DSH keeps a conversation's write lock until the process owning it exits, so one shared runtime means one holder rather than several competing for the same conversations. Only a runtime this extension started is ever reused, and ending one requires proving it is the same process: by pid together with its process start time where the platform reports one, and otherwise by authenticating the runtime's own launch token — which DSH mints per process and never stores, so only that exact instance can answer it. A runtime started with different settings (a different `DSH_HOME`, executable, arguments or extension version) is never adopted, and a pid that cannot be proved is reported rather than signalled. Turning this off does not affect a runtime you asked this extension to remember (`deepseekHarness.rememberExternalRuntime`) — that one is yours, and every window attaches to it. Reload the window after changing this setting."
+          "markdownDescription": "Share one managed DSH runtime on the same host, OS account and DSH_HOME, including across VS Code profiles. History search and Schedule remain available. Launch arguments, DSH version, runtime-host protocol and launcher environment must match. The creating window can close while other windows continue. The last normal exit stops DSH. On Linux Remote\u2013SSH, each window is also bound to its verified VS Code Server process. After all valid extension hosts exit, the helper checks every 5 seconds and starts cleanup after a 30-second grace period; an unresponsive DSH is force-terminated after 4 seconds. SSH disconnections follow VS Code's remote.SSH.reconnectionGraceTime; this is not a promise to keep running after a normal close. The helper does not restart DSH automatically. Restart Runtime can replace an incompatible recorded managed runtime, with confirmation if other windows use it. Reconnect only reconnects this window. Keep autonomous debugging disabled for shared mode. Reload after changing this setting. See the README for cleanup limits and upgrade steps."
         },
         "deepseekHarness.autonomousDebugging": {
           "type": "boolean",
           "scope": "resource",
           "default": false,
-          "markdownDescription": "Expose the current workspace's native VS Code debugger to DSH as autonomous tools. When enabled, the extension starts a managed DSH runtime instead of reusing an external runtime."
+          "markdownDescription": "Expose this workspace's native VS Code debugger to DSH. The bridge belongs to one VS Code window and cannot safely control other windows. Disable autonomous debugging for a shared runtime, or explicitly disable deepseekHarness.reuseAcrossWindows to use a dedicated debugging runtime."
         },
         "deepseekHarness.startupTimeout": {
           "type": "number",
@@ -304,13 +304,13 @@
           "default": 60000,
           "minimum": 1000,
           "maximum": 300000,
-          "description": "Milliseconds to wait for DSH to report its local Web URL."
+          "description": "Milliseconds allowed for each shared-runtime operation or startup wait, and for a new DSH process to report its local Web URL. A timeout does not stop another window's runtime."
         },
         "deepseekHarness.searchBaseUrl": {
           "type": "string",
           "scope": "machine",
           "default": "",
-          "markdownDescription": "Base URL for the runtime's web search, for a host that cannot reach the public API. Include the version path — the search plugin appends `/messages` — for example `https://host/anthropic/v1`. Left empty, the runtime keeps its own default. DSH only accepts this variable from the process that launches it, so it cannot be set in the runtime's `.env`; this extension provides it. Per-machine, so Settings Sync never carries it to another host."
+          "markdownDescription": "Base URL for the runtime's web search, for a host that cannot reach the public API. Include the version path \u2014 the search plugin appends `/messages` \u2014 for example `https://host/anthropic/v1`. Left empty, the runtime keeps its own default. DSH only accepts this variable from the process that launches it, so it cannot be set in the runtime's `.env`; this extension provides it. Per-machine, so Settings Sync never carries it to another host."
         },
         "deepseekHarness.enableHistorySearch": {
           "type": "boolean",
@@ -338,7 +338,9 @@
     "check": "tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts && node scripts/build.mjs",
     "package": "vsce package --readme-path README.marketplace.md --out dsh-vscode.vsix",
     "publish:marketplace": "vsce publish --readme-path README.marketplace.md",
-    "test:task-runtime": "node tests/task-features.runtime.mjs"
+    "test:task-runtime": "node tests/task-features.runtime.mjs",
+    "test:shared-runtime": "node tests/shared-runtime.runtime.mjs",
+    "test:runtime-host": "node tests/runtime-host.runtime.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.31.0",
