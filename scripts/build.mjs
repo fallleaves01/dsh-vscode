@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path'
 await rm(new URL('../dist/', import.meta.url), { recursive: true, force: true })
 
 await build({
-  entryPoints: { extension: 'src/extension.ts' },
+  entryPoints: { extension: 'src/extension.ts', 'runtime-host': 'src/runtime-host.ts' },
   outdir: 'dist',
   entryNames: '[name]',
   bundle: true,
@@ -56,6 +56,7 @@ await build({
 await build({
   entryPoints: { 'settings-page': 'src/settings-page.mts' },
   outdir: 'dist/webview', bundle: true, platform: 'browser', format: 'iife',
+  globalName: 'dshSettingsPage',
   target: 'chrome132', minify: true, sourcemap: true, logLevel: 'info',
 })
 

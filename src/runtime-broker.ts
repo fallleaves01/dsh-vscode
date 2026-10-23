@@ -1,7 +1,10 @@
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
+import { homedir, hostname } from 'node:os'
+import { isAbsolute, join } from 'node:path'
+import { acquireRuntimeTransition, privateDirectory, type RuntimeTransition } from './runtime-lock.js'
+import { parseProcessIdentity, RUNTIME_HOST_PROTOCOL, type RuntimeProcessIdentity } from './runtime-lifetime.js'
 
 /**
  * Cross-window DSH runtime broker: descriptors, leases, adoption, dead-file sweep.
@@ -14,8 +17,8 @@ import { join } from 'node:path'
  * the extension host can die without running `deactivate` — leaving an orphan
  * runtime that keeps holding every conversation it ever opened.
  *
- * This module gives such an orphan a bounded, visible life **without adding any
- * process outside VS Code**:
+ * Descriptors and leases also let the runtime host survive the first window and
+ * clean up after the last extension host exits.
  *
  * - A **descriptor** records a runtime *this extension* spawned — pid, process
  *   start time, a configuration fingerprint, and the launch URL — so a later
@@ -47,6 +50,11 @@ export interface RuntimeFingerprint {
   readonly executable: string
   readonly arguments: readonly string[]
   readonly extensionVersion: string
+  readonly runtimeVersion?: string
+  /** HMAC of explicit launcher overrides; never a plaintext credential. */
+  readonly environmentDigest?: string
+  /** Changes only when the runtime-host contract changes, not for UI updates. */
+  readonly hostProtocol?: string
 }
 
 /**
@@ -74,6 +82,8 @@ export interface RuntimeDescriptor {
   readonly pid?: number
   /** `ps -o lstart=` of the pid, when the platform can report it. */
   readonly processStartTime?: string
+  /** The supervisor, for recovery if it exits while DSH is still alive. */
+  readonly host?: RuntimeProcessIdentity
   readonly startedAt: number
   readonly cwd: string
   /** Absent for an attach-only runtime: its launch configuration is unknown. */
@@ -100,6 +110,8 @@ export interface RuntimeLease {
    * runtime another window has since recorded over the top of it.
    */
   readonly runtimePid?: number
+  /** Linux Remote–SSH server that owns this particular extension host. */
+  readonly server?: RuntimeProcessIdentity
 }
 
 /** The platform facts the policy needs. Injected so tests never touch real processes. */
@@ -167,16 +179,25 @@ function safeSegment(value: string): boolean {
 /**
  * Whether two windows are configured to run the same thing.
  *
- * A mismatch is never fatal: it only means "do not adopt, and never touch it
- * automatically". Changing `deepseekHarness.executable` or `DSH_HOME` between
- * releases must not let a new window silently drive an old configuration.
+ * A mismatch prevents automatic adoption and replacement. A UI-only extension
+ * update does not change the runtime configuration.
  */
 export function fingerprintsMatch(left: RuntimeFingerprint, right: RuntimeFingerprint): boolean {
-  return left.dshHome === right.dshHome
-    && left.executable === right.executable
-    && left.extensionVersion === right.extensionVersion
-    && left.arguments.length === right.arguments.length
-    && left.arguments.every((value, index) => value === right.arguments[index])
+  return fingerprintDifferences(left, right).length === 0
+}
+
+/** Field names only: arguments and environment values can contain credentials. */
+export function fingerprintDifferences(left: RuntimeFingerprint, right: RuntimeFingerprint): string[] {
+  const differences: string[] = []
+  if (left.dshHome !== right.dshHome) differences.push('DSH home')
+  if (left.executable !== right.executable) differences.push('executable')
+  if (left.arguments.length !== right.arguments.length
+    || left.arguments.some((value, index) => value !== right.arguments[index])) differences.push('arguments')
+  if (left.runtimeVersion !== undefined && right.runtimeVersion !== undefined
+    && left.runtimeVersion !== right.runtimeVersion) differences.push('DSH version')
+  if (left.hostProtocol !== right.hostProtocol) differences.push('runtime-host protocol')
+  if (left.environmentDigest !== right.environmentDigest) differences.push('launcher environment')
+  return differences
 }
 
 function parseFingerprint(value: unknown): RuntimeFingerprint | undefined {
@@ -187,7 +208,10 @@ function parseFingerprint(value: unknown): RuntimeFingerprint | undefined {
   const extensionVersion = text(source.extensionVersion)
   const args = stringList(source.arguments)
   if (dshHome === undefined || executable === undefined || extensionVersion === undefined || args === undefined) return undefined
-  return { dshHome, executable, extensionVersion, arguments: args }
+  return { dshHome, executable, extensionVersion, arguments: args,
+    ...(text(source.runtimeVersion) === undefined ? {} : { runtimeVersion: text(source.runtimeVersion)! }),
+    ...(text(source.hostProtocol) === undefined ? {} : { hostProtocol: text(source.hostProtocol)! }),
+    ...(text(source.environmentDigest) === undefined ? {} : { environmentDigest: text(source.environmentDigest)! }) }
 }
 
 export function parseDescriptor(source: string): RuntimeDescriptor | undefined {
@@ -208,6 +232,8 @@ export function parseDescriptor(source: string): RuntimeDescriptor | undefined {
   const pid = count(entry.pid)
   const fingerprint = parseFingerprint(entry.fingerprint)
   const processStartTime = text(entry.processStartTime)
+  const host = parseProcessIdentity(entry.host)
+  if (entry.host !== undefined && host === undefined) return undefined
   // A runtime this extension started must be identified by its process and the
   // configuration it was started with; that is what makes ending it defensible.
   // An attach-only runtime has neither, and relies on its launch URL alone.
@@ -218,6 +244,7 @@ export function parseDescriptor(source: string): RuntimeDescriptor | undefined {
     ...pid === undefined ? {} : { pid },
     ...fingerprint === undefined ? {} : { fingerprint },
     ...processStartTime === undefined ? {} : { processStartTime },
+    ...host === undefined ? {} : { host },
   }
 }
 
@@ -235,11 +262,14 @@ export function parseLease(source: string): RuntimeLease | undefined {
   const createdAt = count(entry.createdAt)
   const processStartTime = text(entry.processStartTime)
   const runtimePid = count(entry.runtimePid)
+  const server = parseProcessIdentity(entry.server)
+  if (entry.server !== undefined && server === undefined) return undefined
   if (instanceId === undefined || pid === undefined || createdAt === undefined) return undefined
   return {
     schema: BROKER_SCHEMA, instanceId, pid, createdAt,
     ...processStartTime === undefined ? {} : { processStartTime },
     ...runtimePid === undefined ? {} : { runtimePid },
+    ...server === undefined ? {} : { server },
   }
 }
 
@@ -268,9 +298,12 @@ async function processState(probe: ProcessProbe, pid: number, expected: string |
   if (!probe.isAlive(pid)) return 'dead'
   // Without a recorded start time there is nothing to compare against, so the pid
   // alone cannot be tied to the recorded process.
-  if (expected === undefined) return 'unknown'
+  if (expected === undefined || expected.length === 0) return 'unknown'
   const actual = await probe.startTime(pid)
   if (actual === undefined) return 'unknown'
+  // Legacy records used localized ps timestamps. A different identity format
+  // is not evidence of PID reuse; authenticate that runtime instead.
+  if (actual.startsWith('linux:') !== expected.startsWith('linux:')) return 'unknown'
   // A different start time is positive proof that the pid was reused.
   return actual === expected ? 'alive' : 'dead'
 }
@@ -280,9 +313,14 @@ async function stillRunning(probe: ProcessProbe, pid: number, expected: string |
   return await processState(probe, pid, expected) !== 'dead'
 }
 
-/** The real probe: `kill(pid, 0)` for existence, `ps -o lstart=` for identity. */
-export function nodeProcessProbe(options: { exec?: ExecFileLike } = {}): ProcessProbe {
+/** Linux identity uses boot id + start ticks; other POSIX hosts use ps. */
+export function nodeProcessProbe(options: {
+  exec?: ExecFileLike; platform?: NodeJS.Platform; readText?: (path: string) => string
+} = {}): ProcessProbe {
   const exec = options.exec ?? run
+  const platform = options.platform ?? process.platform
+  const readText = options.readText ?? (path => readFileSync(path, 'utf8'))
+  let bootId: string | undefined
   return {
     isAlive(pid: number): boolean {
       // `pid 0` means "every process in this process group" to `kill(2)`, and a
@@ -290,6 +328,13 @@ export function nodeProcessProbe(options: { exec?: ExecFileLike } = {}): Process
       // all (an attach-only runtime), so this guard is load-bearing: without it a
       // liveness check would signal the whole group.
       if (!Number.isSafeInteger(pid) || pid <= 0) return false
+      if (platform === 'linux') {
+        try {
+          const stat = readText(`/proc/${pid}/stat`)
+          const state = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[0]
+          if (state === 'Z' || state === 'X') return false
+        } catch { /* kill(0) remains the conservative fallback. */ }
+      }
       try {
         process.kill(pid, 0)
         return true
@@ -299,7 +344,17 @@ export function nodeProcessProbe(options: { exec?: ExecFileLike } = {}): Process
       }
     },
     async startTime(pid: number): Promise<string | undefined> {
-      if (process.platform === 'win32') return undefined
+      if (platform === 'win32') return undefined
+      if (platform === 'linux') {
+        try {
+          bootId ??= readText('/proc/sys/kernel/random/boot_id').trim()
+          const stat = readText(`/proc/${pid}/stat`)
+          // comm is parenthesized and may itself contain spaces or parentheses.
+          const end = stat.lastIndexOf(')')
+          const ticks = end < 0 ? undefined : stat.slice(end + 1).trim().split(/\s+/)[19]
+          if (bootId !== '' && ticks !== undefined && /^\d+$/.test(ticks)) return `linux:${bootId}:${ticks}`
+        } catch { /* Restricted /proc: retain the conservative ps fallback. */ }
+      }
       try {
         // `lstart` is a fixed-format, locale-independent timestamp. It is only
         // ever compared with another reading of the same pid on this machine.
@@ -325,17 +380,182 @@ function run(file: string, args: readonly string[]): Promise<{ stdout: string }>
 /**
  * Descriptors, leases and the sweep policy for one machine.
  *
- * `stateDir` is the extension's global storage: per-user and per-extension, on
- * whichever machine the extension host runs — which is the remote host in a
- * server scenario, exactly where the spawned runtime lives.
+ * `stateDir` is per host, account and DSH home, independent of VS Code profiles.
+ * Callers hold acquireTransition() across lookup, startup, registration and
+ * shutdown; atomic JSON writes alone cannot serialize those operations.
  */
 export class RuntimeBroker {
-  private readonly stateDir: string
+  private readonly rootDir: string
+  private readonly legacyStateDir: string | undefined
   private readonly probe: ProcessProbe
+  private readonly serverOwner: (() => Promise<RuntimeProcessIdentity>) | undefined
+  private serverIdentity: Promise<RuntimeProcessIdentity> | undefined
 
-  constructor(options: { stateDir: string; probe?: ProcessProbe }) {
-    this.stateDir = options.stateDir
+  constructor(options: { stateDir: string; legacyStateDir?: string; probe?: ProcessProbe; serverOwner?: () => Promise<RuntimeProcessIdentity> }) {
+    this.rootDir = options.stateDir
+    this.legacyStateDir = options.legacyStateDir
     this.probe = options.probe ?? nodeProcessProbe()
+    this.serverOwner = options.serverOwner
+  }
+
+  async currentServer(): Promise<RuntimeProcessIdentity | undefined> {
+    if (this.serverOwner === undefined) return undefined
+    this.serverIdentity ??= this.serverOwner()
+    const server = await this.serverIdentity
+    if (!await this.isRecordRunning(server.pid, server.startTime)) throw new Error('The VS Code Server owning this window has exited. Reconnect before starting DSH.')
+    return server
+  }
+
+  get sharedDirectory(): string { return this.rootDir }
+
+  /** A migrated runtime retains its original ledger so old windows see leases. */
+  get ledgerDirectory(): string {
+    const pointer = join(this.rootDir, 'ledger.json')
+    try {
+      const stat = lstatSync(pointer)
+      if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 8_192
+        || (process.getuid !== undefined && stat.uid !== process.getuid())
+        || (process.platform !== 'win32' && (stat.mode & 0o077) !== 0)) throw new Error('Unsafe DSH runtime ledger pointer.')
+      const value: unknown = JSON.parse(readFileSync(pointer, 'utf8'))
+      if (typeof value !== 'string' || !isAbsolute(value)) throw new Error('Invalid DSH runtime ledger pointer.')
+      privateDirectory(value)
+      return value
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      return this.rootDir
+    }
+  }
+
+  private get stateDir(): string { return this.ledgerDirectory }
+
+  async acquireTransition(options: { signal?: AbortSignal; timeoutMs?: number; pollMs?: number } = {}): Promise<RuntimeTransition> {
+    privateDirectory(this.rootDir)
+    const server = await this.currentServer()
+    const lock = await acquireRuntimeTransition(join(this.rootDir, 'operations'), this.probe,
+      { ...options, ...(server === undefined ? {} : { server }) })
+    try {
+      const pointer = join(this.rootDir, 'ledger.json')
+      if (!existsSync(pointer) && this.legacyStateDir !== undefined
+        && existsSync(join(this.legacyStateDir, 'runtime.json')) && !existsSync(join(this.rootDir, 'runtime.json'))) {
+        privateDirectory(this.legacyStateDir)
+        const temp = `${pointer}.${randomUUID()}.tmp`
+        writeFileSync(temp, JSON.stringify(this.legacyStateDir), { mode: 0o600, flag: 'wx' })
+        renameSync(temp, pointer)
+      }
+      // Resolve and validate before handing the transition to the caller.
+      void this.ledgerDirectory
+      return lock
+    } catch (error) { lock.release(); throw error }
+  }
+
+  environmentDigest(environment: Readonly<Record<string, string | undefined>>): string | undefined {
+    const entries = Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined).sort(([a], [b]) => a.localeCompare(b))
+    if (entries.length === 0) return undefined
+    privateDirectory(this.rootDir)
+    const file = join(this.rootDir, 'environment.key')
+    if (!existsSync(file)) {
+      try { writeFileSync(file, randomBytes(32), { mode: 0o600, flag: 'wx' }) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+    }
+    const stat = lstatSync(file)
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== 32
+      || (process.getuid !== undefined && stat.uid !== process.getuid())
+      || (process.platform !== 'win32' && (stat.mode & 0o077) !== 0)) throw new Error('Unsafe DSH runtime environment key.')
+    return createHmac('sha256', readFileSync(file)).update(JSON.stringify(entries)).digest('hex')
+  }
+
+  async reserveStartup(hostPid: number, instanceId: string): Promise<void> {
+    this.ensure(false)
+    const startTime = await this.probe.startTime(hostPid)
+    writeFileSync(join(this.stateDir, 'starting.json'), JSON.stringify({ hostPid, instanceId, startTime }), { mode: 0o600, flag: 'wx' })
+  }
+
+  markStartupLaunched(instanceId: string, runtimePid?: number, runtimeStartTime?: string, hostProtocol?: string): void {
+    const file = join(this.stateDir, 'starting.json')
+    const value = JSON.parse(readFileSync(file, 'utf8')) as { instanceId?: string }
+    if (value.instanceId !== instanceId) throw new Error('DSH startup reservation changed before launch.')
+    const temp = `${file}.${randomUUID()}.tmp`
+    writeFileSync(temp, JSON.stringify({ ...value, launchRequested: true, ...(runtimePid === undefined ? {} : { runtimePid }),
+      ...(runtimeStartTime === undefined ? {} : { runtimeStartTime }), ...(hostProtocol === undefined ? {} : { hostProtocol }) }), { mode: 0o600, flag: 'wx' })
+    renameSync(temp, file)
+  }
+
+  clearStartup(instanceId: string, hostPid?: number): void {
+    const file = join(this.stateDir, 'starting.json')
+    try {
+      const value = JSON.parse(readFileSync(file, 'utf8')) as { instanceId?: unknown; hostPid?: unknown }
+      if (value.instanceId === instanceId && (hostPid === undefined || value.hostPid === hostPid)) rmSync(file)
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  }
+
+  async waitForStartup(signal?: AbortSignal, timeoutMs = 310_000, recoverAbandoned = false): Promise<void> {
+    const file = join(this.stateDir, 'starting.json'), deadline = Date.now() + timeoutMs
+    let checkedAt = 0, checkedOwner = ''
+    while (existsSync(file)) {
+      if (signal?.aborted) throw new Error('DSH runtime stopped.')
+      const value = JSON.parse(readFileSync(file, 'utf8')) as { hostPid: number; instanceId: string; startTime?: string;
+        launchRequested?: boolean; runtimePid?: number; runtimeStartTime?: string; hostProtocol?: string }
+      if (!Number.isSafeInteger(value.hostPid) || value.hostPid <= 0 || typeof value.instanceId !== 'string'
+        || (value.runtimePid !== undefined && (!Number.isSafeInteger(value.runtimePid) || value.runtimePid <= 0))
+        || (value.launchRequested !== undefined && typeof value.launchRequested !== 'boolean')
+        || (value.startTime !== undefined && typeof value.startTime !== 'string')
+        || (value.runtimeStartTime !== undefined && typeof value.runtimeStartTime !== 'string')
+        || (value.hostProtocol !== undefined && typeof value.hostProtocol !== 'string')) throw new Error('Invalid DSH runtime startup record.')
+      const owner = `${value.hostPid}:${value.startTime ?? ''}`
+      let live = this.probe.isAlive(value.hostPid)
+      if (live && (owner !== checkedOwner || Date.now() - checkedAt >= 2_000)) {
+        live = await stillRunning(this.probe, value.hostPid, value.startTime)
+        checkedOwner = owner; checkedAt = Date.now()
+      }
+      if (!live) {
+        const state = value.runtimePid === undefined ? 'unknown' : await processState(this.probe, value.runtimePid, value.runtimeStartTime)
+        if (value.launchRequested && state !== 'dead') {
+          if (!recoverAbandoned || state !== 'alive' || value.runtimePid === undefined || value.hostProtocol !== RUNTIME_HOST_PROTOCOL) {
+            throw new Error(`The DSH runtime host exited during startup${value.runtimePid === undefined ? '' : ` (DSH pid ${value.runtimePid})`}. A running DSH process cannot be ruled out. The startup record was retained; no additional runtime was started.`)
+          }
+          const recorded = this.readDescriptor()
+          if (recorded !== undefined && (!recorded.manageable || recorded.instanceId !== value.instanceId || recorded.pid !== value.runtimePid)) {
+            throw new Error('The saved runtime differs from the abandoned startup. Its record was retained; no additional runtime was started.')
+          }
+          await this.assertNoRuntimeUsers(value.runtimePid)
+          if (signal?.aborted) throw new Error('DSH runtime stopped.')
+          // A startup may die before there is an authentication URL. This local
+          // descriptor is only a signalling input, never persisted or adopted.
+          if (!await this.stop({ schema: BROKER_SCHEMA, origin: 'dsh-sidebar', manageable: true,
+            instanceId: value.instanceId, pid: value.runtimePid, processStartTime: value.runtimeStartTime!,
+            startedAt: Date.now(), cwd: this.stateDir, launchUrl: '' }, { processGroup: true })) {
+            throw new Error('The abandoned DSH startup could not be stopped. Its record was retained; no additional runtime was started.')
+          }
+        }
+        this.clearStartup(value.instanceId, value.hostPid); return
+      }
+      if (Date.now() >= deadline) throw new Error('Another DSH runtime is still starting. No additional runtime was started.')
+      await delay(100)
+    }
+  }
+
+  private async assertNoRuntimeUsers(pid: number): Promise<void> {
+    if ((await this.liveLeases()).some(lease => lease.runtimePid === undefined || lease.runtimePid === pid)) {
+      throw new Error('The DSH runtime host exited, but another VS Code window still uses that runtime. Use Restart Runtime to review a shared restart. No additional runtime was started.')
+    }
+  }
+
+  /** Caller holds the transition lock. Recover before authentication or a new turn. */
+  async recoverAbandonedRuntime(signal?: AbortSignal): Promise<boolean> {
+    const descriptor = this.readDescriptor(), host = descriptor?.host
+    if (descriptor === undefined || !descriptor.manageable || descriptor.pid === undefined || host === undefined) return false
+    if (await processState(this.probe, host.pid, host.startTime) !== 'dead') return false
+    const runtimeState = await this.recordProcessState(descriptor)
+    if (runtimeState === 'unknown') {
+      throw new Error('The DSH runtime host exited, but the remaining DSH process identity cannot be verified. Its record was retained; no additional runtime was started.')
+    }
+    if (runtimeState === 'alive') await this.assertNoRuntimeUsers(descriptor.pid)
+    if (signal?.aborted) throw new Error('DSH runtime stopped.')
+    if (!await this.stop(descriptor, { processGroup: descriptor.fingerprint?.hostProtocol === RUNTIME_HOST_PROTOCOL })) {
+      throw new Error('The abandoned DSH runtime could not be stopped. Its record was retained; no additional runtime was started.')
+    }
+    this.clearStartup(descriptor.instanceId, host.pid)
+    return true
   }
 
   private get descriptorFile(): string { return join(this.stateDir, 'runtime.json') }
@@ -348,10 +568,11 @@ export class RuntimeBroker {
   /** Create the state directory with owner-only permissions, or reuse it. */
   private ensure(deep: boolean): void {
     if (!deep) {
-      if (!existsSync(this.stateDir)) mkdirSync(this.stateDir, { recursive: true, mode: 0o700 })
+      privateDirectory(this.stateDir)
       return
     }
-    if (!existsSync(this.leaseDir)) mkdirSync(this.leaseDir, { recursive: true, mode: 0o700 })
+    privateDirectory(this.stateDir)
+    privateDirectory(this.leaseDir)
   }
 
   readDescriptor(): RuntimeDescriptor | undefined {
@@ -388,6 +609,7 @@ export class RuntimeBroker {
     fingerprint?: RuntimeFingerprint
     launchUrl: string
     manageable?: boolean
+    host?: RuntimeProcessIdentity
   }): Promise<RuntimeDescriptor> {
     const startTime = input.pid === undefined ? undefined : await this.probe.startTime(input.pid)
     const descriptor: RuntimeDescriptor = {
@@ -401,26 +623,32 @@ export class RuntimeBroker {
       ...input.pid === undefined ? {} : { pid: input.pid },
       ...input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint },
       ...startTime === undefined ? {} : { processStartTime: startTime },
+      ...input.host === undefined ? {} : { host: input.host },
     }
     this.writeDescriptor(descriptor)
     return descriptor
   }
 
-  readLeases(): RuntimeLease[] {
+  readLeases(strict = false): RuntimeLease[] {
     let names: string[]
     try {
       names = readdirSync(this.leaseDir)
-    } catch {
+    } catch (error) {
+      if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       return []
     }
     const leases: RuntimeLease[] = []
     for (const name of names) {
       if (!name.endsWith('.json')) continue
       try {
-        const lease = parseLease(readFileSync(join(this.leaseDir, name), 'utf8'))
+        const file = join(this.leaseDir, name)
+        const stat = lstatSync(file)
+        if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 8_192) throw new Error('Invalid DSH runtime lease file.')
+        const lease = parseLease(readFileSync(file, 'utf8'))
         if (lease !== undefined) leases.push(lease)
-      } catch {
-        // An unreadable lease is not evidence of anything; the sweep decides.
+        else if (strict) throw new Error('An unreadable DSH runtime lease prevents safe shutdown.')
+      } catch (error) {
+        if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
     }
     return leases
@@ -437,12 +665,19 @@ export class RuntimeBroker {
     return await processState(this.probe, pid, processStartTime) !== 'dead'
   }
 
+  /** Positive OS identity can authorize manual recovery even when HTTP is hung. */
+  async recordProcessState(descriptor: RuntimeDescriptor): Promise<ProcessState> {
+    return descriptor.pid === undefined ? 'unknown'
+      : processState(this.probe, descriptor.pid, descriptor.processStartTime)
+  }
+
   /** Leases whose process is still running, judged by pid + start time. */
   async liveLeases(): Promise<RuntimeLease[]> {
-    const leases = this.readLeases()
+    const leases = this.readLeases(true)
     const live: RuntimeLease[] = []
     for (const lease of leases) {
-      if (await stillRunning(this.probe, lease.pid, lease.processStartTime)) live.push(lease)
+      if (await stillRunning(this.probe, lease.pid, lease.processStartTime)
+        && (lease.server === undefined || await stillRunning(this.probe, lease.server.pid, lease.server.startTime))) live.push(lease)
     }
     return live
   }
@@ -462,11 +697,13 @@ export class RuntimeBroker {
   /** Record this extension host as a current user of the runtime it is using. */
   async takeLease(instanceId: string, runtimePid?: number): Promise<RuntimeLease> {
     this.ensure(true)
+    const server = runtimePid === undefined ? undefined : await this.currentServer()
     const startTime = await this.probe.startTime(process.pid)
     const lease: RuntimeLease = {
       schema: BROKER_SCHEMA, instanceId, pid: process.pid, createdAt: Date.now(),
       ...startTime === undefined ? {} : { processStartTime: startTime },
       ...runtimePid === undefined ? {} : { runtimePid },
+      ...server === undefined ? {} : { server },
     }
     this.writeLease(lease)
     return lease
@@ -507,7 +744,10 @@ export class RuntimeBroker {
    */
   async decide(fingerprint: RuntimeFingerprint): Promise<AdoptionDecision> {
     const descriptor = this.readDescriptor()
-    if (descriptor === undefined) return { action: 'spawn', reason: 'no recorded runtime' }
+    if (descriptor === undefined) {
+      if (existsSync(this.descriptorFile)) throw new Error('The saved DSH runtime record cannot be verified. No additional runtime was started.')
+      return { action: 'spawn', reason: 'no recorded runtime' }
+    }
     if (!descriptor.manageable) {
       // An attach-only runtime is the user's: this extension knows neither its pid
       // nor how it was started, so nothing here can decide that it is gone. Whether
@@ -524,10 +764,11 @@ export class RuntimeBroker {
       this.clearDescriptor()
       return { action: 'spawn', reason: 'the recorded runtime is no longer running' }
     }
-    if (!fingerprintsMatch(descriptor.fingerprint ?? fingerprint, fingerprint)) {
+    const differences = fingerprintDifferences(descriptor.fingerprint ?? fingerprint, fingerprint)
+    if (differences.length > 0) {
       return {
         action: 'ignore', descriptor,
-        reason: 'the running runtime was started with different settings (DSH home, executable, arguments or extension version)',
+        reason: `different ${differences.join(', ')}`,
       }
     }
     return { action: 'adopt', descriptor }
@@ -545,7 +786,7 @@ export class RuntimeBroker {
   async release(instanceId: string): Promise<ReleaseOutcome> {
     const notes: string[] = []
     const descriptor = this.readDescriptor()
-    if (descriptor === undefined) return { notes }
+    if (descriptor === undefined) { this.clearLease(instanceId); return { notes } }
     if (!descriptor.manageable) {
       // The user's own runtime: this extension did not start it, so it is never
       // ended from here — the process outlives every window that attached to it.
@@ -566,7 +807,7 @@ export class RuntimeBroker {
       notes.push('the recorded runtime is not the one this window used, so it was left alone')
       return { notes }
     }
-    const live = await this.liveLeases()
+    const live = (await this.liveLeases()).filter(lease => lease.runtimePid === undefined || lease.runtimePid === descriptor.pid)
     if (live.length > 0) {
       notes.push(`the runtime is still in use by ${String(live.length)} other window(s); leaving it running`)
       return { notes }
@@ -593,9 +834,9 @@ export class RuntimeBroker {
    * Terminate a runtime this extension spawned, after `release` approved it.
    *
    * Waits for the process to actually go away, then removes the descriptor. The
-   * hard kill is safe by construction: DSH's JSONL backend persists every batch
-   * immediately and repairs a torn tail on the next open, so a killed runtime can
-   * only lose the events it had not appended yet.
+   * hard kill can lose events still buffered in DSH. Its JSONL backend repairs a
+   * torn tail on the next open; recovery reopens the saved prefix, not unfinished
+   * requests or in-memory output.
    */
   async stop(
     descriptor: RuntimeDescriptor,
@@ -605,45 +846,69 @@ export class RuntimeBroker {
      * been reused. A pid that cannot be tied to the record any other way is only
      * signalled when that proof exists.
      */
-    options: { graceMs?: number; confirmed?: boolean } = {},
+    options: { graceMs?: number; confirmed?: boolean; confirmIdentity?: () => Promise<boolean>; processGroup?: boolean } = {},
   ): Promise<boolean> {
     const graceMs = options.graceMs ?? 4_000
     // Attach-only runtimes are never signalled, and a managed one always has a pid.
     if (!descriptor.manageable || descriptor.pid === undefined) return false
+    const group = options.processGroup === true && process.platform !== 'win32'
+    const target = group ? -descriptor.pid : descriptor.pid
+    const targetAlive = (): boolean => {
+      if (!group) return this.probe.isAlive(descriptor.pid!)
+      try { process.kill(target, 0); return true } catch (error) {
+        return (error as NodeJS.ErrnoException).code !== 'ESRCH'
+      }
+    }
+    const clear = (): void => {
+      const current = this.readDescriptor()
+      if (current?.instanceId === descriptor.instanceId && current.pid === descriptor.pid
+        && current.processStartTime === descriptor.processStartTime) this.clearDescriptor()
+    }
     const state = await processState(this.probe, descriptor.pid, descriptor.processStartTime)
     if (state === 'dead') {
-      this.clearDescriptor()
+      clear()
       return true
     }
     if (state === 'unknown' && options.confirmed !== true) return false
     try {
-      process.kill(descriptor.pid, 'SIGTERM')
+      process.kill(target, 'SIGTERM')
     } catch {
-      if (this.probe.isAlive(descriptor.pid)) return false
-      this.clearDescriptor()
+      if (targetAlive()) return false
+      clear()
       return true
     }
     const deadline = Date.now() + graceMs
     while (Date.now() < deadline) {
-      if (!this.probe.isAlive(descriptor.pid)) {
-        this.clearDescriptor()
+      if (!targetAlive()) {
+        clear()
         return true
       }
       await delay(100)
     }
+    // A process can exit and its PID can be reused during the grace period.
+    // Initial proof must not authorize SIGKILL against a different process.
+    const beforeForce = await processState(this.probe, descriptor.pid, descriptor.processStartTime)
+    if (beforeForce === 'dead' && (!group || !targetAlive() || this.probe.isAlive(descriptor.pid))) { clear(); return true }
+    if (beforeForce === 'unknown' && !await options.confirmIdentity?.()) return false
     try {
-      process.kill(descriptor.pid, 'SIGKILL')
+      process.kill(target, 'SIGKILL')
     } catch {
       // Already gone, or no longer ours to signal.
     }
     // A killed process is not reaped instantly, so poll rather than reporting a
     // race as a failure.
     const killDeadline = Date.now() + 1_000
-    while (Date.now() < killDeadline && this.probe.isAlive(descriptor.pid)) await delay(50)
-    if (this.probe.isAlive(descriptor.pid)) return false
-    this.clearDescriptor()
+    while (Date.now() < killDeadline && targetAlive()) await delay(50)
+    if (targetAlive()) return false
+    clear()
     return true
   }
+}
+
+/** Host-local, account-local coordination, independent of VS Code profiles. */
+export function sharedRuntimeDirectory(dshHome: string, home = homedir(), host = hostname()): string {
+  const key = createHash('sha256').update(JSON.stringify([host, dshHome])).digest('hex').slice(0, 32)
+  return join(home, '.dsh-vscode', 'runtimes', key)
 }
 
 function delay(ms: number): Promise<void> {
