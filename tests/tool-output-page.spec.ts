@@ -7,6 +7,17 @@ function tool(extra: Partial<ConversationMessage>): ConversationMessage {
 }
 
 describe('tool output pages', () => {
+  it('retains both input and result when expanding a subagent card, with bounded pages',()=>{
+    const input={description:'Review allocator',prompt:'Inspect '+ 'p'.repeat(TOOL_OUTPUT_CHAR_LIMIT)}
+    const output='started subagent child\n'+'r'.repeat(TOOL_OUTPUT_CHAR_LIMIT)
+    const message=tool({text:'subagent',rawInput:JSON.stringify(input),rawResult:output,
+      callView:{card:'generic',subagentLabel:'Review allocator'},resultView:{card:'generic',subagentLinks:[{id:'child'}],content:[{text:output}]}})
+    let cursor:string|undefined,combined=''
+    do{const page=pageToolOutput(message,cursor),text=(page.message.resultView as any).content[0].text as string
+      expect(text.length).toBeLessThanOrEqual(TOOL_OUTPUT_CHAR_LIMIT);combined+=text;cursor=page.nextCursor
+    }while(cursor)
+    expect(combined).toBe('Input\n'+JSON.stringify(input,null,2)+'\n\nResult\n'+output)
+  })
   it('bounds terminal output and resumes from an opaque cursor', () => {
     const output = 'x'.repeat(TOOL_OUTPUT_CHAR_LIMIT + 37)
     const first = pageToolOutput(tool({ resultView: { card: 'terminal', output } }))

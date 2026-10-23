@@ -26,6 +26,7 @@ function fixture() {
     onDidChangeState: (listener: any) => { listeners.add(listener); return { dispose: () => listeners.delete(listener) } },
     childReadOnlyReason: vi.fn(() => null), sendToChild: vi.fn(async () => {}), stopChild: vi.fn(async () => {}), answerTaskRequest: vi.fn(async () => {}),
     selectSession: vi.fn(async () => {}), killJob: vi.fn(async () => {}), openFile: vi.fn(),
+    adoptTaskSnapshot:vi.fn(),resolveSubagent:vi.fn(async(_parent:string,id:string)=>host.state.sessions.find(item=>item.id===id)),
   }
   const change = (patch: any) => { host.state = { ...host.state, ...patch }; for (const listener of listeners) listener(host.state) }
   const replace = () => { const previous = client; client = makeClient(); change({ phase: 'ready' }); return previous }
@@ -44,6 +45,28 @@ beforeEach(() => {
 })
 afterEach(() => { manager?.dispose(); vi.useRealTimers() })
 describe('independent task pane lifecycle', () => {
+  it('returns a redacted opening error to the exact tool-card request',async()=>{
+    const h=fixture();manager.open({kind:'subagent',sessionId:'child'});await flush();const panel=mocks.panels[0]
+    h.host.resolveSubagent.mockRejectedValueOnce(new Error('Cannot open https://example.test/?token=synthetic-navigation-token'))
+    panel.send({type:'open-subagent',parentSessionId:'child',sessionId:'nested',requestId:'navigation',placement:'beside'});await flush()
+    const result=panel.webview.postMessage.mock.calls.map(([value]:any[])=>value).find((value:any)=>value.type==='open-subagent-result')
+    expect(result).toMatchObject({requestId:'navigation',parentSessionId:'child'})
+    expect(result.error).not.toContain('synthetic-navigation-token');expect(result.error).toContain('[redacted]')
+  })
+  it('routes a nested tool-card request only from its bound conversation',async()=>{
+    const h=fixture();h.change({sessions:[...h.host.state.sessions,{id:'nested',parentId:'child',subagent:{mode:'continuable'},title:'Nested'}]})
+    manager.open({kind:'subagent',sessionId:'child'});await flush();const panel=mocks.panels[0]
+    panel.send({type:'open-subagent',parentSessionId:'foreign',sessionId:'nested',requestId:'wrong'});await flush()
+    expect(h.host.resolveSubagent).not.toHaveBeenCalled()
+    panel.send({type:'open-subagent',parentSessionId:'child',sessionId:'nested',requestId:'correct',placement:'chat'});await flush()
+    expect(h.host.resolveSubagent).toHaveBeenCalledWith('child','nested');expect(h.host.selectSession).toHaveBeenCalledWith('nested')
+    expect(panel.webview.postMessage.mock.calls.some(([message]:any[])=>message.type==='open-subagent-result'&&message.requestId==='correct'&&!message.error)).toBe(true)
+  })
+  it('rejects external execution addresses before creating a pane or any local observation', () => {
+    const h = fixture(); h.change({ sessions: [{ id: 'parent' }, { id: 'external:parent:job', parentId: 'parent', subagent: { mode: 'external', executionId: 'job' } }] })
+    expect(() => manager.open({ kind: 'subagent', sessionId: 'external:parent:job' })).toThrow('no local conversation')
+    expect(mocks.create).not.toHaveBeenCalled(); expect(h.client.observeSession).not.toHaveBeenCalled(); expect(h.client.watchRequests).not.toHaveBeenCalled()
+  })
   it('reuses a pane by exact child address without selecting the main conversation', async () => {
     const h = fixture(); manager.open({ kind: 'subagent', sessionId: 'child' }); manager.open({ kind: 'subagent', sessionId: 'child' })
     mocks.panels[0].send({ type: 'ready' }); await flush()

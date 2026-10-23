@@ -22,7 +22,7 @@ describe('main conversation directory and quick switcher', () => {
     h.click('#sessionTrigger'); expect(ids(h)).toEqual(['parent']); expect(ids(h, '#homeSessionList')).toEqual(['parent'])
     expect(h.document.querySelectorAll('.session-expander')).toHaveLength(0)
     expect(h.document.querySelector('.task-child[data-session-id="kid"]')).not.toBeNull()
-    h.click('.task-child[data-session-id="kid"]'); expect(h.posts.at(-1)).toEqual({ type: 'open-task-details', kind: 'subagent', sessionId: 'kid' })
+    h.click('.task-child[data-session-id="kid"]'); expect(h.posts.at(-1)).toEqual({ type: 'select-session', sessionId: 'kid' })
   })
   it('excludes children at every delegation depth, including title and body search hits', () => {
     const h = open(); h.sendState({ sessionId: 'parent', sessions: [parent, child, { ...child, id: 'leaf', parentId: 'kid' }], historySearch: { query: 'research', loading: false, items: [{ sessionId: 'kid', snippet: 'research' }, { sessionId: 'leaf', snippet: 'research' }] } })

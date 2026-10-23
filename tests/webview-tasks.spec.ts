@@ -15,6 +15,16 @@ const child = { id: 'child', title: 'Research details', parentId: 'parent', runn
   subagent: { mode: 'continuable', label: 'Research' }, activity: { status: 'completed', elapsedMs: 65000, totalTokens: 1250 } }
 
 describe('direct task details navigation', () => {
+  it('shows external executions as informational rows without local session actions or fabricated status', async () => {
+    const h = open(), external = { id: 'external:parent:execution', title: 'Remote review', parentId: 'parent', agentAvailable: false, running: false, subagent: { mode: 'external', executionId: 'execution', label: 'Remote review' } }
+    h.sendState({ sessionId: 'parent', sessions: [parent, child, external] }); await h.settle()
+    const row = h.document.querySelector<HTMLButtonElement>('[data-session-id="external:parent:execution"]')!
+    expect(row.textContent).toContain('Remote review'); expect(row.textContent).toContain('External task')
+    expect(row.textContent).not.toMatch(/Idle|Completed|Running/)
+    expect(row.getAttribute('aria-disabled')).toBe('true'); expect(row.tabIndex).toBe(-1)
+    row.click(); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(h.posts.some(post => post.type === 'open-task-details' || post.type === 'select-session')).toBe(false)
+  })
   it('shows subagent status, duration and tokens without opening the session picker', async () => {
     const h = open()
     h.sendState({ sessionId: 'parent', sessions: [parent, child] })
@@ -27,6 +37,8 @@ describe('direct task details navigation', () => {
     expect(row?.textContent).toContain('tokens')
     expect(h.document.querySelector('#sessionMenu')?.classList.contains('hidden')).toBe(true)
     h.click('.task-child')
+    expect(h.posts.at(-1)).toEqual({ type: 'select-session', sessionId: 'child' })
+    h.click('.task-open')
     expect(h.posts).toContainEqual({ type: 'open-task-details', kind: 'subagent', sessionId: 'child' })
   })
   it('opens a nested child by its exact id and only lists descendants of the current conversation', async () => {
@@ -39,7 +51,7 @@ describe('direct task details navigation', () => {
     expect((h.document.querySelector('.task-child[data-session-id="child"]') as HTMLElement).style.paddingLeft).toBe('8px')
     expect((h.document.querySelector('.task-child[data-session-id="grandchild"]') as HTMLElement).style.paddingLeft).toBe('20px')
     h.click('.task-child[data-session-id="grandchild"]')
-    expect(h.posts.at(-1)).toEqual({ type: 'open-task-details', kind: 'subagent', sessionId: 'grandchild' })
+    expect(h.posts.at(-1)).toEqual({ type: 'select-session', sessionId: 'grandchild' })
   })
   it('shows an actionable pending approval and updates it when the child completes', async () => {
     const h = open()

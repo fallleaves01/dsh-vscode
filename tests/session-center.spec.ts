@@ -12,6 +12,29 @@ function summary(overrides: Partial<SessionSummary> & Pick<SessionSummary, 'sess
 }
 
 describe('session center state', () => {
+  it('shows external executions without requiring or reparenting a local Session', () => {
+    const items = sessionItems([
+      summary({ sessionId: 'parent', projections: { values: { subagentCatalog: [
+        { id: 'execution', mode: 'external', createdAt: 10, label: 'External review' },
+        { id: 'unrelated', mode: 'external', createdAt: 20, label: 'Provider task' },
+      ] } } }),
+      summary({ sessionId: 'unrelated' }),
+    ], new Set(), 'parent', new Set())
+    expect(items.find(item => item.id === 'parent')?.childCount).toBe(2)
+    expect(items.find(item => item.id === 'external:parent:execution')).toMatchObject({ parentId: 'parent', subagent: { mode: 'external', executionId: 'execution' }, agentAvailable: false })
+    expect(items.find(item => item.id === 'unrelated')?.parentId).toBeUndefined()
+  })
+  it('keeps external executions with their nested owner, deduplicates them, and respects root archiving', () => {
+    const summaries = [summary({ sessionId: 'parent' }), summary({ sessionId: 'child', parentSessionId: 'parent', origin: 'subagent', projections: { values: { subagentCatalog: [
+      { id: 'provider:one', mode: 'external', createdAt: 10 }, { id: 'provider:one', mode: 'external', createdAt: 10 },
+      { id: 42, mode: 'external' },
+    ] } } })]
+    const items = sessionItems(summaries, new Set(), 'parent', new Set())
+    expect(items.filter(item => item.subagent?.mode === 'external')).toEqual([expect.objectContaining({ parentId: 'child', title: 'provider:one' })])
+    expect(items.find(item => item.id === 'child')!.childCount).toBe(1)
+    expect(sessionItems(summaries, new Set(['parent']), undefined, new Set())).toEqual([])
+  })
+
   it('keeps a blank conversation visible while it needs a response, but respects archiving', () => {
     const pending = { approvals: 1, questions: 2 }
     const items = sessionItems([
@@ -84,6 +107,12 @@ describe('session center state', () => {
 })
 
 describe('subagent sessions', () => {
+  it('keeps exact parent and mode addresses when a child has no list summary yet',()=>{
+    const summaries=[summary({sessionId:'parent',projections:catalog([{id:'cold',mode:'one-shot',label:'Stored review'}])})]
+    const items=sessionItems(summaries,new Set(),'parent',new Set())
+    expect(items.find(item=>item.id==='cold')).toMatchObject({parentId:'parent',catalogOnly:true,subagent:{mode:'one-shot',label:'Stored review'}})
+    expect(items[0]?.childCount).toBe(1);expect(parentIdOf(summaries,'cold')).toBe('parent')
+  })
   const catalog = (entries: Array<{ id: string; mode: string; label?: string }>) => ({
     values: { subagentCatalog: entries.map(entry => ({ createdAt: 1, ...entry })) },
   })
@@ -113,13 +142,13 @@ describe('subagent sessions', () => {
     expect(items.find(item => item.id === 'kid')?.subagent).toEqual({ mode: 'continuable', label: 'Own label' })
   })
 
-  it('keeps a completed one-shot child collapsed but still lists live or selected work', () => {
+  it('keeps catalog-owned children available even when their summaries are blank', () => {
     const build = (kid: Partial<SessionSummary>) => sessionItems([
       summary({ sessionId: 'parent', updatedAt: 50, projections: catalog([{ id: 'kid', mode: 'one-shot', label: 'Audit' }]) }),
       summary({ sessionId: 'kid', updatedAt: 40, origin: 'subagent', parentSessionId: 'parent', ...kid }),
     ], new Set(), 'parent', new Set())
 
-    expect(build({ blank: true }).map(item => item.id)).toEqual(['parent'])
+    expect(build({ blank: true }).map(item => item.id)).toEqual(['parent', 'kid'])
     expect(build({ blank: true, running: true }).map(item => item.id)).toEqual(['parent', 'kid'])
     expect(build({ blank: false }).map(item => item.id)).toEqual(['parent', 'kid'])
 
