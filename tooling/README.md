@@ -7,10 +7,23 @@ break too.
 
 Run these **first** after upgrading DeepSeek Harness.
 
+The `0.2.1-rc.2` Typert generator uses keyed method tables instead of the legacy
+per-method `id` fields. The contract comparison accepts both formats and rejects
+unrecognized descriptors. Network failures produce an incomplete result rather
+than a claim of compatibility. Library packages without a Host face are outside
+the method/schema comparison.
+
 ## Usage
 
-Every script needs a DSH launch URL that carries a token — the same URL the
-sidebar accepts. Start DSH (`dsh web`), copy the URL, and pass it quoted:
+The static comparison takes two published versions and needs no runtime URL:
+
+```sh
+node tooling/dsh-contract-diff.mjs 0.2.0-rc.2 0.2.1-rc.2
+```
+
+Live probes need a DSH launch URL that carries a token — the same URL the
+sidebar accepts. For probes that create or modify sessions, use the isolated
+home described below. Copy the isolated runtime's URL and pass it quoted:
 
 ```sh
 node tooling/dsh-drift-audit.mjs '<launch url with token>'

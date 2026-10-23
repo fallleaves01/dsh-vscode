@@ -3,9 +3,9 @@
 //
 // Downloads the RPC contract surface (Typert host descriptors + published types)
 // of the packages this extension consumes, for two published versions, and
-// reports: added/removed RPC methods, changed argument/result schemas, and any
-// newly exported types. Reads only the npm registry — nothing is installed and
-// nothing on this machine is touched.
+// reports added/removed RPC methods and changed argument/result schemas.
+// Uses an ignored .drift scratch directory; no packages are installed and no
+// user profile or conversation is read or changed.
 //
 // Usage: node tooling/dsh-contract-diff.mjs [fromVersion] [toVersion]
 //        node tooling/dsh-contract-diff.mjs 0.1.7-rc.1 0.1.7-rc.2
@@ -14,6 +14,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { methodsOf } from './dsh-contract-surface.mjs';
 
 const [fromVersion = '0.1.7-rc.1', toVersion = '0.1.7-rc.2'] = process.argv.slice(2);
 
@@ -52,10 +53,6 @@ const read = async (path) => {
   try { return await (await import('node:fs/promises')).readFile(path, 'utf8'); } catch { return undefined; }
 };
 
-const methodsOf = (source) => source === undefined
-  ? undefined
-  : new Set([...source.matchAll(/id:\s*'[^#']+#([A-Za-z0-9_]+\/[A-Za-z0-9_]+)'/g)].map(m => m[1]));
-
 // Generated descriptors embed source line numbers; strip them so only real
 // shape changes register.
 const schemasOf = (source) => {
@@ -69,6 +66,8 @@ const schemasOf = (source) => {
 
 await rm(root, { recursive: true, force: true });
 let findings = 0;
+let failures = 0;
+let compared = 0;
 console.log(`DSH contract diff: ${fromVersion} -> ${toVersion}\n`);
 
 for (const pkg of PACKAGES) {
@@ -78,6 +77,7 @@ for (const pkg of PACKAGES) {
     [fromDir, toDir] = await Promise.all([fetchContract(pkg, fromVersion), fetchContract(pkg, toVersion)]);
   } catch (error) {
     const reason = String(error?.message ?? error);
+    if (!reason.includes('no typert.host.js')) failures++;
     console.log(`  ??  ${pkg}: ${reason.includes('no typert.host.js')
       ? 'library package (no host RPC face to diff)'
       : `could not be diffed: ${reason.slice(0, 70)}`}`);
@@ -90,6 +90,12 @@ for (const pkg of PACKAGES) {
   const [fromHost, toHost] = await Promise.all([
     read(join(fromDir, 'lib/typert.host.js')), read(join(toDir, 'lib/typert.host.js')),
   ]);
+  if (fromHost === undefined || toHost === undefined) {
+    failures++;
+    console.log(`  ??  ${pkg}: downloaded Host descriptor could not be read`);
+    continue;
+  }
+  compared++;
   const fromMethods = methodsOf(fromHost);
   const toMethods = methodsOf(toHost);
   const added = [...(toMethods ?? [])].filter(m => !(fromMethods ?? new Set()).has(m));
@@ -119,5 +125,9 @@ for (const pkg of PACKAGES) {
 }
 
 await rm(root, { recursive: true, force: true });
-console.log(`\n${findings === 0 ? 'No contract changes affecting this extension.' : `${findings} contract change(s) to review.`}`);
-process.exit(0);
+if (failures > 0 || compared === 0) {
+  console.log(`\nIncomplete comparison: ${compared} Host package(s) compared, ${failures} failed. No compatibility conclusion.`);
+  process.exitCode = 1;
+} else {
+  console.log(`\n${compared} Host package(s) compared. ${findings === 0 ? 'No RPC method or serialized schema changes detected in these descriptors.' : `${findings} contract change(s) to review.`}`);
+}
