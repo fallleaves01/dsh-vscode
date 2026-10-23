@@ -15,7 +15,7 @@ const vscodeignore = readFileSync(join(root, '.vscodeignore'), 'utf8')
 const gitignore = readFileSync(join(root, '.gitignore'), 'utf8')
 
 /** Directories tooling/ and the test suites create at the repository root. */
-const TRANSIENT = ['.acct-home', '.audit-home', '.probe-home', '.drift', '.npm-cache']
+const TRANSIENT = ['.acct-home', '.audit-home', '.probe-home', '.drift', '.npm-cache', '.dsh-vscode']
 
 describe('the running-tail asset', () => {
   const png = readFileSync(join(root, 'media/deepseek-tail.png'))

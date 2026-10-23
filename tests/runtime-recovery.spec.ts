@@ -102,6 +102,18 @@ describe('inspecting what is on record', () => {
 })
 
 describe('ending a recorded runtime', () => {
+  it('refuses to stop a runtime still leased by a live window', async () => {
+    const child=idleProcess(),broker=new RuntimeBroker({stateDir:scratch(),probe:testProbe()}),descriptor=descriptorFor(child)
+    broker.writeDescriptor(descriptor); await broker.takeLease('active-window',child.pid)
+    await expect(endRecordedRuntime(broker,descriptor)).resolves.toEqual({ended:false,reason:'in-use'})
+    expect(child.exitCode).toBeNull()
+  })
+  it('does not stop a replacement recorded while the confirmation was open', async () => {
+    const child=idleProcess(),broker=new RuntimeBroker({stateDir:scratch(),probe:testProbe()}),descriptor=descriptorFor(child)
+    broker.writeDescriptor({...descriptor,instanceId:'newer-runtime'})
+    await expect(endRecordedRuntime(broker,descriptor)).resolves.toEqual({ended:false,reason:'replaced'})
+    expect(child.exitCode).toBeNull()
+  })
   it('ends it once it answers with its own launch token', async () => {
     const child = idleProcess()
     const broker = new RuntimeBroker({ stateDir: scratch(), probe: testProbe() })

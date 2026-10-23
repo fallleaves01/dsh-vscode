@@ -148,6 +148,7 @@ function expectedFingerprint() {
     // `webArgsForDshVersion` appends `--no-open` for 0.1.2-rc.1.
     arguments: ['web', '--host', '127.0.0.1', '--port', '0', '--no-open'],
     extensionVersion: 'unknown',
+    runtimeVersion: state.version,
   }
 }
 
@@ -217,6 +218,64 @@ afterEach(async () => {
 })
 
 describe('attaching to a runtime another window started', () => {
+  it('bounds a busy operation by startupTimeout and can retry the same instance afterwards', async () => {
+    const child = idleProcess(), dir = scratch(), broker = new RuntimeBroker({ stateDir: dir, probe: testProbe() })
+    descriptorFor(child, dir); state.timeout = 30
+    const lock = await broker.acquireTransition(), { instance, logs } = runtime(broker)
+    try {
+      await expect(instance.start()).rejects.toThrow('Timed out waiting for another VS Code window')
+      expect(instance.state.kind).toBe('failed')
+      expect(broker.readDescriptor()?.pid).toBe(child.pid)
+      expect(state.children).toHaveLength(0)
+    } finally { lock.release() }
+    await instance.start()
+    expect(instance.state).toMatchObject({ kind: 'ready', ownership: 'adopted', pid: child.pid })
+    expect(logs.join('\n')).toContain('Connecting to the existing shared DSH runtime')
+    expect(logs.join('\n')).not.toContain('shared-token')
+    expect(state.children).toHaveLength(0)
+  })
+
+  it('uses the authenticated ledger before probing a different service on port 3080', async () => {
+    const child = idleProcess(), dir = scratch(), broker = new RuntimeBroker({ stateDir: dir, probe: testProbe() })
+    descriptorFor(child, dir); state.reuse = true
+    vi.stubGlobal('fetch', vi.fn(async (url: URL, init?: RequestInit) => {
+      if (new URL(url).port === '3080') throw new Error('The conventional port must not be consulted')
+      return init?.method === 'GET' ? authResponse() : rpcResponse(init)
+    }))
+    await runtime(broker).instance.start()
+    expect(state.children).toHaveLength(0)
+  })
+
+  it('does not reject a compatible runtime solely because its extension UI version differs', async () => {
+    const child = idleProcess(), dir = scratch(), broker = new RuntimeBroker({ stateDir: dir, probe: testProbe() })
+    descriptorFor(child, dir, {fingerprint:{...expectedFingerprint(),extensionVersion:'0.1.10'}})
+    await runtime(broker).instance.start()
+    expect(state.children).toHaveLength(0)
+  })
+
+  it('cancels a waiting window without admitting a competing startup', async () => {
+    const broker = new RuntimeBroker({stateDir:scratch(),probe:testProbe()})
+    const lock = await broker.acquireTransition(), {instance} = runtime(broker)
+    const starting = instance.start(); await vi.waitFor(()=>expect(instance.state.kind).toBe('starting'))
+    await instance.stop(); await expect(starting).rejects.toThrow('stopped')
+    expect(state.children).toHaveLength(0); lock.release()
+    const after = await broker.acquireTransition({timeoutMs:100}); after.release()
+  })
+
+  it('waits for a pending lease write when a window closes during adoption', async () => {
+    const child = idleProcess(), dir = scratch(), leaseWrite = Promise.withResolvers<void>()
+    let selfReads = 0
+    const probe = {...testProbe(),startTime:async(pid:number)=>{
+      if(pid===process.pid && ++selfReads===2) await leaseWrite.promise
+      return 'test-start'
+    }}
+    const broker = new RuntimeBroker({stateDir:dir,probe}); descriptorFor(child,dir)
+    const {instance} = runtime(broker), start = instance.start()
+    await vi.waitFor(()=>expect(selfReads).toBe(2))
+    const stop = instance.stop(); leaseWrite.resolve(); await stop; await expect(start).rejects.toThrow('stopped')
+    expect(broker.readLeases()).toEqual([]); expect(state.children).toHaveLength(0)
+  })
+
   it('adopts it instead of spawning a second one', async () => {
     const child = idleProcess()
     const dir = scratch()
@@ -247,25 +306,50 @@ describe('attaching to a runtime another window started', () => {
     expect(broker.readLeases()[0]!.pid).toBe(process.pid)
   })
 
-  it('starts a separate runtime when the recorded configuration differs, and never ends the other one', async () => {
+  it('reports incompatible settings without spawning or ending the live runtime', async () => {
     const child = idleProcess()
     const dir = scratch()
     const broker = new RuntimeBroker({ stateDir: dir, probe: testProbe() })
     descriptorFor(child, dir, { fingerprint: { ...expectedFingerprint(), dshHome: '/somewhere/else/.dsh' } })
     const { instance, logs } = runtime(broker)
 
-    const pending = instance.start()
-    await vi.waitFor(() => expect(state.children).toHaveLength(1))
-    state.children[0]!.stdout.emit('data', 'dsh web: http://127.0.0.1:43127/?token=managed-token\n')
-    await pending
-
-    expect(instance.state).toMatchObject({ kind: 'ready', ownership: 'managed' })
-    expect(logs.join('\n')).toContain('not attaching to the running DSH runtime')
+    await expect(instance.start()).rejects.toThrow('incompatible settings')
+    expect(state.children).toHaveLength(0)
+    expect(instance.state).toMatchObject({ kind: 'failed' })
+    expect(logs.join('\n')).not.toContain('shared-token')
     // The mismatched runtime is still running: nothing in this path ends a process.
     expect(child.exitCode).toBeNull()
   })
 
-  it('falls back to a private runtime when the recorded one no longer authenticates', async () => {
+  it('actually replaces an incompatible runtime when Restart is requested by a window that never acquired a lease', async () => {
+    const child = idleProcess(), dir = scratch(), broker = new RuntimeBroker({ stateDir: dir, probe: testProbe() })
+    descriptorFor(child, dir, { fingerprint: { ...expectedFingerprint(), runtimeVersion: 'older-version' } })
+    const { instance, logs } = runtime(broker)
+    await expect(instance.start()).rejects.toThrow('different DSH version')
+    expect(broker.readLeases()).toEqual([])
+    const restart = instance.restart()
+    await vi.waitFor(() => expect(state.children).toHaveLength(1))
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true)
+    state.children[0]!.stdout.emit('data', 'dsh web: http://127.0.0.1:43127/?token=replacement-token\n')
+    await restart
+    expect(instance.state).toMatchObject({ kind: 'ready', ownership: 'managed' })
+    expect(broker.readDescriptor()?.pid).toBe(123)
+    expect(logs.join('\n')).not.toContain('shared-token')
+    expect(logs.join('\n')).not.toContain('replacement-token')
+  })
+
+  it('does not replace an incompatible runtime with active borrowers without confirmation', async () => {
+    const child = idleProcess(), dir = scratch(), broker = new RuntimeBroker({ stateDir: dir, probe: testProbe() })
+    descriptorFor(child, dir, { fingerprint: { ...expectedFingerprint(), runtimeVersion: 'older-version' } })
+    await broker.takeLease('other-window', child.pid)
+    const { instance } = runtime(broker)
+    await expect(instance.start()).rejects.toThrow('incompatible settings')
+    await expect(instance.restart()).rejects.toThrow('another VS Code window')
+    expect(child.exitCode).toBeNull()
+    expect(state.children).toHaveLength(0)
+  })
+
+  it('retains an unauthenticating live runtime without starting a competing writer', async () => {
     const child = idleProcess()
     const dir = scratch()
     const broker = new RuntimeBroker({ stateDir: dir, probe: testProbe() })
@@ -273,18 +357,15 @@ describe('attaching to a runtime another window started', () => {
     const { instance, logs } = runtime(broker)
     vi.stubGlobal('fetch', vi.fn(async (_url: URL, init?: RequestInit) => init?.method === 'GET' ? authRequired() : rpcResponse(init)))
 
-    const pending = instance.start()
-    await vi.waitFor(() => expect(state.children).toHaveLength(1))
-    vi.stubGlobal('fetch', vi.fn(async (_url: URL, init?: RequestInit) => init?.method === 'GET' ? authResponse() : rpcResponse(init)))
-    state.children[0]!.stdout.emit('data', 'dsh web: http://127.0.0.1:43127/?token=managed-token\n')
-    await pending
-
-    expect(instance.state).toMatchObject({ kind: 'ready', ownership: 'managed' })
-    expect(logs.join('\n')).toContain('could not attach to the recorded DSH runtime')
+    await expect(instance.start()).rejects.toThrow('no additional runtime was started')
+    expect(instance.state).toMatchObject({ kind: 'failed' })
+    expect(state.children).toHaveLength(0)
+    expect(broker.readDescriptor()?.pid).toBe(child.pid)
+    expect(logs.join('\n')).not.toContain('shared-token')
     expect(child.exitCode).toBeNull()
   })
 
-  it('ignores a descriptor that is not one of ours', async () => {
+  it('refuses to replace an unverifiable descriptor', async () => {
     const child = idleProcess()
     const dir = scratch()
     writeFileSync(join(dir, 'runtime.json'), JSON.stringify({
@@ -293,15 +374,22 @@ describe('attaching to a runtime another window started', () => {
     const broker = new RuntimeBroker({ stateDir: dir, probe: testProbe() })
     const { instance } = runtime(broker)
 
-    const pending = instance.start()
-    await vi.waitFor(() => expect(state.children).toHaveLength(1))
-    state.children[0]!.stdout.emit('data', 'dsh web: http://127.0.0.1:43127/?token=managed-token\n')
-    await pending
-    expect(instance.state).toMatchObject({ kind: 'ready', ownership: 'managed' })
+    await expect(instance.start()).rejects.toThrow('cannot be verified')
+    expect(state.children).toHaveLength(0)
+    expect(instance.state).toMatchObject({ kind: 'failed' })
   })
 })
 
 describe('publishing a runtime for another window', () => {
+  it('releases startup coordination after a process error so retry can complete', async () => {
+    const broker=new RuntimeBroker({stateDir:scratch(),probe:testProbe()}),{instance}=runtime(broker)
+    const first=instance.start(); await vi.waitFor(()=>expect(state.children).toHaveLength(1))
+    state.children[0]!.emit('error',new Error('Isolated runtime host registration failed'))
+    await expect(first).rejects.toThrow('registration failed')
+    const retry=instance.start(); await vi.waitFor(()=>expect(state.children).toHaveLength(2))
+    state.children[1]!.stdout.emit('data','dsh web: http://127.0.0.1:43127/?token=retry-token\n')
+    await retry; expect(instance.state.kind).toBe('ready'); expect(broker.readLeases()).toHaveLength(1)
+  })
   it('records the managed runtime with its fingerprint, and keeps the token out of the log', async () => {
     const dir = scratch()
     const broker = new RuntimeBroker({ stateDir: dir, probe: testProbe() })
@@ -327,7 +415,7 @@ describe('publishing a runtime for another window', () => {
     expect(logs.join('\n')).toContain('[runtime] launch:')
   })
 
-  it('reports a still-running runtime it did not adopt, so the user can find it', async () => {
+  it('preserves a mismatched record when refusing to start', async () => {
     const child = idleProcess()
     const dir = scratch()
     const broker = new RuntimeBroker({ stateDir: dir, probe: testProbe() })
@@ -336,15 +424,10 @@ describe('publishing a runtime for another window', () => {
     descriptorFor(child, dir, { fingerprint: { ...expectedFingerprint(), dshHome: '/elsewhere/.dsh' } })
     const { instance, logs } = runtime(broker)
 
-    const pending = instance.start()
-    await vi.waitFor(() => expect(state.children).toHaveLength(1))
-    state.children[0]!.stdout.emit('data', 'dsh web: http://127.0.0.1:43127/?token=managed-token\n')
-    await pending
-
-    const text = logs.join('\n')
-    expect(text).toContain('is still running and was not adopted')
-    expect(text).toContain(`pid ${String(child.pid!)}`)
-    expect(text).toContain('Diagnose Session Occupancy')
+    await expect(instance.start()).rejects.toThrow('incompatible settings')
+    expect(state.children).toHaveLength(0)
+    expect(broker.readDescriptor()?.pid).toBe(child.pid)
+    expect(logs.join('\n')).not.toContain('shared-token')
     expect(child.exitCode).toBeNull()
   })
 })
@@ -378,6 +461,19 @@ describe('recovering a runtime orphaned by a crashed window', () => {
 })
 
 describe('releasing a runtime', () => {
+  it('allows replacing a proved-dead runtime even if another live window has an old lease', async () => {
+    const child=idleProcess(),dir=scratch(),broker=new RuntimeBroker({stateDir:dir,probe:testProbe()})
+    descriptorFor(child,dir)
+    const {instance}=runtime(broker); await instance.start()
+    broker.writeLease({schema:1,instanceId:'other-window',pid:process.pid,createdAt:Date.now(),runtimePid:child.pid})
+    const exited=new Promise(resolve=>child.once('exit',resolve)); child.kill('SIGTERM'); await exited
+    const restart=instance.restart()
+    await vi.waitFor(()=>expect(state.children).toHaveLength(1))
+    state.children[0]!.stdout.emit('data','dsh web: http://127.0.0.1:43127/?token=replacement-token\n')
+    await restart
+    expect(instance.state).toMatchObject({kind:'ready',ownership:'managed'})
+    expect(broker.readDescriptor()?.pid).toBe(123)
+  })
   it('stops an adopted runtime when this was the last window using it', async () => {
     const child = idleProcess()
     const dir = scratch()
@@ -442,7 +538,7 @@ describe('releasing a runtime', () => {
     await instance.stop()
 
     expect(child.exitCode).toBeNull()
-    expect(broker.readDescriptor()).toBeUndefined()
+    expect(broker.readDescriptor()?.pid).toBe(child.pid)
     expect(logs.join('\n')).toContain('did not answer with its own launch token')
     expect(logs.join('\n')).not.toContain('the conversations it held are released')
   })
@@ -550,24 +646,18 @@ describe('a runtime the user asked us to remember', () => {
     expect(logs.join('\n')).not.toContain('the conversations it held are released')
   })
 
-  it('drops its record once it stops answering, and starts a separate runtime', async () => {
+  it('retains a saved runtime that stops answering until explicitly forgotten', async () => {
     const dir = scratch()
     savedDescriptor(dir)
     const broker = new RuntimeBroker({ stateDir: dir, probe: testProbe() })
     const { instance, logs } = runtime(broker)
     vi.stubGlobal('fetch', vi.fn(async (_url: URL, init?: RequestInit) => init?.method === 'GET' ? authRequired() : rpcResponse(init)))
 
-    const pending = instance.start()
-    await vi.waitFor(() => expect(state.children).toHaveLength(1))
-    vi.stubGlobal('fetch', vi.fn(async (_url: URL, init?: RequestInit) => init?.method === 'GET' ? authResponse() : rpcResponse(init)))
-    state.children[0]!.stdout.emit('data', 'dsh web: http://127.0.0.1:43127/?token=managed-token\n')
-    await pending
-
-    expect(instance.state).toMatchObject({ kind: 'ready', ownership: 'managed' })
-    // The dead saved record was dropped, and the runtime this window started took
-    // its place — so the next window adopts a live runtime rather than a dead URL.
-    expect(broker.readDescriptor()).toMatchObject({ manageable: true })
-    expect(logs.join('\n')).toContain('no longer answering')
+    await expect(instance.start()).rejects.toThrow('record was retained')
+    expect(instance.state).toMatchObject({ kind: 'failed' })
+    expect(state.children).toHaveLength(0)
+    expect(broker.readDescriptor()).toMatchObject({ manageable: false })
+    expect(logs.join('\n')).not.toContain('saved-token')
   })
 
   it('is still honoured when reuse across windows is disabled', async () => {

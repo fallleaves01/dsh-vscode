@@ -36,10 +36,21 @@ describe('opt-in task services for managed runtimes', () => {
     const contribution = new TaskRuntimeContribution({ globalStorageUri: { fsPath: dir } } as any, previous)
     const launch = { workspacePath: '/project', configuredExecutable: '', configuredArguments: ['web'] }
     const first = (await contribution.prepare(launch))!, second = (await contribution.prepare(launch))!
+    expect(first.sharing).toBe('exclusive')
     const args = first.transformArguments(['web'], '0.2.0-rc.2')
     expect(args).toEqual(second.transformArguments(['web'], '0.2.0-rc.2'))
     expect(args).toContain('--debug'); expect(first.environment).toEqual({ DEBUG_BRIDGE: 'test' })
     expect(await readFile(String(args[args.indexOf('--patch') + 1]), 'utf8')).toBe(taskRuntimePatch({ historySearch: true, schedule: true }))
     await first.dispose!(); expect(dispose).toHaveBeenCalledOnce()
+  })
+  it('shares identical task overlays across different VS Code profile storage paths', async () => {
+    const dir = await mkdtemp(join(tmpdir(),'dsh-task-shared-')); directories.push(dir)
+    settings.values={enableHistorySearch:true,enableSchedule:true}
+    const a = new TaskRuntimeContribution({globalStorageUri:{fsPath:join(dir,'profile-a')}} as any)
+    const b = new TaskRuntimeContribution({globalStorageUri:{fsPath:join(dir,'profile-b')}} as any)
+    const context={workspacePath:'/project',configuredExecutable:'',configuredArguments:['web'],sharedRuntimeDirectory:join(dir,'shared')}
+    const [first,second]=await Promise.all([a.prepare(context),b.prepare(context)])
+    expect(first!.sharing).toBe('compatible'); expect(second!.sharing).toBe('compatible')
+    expect(first!.transformArguments(['web'],'0.2.1-rc.2')).toEqual(second!.transformArguments(['web'],'0.2.1-rc.2'))
   })
 })

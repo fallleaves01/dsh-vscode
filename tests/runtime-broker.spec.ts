@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  BROKER_SCHEMA, RuntimeBroker, describeDescriptor, describeLockHolders, fingerprintsMatch,
+  BROKER_SCHEMA, RuntimeBroker, describeDescriptor, describeLockHolders, fingerprintsMatch, fingerprintDifferences,
   nodeProcessProbe, parseDescriptor, parseLease, sessionLockPaths,
   type ProcessProbe, type RuntimeDescriptor, type RuntimeFingerprint,
 } from '../src/runtime-broker.ts'
@@ -30,6 +30,28 @@ afterEach(() => {
 })
 
 describe('failed process termination', () => {
+  it('does not force-kill a different process that reuses the PID during shutdown', async () => {
+    let identity = 'recorded-start'
+    const broker = new RuntimeBroker({ stateDir: stateDir(), probe: { isAlive: () => true, startTime: async () => identity } })
+    const record = descriptor({ processStartTime: identity }); broker.writeDescriptor(record)
+    const signal = vi.spyOn(process, 'kill').mockImplementation((_pid, kind) => {
+      if (kind === 'SIGTERM') identity = 'unrelated-start'
+      return true
+    })
+    await expect(broker.stop(record, { graceMs: 0 })).resolves.toBe(true)
+    expect(signal).toHaveBeenCalledWith(record.pid, 'SIGTERM')
+    expect(signal).not.toHaveBeenCalledWith(record.pid, 'SIGKILL')
+  })
+
+  it('requires fresh identity proof before force-killing an unidentifiable PID', async () => {
+    const broker = new RuntimeBroker({ stateDir: stateDir(), probe: { isAlive: () => true, startTime: async () => undefined } })
+    const record = descriptor(); broker.writeDescriptor(record)
+    const signal = vi.spyOn(process, 'kill').mockReturnValue(true)
+    await expect(broker.stop(record, { graceMs: 0, confirmed: true })).resolves.toBe(false)
+    expect(signal).not.toHaveBeenCalledWith(record.pid, 'SIGKILL')
+    expect(broker.readDescriptor()).toBeDefined()
+  })
+
   it('retains a living runtime record when the operating system refuses its signal', async () => {
     const broker = new RuntimeBroker({ stateDir: stateDir(), probe: scriptedProbe([4821], { 4821: 'start' }) })
     broker.writeDescriptor(descriptor({ processStartTime: 'start' }))
@@ -83,11 +105,20 @@ function scriptedProbe(alive: number[] = [], times: Record<number, string | unde
 }
 
 describe('runtime fingerprints', () => {
+  it('reports only the differing field names without exposing values', () => {
+    const left = fingerprint({ environmentDigest: 'first-key-hmac', runtimeVersion: '1.0' })
+    const right = fingerprint({ arguments: ['--key', 'private-api-key'], environmentDigest: 'second-key-hmac', runtimeVersion: '2.0' })
+    expect(fingerprintDifferences(left, right)).toEqual(['arguments', 'DSH version', 'launcher environment'])
+    expect(JSON.stringify(fingerprintDifferences(left, right))).not.toMatch(/private-api-key|hmac/)
+  })
   it('matches only an identical configuration', () => {
     expect(fingerprintsMatch(fingerprint(), fingerprint())).toBe(true)
     expect(fingerprintsMatch(fingerprint(), fingerprint({ dshHome: '/other/.dsh' }))).toBe(false)
     expect(fingerprintsMatch(fingerprint(), fingerprint({ executable: '/usr/bin/dsh' }))).toBe(false)
-    expect(fingerprintsMatch(fingerprint(), fingerprint({ extensionVersion: '0.2.0' }))).toBe(false)
+    expect(fingerprintsMatch(fingerprint(), fingerprint({ extensionVersion: '0.2.0' }))).toBe(true)
+    expect(fingerprintsMatch(fingerprint({ runtimeVersion: '0.2.1' }), fingerprint({ runtimeVersion: '0.2.2' }))).toBe(false)
+    expect(fingerprintsMatch(fingerprint(), fingerprint({ environmentDigest: 'changed' }))).toBe(false)
+    expect(fingerprintsMatch(fingerprint(), fingerprint({ hostProtocol: 'ipc-1' }))).toBe(false)
     expect(fingerprintsMatch(fingerprint(), fingerprint({ arguments: ['web', '--port', '0'] }))).toBe(false)
   })
 
