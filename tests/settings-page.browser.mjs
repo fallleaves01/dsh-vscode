@@ -20,12 +20,12 @@ const browser = candidates.find(path => path && existsSync(path))
 assert.ok(browser, 'Set DSH_TEST_BROWSER to a Chrome/Chromium executable.')
 
 const root=new URL('../',import.meta.url)
-const built=await build({stdin:{contents:"export {settingsPageHtml} from './src/settings-page-html.ts'; export {pageState} from './tests/settings-page.fixture.ts'",resolveDir:fileURLToPath(root)},bundle:true,platform:'node',format:'cjs',write:false})
+const built=await build({stdin:{contents:"export {settingsPageHtml} from './src/settings-page-html.ts'; export {searchPageState} from './tests/settings-page.fixture.ts'",resolveDir:fileURLToPath(root)},bundle:true,platform:'node',format:'cjs',write:false})
 const mod={exports:{}};new Function('module','exports','require',built.outputFiles[0].text)(mod,mod.exports,createRequire(import.meta.url))
 const html=mod.exports.settingsPageHtml({cspSource:'https://assets.invalid'},{toString:()=> 'https://assets.invalid/settings.js'})
 const shell=html.replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/,'').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g,'')
 const script=await readFile(new URL('dist/webview/settings-page.js',root),'utf8')
-const snapshot=mod.exports.pageState()
+const snapshot=mod.exports.searchPageState();snapshot.version=JSON.parse(await readFile(new URL('package.json',root),'utf8')).version
 const profile = await mkdtemp(join(tmpdir(), 'dsh-settings-browser-'))
 const child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
   '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'],
@@ -79,22 +79,23 @@ try {
   await evaluate('window.settingsState='+JSON.stringify(snapshot)+';show(settingsState)')
   const themes={dark:{bg:'#181818',fg:'#ddd',input:'#252526',border:'#444',muted:'#aaa'},light:{bg:'#fff',fg:'#202020',input:'#f5f5f5',border:'#ddd',muted:'#555'},contrast:{bg:'#000',fg:'#fff',input:'#000',border:'#fff',muted:'#fff'}}
   const theme=async value=>evaluate(`Object.entries(${JSON.stringify({'--vscode-font-family':'Arial','--vscode-editor-font-family':'monospace','--vscode-focusBorder':'#4d6bfe','--vscode-button-background':'#4d6bfe','--vscode-button-foreground':'#fff'})}).forEach(([key,value])=>document.documentElement.style.setProperty(key,value));Object.entries(${JSON.stringify({'--vscode-editor-background':value.bg,'--vscode-foreground':value.fg,'--vscode-input-background':value.input,'--vscode-widget-border':value.border,'--vscode-descriptionForeground':value.muted})}).forEach(([key,value])=>document.documentElement.style.setProperty(key,value))`)
-  const click=label=>evaluate(`[...document.querySelectorAll('button')].find(button=>button.textContent===${JSON.stringify(label)}).click()`)
-  const input=(key,value)=>evaluate(`(()=>{const control=[...document.querySelectorAll('input')].find(input=>input.dataset.focusKey===${JSON.stringify(key)});control.value=${JSON.stringify(value)};control.dispatchEvent(new Event('input',{bubbles:true}));return true})()`)
+  const click=label=>evaluate(`(()=>{const name=${JSON.stringify(label)};let button=[...document.querySelectorAll('button')].find(button=>button.textContent===name);if(!button&&['Shell','Agent loop','Subagents','Web search'].includes(name)){document.querySelector('[data-section=\"plugins\"]').click();button=[...document.querySelectorAll('button')].find(button=>button.textContent===name)}if(button.closest('details'))button.closest('details').open=true;button.click()})()`)
+  const input=(key,value)=>evaluate(`(()=>{const control=[...document.querySelectorAll('input')].find(input=>input.dataset.focusKey===${JSON.stringify(key)});if(control.closest('details'))control.closest('details').open=true;control.value=${JSON.stringify(value)};control.dispatchEvent(new Event('input',{bubbles:true}));return true})()`)
   const capture=async name=>{if(!process.env.DSH_SETTINGS_SCREENSHOT_DIR)return;await mkdir(process.env.DSH_SETTINGS_SCREENSHOT_DIR,{recursive:true});const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_SETTINGS_SCREENSHOT_DIR,name),Buffer.from(data,'base64'))}
   for(const [name,colors] of Object.entries(themes)){
     await theme(colors)
     for(const [width,height] of [[320,400],[420,800],[900,800]]){
       await page('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false})
-      for(const label of ['General','Models','Shell','Agent loop','Subagents','Web search']){
+      for(const label of ['General','Models','Built-in plugins','Shell','Agent loop','Subagents','Web search']){
         await click(label)
+        if(width<620) assert.equal(await evaluate(`(()=>{const nav=document.getElementById('navigation').getBoundingClientRect(),active=document.querySelector('nav [aria-current="page"]').getBoundingClientRect();return active.left>=nav.left-1&&active.right<=nav.right+1})()`),true,`Active settings section hidden: ${label} ${width}`)
         if(label==='Models'&&!await evaluate('Boolean(document.querySelector(\'input[type="password"]\'))'))await evaluate(`document.querySelector('[data-provider="anthropic"]').click()`)
         const layout=await evaluate(`(()=>{const main=document.querySelector('main').getBoundingClientRect();return {width:document.documentElement.scrollWidth,height:document.documentElement.scrollHeight,mainBottom:main.bottom,viewport:innerHeight,internalOverflow:document.querySelector('main').scrollWidth>document.querySelector('main').clientWidth+1}})()`)
         assert.ok(layout.width<=width&&layout.height<=height+1&&layout.mainBottom<=height+1&&!layout.internalOverflow,`${name} ${width} ${label}: ${JSON.stringify(layout)}`)
       }
     }
   }
-  console.log('PASS: six settings sections in dark, light, and high contrast at 320/420/900px')
+  console.log('PASS: settings navigation and plugin views in dark, light, and high contrast at 320/420/900px')
   await theme(themes.dark);await page('Emulation.setDeviceMetricsOverride',{width:900,height:800,deviceScaleFactor:1,mobile:false})
   await click('Models');if(await evaluate('Boolean(document.querySelector(\'input[type="password"]\'))'))await evaluate(`document.querySelector('[data-provider="anthropic"]').click()`);await click('General');await capture('settings-general.png')
   await click('Shell')
@@ -137,6 +138,41 @@ try {
   assert.equal(await evaluate('sent.at(-1).type'),'save-allowed-models')
   await evaluate(`reply(sent.at(-1).requestId,{ok:true})`)
   console.log('PASS: subagent limits and unavailable saved model routes share a complete settings section')
+  await click('Web search')
+  await evaluate(`document.querySelector('[data-focus-key="search-api-mode"]').focus()`)
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:' ',code:'Space',text:' ',windowsVirtualKeyCode:32})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:' ',code:'Space',windowsVirtualKeyCode:32})
+  assert.equal(await evaluate(`document.querySelector('[data-focus-key="search-api-mode"]').checked`),true)
+  await input('web-deepseek-api:baseURL','https://search-fixture.example/v1/tools');await input('web-deepseek-api:count','25');await input('api-key','fixture-search-key')
+  for(const width of [320,420,900]) {
+    await page('Emulation.setDeviceMetricsOverride',{width,height:800,deviceScaleFactor:1,mobile:false})
+    await evaluate('new Promise(resolve=>requestAnimationFrame(resolve))')
+    if(width<620)assert.equal(await evaluate(`(()=>{const nav=document.getElementById('navigation').getBoundingClientRect(),active=document.querySelector('nav [aria-current="page"]').getBoundingClientRect();return active.left>=nav.left-1&&active.right<=nav.right+1})()`),true,'Active search section hidden after viewport resize')
+    assert.equal(await evaluate(`document.documentElement.scrollWidth>innerWidth||document.querySelector('main').scrollWidth>document.querySelector('main').clientWidth+1`),false)
+    await capture('settings-search-fetch-'+width+'.png')
+  }
+  await click('Save changes')
+  assert.deepEqual(await evaluate('sent.at(-1).selection'),{enabled:true})
+  assert.equal(await evaluate('sent.at(-1).keyNamespace'),'web-deepseek-api')
+  await evaluate(`settingsState={...settingsState,forms:settingsState.forms.map(form=>form.ns==='web-deepseek-api'?{...form,revision:2,fields:form.fields.map(field=>field.key==='count'?{...field,value:25}:field.key==='baseURL'?{...field,value:'https://search-fixture.example/v1/tools'}:field)}:form),search:{...settingsState.search,profiles:settingsState.search.profiles.map(profile=>profile.ns==='web-deepseek-api'?{...profile,revision:2}:profile)}};show(settingsState);reply(sent.at(-1).requestId,{ok:false,keySaved:false,selectionSaved:false,results:[{ns:'web-deepseek-api',ok:true,revision:2}],error:'Fixture credential failure'})`)
+  await click('Save changes')
+  assert.deepEqual(await evaluate('sent.at(-1).changes'),[]);assert.equal(await evaluate('sent.at(-1).keyRevision'),2)
+  await evaluate(`settingsState={...settingsState,search:{...settingsState.search,selection:{...settingsState.search.selection,revision:2,enabled:true}}};show(settingsState);reply(sent.at(-1).requestId,{ok:true,keySaved:true,selectionSaved:true,results:[]})`)
+  assert.equal(await evaluate(`document.querySelector('[data-focus-key="api-key"]').value`),'')
+  console.log('PASS: native Search / Fetch switch, paired routing, result limits, partial-save retry and 320/420/900px layouts')
+  await click('Models');if(!await evaluate(`Boolean(document.querySelector('[data-focus-key="reasoning:0:enabled"]'))`))await evaluate(`document.querySelector('[data-provider="anthropic"]').click()`)
+  await evaluate(`document.querySelector('[data-focus-key="reasoning:0:enabled"]').click()`)
+  await input('reasoning:0:3:value','adaptive');await click('+ Add level')
+  assert.equal(await evaluate(`document.querySelector('[aria-label="off API value"]').disabled`),true)
+  for(const width of [320,420,900]) {
+    await page('Emulation.setDeviceMetricsOverride',{width,height:800,deviceScaleFactor:1,mobile:false})
+    assert.equal(await evaluate(`document.documentElement.scrollWidth>innerWidth||document.querySelector('main').scrollWidth>document.querySelector('main').clientWidth+1`),false)
+    await evaluate(`document.querySelector('.model-reasoning').scrollIntoView({block:'center'})`);await capture('settings-reasoning-'+width+'.png')
+  }
+  await click('Save changes')
+  assert.deepEqual(await evaluate('sent.at(-1).fields.models[0].reasoningEfforts'),{off:null,low:'low',medium:'medium',high:'adaptive',xhigh:'xhigh'})
+  await evaluate(`reply(sent.at(-1).requestId,{ok:true})`)
+  console.log('PASS: reasoning table wire values, unused-level selection, disabled Off value and three viewport layouts')
   await click('Models');await evaluate(`document.querySelector('[data-provider="anthropic"]').click()`)
   // The provider may already be expanded from the previous section; reopen if needed.
   if(!await evaluate(`Boolean(document.querySelector('input[type="password"]'))`))await evaluate(`document.querySelector('[data-provider="anthropic"]').click()`)

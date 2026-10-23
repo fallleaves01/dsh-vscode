@@ -10,9 +10,9 @@ import { basename, join } from 'node:path'
 import { once } from 'node:events'
 import { createServer } from 'node:http'
 const root=process.cwd()
-const {outputFiles}=await build({stdin:{contents:"export {DshConnection} from './src/dsh-connection.ts'; export {DshClient} from './src/dsh-client.ts'; export {providerMutations} from './src/settings-page-state.ts'",resolveDir:root},bundle:true,platform:'node',format:'cjs',write:false})
+const {outputFiles}=await build({stdin:{contents:"export {DshConnection} from './src/dsh-connection.ts'; export {DshClient} from './src/dsh-client.ts'; export {providerMutations,reasoningLevels,searchSelectionMutations,fieldMutations,searchSettings} from './src/settings-page-state.ts'",resolveDir:root},bundle:true,platform:'node',format:'cjs',write:false})
 const mod={exports:{}};new Function('module','exports','require',outputFiles[0].text)(mod,mod.exports,createRequire(root+'/package.json'))
-const {DshClient,DshConnection,providerMutations}=mod.exports
+const {DshClient,DshConnection,providerMutations,reasoningLevels,searchSelectionMutations,fieldMutations,searchSettings}=mod.exports
 const home=await mkdtemp(join(tmpdir(),'dsh-settings-smoke-'))
 let modelRequests=0, modelLists=0, connection, client
 const endpoint=createServer((request,response)=>{
@@ -51,10 +51,22 @@ try {
  assert.ok(discovered.some(model=>model.id==='fixture-model'));assert.equal(modelLists,1)
  const next=(await client.settings()).namespaces.find(ns=>ns.ns===pi.ns)
  const entry=(await client.listConfigurableProviders()).find(row=>row.provider==='fixture-settings');assert.ok(entry)
- await client.mutateSettings(pi.ns,providerMutations(next,entry,{models:[{id:'fixture-model',originalId:'fixture-model',name:'Edited',contextWindow:12000,maxTokens:1200,input:['text']}]}),next.revision)
+ assert.ok(reasoningLevels(next).includes('high'),'Runtime reasoning schema was not recognized')
+ await client.mutateSettings(pi.ns,providerMutations(next,entry,{models:[{id:'fixture-model',originalId:'fixture-model',name:'Edited',contextWindow:12000,maxTokens:1200,input:['text'],reasoningEfforts:{off:null,low:'minimal',high:'adaptive'}}]}),next.revision)
  const stored=(await client.settings()).namespaces.find(ns=>ns.ns===pi.ns)
  assert.equal(stored.value.providers['fixture-settings'].models[0].name,'Edited')
+ assert.deepEqual(stored.value.providers['fixture-settings'].models[0].reasoningEfforts,{off:null,low:'minimal',high:'adaptive'})
  assert.equal(stored.value.providers['fixture-settings'].defaultMaxTokens,1500)
+ const searchDescription=await client.settings(), web=searchDescription.namespaces.find(ns=>ns.ns==='web'), searchApi=searchDescription.namespaces.find(ns=>ns.ns==='web-deepseek-api')
+ assert.equal(searchSettings(searchDescription,{}).selection.available,true)
+ await client.mutateSettings(searchApi.ns,fieldMutations(searchApi,{baseURL:baseURL+'/tools',count:25}),searchApi.revision)
+ assert.throws(()=>fieldMutations(searchApi,{count:51}))
+ await client.mutateSettings(web.ns,searchSelectionMutations(web,true),web.revision)
+ const searchSelected=(await client.settings()).namespaces.find(ns=>ns.ns===web.ns)
+ assert.equal(searchSelected.value.searchProvider,'deepseek-search-api');assert.equal(searchSelected.value.fetchProvider,'deepseek-fetch-api')
+ await client.mutateSettings(web.ns,searchSelectionMutations(searchSelected,false),searchSelected.revision)
+ const searchReset=(await client.settings()).namespaces.find(ns=>ns.ns===web.ns)
+ assert.equal(searchReset.value.searchProvider,'deepseek-official');assert.equal(searchReset.value.fetchProvider,'http')
  async function yamlFiles(directory){const found=[];for(const entry of await readdir(directory,{withFileTypes:true})){const path=join(directory,entry.name);if(entry.isDirectory())found.push(...await yamlFiles(path));else if(/\.ya?ml$/.test(entry.name))found.push(path)}return found}
  for(const path of await yamlFiles(home)) {
   if(basename(path)==='.credentials.yaml') { if(process.platform!=='win32')assert.equal((await stat(path)).mode&0o077,0,'Credential file is readable by another user') }
@@ -63,7 +75,7 @@ try {
  await client.unsetCredential('FIXTURE_SETTINGS_API_KEY');assert.equal((await client.describeCredentials(['FIXTURE_SETTINGS_API_KEY'])).FIXTURE_SETTINGS_API_KEY.configured,false)
  await client.mutateSettings(pi.ns,[{op:'unset',path:['providers','fixture-settings']}],stored.revision)
  assert.equal(modelRequests,0)
- console.log(JSON.stringify({settingsReadWriteReset:true,staleRevisionRejected:true,providerCreateEditRemove:true,credentialWriteDescribeClear:true,credentialsAbsentFromProfileYaml:true,privateCredentialFilePermissions:process.platform==='win32'?'OS-managed':true,endpointModelDiscovery:true,unshownProviderFieldsPreserved:true,modelRequests,homeIsolated:true}))
+ console.log(JSON.stringify({settingsReadWriteReset:true,staleRevisionRejected:true,providerCreateEditRemove:true,credentialWriteDescribeClear:true,credentialsAbsentFromProfileYaml:true,privateCredentialFilePermissions:process.platform==='win32'?'OS-managed':true,endpointModelDiscovery:true,unshownProviderFieldsPreserved:true,reasoningSchemaAndMapping:true,searchFetchSwitchAndLimits:true,modelRequests,homeIsolated:true}))
 } finally {
  client?.dispose();connection?.dispose();child.kill('SIGTERM');const timer=setTimeout(()=>child.kill('SIGKILL'),3000);await exited;clearTimeout(timer)
  await new Promise(resolve=>endpoint.close(resolve));await rm(home,{recursive:true,force:true})

@@ -21,12 +21,13 @@ const candidates = [process.env.DSH_TEST_BROWSER,
 const browser = candidates.find(path => path && existsSync(path))
 assert.ok(browser, 'Set DSH_TEST_BROWSER to a Chrome/Chromium executable.')
 const root = new URL('../', import.meta.url)
-const [{ outputFiles }, markdown, scrollBundle, tailPng, markSvg] = await Promise.all([
+const [{ outputFiles }, markdown, scrollBundle, tailPng, markSvg, settingsBundle] = await Promise.all([
   build({ entryPoints: [fileURLToPath(new URL('src/webview.ts', root))], bundle: true, platform: 'node', format: 'cjs', write: false }),
   readFile(new URL('dist/webview/markdown.js', root), 'utf8'),
   readFile(new URL('dist/webview/scroll.js', root), 'utf8'),
   readFile(new URL('media/deepseek-tail.png', root)),
   readFile(new URL('media/deepseek.svg', root)),
+  readFile(new URL('dist/webview/settings-page.js', root), 'utf8'),
 ])
 const module = { exports: {} }
 new Function('module', 'exports', outputFiles[0].text)(module, module.exports)
@@ -98,7 +99,7 @@ try {
   await page('Page.setDocumentContent', { frameId: frameTree.frame.id, html: shell })
   await evaluate(`window.sent = []; window.webviewErrors = []; window.addEventListener('error', event => webviewErrors.push(event.message)); window.addEventListener('unhandledrejection', event => webviewErrors.push(String(event.reason))); window.acquireVsCodeApi = () => ({postMessage: message => sent.push(message)});
     document.documentElement.style.cssText = '--vscode-foreground:#cccccc;--vscode-sideBar-background:#181818;--vscode-editor-background:#202020;--vscode-font-family:Arial;--vscode-editor-font-family:monospace;--vscode-descriptionForeground:#999;--vscode-widget-border:#454545;--vscode-focusBorder:#4d6bfe;--vscode-button-secondaryBackground:#333;--vscode-button-secondaryForeground:#fff;--vscode-button-secondaryHoverBackground:#454545;--vscode-widget-shadow:#0006;--vscode-textLink-foreground:#65aaff';`)
-  await evaluate(markdown); await evaluate(scrollBundle); await evaluate(inline)
+  await evaluate(markdown); await evaluate(scrollBundle); await evaluate(settingsBundle); await evaluate(inline)
   await evaluate(`window.tick = (ms = 90) => new Promise(resolve => setTimeout(resolve, ms));
     window.ensure = (value, message) => { if (!value) throw new Error(message); };
     window.gap = () => elements.scroll.scrollHeight - elements.scroll.scrollTop - elements.scroll.clientHeight;
@@ -481,6 +482,8 @@ try {
     }
   }
   await evaluate(`document.querySelector('.task-child[data-session-id="child-check"]').click()`)
+  assert.deepEqual(await evaluate('sent.at(-1)'), {type:'select-session',sessionId:'child-check'})
+  await evaluate(`document.querySelector('.task-child[data-session-id="child-check"]').closest('.task-entry').querySelector('.task-open').click()`)
   assert.deepEqual(await evaluate('sent.at(-1)'), {type:'open-task-details',kind:'subagent',sessionId:'child-check'})
   await evaluate(`showState({...taskDemo,sessionId:'child-ui',parentSessionId:'a'});`)
   await evaluate('tick()')
@@ -847,6 +850,126 @@ try {
     const {data}=await detailPage('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_FAILURE_SCREENSHOT_DIR,'failed-subagent.png'),Buffer.from(data,'base64'))
   }
   console.log('PASS: independent subagent details retain failed output and show the same error without horizontal overflow')
+
+  // Official external executions remain informational, while local children open normally.
+  await page('Page.bringToFront')
+  await evaluate(`showState({...taskDemo,sessions:[...taskDemo.sessions,{id:'external:a:fixture',parentId:'a',title:'External review',subagent:{mode:'external',executionId:'fixture',label:'External review'},agentAvailable:false,running:false}]});`)
+  await evaluate('tick()')
+  await evaluate(`if(document.getElementById('taskList').classList.contains('hidden'))document.getElementById('taskToggle').click();window.beforeExternal=sent.length;document.querySelector('[data-session-id="external:a:fixture"]').click()`)
+  assert.equal(await evaluate('sent.length===beforeExternal'),true)
+  assert.deepEqual(await evaluate(`(()=>{const row=document.querySelector('[data-session-id="external:a:fixture"]');return {disabled:row.getAttribute('aria-disabled'),tabIndex:row.tabIndex,label:row.textContent.includes('External task'),fabricated:/Idle|Completed|Running/.test(row.textContent)}})()`),{disabled:'true',tabIndex:-1,label:true,fabricated:false})
+  console.log('PASS: external execution rows are visible, non-routable and do not invent runtime activity')
+
+  const syntheticSecret='sk-'+'A1'.repeat(16)
+  await evaluate(`showState({...baseline,sessionId:'secret-review',messages:[{id:'secret-user',role:'user',text:'Inspect this credential: '+${JSON.stringify(syntheticSecret)}}]})`)
+  await evaluate('tick()')
+  await detailEvaluate(`showTask({kind:'subagent',title:'Credential handling',running:false,status:'Idle',requests:[],messages:[{id:'secret-user',role:'user',text:'Inspect this credential: '+${JSON.stringify(syntheticSecret)}}]})`)
+  for(const width of [320,420,650]) {
+    await page('Emulation.setDeviceMetricsOverride',{width,height:800,deviceScaleFactor:1,mobile:false})
+    await detailPage('Emulation.setDeviceMetricsOverride',{width,height:800,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+    for(const run of [evaluate,detailEvaluate]) {
+      assert.equal(await run(`document.getElementById('messages').innerHTML.includes(${JSON.stringify(syntheticSecret)})`),false)
+      assert.equal(await run('document.documentElement.scrollWidth>innerWidth'),false)
+      assert.equal(await run(`getComputedStyle(document.querySelector('.secret-mask-run')).webkitMaskImage.startsWith('url(')`),true)
+    }
+  }
+  await evaluate(`document.querySelector('.secret-toggle').focus()`)
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',windowsVirtualKeyCode:13})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+  assert.equal(await evaluate(`document.querySelector('.secret-value').textContent`),syntheticSecret)
+  await evaluate(`document.querySelector('.secret-toggle').click()`)
+  if(process.env.DSH_TASK_SCREENSHOT_DIR){const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'masked-user-message.png'),Buffer.from(data,'base64'))}
+  console.log('PASS: main and child user messages mask recognized credentials, support native keyboard reveal and fit three widths')
+
+  // Deferred tool cards retain navigation before their request or result is loaded.
+  const subagentCard={id:'tool:subagent-card',role:'tool',text:'subagent',detail:'Completed',deferredBody:true,deferredBodyRevision:'subagent-navigation',
+    callView:{card:'generic',subagentLabel:'Review runtime ownership'},resultView:{card:'generic',subagentLinks:[{id:'card-child',label:'Review runtime ownership'}]}}
+  const subagentSessions=[{id:'card-parent',title:'Runtime review',updatedAt:1,childCount:1},{id:'card-child',parentId:'card-parent',title:'Runtime ownership audit',subagent:{mode:'continuable',label:'Review runtime ownership'},running:true,activity:{status:'running',elapsedMs:65000,totalTokens:2450}}]
+  await evaluate(`showState({...baseline,sessionId:'card-parent',sessions:${JSON.stringify(subagentSessions)},messages:[${JSON.stringify(subagentCard)}]});`);await evaluate('tick()')
+  assert.equal(await evaluate(`document.querySelector('.subagent-tool-card details').open`),false)
+  assert.equal(await evaluate(`document.querySelector('.subagent-tool-meta').textContent.includes('Running')`),true)
+  for(const [name,theme] of Object.entries(themes)) {
+    await applyTheme(evaluate,theme);await evaluate(`document.body.className=${JSON.stringify('vscode-'+name)}`)
+    for(const width of [320,420,650]) {
+      await page('Emulation.setDeviceMetricsOverride',{width,height:800,deviceScaleFactor:1,mobile:false});await evaluate('tick()')
+      assert.equal(await evaluate('document.documentElement.scrollWidth>innerWidth'),false)
+      assert.equal(await evaluate(`getComputedStyle(document.querySelector('.subagent-tool-name')).fontSize`),'12px')
+      assert.equal(await evaluate(`getComputedStyle(document.querySelector('.subagent-tool-card .tool-title')).fontSize`),'11px')
+      assert.ok(await evaluate(`document.querySelector('.subagent-tool-main').getBoundingClientRect().height>=28`))
+      if(process.env.DSH_TASK_SCREENSHOT_DIR){
+        const{data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,`subagent-card-${name}-${width}.png`),Buffer.from(data,'base64'))
+        if(name==='dark'&&width===420){
+          const clip=await evaluate(`(()=>{const r=document.querySelector('.subagent-tool-card').getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height,scale:1}})()`)
+          const shot=await page('Page.captureScreenshot',{format:'png',clip});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'subagent-card-preview.png'),Buffer.from(shot.data,'base64'))
+        }
+      }
+    }
+  }
+  await evaluate(`document.querySelector('.subagent-tool-main').focus()`)
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',windowsVirtualKeyCode:13})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+  assert.deepEqual(await evaluate(`(()=>{const p=sent.at(-1);return{type:p.type,parentSessionId:p.parentSessionId,sessionId:p.sessionId,placement:p.placement}})()`),{type:'open-subagent',parentSessionId:'card-parent',sessionId:'card-child',placement:'chat'})
+  await evaluate(`window.dispatchEvent(new MessageEvent('message',{data:{...sent.at(-1),type:'open-subagent-result',error:'This task is unavailable. Retry.'}}))`)
+  assert.equal(await evaluate(`document.querySelector('.subagent-tool-error').textContent`),'This task is unavailable. Retry.')
+  await evaluate(`document.querySelector('.subagent-tool-aside').click()`)
+  assert.equal(await evaluate(`sent.at(-1).placement`),'beside')
+  await evaluate(`window.dispatchEvent(new MessageEvent('message',{data:{...sent.at(-1),type:'open-subagent-result'}}));showState({...baseline,sessionId:'card-parent',sessions:${JSON.stringify(subagentSessions.map(s=>s.id==='card-child'?{...s,running:false,activity:{status:'completed',elapsedMs:65000,totalTokens:2900}}:s))},messages:[${JSON.stringify(subagentCard)}]})`);await evaluate('tick()')
+  assert.equal(await evaluate(`document.querySelector('.subagent-tool-meta').textContent.includes('Completed')`),true)
+  await evaluate(`document.querySelector('.subagent-tool-card summary').focus()`)
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',windowsVirtualKeyCode:13})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+  await evaluate('tick()')
+  assert.equal(await evaluate(`sent.at(-1).type`),'load-tool-output')
+  await evaluate(`window.dispatchEvent(new MessageEvent('message',{data:{...sent.at(-1),type:'tool-output',page:{message:{id:'tool:subagent-card',role:'tool',text:'subagent',rawResult:'started subagent card-child'}}}}))`)
+  assert.equal(await evaluate(`document.querySelector('.subagent-tool-card .tool-body').textContent.includes('started subagent card-child')`),true)
+  await detailEvaluate(`showTask({kind:'subagent',sessionId:'card-parent',title:'Nested task review',status:'Running',running:true,requests:[],subagents:${JSON.stringify(subagentSessions)},messages:[${JSON.stringify(subagentCard)}]})`)
+  assert.equal(await detailEvaluate(`document.querySelector('.subagent-tool-name').textContent`),'Review runtime ownership')
+  console.log('PASS: subagent tool cards navigate before loading raw output, support native keyboard and side details, update live status and fit three themes and widths')
+
+  // Settings is the same page mounted as a fenced modal inside the chat.
+  await page('Page.bringToFront')
+  const modalState={scope:'modal-runtime',version:JSON.parse(await readFile(new URL('package.json',root),'utf8')).version,phase:'ready',writable:true,reason:'',loading:false,forms:[],providers:[],availableProviders:[],protocols:[],catalog:[],signedIn:false,inventory:[{label:'Global runtime',rows:[{name:'@deepseek-ai/dsh-tool-fs',status:'Active'}]}]}
+  await evaluate(`elements.openSettings.focus();elements.openSettings.click();window.dispatchEvent(new MessageEvent('message',{data:{type:'settings-open',settingsId:'browser-settings'}}));window.dispatchEvent(new MessageEvent('message',{data:{type:'settings-message',settingsId:'browser-settings',message:{type:'state',state:${JSON.stringify(modalState)}}}}))`)
+  assert.equal(await evaluate(`document.getElementById('app').inert&&elements.openSettings.getAttribute('aria-expanded')==='true'`),true)
+  for(const [name,theme] of Object.entries(themes)) {
+    await applyTheme(evaluate,theme)
+    for(const [width,height] of [[320,400],[420,800],[900,850]]) {
+      await page('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false})
+      await evaluate('tick()')
+      const bounds=await evaluate(`(()=>{const r=document.getElementById('settingsRoot').getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,overflow:document.documentElement.scrollWidth>innerWidth}})()`)
+      assert.ok(bounds.left>=0&&bounds.right<=width+1&&bounds.top>=0&&bounds.bottom<=height+1&&!bounds.overflow,JSON.stringify(bounds))
+      if(process.env.DSH_TASK_SCREENSHOT_DIR&&width===900){const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'settings-in-chat-'+name+'.png'),Buffer.from(data,'base64'))}
+    }
+  }
+  await evaluate(`document.querySelector('#settingsRoot [data-section="plugins"]').click()`)
+  assert.equal(await evaluate(`document.querySelector('#settingsRoot .inventory-name').textContent`),'tool-fs')
+  await evaluate(`document.querySelector('#settingsRoot button:last-of-type');document.getElementById('settingsClose').focus()`)
+  await page('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
+  await page('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
+  assert.equal(await evaluate(`!document.querySelector('.settings-overlay')&&!document.getElementById('app').inert&&document.activeElement.id==='openSettings'`),true)
+  await evaluate(`window.dispatchEvent(new MessageEvent('message',{data:{type:'settings-message',settingsId:'browser-settings',message:{type:'state',state:${JSON.stringify(modalState)}}}}))`)
+  assert.equal(await evaluate(`document.querySelector('.settings-overlay')===null`),true)
+  console.log('PASS: settings opens in chat, fits three themes and viewports, isolates messages, and restores focus on native Escape')
+
+  // Shared-instance identity remains compact; loading stages expose diagnostics.
+  for (const width of [320,420,650]) {
+    await page('Emulation.setDeviceMetricsOverride',{width,height:800,deviceScaleFactor:1,mobile:false})
+    await evaluate(`showState({...baseline,runtimeConnection:{ownership:'adopted',pid:43210}});tick()`)
+    assert.equal(await evaluate(`elements.runtimeConnectionLabel.textContent`),'Shared')
+    assert.equal(await evaluate(`elements.runtimeConnection.title.includes('PID 43210')`),true)
+    assert.equal(await evaluate(`elements.newSession.getBoundingClientRect().right<=innerWidth`),true)
+    assert.equal(await evaluate(`elements.runtimeConnection.getBoundingClientRect().height>=24`),true)
+    if(process.env.DSH_TASK_SCREENSHOT_DIR&&width===320){const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'shared-connection-320.png'),Buffer.from(data,'base64'))}
+  }
+  await evaluate(`elements.runtimeConnection.click()`)
+  assert.equal(await evaluate(`sent.at(-1).type`),'reconnect')
+  await page('Emulation.setDeviceMetricsOverride',{width:320,height:800,deviceScaleFactor:1,mobile:false})
+  await evaluate(`showState({...baseline,phase:'loading',runtimeConnection:null,statusText:'Connecting to the existing shared DSH runtime (PID 43210)…'});tick()`)
+  assert.equal(await evaluate(`elements.runtimeConnection.disabled`),true)
+  assert.equal(await evaluate(`elements.newSession.getBoundingClientRect().right<=innerWidth`),true)
+  assert.equal(await evaluate(`elements.conversationStatus.textContent.includes('Show Output')`),true)
+  if(process.env.DSH_TASK_SCREENSHOT_DIR){const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'shared-connecting-320.png'),Buffer.from(data,'base64'))}
+  console.log('PASS: shared connection displays PID, retries without restart, fits narrow sidebars, and exposes loading-stage diagnostics')
 
   assert.deepEqual(await evaluate('webviewErrors'),[], 'The production webview emitted an uncaught error')
 

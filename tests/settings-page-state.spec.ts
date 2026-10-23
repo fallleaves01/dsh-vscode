@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerViews, settingsForms, validProviderId } from '../src/settings-page-state.js'
-import { fixture } from './settings-page.fixture.js'
+import { credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerViews, publicPluginInventory, reasoningLevels, searchSelectionMutations, searchSettings, settingsForms, validProviderId } from '../src/settings-page-state.js'
+import { fixture, searchFixture } from './settings-page.fixture.js'
 
 describe('official settings form boundaries', () => {
+  it('projects the plugin roster without configuration, conditions or error payloads', () => {
+    const projected = publicPluginInventory({ entries: [{ moduleName: '<img src=x>', enabled: true, fiberPhase: 'active', config: { token: 'hidden-marker' } }], agentPresets: [{ id: 'standard', name: 'Standard', rows: [{ moduleName: 'fixture-plugin', enabled: 'conditional', condition: 'hidden-marker', rawError: 'hidden-marker' }] }] })
+    expect(projected).toEqual([{ label: 'Agent preset: Standard', rows: [{ name: 'fixture-plugin', status: 'Conditional' }] }, { label: 'Global runtime', rows: [{ name: '<img src=x>', status: 'Active' }] }])
+    expect(JSON.stringify(projected)).not.toContain('hidden-marker')
+  })
   it('offers the official shell fields and excludes YAML-only fields', () => {
     const { description } = fixture()
     const shell = settingsForms(description).find(form => form.section === 'shell')!
@@ -45,6 +50,38 @@ describe('official settings form boundaries', () => {
   })
 })
 describe('provider settings edits', () => {
+  it('derives reasoning levels from the serving schema and preserves untouched model mappings', () => {
+    const { description, directory } = fixture(), ns = description.namespaces.find(ns => ns.ns === 'llm-pi-ai')!
+    expect(reasoningLevels(ns)).toEqual(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    const model = (ns.value as any).providers.anthropic.models[0]; model.reasoningEfforts = { off: null, high: 'adaptive' }
+    const ops = providerMutations(ns, directory[1]!, { models: [{ id: 'existing', originalId: 'existing', name: 'Edited' }] })
+    expect((ops[0] as any).value[0].reasoningEfforts).toEqual({ off: null, high: 'adaptive' })
+    expect(reasoningLevels(description.namespaces.find(ns => ns.ns === 'llm-deepseek'))).toEqual([])
+  })
+  it('limits custom reasoning edits to declared Pi provider models, as the official editor does', () => {
+    const { description, directory } = fixture(), ns = description.namespaces.find(ns => ns.ns === 'llm-pi-ai')!, entry = { ...directory[1]!, declared: false }
+    expect(providerViews(description.namespaces, [entry], [], {})[0]!.reasoningLevels).toEqual([])
+    expect(() => providerMutations(ns, entry, { models: [{ id: 'existing', reasoningEfforts: { high: 'adaptive' } }] })).toThrow('does not support')
+  })
+  it('saves custom wire values and can restore automatic reasoning discovery', () => {
+    const { description, directory } = fixture(), ns = description.namespaces.find(ns => ns.ns === 'llm-pi-ai')!
+    for (const reasoningEfforts of [{ off: null, high: 'custom-api-value', max: 'maximum' }, false, null]) {
+      const op = providerMutations(ns, directory[1]!, { models: [{ id: 'existing', originalId: 'existing', reasoningEfforts }] })[0] as any
+      if (reasoningEfforts === null) expect(Object.hasOwn(op.value[0], 'reasoningEfforts')).toBe(false)
+      else expect(op.value[0].reasoningEfforts).toEqual(reasoningEfforts)
+      expect(op.value[0].compat).toEqual({ keep: true })
+    }
+  })
+  it.each([{}, { off: null }, { high: null }, { high: '' }, { invented: 'high' }, ['high']])('rejects an invalid reasoning mapping %#', reasoningEfforts => {
+    const { description, directory } = fixture(), ns = description.namespaces.find(ns => ns.ns === 'llm-pi-ai')!
+    expect(() => providerMutations(ns, directory[1]!, { models: [{ id: 'existing', originalId: 'existing', reasoningEfforts }] })).toThrow()
+  })
+  it('retains a previously declared future reasoning level but rejects prototype keys', () => {
+    const { description, directory } = fixture(), ns = description.namespaces.find(ns => ns.ns === 'llm-pi-ai')!
+    ;(ns.value as any).providers.anthropic.models[0].reasoningEfforts = { future: 'adaptive' }
+    expect(() => providerMutations(ns, directory[1]!, { models: [{ id: 'existing', originalId: 'existing', reasoningEfforts: { future: 'custom' } }] })).not.toThrow()
+    expect(() => providerMutations(ns, directory[1]!, { models: [{ id: 'existing', originalId: 'existing', reasoningEfforts: JSON.parse('{"__proto__":"value"}') }] })).toThrow()
+  })
   it('projects provider rows without headers, secret literals or unshown model properties', () => {
     const { description, directory } = fixture()
     const rows = providerViews(description.namespaces, directory, [], { ANTHROPIC_API_KEY: { configured: true, writable: false, value: 'not-a-key' } as any })
@@ -78,5 +115,25 @@ describe('provider settings edits', () => {
   })
   it.each(['__proto__', 'constructor', 'with/slash', '123provider', ''])('rejects a dangerous or ambiguous new provider ID %s', id => {
     expect(() => validProviderId(id)).toThrow()
+  })
+})
+
+describe('Search / Fetch API settings boundaries', () => {
+  it('projects only public capabilities and selects paired providers with inherited defaults', () => {
+    const { description } = searchFixture(), web = description.namespaces.find(ns => ns.ns === 'web')!
+    const state = searchSettings(description, { SEARCH_FIXTURE_API_KEY: { configured: true, writable: true, value: 'hidden-marker' } as any })
+    expect(state.selection).toEqual({ revision: 1, available: true, enabled: false })
+    expect(JSON.stringify(state)).not.toContain('hidden-marker')
+    expect(searchSelectionMutations(web, true)).toEqual([{ op: 'set', path: ['searchProvider'], value: 'deepseek-search-api' }, { op: 'set', path: ['fetchProvider'], value: 'deepseek-fetch-api' }])
+    expect(searchSelectionMutations(web, false)).toEqual([{ op: 'unset', path: ['searchProvider'] }, { op: 'unset', path: ['fetchProvider'] }])
+  })
+  it.each([0, 51, 1.5, '10', Infinity])('enforces the API result count bounds for %s', count => {
+    const ns = searchFixture().description.namespaces.find(ns => ns.ns === 'web-deepseek-api')!
+    expect(() => fieldMutations(ns, { count })).toThrow()
+  })
+  it('distinguishes results per search from Messages API search calls', () => {
+    const ns = searchFixture().description.namespaces.find(ns => ns.ns === 'web-deepseek-api')!
+    expect(fieldMutations(ns, { count: 50 })).toEqual([{ op: 'set', path: ['count'], value: 50 }])
+    expect(() => fieldMutations(ns, { maxUses: 3 })).toThrow('not part')
   })
 })

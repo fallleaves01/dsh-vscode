@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fixture } from './settings-page.fixture.js'
+import { fixture, searchFixture } from './settings-page.fixture.js'
 import { at } from '../src/settings-page-state.js'
 
 const mocks = vi.hoisted(() => ({ panels: [] as any[], warning: vi.fn(), command: vi.fn() }))
@@ -30,8 +30,8 @@ function assign(value: any, path: string[], next: unknown, unset = false) {
   for (const part of path.slice(0, -1)) target = target[part] ??= {}
   if (unset) delete target[path.at(-1)!]; else target[path.at(-1)!] = clone(next)
 }
-async function harness(ownership: string = 'managed') {
-  const data = fixture(), changes = bus(), stateChanges = bus(), owners = new WeakMap<object, object>()
+async function harness(ownership: string = 'managed', data = fixture()) {
+  const changes = bus(), stateChanges = bus(), owners = new WeakMap<object, object>()
   const secrets = new Map<string, string>()
   const createClient = () => ({
     listConfigurableProviders: vi.fn(async () => {
@@ -81,6 +81,75 @@ async function harness(ownership: string = 'managed') {
 }
 
 describe('settings host ownership and credentials', () => {
+  it('binds the chat modal to one opening and ignores messages after close', async () => {
+    const h = await harness(); h.manager.openEmbedded(h.panel.webview)
+    const opened = h.packets().filter((packet: any) => packet.type === 'settings-open').at(-1), id = opened.settingsId
+    h.panel.send({ type: 'settings-message', settingsId: id, message: { type: 'ready' } })
+    await vi.waitFor(() => expect(h.packets().some((packet: any) => packet.type === 'settings-message' && packet.message.type === 'state' && !packet.message.state.loading)).toBe(true))
+    const latest = h.packets().filter((packet: any) => packet.type === 'settings-message' && packet.message.type === 'state').at(-1).message.state
+    const operation = { type: 'save-fields', requestId: 'modal-save', scope: latest.scope, changes: [{ ns: 'bash-sandbox', revision: 1, values: { timeoutMs: 80000 } }] }
+    h.panel.send({ type: 'settings-message', settingsId: 'wrong-opening', message: operation }); expect(h.host.mutateSettings).not.toHaveBeenCalled()
+    h.panel.send({ type: 'settings-message', settingsId: id, message: operation })
+    await vi.waitFor(() => expect(h.host.mutateSettings).toHaveBeenCalledOnce())
+    h.panel.send({ type: 'settings-message', settingsId: id, message: { type: 'close' } })
+    h.panel.send({ type: 'settings-message', settingsId: id, message: operation }); expect(h.host.mutateSettings).toHaveBeenCalledOnce()
+    h.manager.openEmbedded(h.panel.webview)
+    expect(h.packets().filter((packet: any) => packet.type === 'settings-open').at(-1).settingsId).not.toBe(id)
+  })
+  it('saves both Search / Fetch providers and restores inherited selection defaults', async () => {
+    const h = await harness('managed', searchFixture())
+    expect(h.state().search.selection).toEqual({ revision: 1, available: true, enabled: false })
+    expect(h.state().search.profiles.find((item: any) => item.ns === 'web-deepseek-api').credential).toEqual({ configured: false, writable: true })
+    const enable = h.send({ type: 'save-search', changes: [{ ns: 'web-deepseek-api', revision: 1, values: { count: 25, baseURL: 'https://custom.example/v1/tools' } }], selectionRevision: 1, selection: { enabled: true }, keyNamespace: 'web-deepseek-api', keyRevision: 1, apiKey: 'fixture-search-key' })
+    expect(await h.result(enable)).toMatchObject({ ok: true, keySaved: true, selectionSaved: true })
+    expect(h.client.setCredential).toHaveBeenCalledWith('SEARCH_FIXTURE_API_KEY', 'fixture-search-key')
+    expect((h.data.description.namespaces.find(ns => ns.ns === 'web')!.value as any)).toEqual({ searchProvider: 'deepseek-search-api', fetchProvider: 'deepseek-fetch-api' })
+    const disable = h.send({ type: 'save-search', changes: [], selectionRevision: 2, selection: { enabled: false } })
+    expect((await h.result(disable)).ok).toBe(true)
+    expect(h.host.mutateSettings.mock.calls.at(-1)![1]).toEqual([{ op: 'unset', path: ['searchProvider'] }, { op: 'unset', path: ['fetchProvider'] }])
+  })
+  it('stops a search save after a failed profile and does not change the key or routing', async () => {
+    const h = await harness('managed', searchFixture())
+    h.host.mutateSettings.mockRejectedValueOnce(new Error('Profile write refused'))
+    const id = h.send({ type: 'save-search', changes: [{ ns: 'web-search-deepseek', revision: 1, values: { maxUses: 8 } }, { ns: 'web-deepseek-api', revision: 1, values: { count: 20 } }], selectionRevision: 1, selection: { enabled: true }, apiKey: 'fixture-search-key', keyNamespace: 'web-deepseek-api', keyRevision: 1 })
+    expect(await h.result(id)).toMatchObject({ ok: false, keySaved: false, selectionSaved: false, results: [{ ns: 'web-search-deepseek', ok: false }] })
+    expect(h.host.mutateSettings).toHaveBeenCalledOnce(); expect(h.client.setCredential).not.toHaveBeenCalled()
+  })
+  it('retains a confirmed profile revision after credential failure, then retries only the remaining phases', async () => {
+    const h = await harness('managed', searchFixture())
+    h.client.setCredential.mockRejectedValueOnce(new Error('Credential store unavailable'))
+    const body = { type: 'save-search', selectionRevision: 1, selection: { enabled: true }, apiKey: 'fixture-search-key', keyNamespace: 'web-deepseek-api' }
+    const first = h.send({ ...body, changes: [{ ns: 'web-deepseek-api', revision: 1, values: { count: 22 } }], keyRevision: 1 })
+    expect(await h.result(first)).toMatchObject({ ok: false, results: [{ ns: 'web-deepseek-api', ok: true, revision: 2 }], keySaved: false, selectionSaved: false })
+    expect(h.host.mutateSettings).toHaveBeenCalledOnce()
+    const retry = h.send({ ...body, changes: [], keyRevision: 2 })
+    expect((await h.result(retry)).ok).toBe(true); expect(h.host.mutateSettings).toHaveBeenCalledTimes(2)
+  })
+  it('rejects stale or forged search targets before writing any fields', async () => {
+    const h = await harness('managed', searchFixture())
+    for (const extra of [{ selectionRevision: 0 }, { keyNamespace: 'web-search-deepseek' }, { changes: [{ ns: 'bash-sandbox', revision: 1, values: { timeoutMs: 1 } }] }, { changes: [{ ns: 'web-deepseek-api', revision: 1, values: { count: 51 } }] }]) {
+      const id = h.send({ type: 'save-search', changes: [], selectionRevision: 1, selection: { enabled: true }, apiKey: 'fixture-search-key', keyNamespace: 'web-deepseek-api', keyRevision: 1, ...extra })
+      expect((await h.result(id)).ok).toBe(false)
+    }
+    expect(h.host.mutateSettings).not.toHaveBeenCalled(); expect(h.client.setCredential).not.toHaveBeenCalled()
+  })
+  it('rechecks search routing before storing a key when another window changes the selection', async () => {
+    const h = await harness('managed', searchFixture())
+    h.client.describeCredentials.mockImplementationOnce(async refs => {
+      h.data.description.namespaces.find(ns => ns.ns === 'web')!.revision++
+      return Object.fromEntries(refs.map(ref => [ref, { configured: false, writable: true }])) as any
+    })
+    const id = h.send({ type: 'save-search', changes: [], selectionRevision: 1, selection: { enabled: true }, apiKey: 'fixture-search-key', keyNamespace: 'web-deepseek-api', keyRevision: 1 })
+    expect((await h.result(id)).error).toContain('selection changed')
+    expect(h.client.setCredential).not.toHaveBeenCalled(); expect(h.host.mutateSettings).not.toHaveBeenCalled()
+  })
+  it('clears only the explicitly displayed Search / Fetch API credential', async () => {
+    const h = await harness('managed', searchFixture()); mocks.warning.mockResolvedValueOnce('Clear key')
+    h.secrets.set('SEARCH_FIXTURE_API_KEY', 'fixture-search-key')
+    const id = h.send({ type: 'clear-key', provider: 'web-search', ns: 'web-deepseek-api', revision: 1, selectionRevision: 1 })
+    expect((await h.result(id)).ok).toBe(true)
+    expect(h.client.unsetCredential).toHaveBeenCalledWith('SEARCH_FIXTURE_API_KEY')
+  })
   it('reuses a panel and publishes only curated fields and credential capabilities', async () => {
     const h = await harness(); h.manager.open()
     expect(mocks.panels).toHaveLength(1)

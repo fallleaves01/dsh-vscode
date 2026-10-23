@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { mountSettingsPage } from '../src/settings-page.mjs'
 import { settingsPageHtml } from '../src/settings-page-html.js'
-import { pageState } from './settings-page.fixture.js'
+import { pageState, searchPageState } from './settings-page.fixture.js'
 import type { SettingsPageState } from '../src/settings-page-state.js'
 
 let dispose: (() => void) | undefined
@@ -16,7 +16,10 @@ function harness(overrides: Partial<SettingsPageState> = {}) {
   const send = (data: Record<string, unknown>) => window.dispatchEvent(new MessageEvent('message', { data }))
   const update = (patch: Partial<SettingsPageState>) => { state = { ...state, ...patch }; send({ type: 'state', state }) }
   const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === label)!
-  const click = (label: string) => { expect(button(label), label).toBeDefined(); button(label).click() }
+  const click = (label: string) => {
+    if (!button(label) && ['Shell', 'Agent loop', 'Subagents', 'Web search'].includes(label)) button('Built-in plugins').click()
+    expect(button(label), label).toBeDefined(); button(label).click()
+  }
   const input = (key: string, value: string) => {
     const control = [...document.querySelectorAll<HTMLInputElement>('input')].find(item => item.dataset.focusKey === key)!
     expect(control, key).toBeDefined(); control.value = value; control.dispatchEvent(new Event('input', { bubbles: true })); return control
@@ -27,11 +30,93 @@ function harness(overrides: Partial<SettingsPageState> = {}) {
 }
 
 describe('dedicated DSH settings surface', () => {
+  it('keeps keyboard focus on the active settings navigation button after rendering', () => {
+    const h = harness(); h.click('Built-in plugins'); const nav = document.querySelector<HTMLButtonElement>('[data-section="subagents"]')!
+    nav.focus(); nav.click(); expect((document.activeElement as HTMLElement).dataset.section).toBe('subagents')
+    h.update({}); expect((document.activeElement as HTMLElement).dataset.section).toBe('subagents')
+  })
+  it('does not retain a cleared key target when explicitly choosing another search mode', () => {
+    const state = searchPageState(); state.search!.profiles = state.search!.profiles.map(profile => ({ ...profile, credential: { configured: true, writable: true } }))
+    const h = harness(state); h.click('Web search'); h.input('api-key', 'first-fixture'); h.input('api-key', '')
+    document.querySelector<HTMLInputElement>('[data-focus-key="search-api-mode"]')!.click(); h.input('api-key', 'second-fixture'); h.click('Save changes')
+    expect(h.posts.at(-1)).toMatchObject({ keyNamespace: 'web-deepseek-api', apiKey: 'second-fixture' })
+  })
+  it('keeps the guide accessible in read-only search settings and blocks clearing a stale target', () => {
+    const state = searchPageState(); state.search!.profiles = state.search!.profiles.map(profile => ({ ...profile, credential: { configured: true, writable: true } }))
+    const h = harness(state); h.click('Web search'); h.input('api-key', 'fixture-key')
+    h.update({ search: { ...state.search!, selection: { ...state.search!.selection!, revision: 2 } } })
+    expect(h.button('Clear key').disabled).toBe(true)
+    h.update({ writable: false }); h.click('Search API guide ↗'); expect(h.posts.at(-1)).toMatchObject({ action: 'search-guide' })
+  })
+  it('keeps Search / Fetch mode drafts, endpoints and limits separate until an explicit Save', () => {
+    const h = harness(searchPageState()); h.click('Web search')
+    h.input('web-search-deepseek:maxUses', '8')
+    document.querySelector<HTMLInputElement>('[data-focus-key="search-api-mode"]')!.click()
+    expect(h.posts).toEqual([{ type: 'ready' }])
+    expect(document.querySelector('[data-focus-key="web-search-deepseek:maxUses"]')).toBeNull()
+    h.input('web-deepseek-api:count', '25'); h.input('api-key', 'fixture-search-key')
+    h.click('Save changes')
+    expect(h.posts.at(-1)).toMatchObject({ type: 'save-search', selectionRevision: 1, selection: { enabled: true }, changes: [
+      { ns: 'web-search-deepseek', revision: 1, values: { maxUses: 8 } }, { ns: 'web-deepseek-api', revision: 1, values: { count: 25 } },
+    ], keyNamespace: 'web-deepseek-api', keyRevision: 1, apiKey: 'fixture-search-key' })
+  })
+  it('blocks stale search selection and key drafts while retaining the entered values', () => {
+    const state = searchPageState(), h = harness(state); h.click('Web search')
+    document.querySelector<HTMLInputElement>('[data-focus-key="search-api-mode"]')!.click(); h.input('api-key', 'fixture-search-key')
+    h.update({ search: { ...state.search!, selection: { ...state.search!.selection!, revision: 2 } } })
+    expect(h.button('Save changes').disabled).toBe(true)
+    expect(document.querySelector<HTMLInputElement>('[data-focus-key="api-key"]')!.value).toBe('fixture-search-key')
+    h.click('Discard'); expect(document.querySelector<HTMLInputElement>('[data-focus-key="api-key"]')!.value).toBe('')
+  })
+  it('retains search mode and key after a partial failure and retries with the confirmed profile revision', () => {
+    const state = searchPageState(), h = harness(state); h.click('Web search')
+    document.querySelector<HTMLInputElement>('[data-focus-key="search-api-mode"]')!.click()
+    h.input('web-deepseek-api:count', '22'); h.input('api-key', 'fixture-search-key'); h.click('Save changes')
+    h.update({ forms: state.forms.map(form => form.ns === 'web-deepseek-api' ? { ...form, revision: 2 } : form), search: { ...state.search!, profiles: state.search!.profiles.map(profile => profile.ns === 'web-deepseek-api' ? { ...profile, revision: 2 } : profile) } })
+    h.result({ ok: false, results: [{ ns: 'web-deepseek-api', ok: true, revision: 2 }], keySaved: false, selectionSaved: false, error: 'Credential store unavailable' })
+    expect(h.button('Save changes').disabled).toBe(false); h.click('Save changes')
+    expect(h.posts.at(-1)).toMatchObject({ type: 'save-search', changes: [], keyRevision: 2, apiKey: 'fixture-search-key', selection: { enabled: true } })
+  })
+  it('enforces result count bounds locally and offers only the fixed official guide action', () => {
+    const h = harness(searchPageState()); h.click('Web search'); h.click('Search API guide ↗')
+    expect(h.posts.at(-1)).toMatchObject({ type: 'native-action', action: 'search-guide' })
+    document.querySelector<HTMLInputElement>('[data-focus-key="search-api-mode"]')!.click()
+    h.input('web-deepseek-api:count', '51'); h.click('Save changes')
+    expect(h.posts.some(post => post.type === 'save-search')).toBe(false); expect(document.body.textContent).toContain('maximum 50')
+  })
+  it('uses the official reasoning level table and sends only explicitly edited mappings', () => {
+    const h = harness(); h.click('Models'); document.querySelector<HTMLButtonElement>('[data-provider="anthropic"]')!.click()
+    const enable = document.querySelector<HTMLInputElement>('[data-focus-key="reasoning:0:enabled"]')!
+    enable.click(); expect(document.querySelectorAll('.reasoning-row select')).toHaveLength(4)
+    expect(document.querySelector<HTMLInputElement>('[aria-label="off API value"]')!.disabled).toBe(true)
+    h.input('reasoning:0:3:value', 'adaptive'); h.click('+ Add level')
+    h.click('Save changes')
+    expect(h.posts.at(-1)!.fields.models[0].reasoningEfforts).toEqual({ off: null, low: 'low', medium: 'medium', high: 'adaptive', xhigh: 'xhigh' })
+  })
+  it('prevents an Off-only reasoning map and restores automatic mapping when disabled', () => {
+    const h = harness(); h.click('Models'); document.querySelector<HTMLButtonElement>('[data-provider="anthropic"]')!.click()
+    document.querySelector<HTMLInputElement>('[data-focus-key="reasoning:0:enabled"]')!.click()
+    for (const level of ['low', 'medium', 'high']) document.querySelector<HTMLButtonElement>(`[aria-label="Delete level ${level}"]`)!.click()
+    expect(h.button('Save changes').disabled).toBe(true); expect(document.body.textContent).toContain('at least one level')
+    document.querySelector<HTMLInputElement>('[data-focus-key="reasoning:0:enabled"]')!.click(); h.click('Save changes')
+    expect(h.posts.at(-1)!.fields.models[0].reasoningEfforts).toBeNull()
+  })
+  it('hides custom reasoning controls when the adapter schema does not declare them', () => {
+    const h = harness(); h.click('Models'); document.querySelector<HTMLButtonElement>('[data-provider="deepseek-official"]')!.click()
+    expect(document.querySelector('.model-reasoning')).toBeNull()
+  })
+  it('reveals only a typed API key on explicit request and masks it again on remount', () => {
+    const h = harness(); h.click('Models'); document.querySelector<HTMLButtonElement>('[data-provider="anthropic"]')!.click()
+    h.input('api-key', 'fixture-key'); document.querySelector<HTMLButtonElement>('[aria-label="Show API key"]')!.click()
+    expect(document.querySelector<HTMLInputElement>('[data-focus-key="api-key"]')!.type).toBe('text')
+    h.click('Shell'); h.click('Models')
+    expect(document.querySelector<HTMLInputElement>('[data-focus-key="api-key"]')!.type).toBe('password')
+  })
   it('uses direct settings navigation and only offers capabilities supplied by the runtime', () => {
     const h = harness()
-    expect([...document.querySelectorAll('[data-section]')].map(item => (item as HTMLElement).dataset.section)).toEqual(['general', 'models', 'shell', 'agent', 'subagents', 'search'])
-    h.update({ forms: [], allowedModels: undefined })
-    expect([...document.querySelectorAll('[data-section]')].map(item => (item as HTMLElement).dataset.section)).toEqual(['general', 'models'])
+    expect([...document.querySelectorAll('nav [data-section]')].map(item => (item as HTMLElement).dataset.section)).toEqual(['general', 'models', 'plugins'])
+    h.update({ forms: [], allowedModels: undefined, inventory: [] })
+    expect([...document.querySelectorAll('nav [data-section]')].map(item => (item as HTMLElement).dataset.section)).toEqual(['general', 'models'])
   })
   it('saves shell changes only on Save and keeps restoration as an unset operation', () => {
     const h = harness(); h.click('Shell'); h.input('bash-sandbox:timeoutMs', '120000')

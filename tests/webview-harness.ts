@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { expect, vi } from 'vitest'
 import { marked } from 'marked'
+import { renderUserText } from '../src/user-text.mjs'
+import { createSettingsModal } from '../src/settings-modal.mjs'
+import { createSubagentLinks } from '../src/subagent-links.mjs'
 import type * as vscode from 'vscode'
 import { chatHtml as createChatHtml } from '../src/webview.js'
 
@@ -52,11 +55,14 @@ export function harness(): Harness {
     getState: () => undefined,
     setState: () => undefined,
   })
+  globals.dshSettingsPage = { createSettingsModal }
   // The markdown renderer also ships as its own bundle, which jsdom does not
   // fetch from a `src` attribute. Stand in for it with the same library the
   // bundle wraps, so tests exercise real markdown rather than a stub's idea of
   // it — the alternative was a suite that could not see a formatting regression.
   globals.dshMarkdown = {
+    createSubagentLinks,
+    renderUserText,
     renderMarkdown(text: string) {
       const root = document.createElement('div')
       root.className = 'markdown'
@@ -141,6 +147,7 @@ export function harness(): Harness {
   return {
     posts, drop, enter, sendState, send, click, settle, document,
     dispose() {
+      window.dispatchEvent(new Event('pagehide'))
       for (const spy of spies) spy.mockRestore()
       delete globals.acquireVsCodeApi
       delete globals.dshConversationScroll
