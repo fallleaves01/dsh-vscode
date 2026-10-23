@@ -34,18 +34,21 @@ export async function inspectRecordedRuntime(
   broker: RuntimeBroker,
   dshHome: string,
 ): Promise<RecordedRuntimeState> {
-  const descriptor = broker.readDescriptor()
-  if (descriptor === undefined) return { state: 'none' }
-  if (!descriptor.manageable) return { state: 'attach-only', descriptor }
-  const pid = descriptor.pid
-  // A managed record is required to carry a pid (see `parseDescriptor`).
-  if (pid === undefined) return { state: 'gone' }
-  if (!await broker.isRecordRunning(pid, descriptor.processStartTime)) {
-    broker.clearDescriptor()
-    return { state: 'gone' }
-  }
-  const held = await countSessionsHeldBy(dshHome, pid)
-  return { state: 'ready', descriptor, held: held.count, heldIsLowerBound: held.truncated }
+  const lock = await broker.acquireTransition()
+  try {
+    const descriptor = broker.readDescriptor()
+    if (descriptor === undefined) return { state: 'none' }
+    if (!descriptor.manageable) return { state: 'attach-only', descriptor }
+    const pid = descriptor.pid
+    // A managed record is required to carry a pid (see `parseDescriptor`).
+    if (pid === undefined) return { state: 'gone' }
+    if (!await broker.isRecordRunning(pid, descriptor.processStartTime)) {
+      broker.clearDescriptor()
+      return { state: 'gone' }
+    }
+    const held = await countSessionsHeldBy(dshHome, pid)
+    return { state: 'ready', descriptor, held: held.count, heldIsLowerBound: held.truncated }
+  } finally { lock.release() }
 }
 
 export type EndRecordedRuntimeResult =
@@ -57,6 +60,7 @@ export type EndRecordedRuntimeResult =
   | { readonly ended: false; readonly reason: 'attach-only' }
   /** The signal was sent but the process was still there afterwards. */
   | { readonly ended: false; readonly reason: 'still-running' }
+  | { readonly ended: false; readonly reason: 'in-use' | 'replaced' }
 
 /**
  * End a recorded runtime after proving it is the recorded instance.
@@ -71,7 +75,14 @@ export async function endRecordedRuntime(
   // Checked first, so a user-owned runtime is never even authenticated for the
   // purpose of ending it.
   if (!descriptor.manageable) return { ended: false, reason: 'attach-only' }
-  if (!await proveRuntimeIdentity(descriptor.launchUrl)) return { ended: false, reason: 'unproved' }
-  const stopped = await broker.stop(descriptor, { confirmed: true })
-  return stopped ? { ended: true } : { ended: false, reason: 'still-running' }
+  const lock = await broker.acquireTransition()
+  try {
+    const current = broker.readDescriptor()
+    if (current?.instanceId !== descriptor.instanceId || current.pid !== descriptor.pid
+      || current.launchUrl !== descriptor.launchUrl) return { ended: false, reason: 'replaced' }
+    if ((await broker.liveLeases()).some(lease => lease.runtimePid === descriptor.pid)) return { ended: false, reason: 'in-use' }
+    if (!await proveRuntimeIdentity(descriptor.launchUrl)) return { ended: false, reason: 'unproved' }
+    const stopped = await broker.stop(descriptor, { confirmed: true })
+    return stopped ? { ended: true } : { ended: false, reason: 'still-running' }
+  } finally { lock.release() }
 }

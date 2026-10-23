@@ -61,6 +61,7 @@ export class DebugRuntimeContribution implements RuntimeLaunchContributor {
       await writeFile(patchPath, debugRuntimePatch(endpoint), { encoding: 'utf8', mode: 0o600 })
       const finalPatchPath = patchPath
       return {
+        sharing: 'exclusive',
         environment: { [DEBUG_TOKEN_ENV]: bridge.authorizationToken },
         transformArguments: (args, version) => {
           if (!supportsDebugRuntime(version)) {

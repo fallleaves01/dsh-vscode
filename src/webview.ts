@@ -1,5 +1,8 @@
 import type * as vscode from 'vscode'
 import { webviewThemeCss } from './webview-theme.js'
+import { userTextCss } from './user-text-style.js'
+import { settingsPageCss, settingsIcon } from './settings-ui.js'
+import { subagentLinkCss } from './subagent-link-style.js'
 
 function nonce(): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
@@ -12,7 +15,7 @@ function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
-export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, markdownAssets: { script: vscode.Uri; style: vscode.Uri; scroll: vscode.Uri; tail: vscode.Uri }): string {
+export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, markdownAssets: { script: vscode.Uri; style: vscode.Uri; scroll: vscode.Uri; tail: vscode.Uri; settings?: vscode.Uri }): string {
   const token = nonce()
   const mark = escapeHtml(deepseekMarkUri.toString(true))
   const tail = escapeHtml(markdownAssets.tail.toString(true))
@@ -68,7 +71,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .runtime-indicator { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--dsh-muted); }
     .runtime-indicator[data-phase="ready"] { background: var(--dsh-success); }
     .runtime-indicator[data-phase="error"] { background: var(--vscode-errorForeground); }
-    .runtime-indicator[data-phase="starting"] { background: var(--dsh-warning); }
+    .runtime-indicator[data-phase="loading"] { background: var(--dsh-warning); }
+    .runtime-connection { flex: none; display: flex; align-items: center; gap: 4px; padding: 4px; border: 0; border-radius: 4px; background: transparent; color: var(--dsh-muted); font-size: 10px; line-height: 18px; }
+    .runtime-connection:hover:not(:disabled) { background: var(--dsh-hover); color: var(--vscode-foreground); }
+    .runtime-connection:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
     .session-control { min-width: 0; flex: 1; }
     .session-trigger { width: 100%; min-width: 0; height: 28px; padding: 0 6px; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; background: transparent; font-size: 13px; line-height: 18px; font-weight: 500; text-align: left; }
     .session-trigger:hover, .session-trigger[aria-expanded="true"] { background: var(--vscode-toolbar-hoverBackground); }
@@ -180,6 +186,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .session-action:hover { background: var(--dsh-hover); }
     .icon-button { width: 28px; height: 28px; min-width: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--vscode-icon-foreground); }
     .icon-button:hover { background: var(--vscode-toolbar-hoverBackground); }
+    #openSettings { width: 36px; min-width: 36px; height: 36px; border-radius: 12px; }
+    #openSettings svg { width: 18px; height: 18px; stroke-width: 1.3; }
     .github-star:hover { color: var(--vscode-charts-yellow, #e3b341); }
     .jobs-control { position: relative; flex: 0 0 auto; }
     .task-panel { min-width: 0; border: .5px solid var(--dsh-border); border-radius: 12px; overflow: hidden; background: var(--dsh-surface); line-height: 18px; }
@@ -189,7 +197,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .task-attention { flex: none; padding: 0 5px; border-radius: 5px; color: var(--dsh-warning); background: color-mix(in srgb, var(--dsh-warning) 12%, transparent); font-size: 10px; }
     .task-chevron { flex: none; width: 12px; height: 12px; transition: transform 120ms; }
     .task-toggle[aria-expanded="true"] .task-chevron { transform: rotate(90deg); }
-    .task-toggle:hover, .task-child:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .task-toggle:hover, .task-child:not([aria-disabled="true"]):hover { background: var(--vscode-toolbar-hoverBackground); }
+    .task-child[aria-disabled="true"] { cursor: default; }
     .task-list { max-height: min(210px, 27vh); overflow-y: auto; padding: 0 5px 6px; }
     .task-section { margin: 7px 5px 4px; font-size: 10px; color: var(--dsh-muted); }
     .task-child { display: flex; width: 100%; min-width: 0; align-items: center; gap: 9px; border: 0; border-radius: 8px; padding: 8px; background: transparent; text-align: left; font-size: 12px; line-height: 18px; }
@@ -201,7 +210,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .task-copy { flex: 1; min-width: 0; display: grid; gap: 2px; }
     .task-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
     .task-meta { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 3px 7px; color: var(--dsh-muted); font-size: 10px; line-height: 15px; font-variant-numeric: tabular-nums; }
-    .task-open { flex: none; width: 14px; height: 14px; color: var(--dsh-muted); }
+    .task-entry { display:flex; align-items:center; min-width:0; }
+    .task-entry .task-child { width:auto; flex:1; }
+    .task-open { flex: none; width: 28px; height: 28px; padding:6px; border:0; border-radius:6px; background:transparent; color: var(--dsh-muted); cursor:pointer; }
+    .task-open svg { width:14px; height:14px; }
+    .task-open:hover { background:var(--dsh-hover); }
     .task-status { font-size: 10px; color: var(--vscode-descriptionForeground); }
     .task-status.running { color: var(--vscode-textLink-foreground); }
     .task-status.waiting { color: var(--vscode-editorWarning-foreground, #cca700); }
@@ -689,6 +702,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     @media (max-width: 380px) { .conversation { padding-inline: 12px; } .composer-row { grid-template-columns: 28px auto 20px minmax(0, 1fr) minmax(40px, .5fr) auto; } .project span { display: none; } }
     @media (max-height: 500px) { .conversation-home { gap: 8px; padding-block: 8px; grid-template-rows: auto minmax(0, 1fr); } .task-area { max-height: 24vh; } textarea { max-height: 28vh; } .command-menu { max-height: 26vh; } }
     ${webviewThemeCss}
+    ${userTextCss}
+    ${settingsPageCss}
+    ${subagentLinkCss}
   </style>
 </head>
 <body>
@@ -713,8 +729,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         <button id="accountTrigger" class="icon-button account-trigger" title="DeepSeek account" aria-label="DeepSeek account" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg><span class="account-dot"></span></button>
         <div id="accountMenu" class="account-menu hidden" role="menu" aria-label="DeepSeek account"></div>
       </div>
-      <span id="runtimeIndicator" class="runtime-indicator" role="img" aria-label="Runtime disconnected"></span>
-      <button id="openSettings" class="icon-button" title="DeepSeek settings" aria-label="DeepSeek settings"><svg viewBox="0 0 24 24"><path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3z"/><circle cx="12" cy="12" r="3"/></svg></button>
+      <button id="runtimeConnection" class="runtime-connection" type="button" title="Connect to DSH" aria-label="Connect to DSH"><span id="runtimeIndicator" class="runtime-indicator" role="img" aria-label="Runtime disconnected"></span><span id="runtimeConnectionLabel">Connect</span></button>
+      <button id="openSettings" class="icon-button" title="Settings" aria-label="Settings" aria-haspopup="dialog" aria-expanded="false">${settingsIcon('general')}</button>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     </header>
     <section id="conversationHomeView" class="conversation-home hidden" aria-label="Conversation directory">
@@ -788,8 +804,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
   </div>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.script.toString(true))}"></script>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.scroll.toString(true))}"></script>
+  ${markdownAssets.settings ? '<script nonce="' + token + '" src="' + escapeHtml(markdownAssets.settings.toString(true)) + '"></script>' : ''}
   <script nonce="${token}">
     const vscode = acquireVsCodeApi();
+    const settingsModal = window.dshSettingsPage ? window.dshSettingsPage.createSettingsModal(document, vscode) : undefined;
+    window.addEventListener('unload', () => { if (settingsModal) settingsModal.dispose(); });
     window.addEventListener('error', event => {
       vscode.postMessage({ type: 'webview-error', message: event.message || 'Unknown webview error' });
     });
@@ -799,6 +818,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     });
     const elements = {
       runtimeIndicator: document.getElementById('runtimeIndicator'),
+      runtimeConnection: document.getElementById('runtimeConnection'),
+      runtimeConnectionLabel: document.getElementById('runtimeConnectionLabel'),
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
       conversationStatus: document.getElementById('conversationStatus'), conversationHistory: document.getElementById('conversationHistory'), messages: document.getElementById('messages'), conversationTail: document.getElementById('conversationTail'),
       openSettings: document.getElementById('openSettings'), conversationHome: document.getElementById('conversationHome'), conversationHomeView: document.getElementById('conversationHomeView'), conversationPane: document.getElementById('conversationPane'), composerFooter: document.getElementById('composerFooter'),
@@ -878,6 +899,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let armedJobTimer;
     let jobsTimer;
     let taskTimer;
+    let subagentLinkTimer;
+    const subagentLinkViews = new Map();
+    function syncSubagentToolLinks() {
+      let running = false;
+      for (const [id, entry] of subagentLinkViews) {
+        if (!entry.view.root.isConnected || !state || entry.sessionId !== state.sessionId) { entry.view.dispose(); subagentLinkViews.delete(id); continue; }
+        entry.view.update(array(state.sessions)); running = running || entry.view.running();
+      }
+      if (running && !subagentLinkTimer) subagentLinkTimer = setInterval(syncSubagentToolLinks, 1000);
+      if (!running && subagentLinkTimer) { clearInterval(subagentLinkTimer); subagentLinkTimer = undefined; }
+    }
+    window.addEventListener('pagehide', () => {
+      if (subagentLinkTimer) clearInterval(subagentLinkTimer);
+      if (taskTimer) clearInterval(taskTimer);
+      for (const entry of subagentLinkViews.values()) entry.view.dispose(); subagentLinkViews.clear();
+    });
     const collapsedTaskPanels = new Set();
     let historyAnchor;
     let renderFrame;
@@ -1517,16 +1554,23 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const context = { sessionId: state && state.sessionId, cwd: state && state.cwd };
       const callView = record(message.callView);
       const resultView = record(message.resultView);
+      const references = [];
+      for (const view of [resultView, callView]) for (const entry of array(view && view.subagentLinks)) {
+        if (entry && typeof entry.id === 'string' && !references.some(ref => ref.id === entry.id)) references.push(entry);
+      }
+      const subagent = references.length > 0 || string(callView && callView.subagentLabel) || string(resultView && resultView.subagentLabel);
       const item = document.createElement('details');
       item.className = 'tool' + (message.failed ? ' failed' : '');
-      item.open = toolStartsOpen(message);
+      item.open = subagent ? (toolOpenIntent.has(message.id) ? toolOpenIntent.get(message.id) : message.failed === true) : toolStartsOpen(message);
       const summary = document.createElement('summary');
-      summary.append(node('span', 'tool-icon', message.streaming ? '●' : (message.failed ? '!' : '✓')));
-      const title = message.streaming === true
+      const toolIcon = node('span', 'tool-icon', message.streaming ? '●' : (message.failed ? '!' : '✓'));
+      if (subagent && !message.failed) toolIcon.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>';
+      summary.append(toolIcon);
+      const title = subagent ? node('span', 'tool-title', 'Details') : message.streaming === true
         ? shimmerNode('tool-title', toolTitle(message, callView, resultView))
         : node('span', 'tool-title', toolTitle(message, callView, resultView));
       summary.append(title);
-      summary.append(node('span', 'tool-detail', message.detail || ''));
+      summary.append(node('span', 'tool-detail', subagent ? (message.failed ? 'Failed' : '') : message.detail || ''));
       summary.addEventListener('click', () => { if (!item.open) conversationScroller.pause(); });
       item.append(summary);
       let contentInitialized = false;
@@ -1546,7 +1590,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         toolOpenIntent.set(message.id, item.open);
         if (item.open) initializeContent();
       });
-      return item;
+      if (!subagent) return item;
+      const card = node('div', 'subagent-tool-card');
+      card.append(node('div', 'subagent-tool-heading', references.length > 1 ? 'Subagents · ' + references.length : 'Subagent'));
+      const previous = subagentLinkViews.get(message.id); if (previous) { previous.view.dispose(); subagentLinkViews.delete(message.id); }
+      if (references.length && window.dshMarkdown && typeof window.dshMarkdown.createSubagentLinks === 'function') {
+        const view = window.dshMarkdown.createSubagentLinks(references, context.sessionId, value => vscode.postMessage(value));
+        view.update(array(state && state.sessions)); card.append(view.root); subagentLinkViews.set(message.id, { view, sessionId: context.sessionId });
+      } else if (!references.length) card.append(node('div', 'subagent-tool-heading', string(callView && callView.subagentLabel) || (message.streaming ? 'Starting subagent…' : 'No child conversation was created.')));
+      card.append(item); return card;
     }
     function renderCommand(message) {
       const context = { sessionId: state && state.sessionId, cwd: state && state.cwd };
@@ -2194,7 +2246,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const thinking = message.role === 'assistant' && hasThinking(message) ? renderThinking(message) : undefined;
       const body = message.role === 'assistant'
         ? message.deferredBody === true ? node('div', 'markdown') : (markdown ? markdown.root : renderMarkdown(message.text))
-        : node('div', '', message.text);
+        : (window.dshMarkdown && typeof window.dshMarkdown.renderUserText === 'function'
+          ? window.dshMarkdown.renderUserText(message.text) : node('div', '', 'Message renderer unavailable.'));
       body.classList.add('message-body');
       if (message.deferredBody === true) attachDeferredOutput(message, body, renderAssistantPage, false, 'Show full response' + (message.bodyLength ? ' · ' + String(message.bodyLength) + ' characters' : ''));
       else appendImages(body, message.images);
@@ -2298,7 +2351,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       } else {
         box.append(document.createTextNode(current.statusText || 'Starting DeepSeek Harness…'));
       }
-      if (current.phase === 'error') {
+      if (current.phase === 'idle') {
+        const actions = node('div', 'actions');
+        const connect = node('button', 'primary', 'Connect to DSH'); connect.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(connect);
+        box.append(actions);
+      } else if (current.phase === 'loading') {
+        const actions = node('div', 'actions');
+        const output = node('button', 'secondary', 'Show Output'); output.addEventListener('click', () => vscode.postMessage({ type: 'output' })); actions.append(output);
+        box.append(actions);
+      } else if (current.phase === 'error') {
         const actions = node('div', 'actions');
         if (setup === 'workspace') {
           const open = node('button', 'primary', 'Open Project'); open.addEventListener('click', () => vscode.postMessage({ type: 'open-workspace' })); actions.append(open);
@@ -2312,6 +2373,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         } else {
           if (current.canReconnect) {
             const retry = node('button', 'secondary', 'Reconnect'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(retry);
+          } else {
+            const retry = node('button', 'secondary', 'Retry Connection'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(retry);
           }
           const restart = node('button', 'secondary', 'Restart Runtime'); restart.addEventListener('click', () => vscode.postMessage({ type: 'restart' })); actions.append(restart);
         }
@@ -3026,6 +3089,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       });
     }
     function taskStatus(item) {
+      if (item.subagent && item.subagent.mode === 'external') return { label: 'External task', kind: 'idle' };
+      if (item.catalogOnly) return { label: 'Not opened', kind: 'idle' };
       const attention = item.attention || {};
       if (Number(attention.approvals) > 0) return { label: 'Needs approval', kind: 'waiting' };
       if (Number(attention.questions) > 0) return { label: 'Needs your answer', kind: 'waiting' };
@@ -3081,10 +3146,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         for (const item of children) {
           const depth = Math.min(8, (depths.get(item.parentId) ?? -1) + 1); depths.set(item.id, depth);
           const status = taskStatus(item);
+          const external = item.subagent && item.subagent.mode === 'external';
           const label = string(item.subagent && item.subagent.label) || string(item.title, 'Subagent');
           const row = node('button', 'task-child'); row.type = 'button'; row.style.paddingLeft = (8 + depth * 12) + 'px';
-          row.title = label + ' · ' + status.label + ' · Open details beside this chat';
-          row.setAttribute('aria-label', 'Open subagent ' + label + ', ' + status.label);
+          row.title = external ? label + ' · External task' : label + ' · ' + status.label + ' · Open conversation';
+          row.setAttribute('aria-label', (external ? '' : 'Open subagent ') + label + ', ' + status.label);
+          if (external) { row.setAttribute('aria-disabled', 'true'); row.tabIndex = -1; }
           row.dataset.sessionId = item.id;
           const glyph = node('span', 'task-glyph ' + status.kind); glyph.setAttribute('aria-hidden', 'true');
           glyph.innerHTML = status.kind === 'completed' ? '<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>' : '<svg viewBox="0 0 24 24"><rect x="5" y="6" width="14" height="12" rx="3"/><path d="M9 10h.01M15 10h.01M9 14h6M12 3v3"/></svg>';
@@ -3094,11 +3161,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           if (item.activity && typeof item.activity.totalTokens === 'number') meta.append(node('span', '', formatTokens(item.activity.totalTokens) + ' tokens'));
           const duration = node('span', 'task-duration', taskDuration(item)); duration.dataset.taskDuration = item.id; meta.append(duration);
           copy.append(meta);
-          const open = node('span', 'task-open'); open.setAttribute('aria-hidden', 'true'); open.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5h11v11M19 5 5 19"/></svg>';
-          row.append(glyph, copy, open);
+          const open = node('button', 'task-open'); open.type = 'button'; open.title = 'Open details beside this chat'; open.setAttribute('aria-label', 'Open subagent details beside this chat: ' + label); open.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h11v11M19 5 5 19"/></svg>';
+          row.append(glyph, copy);
           const sessionId = item.id;
-          row.addEventListener('click', () => vscode.postMessage({ type: 'open-task-details', kind: 'subagent', sessionId }));
-          elements.taskList.append(row);
+          if (!external) row.addEventListener('click', () => vscode.postMessage({ type: 'select-session', sessionId }));
+          open.addEventListener('click', () => vscode.postMessage({ type: 'open-task-details', kind: 'subagent', sessionId }));
+          const entry = node('div', 'task-entry'); entry.append(row); if (!external) entry.append(open); elements.taskList.append(entry);
         }
       }
       if (todos.length) {
@@ -3300,7 +3368,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
         loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear(); deferredOutputViews.clear(); pendingMessageAppends.clear();
       }
-      const statusKey = current.phase + '::' + current.statusText + '::' + current.setup;
+      const statusKey = current.phase + '::' + current.statusText + '::' + current.setup + '::' + current.canReconnect;
       if (statusKey !== renderedStatusKey) {
         renderedStatusKey = statusKey;
         elements.conversationStatus.replaceChildren();
@@ -3361,8 +3429,21 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     }
     function render(current) {
       elements.runtimeIndicator.dataset.phase = current.phase;
-      const runtimeLabel = current.phase === 'ready' ? 'Runtime connected' : current.phase === 'error' ? 'Runtime connection failed' : current.phase === 'starting' ? 'Runtime starting' : 'Runtime disconnected';
+      const connection = current.runtimeConnection;
+      const shared = connection && connection.ownership === 'adopted';
+      const external = connection && (connection.ownership === 'external' || connection.ownership === 'attached');
+      const connected = connection || current.phase === 'ready';
+      const runtimeLabel = current.phase === 'ready' ? (shared ? 'Shared DSH connected' : external ? 'External DSH connected' : 'Runtime connected')
+        : current.phase === 'error' ? 'Runtime connection failed' : current.phase === 'loading' ? (current.statusText || 'Connecting to DSH…') : 'Runtime disconnected';
       elements.runtimeIndicator.title = runtimeLabel; elements.runtimeIndicator.setAttribute('aria-label', runtimeLabel);
+      elements.runtimeConnectionLabel.textContent = current.phase === 'loading' ? (connected ? 'Loading' : 'Connecting')
+        : current.phase === 'error' ? 'Retry' : current.phase === 'idle' ? 'Connect' : shared ? 'Shared' : external ? 'External' : 'DSH';
+      const identity = connection && Number.isSafeInteger(connection.pid) && connection.pid > 0 ? ' · PID ' + connection.pid : '';
+      const action = current.setup === 'runtime-auth' ? 'Connect to the existing runtime using its launch URL'
+        : current.phase === 'ready' ? 'Reconnect this window' : current.phase === 'loading' ? 'See the current stage or Show Output below' : 'Connect to DSH; reuse a compatible saved runtime';
+      elements.runtimeConnection.title = runtimeLabel + identity + '. ' + action;
+      elements.runtimeConnection.setAttribute('aria-label', elements.runtimeConnection.title);
+      elements.runtimeConnection.disabled = current.phase === 'loading' || current.setup === 'workspace';
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
       state = current;
       const createdConversation = reconcileConversationCreation(current);
@@ -3418,6 +3499,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       renderRoutableNotice(current);
       renderHeldNotice(current);
       renderConversation(current);
+      syncSubagentToolLinks();
       const enabled = composerReady() && Boolean(current.sessionId);
       elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true || Boolean(pendingConversationCreation); elements.newSession.disabled = current.phase !== 'ready'; elements.policyTrigger.disabled = current.phase !== 'ready' || Boolean(pendingConversationCreation);
       if (!enabled) closeContextMenu(false);
@@ -3939,7 +4021,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     elements.refreshTasks.addEventListener('click', () => vscode.postMessage({ type: 'refresh-tasks' }));
     elements.configureTaskServices.addEventListener('click', () => vscode.postMessage({ type: 'configure-task-services' }));
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
-    elements.openSettings.addEventListener('click', () => vscode.postMessage({ type: 'open-settings' }));
+    elements.runtimeConnection.addEventListener('click', () => vscode.postMessage({ type: state && state.setup === 'runtime-auth' ? 'connect-existing-runtime' : 'reconnect' }));
+    elements.openSettings.addEventListener('click', () => { elements.openSettings.setAttribute('aria-busy', 'true'); vscode.postMessage({ type: 'open-settings' }); });
     elements.conversationHome.addEventListener('click', () => {
       if (pendingConversationCreation) return;
       if (homeOpen) { homeOpen = false; if (state) render(state); elements.prompt.focus(); }
@@ -4039,6 +4122,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
     });
     window.addEventListener('message', event => {
+      if (event.data && event.data.type === 'open-subagent-result') for (const entry of subagentLinkViews.values()) entry.view.reply(event.data);
       if (!event.data) return;
       if (event.data.type === 'conversation-created' && pendingConversationCreation && event.data.requestId === pendingConversationCreation.requestId && event.data.cwd === pendingConversationCreation.cwd) {
         if (typeof event.data.sessionId === 'string' && !event.data.error) {

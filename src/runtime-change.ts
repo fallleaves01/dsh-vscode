@@ -36,7 +36,7 @@ export interface RuntimeChangeController {
   readonly runtimeOwnership: RuntimeOwnership | undefined
   readonly runtimeIdentity: object | undefined
   readonly hasRunningTasks: boolean
-  readonly state: { phase: 'loading' | 'ready' | 'error'; statusText: string }
+  readonly state: { phase: 'idle' | 'loading' | 'ready' | 'error'; statusText: string }
   /** False when another connection operation superseded this restart. */
   restart(): Promise<boolean>
 }

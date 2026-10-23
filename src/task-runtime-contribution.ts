@@ -1,8 +1,9 @@
 import * as vscode from 'vscode'
-import { randomUUID } from 'node:crypto'
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { link, lstat, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { RuntimeLaunchContext, RuntimeLaunchContributor, RuntimeLaunchPreparation } from './runtime-launch.js'
+import { privateDirectory } from './runtime-lock.js'
 
 export interface TaskRuntimeOptions { historySearch: boolean; schedule: boolean }
 /** Standard Web profile keeps these opt-in; no database is opened before first search. */
@@ -29,16 +30,26 @@ export class TaskRuntimeContribution implements RuntimeLaunchContributor {
     const existing = await this.previous?.prepare(launch)
     if (!options.historySearch && !options.schedule) return existing
     try {
-      const directory = join(this.context.globalStorageUri.fsPath, 'task-services')
-      await mkdir(directory, { recursive: true })
-      const file = join(directory, `web-${Number(options.historySearch)}-${Number(options.schedule)}.patch.yml`)
-      // Stable content/path lets other windows reuse a runtime with the same options.
+      const directory = join(launch.sharedRuntimeDirectory ?? this.context.globalStorageUri.fsPath, 'task-services')
+      privateDirectory(directory)
+      const content = taskRuntimePatch(options)
+      const hash = createHash('sha256').update(content).digest('hex').slice(0, 16)
+      const file = join(directory, `web-${Number(options.historySearch)}-${Number(options.schedule)}-${hash}.patch.yml`)
+      // Immutable content and a profile-independent path keep live overlays stable.
       const temporary = `${file}.${randomUUID()}.tmp`
       try {
-        await writeFile(temporary, taskRuntimePatch(options), { mode: 0o600, flag: 'wx' })
-        await rename(temporary, file)
+        await writeFile(temporary, content, { mode: 0o600, flag: 'wx' })
+        try { await link(temporary, file) }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+          const stat = await lstat(file)
+          if (stat.isSymbolicLink() || !stat.isFile()
+            || (process.platform !== 'win32' && (stat.mode & 0o077) !== 0)
+            || await readFile(file, 'utf8') !== content) throw new Error('The DSH task service patch does not match its expected private content.')
+        }
       } finally { await rm(temporary, { force: true }) }
-      return { ...(existing?.environment === undefined ? {} : { environment: existing.environment }),
+      return { sharing: existing === undefined ? 'compatible' : existing.sharing ?? 'exclusive',
+        ...(existing?.environment === undefined ? {} : { environment: existing.environment }),
         transformArguments: (args, version) => taskRuntimeArgs(existing?.transformArguments(args, version) ?? args, version, file),
         ...(existing?.dispose === undefined ? {} : { dispose: () => existing.dispose!() }) }
     } catch (error) { await existing?.dispose?.(); throw error }

@@ -28,6 +28,10 @@ import { DshConnection } from './dsh-connection.js'
 import { assertSupportedDshVersion, DSH_UPGRADE_MESSAGE } from './runtime-endpoint.js'
 import { redactDshSecrets, RuntimeOutput } from './runtime-output.js'
 import { existingRuntimeUrl, ExistingRuntimeConnectionError, type RuntimeTarget } from './runtime-target.js'
+import type { RuntimeTransition } from './runtime-lock.js'
+import { spawnHostedRuntime, type RuntimeHostOptions, type RuntimeProcess } from './runtime-process.js'
+import { inspectRuntimeRestart, stopRuntimeForRestart, validateRuntimeRestart, type RuntimeRestartPlan } from './runtime-restart.js'
+import { RUNTIME_HOST_PROTOCOL } from './runtime-lifetime.js'
 
 /**
  * Who owns the runtime process.
@@ -43,10 +47,11 @@ export type RuntimeOwnership = 'external' | 'managed' | 'adopted' | 'attached'
 export type RuntimeState =
   | { kind: 'stopped' }
   | { kind: 'starting'; detail: string }
-  | { kind: 'ready'; localUri: vscode.Uri; ownership: RuntimeOwnership }
+  | { kind: 'ready'; localUri: vscode.Uri; ownership: RuntimeOwnership; pid?: number }
   | { kind: 'failed'; message: string; reason?: 'runtime-auth' }
 
 interface PendingStart {
+  readonly abort: AbortController
   resolve(uri: vscode.Uri): void
   reject(error: Error): void
   promise: Promise<vscode.Uri>
@@ -64,7 +69,7 @@ function deferredStart(): PendingStart {
   // stop() can reject while launch preparation is still awaited; the caller
   // receives the same rejection once that preparation settles.
   void promise.catch(() => {})
-  return { resolve, reject, promise }
+  return { resolve, reject, promise, abort: new AbortController() }
 }
 
 /**
@@ -87,11 +92,7 @@ export function describeLaunchFailure(launch: LaunchCommand, error: unknown): Er
 }
 
 /**
- * The installed extension version, used only to keep a broker fingerprint honest.
- *
- * Two windows may run different extension builds across a VS Code update; a
- * fingerprint mismatch makes them start separate runtimes rather than let an
- * older window drive a runtime a newer one configured.
+ * The UI version is diagnostic metadata; launch compatibility is independent.
  */
 function extensionVersionOf(context: vscode.ExtensionContext): string {
   const manifest = (context.extension as { packageJSON?: { version?: unknown } } | undefined)?.packageJSON
@@ -145,9 +146,16 @@ function readDshVersion(launch: LaunchCommand, cwd: string): Promise<string | un
 /** Connects to one official DSH Web runtime, spawning and owning it only when needed. */
 export class DshRuntime implements vscode.Disposable {
   private readonly changes = new vscode.EventEmitter<RuntimeState>()
-  private child: ChildProcessWithoutNullStreams | undefined
+  private child: RuntimeProcess | undefined
+  private transition: RuntimeTransition | undefined
+  private brokerUse = false
+  /** Also retained after a failed adoption: Restart must reach that recorded process. */
+  private sharedStartAttempted = false
+  private launchingChild: Promise<RuntimeProcess> | undefined
+  private readonly brokerWrites = new Set<Promise<unknown>>()
   private pending: PendingStart | undefined
   private startupTimer: NodeJS.Timeout | undefined
+  private hostMonitor: NodeJS.Timeout | undefined
   private _connection: DshConnection | undefined
   private authenticating: DshConnection | undefined
   private startTask: Promise<vscode.Uri> | undefined
@@ -161,8 +169,6 @@ export class DshRuntime implements vscode.Disposable {
   private readonly instanceId = randomUUID()
   /** Conversations released by the most recent stop, for the restart report. */
   private released = 0
-  /** When this window already reported that a saved runtime went away. */
-  private warnedStaleAttached = false
   /**
    * Every form of the launch token this window has seen, for the one logger that
    * handles arbitrary runtime output: the launch URL is printed by the runtime
@@ -187,6 +193,7 @@ export class DshRuntime implements vscode.Disposable {
      * A saved external runtime is unaffected: the user asked for that one.
      */
     private readonly adoptOwnRuntimes = true,
+    private readonly host?: RuntimeHostOptions,
   ) {}
 
   get state(): RuntimeState {
@@ -209,6 +216,9 @@ export class DshRuntime implements vscode.Disposable {
   }
 
   private publish(state: RuntimeState): void {
+    if (state.kind === 'starting' && (this._state.kind !== 'starting' || this._state.detail !== state.detail)) {
+      this.output.appendLine(`[runtime] ${redactDshSecrets(state.detail, this.outputSecrets)}`)
+    }
     this._state = state
     this.changes.fire(state)
   }
@@ -259,6 +269,8 @@ export class DshRuntime implements vscode.Disposable {
     const pending = deferredStart()
     this.pending = pending
     this.stopping = false
+    this.brokerUse = false
+    this.sharedStartAttempted = false
     const inheritedApiKey = process.env.DEEPSEEK_API_KEY
     if (inheritedApiKey !== undefined && inheritedApiKey !== '' && !this.outputSecrets.includes(inheritedApiKey)) this.outputSecrets.push(inheritedApiKey)
 
@@ -274,45 +286,46 @@ export class DshRuntime implements vscode.Disposable {
         void this.connectExternal(launchUrl, pending)
         return pending.promise
       }
+      if (this.broker !== undefined) {
+        this.sharedStartAttempted = this.adoptOwnRuntimes
+        this.publish({ kind: 'starting', detail: `Waiting for another window's DSH operation (up to ${Math.ceil(timeoutMs / 1_000)} s)…` })
+        const transition = await this.broker.acquireTransition({ signal: pending.abort.signal, timeoutMs })
+        if (this.pending !== pending) { transition.release(); return pending.promise }
+        this.transition = transition
+        this.publish({ kind: 'starting', detail: 'Checking the saved DSH runtime and its supervisor…' })
+        const recoverAbandoned = this.host !== undefined && this.adoptOwnRuntimes
+        if (recoverAbandoned && await this.broker.recoverAbandonedRuntime(pending.abort.signal)) {
+          this.output.appendLine('[runtime] cleaned up DSH left by an exited runtime host; starting a supervised replacement before opening a conversation')
+        }
+        this.publish({ kind: 'starting', detail: 'Checking for an unfinished DSH startup…' })
+        await this.broker.waitForStartup(pending.abort.signal, timeoutMs, recoverAbandoned)
+        if (this.pending !== pending) return pending.promise
+      }
+      this.publish({ kind: 'starting', detail: 'Preparing DSH runtime settings…' })
       const launchPreparation = await this.launchContributor?.prepare({
         workspacePath: workspace.fsPath,
         configuredExecutable,
         configuredArguments: configuredArgs,
+        ...(this.broker === undefined ? {} : { sharedRuntimeDirectory: this.broker.sharedDirectory }),
       })
       if (this.pending !== pending) {
         await launchPreparation?.dispose?.()
         return pending.promise
       }
       this.launchPreparation = launchPreparation
-
-      // A nested deepseek-harness checkout is the documented empty-executable
-      // launch; an unrelated stock DSH on 3080 must not silently pre-empt it.
-      if (launchPreparation === undefined
-        && target?.kind !== 'managed'
+      if (this.broker !== undefined && this.adoptOwnRuntimes && launchPreparation !== undefined && launchPreparation.sharing !== 'compatible') {
+        throw new Error('This launch uses a window-bound runtime bridge, which cannot be shared safely. Disable autonomous debugging to share DSH, or disable deepseekHarness.reuseAcrossWindows for an intentionally separate runtime.')
+      }
+      if (this.broker === undefined && launchPreparation === undefined && target?.kind !== 'managed'
         && shouldProbeExistingDsh(reuseExistingRuntime, configuredExecutable, hasCustomArguments)
         && findSourceRoot(this.context.extensionUri.fsPath) === undefined) {
-        const existingUrl = new URL(DEFAULT_DSH_SERVER_URL)
-        this.publish({ kind: 'starting', detail: 'Looking for an existing DeepSeek Harness runtime…' })
-        const connection = new DshConnection(existingUrl)
-        const probe = await probeDshServer(connection)
-        connection.dispose()
-        // `127.0.0.1` is host-wide, not user-wide: on a shared machine every
-        // local account can bind this port. A real DSH always demands its
-        // launch token, so an endpoint that answers `session/list` without one
-        // is not a runtime this sidebar may adopt — adopting it would hand the
-        // user's prompts and workspace files to whoever is listening.
-        if (probe.kind === 'ready') {
-          this.output.appendLine('[runtime] ignoring an unauthenticated service on 127.0.0.1:3080: a DeepSeek Harness runtime must present its launch token. Starting a separate managed runtime.')
-        } else if (probe.kind === 'authentication-required') {
-          throw new ExistingRuntimeConnectionError()
-        } else if (probe.kind === 'unsupported') {
-          this.output.appendLine('[runtime] existing endpoint does not support the required DSH Remote protocol; starting a separate managed runtime.')
-        }
+        await this.checkConventionalEndpoint()
         if (this.pending !== pending) return pending.promise
       }
       const versionLaunch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, ['--version'], {
         cwd: workspace.fsPath,
       })
+      this.publish({ kind: 'starting', detail: 'Checking the installed DSH version…' })
       version = await readDshVersion(versionLaunch, workspace.fsPath)
       if (this.pending !== pending) return pending.promise
       assertSupportedDshVersion(version)
@@ -321,6 +334,7 @@ export class DshRuntime implements vscode.Disposable {
       launch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, args, {
         cwd: workspace.fsPath,
       })
+      this.publish({ kind: 'starting', detail: 'Loading DSH credentials…' })
       storedApiKey = await this.context.secrets.get(DEEPSEEK_API_KEY_SECRET)
       if (this.pending !== pending) return pending.promise
     } catch (error) {
@@ -335,42 +349,55 @@ export class DshRuntime implements vscode.Disposable {
     this.output.appendLine(`[runtime] launch: ${redactDshSecrets(renderedCommand, this.outputSecrets)}`)
     if (storedApiKey !== undefined) this.output.appendLine('[runtime] DeepSeek credential: VS Code SecretStorage')
 
-    // A runtime a previous extension host left behind may still be serving — and
-    // may still be running a turn the user started before that host died.
-    // Attaching preserves that work and removes the orphan; it never terminates
-    // anything. A launch preparation (autonomous debugging) always spawns its own,
-    // because its overlay is part of the configuration a fingerprint compares.
-    if (this.broker !== undefined && this.launchPreparation !== undefined) {
-      this.output.appendLine('[runtime] autonomous debugging starts its own runtime, so any runtime recorded for reuse is left alone')
-    }
-    if (this.broker !== undefined && this.launchPreparation === undefined) {
-      pending.owned = {
-        fingerprint: {
-          dshHome: resolveDshHome(),
-          executable: launch.command,
-          arguments: launch.args,
-          extensionVersion: extensionVersionOf(this.context),
-        },
-        cwd: workspace.fsPath,
-      }
-      // Consulting the ledger is an optimisation: any failure here must fall
-      // through to a normal spawn rather than leave the sidebar in 'starting'.
+    if (this.broker !== undefined) {
       try {
-        const decision = await this.broker.decide(pending.owned.fingerprint)
+        const environmentDigest = this.broker.environmentDigest({
+          ...searchEnv, ...launch.env, ...this.launchPreparation?.environment,
+          ...((storedApiKey ?? inheritedApiKey) === undefined ? {} : { DEEPSEEK_API_KEY: storedApiKey ?? inheritedApiKey }),
+        })
+        const owned = {
+          fingerprint: {
+            dshHome: resolveDshHome(),
+            executable: launch.command,
+            arguments: launch.args,
+            extensionVersion: extensionVersionOf(this.context),
+            ...(this.host === undefined ? {} : { hostProtocol: RUNTIME_HOST_PROTOCOL }),
+            ...(version === undefined ? {} : { runtimeVersion: version }),
+            ...(environmentDigest === undefined ? {} : { environmentDigest }),
+          },
+          cwd: workspace.fsPath,
+        }
+        if (this.host !== undefined && this.adoptOwnRuntimes) await this.broker.currentServer()
+        const decision = await this.broker.decide(owned.fingerprint)
         if (this.pending !== pending) return pending.promise
         if (decision.action === 'adopt' && decision.descriptor.manageable && !this.adoptOwnRuntimes) {
           this.output.appendLine('[runtime] not attaching to the runtime another window started: reuse across windows is disabled')
         } else if (decision.action === 'ignore') {
-          // Why we are not attaching; the leftover runtime itself is reported once,
-          // with its pid, at the point we commit to starting a separate one.
-          this.output.appendLine(`[runtime] not attaching to the running DSH runtime: ${decision.reason}`)
+          if (this.adoptOwnRuntimes) throw new Error(`The shared DSH runtime is already running with incompatible settings (${decision.reason}). Use Restart Runtime to replace it with this window's settings, or align the settings in both windows. Restarting interrupts tasks in every window using that runtime. No additional runtime was started.`)
         } else if (decision.action === 'adopt') {
           const adopted = await this.adopt(decision.descriptor, pending)
           if (adopted !== undefined) return adopted
           if (this.pending !== pending) return pending.promise
         }
+        if (this.adoptOwnRuntimes) { pending.owned = owned; this.brokerUse = true }
+        else this.releaseTransition()
       } catch (error) {
-        this.output.appendLine(`[runtime] could not check for a runtime another window started: ${describeError(error)}`)
+        this.failStart(error instanceof Error ? error : new Error(String(error)), pending)
+        return pending.promise
+      }
+    }
+
+    // Saved, authenticated instances take precedence over an unrelated service
+    // on the conventional port. Never adopt an unauthenticated loopback service.
+    if (this.broker !== undefined && this.launchPreparation === undefined && target?.kind !== 'managed'
+      && shouldProbeExistingDsh(reuseExistingRuntime, configuredExecutable, hasCustomArguments)
+      && findSourceRoot(this.context.extensionUri.fsPath) === undefined) {
+      try {
+        await this.checkConventionalEndpoint()
+        if (this.pending !== pending) return pending.promise
+      } catch (error) {
+        this.failStart(error instanceof Error ? error : new Error(String(error)), pending)
+        return pending.promise
       }
     }
 
@@ -379,9 +406,9 @@ export class DshRuntime implements vscode.Disposable {
       detail: launch.sourceCheckout ? 'Starting the official DSH source profile…' : 'Starting the official DSH profile…',
     })
 
-    let child: ChildProcessWithoutNullStreams
+    let child: RuntimeProcess
     try {
-      child = spawn(launch.command, launch.args, {
+      const options = {
         cwd: workspace.fsPath,
         env: {
           ...process.env,
@@ -391,10 +418,16 @@ export class DshRuntime implements vscode.Disposable {
           ...launch.env,
           ...this.launchPreparation?.environment,
         },
-        stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         windowsVerbatimArguments: launch.windowsVerbatimArguments,
-      })
+      }
+      if (this.host !== undefined && this.broker !== undefined && pending.owned !== undefined) {
+        const launching = spawnHostedRuntime({ launch, options, host: this.host, broker: this.broker,
+          instanceId: this.instanceId, fingerprint: pending.owned.fingerprint, timeoutMs, signal: pending.abort.signal })
+        this.launchingChild = launching
+        try { child = await launching } finally { if (this.launchingChild === launching) this.launchingChild = undefined }
+      } else child = spawn(launch.command, launch.args, { ...options, stdio: ['pipe', 'pipe', 'pipe'] })
+      if (this.pending !== pending) return pending.promise
     } catch (error) {
       this.failStart(error instanceof Error ? error : new Error(String(error)), pending)
       return pending.promise
@@ -419,13 +452,17 @@ export class DshRuntime implements vscode.Disposable {
     child.on('error', (error) => {
       if (this.child !== child) return
       if (child.pid === undefined) this.child = undefined
-      this.failStart(describeLaunchFailure(launch, error), pending)
+      const failure = describeLaunchFailure(launch, error)
+      if (this.pending === pending) this.failStart(failure, pending)
+      else this.publish({ kind: 'failed', message: redactDshSecrets(failure.message, this.outputSecrets) })
+      this.stopAfterFailedStart()
     })
     child.on('exit', (code, signal) => {
       // A replaced process must not clear the new startup timer or credentials.
       if (this.child !== child) return
       this.clearStartupTimer()
       this.child = undefined
+      if (this.pending === undefined) this.releaseTransition()
       this.disposeConnections()
       void this.releaseLaunchPreparation()
       const detail = `DSH exited (${signal ?? `code ${String(code)}`}).`
@@ -448,6 +485,14 @@ export class DshRuntime implements vscode.Disposable {
     }, timeoutMs)
 
     return pending.promise
+  }
+
+  private async checkConventionalEndpoint(): Promise<void> {
+    const connection = new DshConnection(new URL(DEFAULT_DSH_SERVER_URL))
+    let probe: Awaited<ReturnType<typeof probeDshServer>>
+    try { probe = await probeDshServer(connection) } finally { connection.dispose() }
+    if (probe.kind === 'authentication-required') throw new ExistingRuntimeConnectionError()
+    if (probe.kind === 'ready') this.output.appendLine('[runtime] ignoring an unauthenticated service on 127.0.0.1:3080; starting a managed runtime with its own launch token')
   }
 
   private async connectExternal(launchUrl: URL, pending: PendingStart): Promise<void> {
@@ -497,23 +542,25 @@ export class DshRuntime implements vscode.Disposable {
   /**
    * Attach to a runtime this extension started in an earlier window.
    *
-   * Returning undefined means "start a separate one": attaching is an
-   * optimisation, never a failure mode. The recorded runtime is left running
-   * either way — one that does not answer is reported, not killed, because the
-   * extension cannot prove which turn it would be interrupting.
+   * A failed handshake never justifies a competing writer. Only a process that
+   * is proved dead can be replaced automatically.
    */
   private async adopt(descriptor: RuntimeDescriptor, pending: PendingStart): Promise<vscode.Uri | undefined> {
     let launchUrl: URL
     try {
       launchUrl = new URL(descriptor.launchUrl)
     } catch {
-      this.output.appendLine(`[runtime] ignoring an unreadable recorded runtime (${describeDescriptor(descriptor)})`)
-      return undefined
+      throw new Error('The saved DSH runtime URL is invalid. No additional runtime was started. Use Forget the Saved Runtime only after checking the existing process.')
     }
+    this.rememberOutputSecrets(launchUrl)
     const connection = new DshConnection(new URL(launchUrl.origin))
     this.authenticating = connection
-    this.publish({ kind: 'starting', detail: 'Attaching to the DSH runtime already running for this workspace…' })
+    this.publish({ kind: 'starting', detail: descriptor.manageable
+      ? `Connecting to the existing shared DSH runtime${descriptor.pid === undefined ? '' : ` (PID ${descriptor.pid})`}…`
+      : 'Connecting to the saved external DSH runtime…' })
     try {
+      if (this.broker !== undefined) await this.trackBrokerWrite(this.broker.takeLease(this.instanceId, descriptor.pid))
+      if (this.pending !== pending) { connection.dispose(); return undefined }
       await connection.authenticate(launchUrl)
       const probe = await probeDshServer(connection, 10_000)
       if (probe.kind !== 'ready') {
@@ -527,6 +574,7 @@ export class DshRuntime implements vscode.Disposable {
       }
       this.authenticating = undefined
       this._connection = connection
+      this.brokerUse = true
       this.pending = undefined
       this.clearStartupTimer()
       const localUri = vscode.Uri.parse(connection.baseUrl.href)
@@ -536,29 +584,24 @@ export class DshRuntime implements vscode.Disposable {
       this.output.appendLine(ownership === 'adopted'
         ? `[runtime] attached to a DSH runtime started by another window: ${describeDescriptor(descriptor)}`
         : `[runtime] attached to the DSH runtime you saved: ${describeDescriptor(descriptor)}`)
-      this.publish({ kind: 'ready', localUri, ownership })
+      this.publish({ kind: 'ready', localUri, ownership, ...(descriptor.pid === undefined ? {} : { pid: descriptor.pid }) })
+      if (descriptor.manageable) this.watchRuntimeHost(descriptor)
+      this.releaseTransition()
       pending.resolve(localUri)
-      this.recordLease(descriptor.pid)
       return localUri
     } catch (error) {
       connection.dispose()
       if (this.authenticating === connection) this.authenticating = undefined
-      if (!descriptor.manageable) {
-        // The user's runtime is gone, or something else took its port. Its record
-        // is the only thing left, and keeping it would make every window pay for a
-        // dead URL, so it is dropped and the user is told once.
-        this.broker?.clearDescriptor()
-        this.output.appendLine(`[runtime] the DSH runtime you saved is no longer answering (${describeError(error)}); its record was dropped`)
-        if (!this.warnedStaleAttached) {
-          this.warnedStaleAttached = true
-          void vscode.window.showWarningMessage(
-            'The DSH runtime you asked this extension to remember is no longer answering, so a separate runtime was started. Connect to a runtime again to save a new one.',
-            'Show Output').then(choice => { if (choice === 'Show Output') this.output.show(true) })
-        }
+      if (this.pending !== pending) return undefined
+      this.broker?.clearLease(this.instanceId)
+      if (descriptor.manageable && this.broker !== undefined
+        && !await this.broker.isRecordRunning(descriptor.pid, descriptor.processStartTime)) {
+        if (this.pending !== pending) return undefined
+        this.broker.clearDescriptor()
+        this.output.appendLine('[runtime] the recorded DSH process exited during connection; starting its replacement')
         return undefined
       }
-      this.output.appendLine(`[runtime] could not attach to the recorded DSH runtime; starting a separate one: ${describeError(error)}`)
-      return undefined
+      throw new Error(`Could not connect to the shared DSH runtime (${redactDshSecrets(describeError(error), this.outputSecrets)}). Its record was retained; no additional runtime was started. Retry the connection, or inspect the recorded process before ending or forgetting it.`)
     }
   }
 
@@ -568,12 +611,10 @@ export class DshRuntime implements vscode.Disposable {
    * A failed lease is bookkeeping, not a runtime failure: the conversation still
    * works, and the next `stop()` simply finds no lease of ours to release.
    */
-  private recordLease(runtimePid: number | undefined): void {
+  private async recordLease(runtimePid: number | undefined): Promise<void> {
     const broker = this.broker
     if (broker === undefined) return
-    void broker.takeLease(this.instanceId, runtimePid).catch(error => {
-      this.output.appendLine(`[runtime] could not record this window's runtime lease: ${describeError(error)}`)
-    })
+    await this.trackBrokerWrite(broker.takeLease(this.instanceId, runtimePid))
   }
 
   /**
@@ -583,7 +624,7 @@ export class DshRuntime implements vscode.Disposable {
    * The descriptor's launch URL carries an authentication token, so the broker
    * writes it owner-only (0600) and nothing here ever logs it.
    */
-  private publishOwnedRuntime(launchUrl: URL, pending: PendingStart): void {
+  private async publishOwnedRuntime(launchUrl: URL, pending: PendingStart): Promise<void> {
     const broker = this.broker
     const owned = pending.owned
     const pid = this.child?.pid
@@ -594,15 +635,14 @@ export class DshRuntime implements vscode.Disposable {
       // ours to end, and it keeps every conversation it has opened until it exits.
       this.output.appendLine(`[runtime] a runtime from an earlier window is still running and was not adopted (${describeDescriptor(previous)}); it keeps the conversations it opened until it exits. 'DSH: Diagnose Session Occupancy' reports which process holds one.`)
     }
-    void broker.publishOwnedRuntime({
+    await this.trackBrokerWrite(broker.publishOwnedRuntime({
       instanceId: this.instanceId,
       pid,
       cwd: owned.cwd,
       fingerprint: owned.fingerprint,
       launchUrl: launchUrl.href,
-    }).catch(error => {
-      this.output.appendLine(`[runtime] could not record this runtime for reuse by another window: ${describeError(error)}`)
-    })
+      ...(previous?.pid === pid && previous.host !== undefined ? { host: previous.host } : {}),
+    }))
   }
 
   /**
@@ -637,19 +677,32 @@ export class DshRuntime implements vscode.Disposable {
     const broker = this.broker
     const launchUrl = this.externalRuntimeUrlToRemember()
     if (broker === undefined || launchUrl === undefined) return false
+    const connection = this._connection, revision = this.stopRevision
+    let lock: RuntimeTransition | undefined
     try {
+      lock = await broker.acquireTransition()
+      if (revision !== this.stopRevision || this._connection !== connection) return false
+      const previous = broker.readDescriptor()
+      if (previous !== undefined && previous.launchUrl !== launchUrl
+        && await broker.isRecordRunning(previous.pid, previous.processStartTime)) {
+        throw new Error('Another live DSH runtime is already saved. Its record was retained.')
+      }
       await broker.publishOwnedRuntime({
         instanceId: this.instanceId,
         manageable: false,
         cwd,
         launchUrl,
       })
+      if (revision !== this.stopRevision || this._connection !== connection) return false
+      await broker.takeLease(this.instanceId)
+      if (revision !== this.stopRevision || this._connection !== connection) { broker.clearLease(this.instanceId); return false }
+      this.brokerUse = true
       this.output.appendLine(`[runtime] saved this DSH runtime for other windows (attach-only; it is never managed or ended from here)`)
       return true
     } catch (error) {
       this.output.appendLine(`[runtime] could not save this DSH runtime: ${describeError(error)}`)
       return false
-    }
+    } finally { lock?.release() }
   }
 
   private acceptOutputLine(line: string, pending: PendingStart): void {
@@ -677,14 +730,20 @@ export class DshRuntime implements vscode.Disposable {
         connection.dispose()
         return
       }
+      const localUri = vscode.Uri.parse(connection.baseUrl.href)
+      if (pending.owned !== undefined) {
+        await this.publishOwnedRuntime(launchUrl, pending)
+        if (this.pending !== pending) { connection.dispose(); return }
+        await this.recordLease(this.child?.pid)
+        if (this.pending !== pending) { connection.dispose(); return }
+      }
       this.authenticating = undefined
       this._connection = connection
-      const localUri = vscode.Uri.parse(connection.baseUrl.href)
       this.pending = undefined
       this.clearStartupTimer()
-      this.recordLease(this.child?.pid)
-      this.publishOwnedRuntime(launchUrl, pending)
-      this.publish({ kind: 'ready', localUri, ownership: 'managed' })
+      this.publish({ kind: 'ready', localUri, ownership: 'managed', ...(this.child?.pid === undefined ? {} : { pid: this.child.pid }) })
+      if (pending.owned !== undefined) this.watchRuntimeHost(this.broker?.readDescriptor())
+      this.releaseTransition()
       pending.resolve(localUri)
     })().catch(error => {
       connection.dispose()
@@ -695,10 +754,51 @@ export class DshRuntime implements vscode.Disposable {
   }
 
   private disposeConnections(): void {
+    clearInterval(this.hostMonitor)
+    this.hostMonitor = undefined
     this.authenticating?.dispose()
     this.authenticating = undefined
     this._connection?.dispose()
     this._connection = undefined
+  }
+
+  /** Every attached window can clean up if the independent host is killed. */
+  private watchRuntimeHost(descriptor: RuntimeDescriptor | undefined): void {
+    clearInterval(this.hostMonitor)
+    const broker = this.broker, host = descriptor?.host
+    if (broker === undefined || descriptor === undefined || !descriptor.manageable || host === undefined) return
+    let checking = false
+    const connection = this._connection
+    this.hostMonitor = setInterval(() => {
+      if (checking || connection !== this._connection) return
+      checking = true
+      void (async () => {
+        if (await broker.isRecordRunning(host.pid, host.startTime)) return
+        const lock = await broker.acquireTransition({ timeoutMs: 1_000 })
+        try {
+          if (connection !== this._connection) return
+          const current = broker.readDescriptor()
+          if (current?.instanceId !== descriptor.instanceId || current.pid !== descriptor.pid
+            || current.host?.pid !== host.pid || current.host.startTime !== host.startTime) {
+            // Another attached window may already have completed cleanup.
+            if (!await broker.isRecordRunning(descriptor.pid, descriptor.processStartTime)
+              && connection === this._connection) {
+              this.disposeConnections()
+              this.publish({ kind: 'failed', message: 'The shared DSH runtime exited. Use Restart Runtime to continue from saved history.' })
+            }
+            return
+          }
+          if (await broker.isRecordRunning(host.pid, host.startTime)) return
+          const stopped = await broker.stop(current, { processGroup: current.fingerprint?.hostProtocol === RUNTIME_HOST_PROTOCOL })
+          if (connection !== this._connection) return
+          this.disposeConnections()
+          this.publish({ kind: 'failed', message: stopped
+            ? 'The shared DSH runtime host exited unexpectedly. Its DSH process was stopped. Use Restart Runtime to continue from saved history.'
+            : 'The shared DSH runtime host exited unexpectedly. DSH cleanup could not be confirmed; its record was retained. Use Restart Runtime to inspect and recover.' })
+        } finally { lock.release() }
+      })().catch(() => { /* Retry an uncertain identity or busy transition. */ }).finally(() => { checking = false })
+    }, this.host?.leasePollMs ?? 5_000)
+    this.hostMonitor.unref()
   }
 
   private stopAfterFailedStart(): void {
@@ -714,11 +814,24 @@ export class DshRuntime implements vscode.Disposable {
     error.message = redactDshSecrets(error.message, this.outputSecrets)
     if (error.stack !== undefined) error.stack = redactDshSecrets(error.stack, this.outputSecrets)
     this.pending = undefined
+    pending.abort.abort()
     this.clearStartupTimer()
     this.publish({ kind: 'failed', message: error.message,
       ...(error instanceof ExistingRuntimeConnectionError ? { reason: 'runtime-auth' as const } : {}) })
     void this.releaseLaunchPreparation()
     pending.reject(error)
+    if (this.child === undefined) this.releaseTransition()
+  }
+
+  private releaseTransition(): void {
+    const transition = this.transition
+    this.transition = undefined
+    transition?.release()
+  }
+
+  private async trackBrokerWrite<T>(write: Promise<T>): Promise<T> {
+    this.brokerWrites.add(write)
+    try { return await write } finally { this.brokerWrites.delete(write) }
   }
 
   private async releaseLaunchPreparation(): Promise<void> {
@@ -769,33 +882,97 @@ export class DshRuntime implements vscode.Disposable {
   }
 
   async restart(): Promise<vscode.Uri> {
-    await this.stop()
+    const plan = await this.prepareRestart()
+    if ((plan?.otherWindows.length ?? 0) > 0) throw new Error('The DSH runtime is in use by another VS Code window. Use Restart Runtime in the sidebar to confirm a shared restart, or Reconnect to preserve running work.')
+    await this.stop(false, true, plan)
     return this.start()
   }
 
-  stop(preserveFailure = false): Promise<void> {
+  async prepareRestart(): Promise<RuntimeRestartPlan | undefined> {
+    if (this.broker === undefined || !this.adoptOwnRuntimes || !this.sharedStartAttempted || this.pending !== undefined) return undefined
+    const lock = await this.broker.acquireTransition()
+    try { return await inspectRuntimeRestart(this.broker, this.instanceId) } finally { lock.release() }
+  }
+
+  async assertCanRestart(plan?: RuntimeRestartPlan): Promise<void> {
+    if (this.broker !== undefined && (this.brokerUse || plan !== undefined)) {
+      if (this.transition !== undefined) {
+        if (plan === undefined) await this.assertExclusiveRuntime()
+        else await validateRuntimeRestart(this.broker, plan, this.instanceId)
+        return
+      }
+      const lock = await this.broker.acquireTransition()
+      try {
+        if (plan === undefined) await this.assertExclusiveRuntime()
+        else await validateRuntimeRestart(this.broker, plan, this.instanceId)
+      } finally { lock.release() }
+    }
+  }
+
+  private async assertExclusiveRuntime(): Promise<void> {
+    if (this.broker === undefined) return
+    const descriptor = this.broker.readDescriptor()
+    const pid = descriptor?.pid
+    if (descriptor !== undefined && pid !== undefined
+      && !await this.broker.isRecordRunning(pid, descriptor.processStartTime)) return
+    const others = (await this.broker.liveLeases()).filter(lease => lease.instanceId !== this.instanceId
+      && (lease.runtimePid === undefined || lease.runtimePid === pid))
+    if (others.length > 0) throw new Error('The DSH runtime is in use by another VS Code window. Restart was cancelled to preserve its work. Use Reconnect for this window, or close the other windows before restarting.')
+  }
+
+  stop(preserveFailure = false, forRestart = false, plan?: RuntimeRestartPlan): Promise<void> {
+    this.pending?.abort.abort()
     this.stopRevision++
     this.startTask = undefined
     if (this.stopTask !== undefined) return this.stopTask
-    const task = this.stopRuntime(preserveFailure)
+    const task = this.stopRuntime(preserveFailure, forRestart, plan)
     this.stopTask = task
     const clear = (): void => { if (this.stopTask === task) this.stopTask = undefined }
     void task.then(clear, clear)
     return task
   }
 
-  private async stopRuntime(preserveFailure = false): Promise<void> {
+  private async stopRuntime(preserveFailure = false, forRestart = false, plan?: RuntimeRestartPlan): Promise<void> {
+    if (forRestart && this.broker !== undefined && (this.brokerUse || plan !== undefined)) {
+      if (this.transition === undefined) this.transition = await this.broker.acquireTransition()
+      try {
+        if (plan === undefined) await this.assertExclusiveRuntime()
+        else await validateRuntimeRestart(this.broker, plan, this.instanceId)
+      } catch (error) { this.releaseTransition(); throw error }
+    }
     const state: RuntimeState = preserveFailure && this._state.kind === 'failed' ? this._state : { kind: 'stopped' }
     this.stopping = true
     this.released = 0
     this.clearStartupTimer()
     this.disposeConnections()
-    const child = this.child
+    let stoppingChild = this.child
     this.child = undefined
     const pending = this.pending
     this.pending = undefined
     pending?.reject(new Error('DSH runtime stopped.'))
     try {
+      if (this.launchingChild !== undefined) {
+        try { stoppingChild = await this.launchingChild } catch { /* Startup reservation guards any unfinished helper cleanup. */ }
+      }
+      await Promise.allSettled([...this.brokerWrites])
+      // Provisional adoption leases have not reached ready yet, but their write
+      // must finish and be removed before a newer start can reuse this window id.
+      if (!this.brokerUse && this.transition !== undefined) this.broker?.clearLease(this.instanceId)
+      if (this.transition === undefined && this.broker !== undefined && this.brokerUse) {
+        this.transition = await this.broker.acquireTransition()
+      }
+      if (forRestart && plan !== undefined && this.broker !== undefined) {
+        // This also handles a failed window that never acquired a lease or child.
+        this.output.appendLine('[runtime] restarting the recorded shared DSH runtime with this window\'s settings')
+        await stopRuntimeForRestart(this.broker, plan, this.instanceId)
+        this.broker.clearLease(this.instanceId)
+        this.brokerUse = false
+        stoppingChild?.detach?.()
+        await this.waitForLaunchCleanup()
+        this.publish(state)
+        return
+      }
+      const child = stoppingChild
       if (child === undefined || child.exitCode != null || child.signalCode != null) {
         await this.waitForLaunchCleanup()
         await this.releaseBroker(child?.pid)
@@ -804,10 +981,11 @@ export class DshRuntime implements vscode.Disposable {
       }
       // The spawning window can also have borrowers. Its process handle does
       // not grant permission to interrupt work in those other windows.
-      const borrowed = this.broker !== undefined && (await this.broker.liveLeases()).some(lease =>
+      const borrowed = this.brokerUse && this.broker !== undefined && (await this.broker.liveLeases()).some(lease =>
         lease.instanceId !== this.instanceId && (lease.runtimePid === undefined || lease.runtimePid === child.pid))
       if (borrowed) {
         await this.releaseBroker(undefined)
+        child.detach?.()
         await this.waitForLaunchCleanup()
         this.publish(state)
         return
@@ -847,12 +1025,12 @@ export class DshRuntime implements vscode.Disposable {
       this.publish(state)
     } catch (error) {
       // Retain a live process so another restart cannot silently orphan it.
-      if (child !== undefined && child.exitCode == null && child.signalCode == null) this.child = child
+      if (stoppingChild !== undefined && stoppingChild.exitCode == null && stoppingChild.signalCode == null) this.child = stoppingChild
       this.stopping = false
       this.output.appendLine(`[runtime] shutdown failed: ${describeError(error)}`)
       this.publish({ kind: 'failed', message: describeError(error) })
       throw error
-    }
+    } finally { this.releaseTransition() }
   }
 
   /**
@@ -865,7 +1043,7 @@ export class DshRuntime implements vscode.Disposable {
    */
   private async releaseBroker(ownedPid: number | undefined): Promise<void> {
     const broker = this.broker
-    if (broker === undefined) return
+    if (broker === undefined || !this.brokerUse) return
     try {
       const outcome = await broker.release(this.instanceId)
       for (const note of outcome.notes) this.output.appendLine(`[runtime] ${note}`)
@@ -883,8 +1061,7 @@ export class DshRuntime implements vscode.Disposable {
       if (!identified) {
         // A pid whose process cannot be tied to the record is never signalled:
         // it may be whatever reused the pid. The runtime is reported instead.
-        broker.clearDescriptor()
-        this.output.appendLine(`[runtime] the runtime recorded as ${describeDescriptor(stop)} did not answer with its own launch token, so no signal was sent and its record was dropped. 'DSH: Diagnose Session Occupancy' reports what holds a conversation now.`)
+        this.output.appendLine(`[runtime] the runtime recorded as ${describeDescriptor(stop)} did not answer with its own launch token, so no signal was sent and its record was retained. 'DSH: Diagnose Session Occupancy' reports what holds a conversation now.`)
         return
       }
       const stopPid = stop.pid

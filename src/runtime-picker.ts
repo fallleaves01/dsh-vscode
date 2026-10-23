@@ -17,7 +17,7 @@ async function confirmSwitch(host: RuntimePickerHost): Promise<boolean> {
   // conversation it holds.
   if (!runtimeIsOurs(host.runtimeOwnership)) return true
   return await vscode.window.showWarningMessage(
-    'Switching runtimes will stop the extension-managed DSH process and its background jobs.',
+    'Switching runtimes disconnects this window. If it is the last using window, the extension-managed DSH process and its background jobs will stop.',
     { modal: true }, 'Switch Runtime',
   ) === 'Switch Runtime'
 }

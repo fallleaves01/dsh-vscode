@@ -9,10 +9,11 @@ import { pageConversationMessage } from './tool-output-page.js'
 import { wireRecord } from './dsh-streams.js'
 import { taskDetailsHtml } from './task-details-html.js'
 import type { TaskDetailState } from './task-details-state.js'
+import { redactDshSecrets } from './runtime-output.js'
 
 export type TaskPanelAddress = { kind: 'subagent'; sessionId: string } | { kind: 'job'; sessionId: string; jobId: string }
-type TaskPanelHost = Pick<DshChatController, 'state' | 'onDidChangeState' | 'taskClient' | 'childReadOnlyReason' | 'sendToChild' | 'stopChild' | 'answerTaskRequest' | 'selectSession' | 'killJob' | 'openFile'>
-const errorText = (value: unknown): string => value instanceof Error ? value.message : String(value)
+type TaskPanelHost = Pick<DshChatController, 'state' | 'onDidChangeState' | 'taskClient' | 'childReadOnlyReason' | 'sendToChild' | 'stopChild' | 'answerTaskRequest' | 'selectSession' | 'killJob' | 'openFile' | 'adoptTaskSnapshot' | 'resolveSubagent'>
+const errorText = (value: unknown): string => redactDshSecrets(value instanceof Error ? value.message : String(value))
 
 /** Each address gets an independent observation; opening it never selects the main chat. */
 export class TaskPanelManager implements vscode.Disposable {
@@ -24,6 +25,7 @@ export class TaskPanelManager implements vscode.Disposable {
     const child = [...this.host.state.sessions, ...(address.kind === 'job' ? this.host.state.archivedSessions : [])].find(item => item.id === address.sessionId)
     if (!child) throw new Error('This conversation is not in the current project.')
     if (address.kind === 'subagent' && (!child.parentId || !child.subagent)) throw new Error('This conversation is not a delegated child.')
+    if (address.kind === 'subagent' && child.subagent?.mode === 'external') throw new Error('External tasks have no local conversation. View their results in the owning conversation.')
     const key = address.kind + ':' + address.sessionId + (address.kind === 'job' ? ':' + address.jobId : '')
     const existing = this.panels.get(key)
     if (existing) { existing.panel.reveal(vscode.ViewColumn.Beside, false); return }
@@ -42,7 +44,8 @@ export class TaskPanelManager implements vscode.Disposable {
     const projector = new ConversationProjector(), tail = new JobOutputTail()
     const post = (): void => {
       if (!ready || disposed || timer !== undefined) return
-      timer = setTimeout(() => { timer = undefined; if (!disposed) void panel.webview.postMessage({ type: 'state', state: { ...state, messages: state.messages.map(messageForWebview) } }) }, 50)
+      timer = setTimeout(() => { timer = undefined; if (!disposed) void panel.webview.postMessage({ type: 'state', state: { ...state,
+        subagents: this.host.state.cwd === projectCwd ? this.host.state.sessions : [], messages: state.messages.map(messageForWebview) } }) }, 50)
     }
     const update = (patch: Partial<TaskDetailState>): void => { state = { ...state, ...patch }; post() }
     const refreshContext = (): void => {
@@ -109,6 +112,7 @@ export class TaskPanelManager implements vscode.Disposable {
         const opening = observer.opening
         void opening.then(snapshot => {
           if (!valid() || !snapshot.isCurrent()) return
+          if (typeof snapshot.asOfSeq === 'number') this.host.adoptTaskSnapshot(address.sessionId, snapshot.asOfSeq, snapshot.projections)
           entries = snapshot.events; projector.reset(entries)
           update({ messages: projector.messages(), hasMore: snapshot.hasMore, loadingHistory: false, error: null })
           refreshContext(); snapshot.activate()
@@ -136,6 +140,19 @@ export class TaskPanelManager implements vscode.Disposable {
         switch (value.type) {
           case 'ready': ready = true; post(); return
           case 'refresh': start(); return
+          case 'open-subagent': {
+            if (value.parentSessionId !== address.sessionId || typeof value.sessionId !== 'string' || typeof value.requestId !== 'string') return
+            const reply = { type: 'open-subagent-result', requestId: value.requestId, parentSessionId: address.sessionId }
+            try {
+              if (this.host.state.cwd !== projectCwd || this.host.taskClient(false) !== boundClient) throw new Error('The task connection changed. Refresh task details before opening its children.')
+              const client = boundClient, target = await this.host.resolveSubagent(address.sessionId, value.sessionId)
+              if (disposed || this.host.state.cwd !== projectCwd || this.host.taskClient(false) !== client) throw new Error('The task connection changed while opening its child.')
+              if (value.placement === 'beside' && target.subagent) this.open({ kind: 'subagent', sessionId: target.id })
+              else { await this.host.selectSession(target.id); await vscode.commands.executeCommand('deepseekHarness.openChat') }
+              await panel.webview.postMessage(reply)
+            } catch (error) { await panel.webview.postMessage({ ...reply, error: errorText(error) }) }
+            return
+          }
           case 'open-chat': {
             if (value.sessionId !== address.sessionId && value.sessionId !== state.parentSessionId) throw new Error('Invalid conversation target.')
             await this.host.selectSession(String(value.sessionId)); await vscode.commands.executeCommand('deepseekHarness.openChat'); return
