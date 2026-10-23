@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mountTaskDetails } from '../src/task-details.mjs'
 import { taskDetailsHtml } from '../src/task-details-html.js'
+import { renderUserText } from '../src/user-text.mjs'
 import type { TaskDetailState } from '../src/task-details-state.js'
 let dispose: () => void, posts: Record<string, any>[], state: TaskDetailState
 const sendState = (patch: Partial<TaskDetailState> = {}) => { state = { ...state, ...patch }; window.dispatchEvent(new MessageEvent('message', { data: { type: 'state', state } })) }
@@ -10,13 +11,32 @@ const click = (id: string) => (document.getElementById(id) as HTMLButtonElement)
 beforeEach(() => {
   const uri = { toString: () => 'vscode-resource:/asset' } as any
   document.body.innerHTML = taskDetailsHtml({ cspSource: 'vscode-webview:' } as any, { script: uri, markdown: uri, style: uri }).split('<body>')[1]!.split('</body>')[0]!
-  window.dshMarkdown = { renderMarkdown: (text: string) => { const node = document.createElement('div'); node.textContent = text; return node } } as any
+  window.dshMarkdown = { renderUserText, renderMarkdown: (text: string) => { const node = document.createElement('div'); node.textContent = text; return node } } as any
   posts = []; dispose = mountTaskDetails({ postMessage: value => posts.push(value) })
   state = { kind: 'subagent', sessionId: 'c', parentSessionId: 'p', title: 'Child', status: 'Idle', running: false, meta: '', readOnlyReason: null, messages: [], requests: [], chunks: [], gap: false, hasMore: true, loadingHistory: false }
   sendState()
 })
 afterEach(() => { dispose(); document.body.replaceChildren(); vi.restoreAllMocks() })
 describe('independent task detail interactions', () => {
+  it('opens a nested subagent directly from a deferred tool card',()=>{
+    sendState({sessionId:'child-parent',subagents:[{id:'nested',parentId:'child-parent',title:'Nested review',running:true,subagent:{mode:'continuable',label:'Nested review'}}] as any,
+      messages:[{id:'tool:spawn',role:'tool',text:'subagent',deferredBody:true,resultView:{card:'generic',subagentLinks:[{id:'nested',label:'Nested review'}]}}]})
+    const primary=document.querySelector<HTMLButtonElement>('.subagent-tool-main')!
+    expect(primary.textContent).toContain('Nested review');primary.click()
+    expect(posts.at(-1)).toMatchObject({type:'open-subagent',parentSessionId:'child-parent',sessionId:'nested',placement:'chat'})
+    const request=posts.at(-1)!
+    window.dispatchEvent(new MessageEvent('message',{data:{...request,type:'open-subagent-result',error:'Child is unavailable'}}))
+    expect(document.querySelector('.subagent-tool-error')?.textContent).toBe('Child is unavailable')
+  })
+  it('masks recognized user credentials with the same per-value reveal as the main chat', () => {
+    const secret = 'sk-' + 'A1'.repeat(16)
+    sendState({ messages: [{ id: 'user', role: 'user', text: secret }] })
+    expect(document.getElementById('messages')!.innerHTML).not.toContain(secret)
+    document.querySelector<HTMLButtonElement>('#messages .secret-toggle')!.click()
+    expect(document.getElementById('messages')!.textContent).toContain(secret)
+    sendState({ messages: [{ id: 'replacement', role: 'user', text: secret }] })
+    expect(document.getElementById('messages')!.innerHTML).not.toContain(secret)
+  })
   it('retains failed assistant text and shows the precise reason without interpreting error HTML', () => {
     const detail = 'PI_AI_ERROR: <img src=x onerror=bad()> content_filter'
     sendState({ messages: [{ id: 'failed', role: 'assistant', text: 'Received answer', failed: true, detail }] })
