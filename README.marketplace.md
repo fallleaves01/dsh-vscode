@@ -7,7 +7,7 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review. This source version is **0.1.8**.
+DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review. This source version is **0.1.16**.
 
 <p align="center">
   <img src="media/demo.gif" alt="DeepSeek Harness working in the VS Code sidebar">
@@ -18,7 +18,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 - **Conversations and history.** Stream responses, inspect tool calls, answer approvals and questions, and load earlier messages through the official DSH runtime.
 - **Failed response recovery.** Keep received output when a request fails, show its error code and reason in chat and subagent details, and restore saved failed attempts when reopening history. Retries remain separate; output that could not be saved is marked as available only in the current view.
 - **Conversation directory.** Use the directory for recent and archived conversation lists, search, rename, archive with Undo, and restore. New conversation opens the full chat composer with model, reasoning effort, agent composition, and permission controls. The top picker switches main conversations; subagents remain in the owning conversation's Tasks panel.
-- **Independent subagent details.** Open a child task beside the main chat to inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer.
+- **Independent subagent details.** Click a subagent name in its tool card to enter the child conversation, or use the trailing arrow to open independent details. Inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer. External executions appear as informational rows without a local transcript.
 - **Background tasks and task services.** Inspect bounded process output, Goal status and round limits, Schedule reminders and delivery history, and Workflow phases and job logs when the runtime exposes these services. Search conversation message bodies when history search is enabled.
 - **Explicit file context.** Use `+` to search and add files or folders, remove each reference with `×`, or use typed `@` references and **Add Selection to Chat**. The current editor and selected lines are optional suggestions. Drop resources or paste images to attach them.
 - **Conversation controls and queues.** Select agent composition, Permission and Plan modes, Model, and Reasoning Effort. Queue follow-up messages, steer an active task, and inspect or remove held slash commands.
@@ -52,12 +52,56 @@ Use the conversation-settings menu for Permission and agent composition, `/plan`
 
 Run **DeepSeek Harness: Configure Task Services** to enable history search and Schedule in a standard managed Web runtime. Restart that runtime to apply these options. Custom and external profiles must provide the corresponding services themselves.
 
+### Shared runtime across windows
+
+Windows on the same host, OS account and DSH home share one managed DSH process
+when their launch settings agree, including history search and Schedule. The first
+window can close while others continue; the last normal exit stops DSH. A runtime
+host cleans up after all extension hosts crash, with a 30-second grace period and
+checks every five seconds. It never restarts DSH automatically or stores output logs.
+The toolbar shows **Shared** for an existing managed instance, with its PID in the
+tooltip and a reconnect action. Loading distinguishes runtime connection, event
+streams and history, and offers **Show Output**. With `autoStart` disabled, use
+**Connect**; **Retry Connection** can rediscover a saved runtime after a failed
+handshake without restarting a healthy process.
+On Linux Remote–SSH, leases and operations also track the owning VS Code Server:
+an extension host left behind by a dead server cannot retain DSH. Unexpected SSH
+disconnections follow the native `remote.SSH.reconnectionGraceTime` (seconds,
+local User Settings; restart the remote Server to apply). Normal window closure
+may stop the extension host immediately. The helper force-terminates an unresponsive
+DSH after four seconds and bounds waits for inherited output pipes. Surviving
+attached windows can recover a killed helper. No DSH installation/configuration
+changes are needed. If the helper and every extension host are killed, the next
+managed connection checks for leftovers before opening a conversation. It reuses
+a supervised compatible instance, or verifies and stops an orphan with no live
+users before starting one replacement. Concurrent windows serialize recovery;
+saved history can be reopened, but interrupted work cannot resume in place.
+New helpers also record startup identity before URL publication. Missing identity,
+kernel-blocked I/O, or denied signals can prevent cleanup; uncertain records are
+retained without starting a competing process. See the
+[lifecycle details](https://github.com/fallleaves01/dsh-vscode#shared-runtime-across-windows).
+Connection failures and incompatible settings report errors without a second
+writer. Use Reconnect for one window. Restart Runtime can replace an incompatible
+recorded managed instance with the requesting window's settings. When other windows
+use it, confirmation explains that running conversations, subagents and scheduled
+work will be interrupted. Cancellation preserves running work. The process and
+affected windows are rechecked; the old process must exit before a replacement
+starts. External runtimes remain attach-only.
+Disable autonomous debugging for shared mode. Upgrades from before 0.1.15 require
+replacing the helper after active work finishes. Version 0.1.16 can reuse a compatible
+0.1.15 helper after the updated windows reload; this UI update requires no DSH restart.
+
 ### DSH settings
 
-Open the gear in the chat toolbar, or run **DeepSeek Harness: Open Settings**.
+The chat gear opens settings inside the conversation as a modal, with the official
+DSH navigation icons, section layout, provider cards, and a narrow-sidebar icon rail.
+The command **DeepSeek Harness: Open Settings** offers the same page in an editor tab.
 The page follows the official DSH settings cards: account status and session-log
 upload, provider endpoints and model catalogs, Shell timeout/output limits,
 parallel tool calls, subagent limits and allowed model routes, and web search.
+Search supports the official Messages API or the paired Search / Fetch APIs,
+with separate endpoints, limits, and write-only credentials. Custom Pi provider
+models offer a reasoning-level/API-value table when the runtime schema supports it.
 Appearance and keyboard shortcuts use VS Code's native settings.
 
 Provider changes are staged until Save. Model lookup returns selectable
@@ -78,9 +122,15 @@ Enable **DeepSeek Harness: Autonomous Debugging** in VS Code Settings and add a 
 
 DeepSeek can then start the debugger, set breakpoints, step through execution, inspect runtime values, fix the code, and verify the result directly from the sidebar.
 
-Validated against DeepSeek Harness `0.2.0-rc.2`; core protocol compatibility also covers `0.1.7-rc.1` and `0.1.7-rc.2`. Optional services depend on the runtime version and profile.
+Core conversation and settings interfaces have also passed isolated checks against DeepSeek Harness `0.2.1-rc.2`; previous validation covers `0.2.0-rc.2`, `0.1.7-rc.1` and `0.1.7-rc.2`. Version 0.1.9 adds external tasks, Search / Fetch settings, custom reasoning mappings and user-message masks. Workdir/worktree integration still needs dedicated validation. Optional services depend on the runtime version and profile.
 
 ## Privacy
+
+Sent user messages hide credentials recognized by the official DSH rules. Each
+value can be revealed explicitly. This is a display control: it does not redact
+model requests, stored history, assistant/tool output, or an explicit Copy action.
+Unrecognized secrets may remain visible.
+
 
 API keys configured with the key button use VS Code SecretStorage. Remembered runtime launch URLs stay in owner-only local storage and are not synchronized. Adding file references gives DSH access to the selected context; prompts and context can be sent to the configured model service.
 

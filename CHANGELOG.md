@@ -7,6 +7,200 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 versions follow [SemVer](https://semver.org/). The sidebar is distributed as a
 VSIX — see the README for installing one.
 
+## [Unreleased]
+
+## [0.1.16] - 2026-10-23
+
+### Fixed
+
+- Distinguish connection to an existing shared runtime from process startup,
+  event subscriptions and history loading. Expose Shared/External connection
+  identity and PID in the toolbar, with a window-local reconnect action.
+- Show an idle Connect action when automatic startup is disabled, instead of
+  displaying Starting despite no connection attempt. Keep Show Output available
+  during loading; add phase logs and elapsed connection timings without secrets.
+- Allow manual connection retries after failed discovery or authentication without
+  requiring Restart Runtime. Automatic stream recovery still never starts a process.
+- Apply startupTimeout to shared operation/startup waits, instead of waiting up
+  to 310 seconds for an operation lock regardless of the user's setting. Preserve
+  the owner and its process when a waiting window times out.
+- Fix the loading indicator's phase name and refresh recovery buttons when their
+  availability changes without a new error message. Reuse compatible 0.1.15 helpers.
+
+### Validation
+
+- Add regressions for idle views, shared PID display, loading stages, manual retry,
+  lock timeout and retry, and narrow-sidebar interaction. Retain the real DSH
+  multi-process recovery suite; no model requests are sent.
+
+## [0.1.15] - 2026-10-23
+
+### Fixed
+
+- Before opening a conversation through a shared managed runtime, recover a
+  recorded orphan when its helper has exited and no valid window uses it. Verify
+  the DSH process identity, stop it, then start one supervised replacement under
+  the cross-window transition lock. Healthy compatible instances remain reusable.
+- Persist startup process identity before URL publication so the next connection
+  can recover interrupted startup after all managers have been killed. Preserve
+  unverifiable records and never stop external runtimes or silently interrupt
+  another live user. Empty process identities do not establish PID reuse.
+
+### Validation
+
+- Add real-process tests killing both the extension host and helper, with concurrent
+  next-window recovery, reopened history, history search and Schedule, plus an
+  orphan that had not published its connection URL. No model requests are sent.
+- Cover PID reuse, missing identity, denied signals, cancellation, external
+  runtimes and live-user conflicts with targeted unit tests.
+
+## [0.1.14] - 2026-10-23
+
+### Changed
+
+- Bind Linux Remote–SSH leases and runtime operations to the verified VS Code
+  Server process, in addition to each extension host. A surviving orphan extension
+  host or operation can no longer retain DSH after its server exits.
+- Retain the single shared runtime helper and cross-window handoff. Document
+  native `remote.SSH.reconnectionGraceTime`, normal-close behavior and cleanup
+  limitations without adding a second long-term retention timer or modifying DSH.
+- Update the runtime-host protocol to `ipc-2`; upgrade all windows and explicitly
+  restart the managed runtime to replace an older helper.
+
+### Fixed
+
+- Bound helper initialization, shutdown and inherited-pipe waits; terminate DSH's
+  dedicated POSIX process group, escalating from SIGTERM to SIGKILL when needed.
+- Let surviving attached windows detect and clean up a killed helper's identified
+  DSH process, including after the creating window has closed. No automatic restart.
+- Do not report the helper's exit as proof that DSH exited. Recover interrupted
+  startup using the captured DSH process identity; retain uncertain records.
+- Recognize Linux zombies as exited; prevent delayed cleanup from removing a
+  newer startup reservation or runtime descriptor, and bound queued output.
+
+### Validation
+
+- Add isolated real-process fault injection and regression tests for server death,
+  helper loss, blocked DSH, refused graceful shutdown, inherited pipes and PID reuse.
+- Preserve real official-DSH tests for history search, Schedule, shared sessions,
+  concurrent startup, cross-window restart and cleanup. No model requests are sent.
+
+## [0.1.13] - 2026-10-22
+
+### Fixed
+
+- Make Restart Runtime replace an incompatible recorded managed runtime even
+  when the requesting window failed before acquiring a connection or lease.
+- Offer an explicit shared-restart confirmation when other windows use DSH,
+  explaining task interruption and applying the requesting window's settings.
+  Cancellation retains the current conversation and running work.
+- Validate the reviewed process and affected windows again before shutdown;
+  refuse a changed instance, new borrowers or uncertain process identity.
+  Recover an unresponsive service using proved OS process identity, with the
+  launch-token handshake as a fallback. Never stop user-owned external runtimes.
+- Report only the actual differing configuration fields, without printing
+  environment values or credentials. Report replacement failures as failures.
+- Keep project switching local to the requesting window, without offering a
+  global shared restart after the selected project has already changed.
+- Open the newly created conversation directly when a restarted runtime has an
+  empty project catalog. Do not recursively create more sessions while blank
+  conversations remain absent from the list.
+
+## [0.1.12] - 2026-10-21
+
+### Fixed
+
+- Make subagent tool cards directly navigable: click a child name to open its
+  conversation, or the trailing arrow to open independent details. Keep original
+  request/result output collapsed and available without blocking navigation.
+- Retain bounded child references in compact and historical tool messages,
+  including official control calls and structured code-mode activation results.
+- Resolve cold children from their owning catalog and retain blank catalog-owned
+  sessions. Open with the exact parent address, without guessing from labels.
+- Show live child status, tokens and duration independently of the completed
+  delegation call. Keep external executions informational and report opening
+  errors with retry, including timeouts and stale project/runtime responses.
+- Use the same primary/secondary navigation in Tasks and nested child details.
+
+## [0.1.11] - 2026-10-20
+
+### Fixed
+
+- Serialize shared runtime lookup, startup, registration and last-window shutdown
+  across extension hosts. Reuse compatible history-search and Schedule overlays.
+- Share per host, account and DSH home across VS Code profiles. Keep legacy
+  leases in their original ledger during migration; UI version changes alone no
+  longer force a competing runtime.
+- Retain live runtime records on connection failure or incompatible launch
+  settings, and report the error without starting a second writer. Prefer a
+  saved authenticated runtime over probing the conventional port.
+- Prevent restart and leftover-process termination while another window uses
+  the runtime. Reconnect rebuilds only the requesting window's connection.
+
+### Added
+
+- A runtime host that owns and drains DSH's output pipes when the spawning
+  window closes. The last normal exit stops DSH; if every extension host crashes,
+  dead leases trigger cleanup after a 30-second grace period. It never restarts
+  DSH automatically and writes no diagnostic output files.
+- Isolated multi-process coverage for simultaneous startup, shared task services,
+  window exit, process crashes, reconnect, and final cleanup, without model calls.
+
+### Security
+
+- Keep authentication descriptors and environment-signing keys owner-only.
+  Compare launcher credentials using a local HMAC without persisting their values.
+  Refuse unsafe state directories and uncertain shutdown evidence.
+- Keep the window-bound native debugger exclusive; sharing requires disabling
+  autonomous debugging, rather than connecting another window to its bridge.
+
+## [0.1.10] - 2026-10-20
+
+### Changed
+
+- Open settings as a modal inside chat, with the official DSH gear and navigation
+  icons, an 800px panel, a 188px navigation column, native card measurements and
+  compact controls. Keep VS Code appearance and keyboard settings as host actions.
+- Group plugin settings below Built-in plugins and show a read-only inventory
+  first. Keep provider keys above a collapsible Custom settings editor.
+- Adapt the navigation to an icon rail in narrow sidebars, and keep long field
+  hints below inputs rather than compressing them beside Reset or Clear key.
+
+### Fixed
+
+- Isolate every settings opening from chat messages and earlier modal replies.
+  Release subscriptions and secret drafts on close; support Escape, mask click,
+  focus containment and return to the invoking control.
+- Keep configured-credential indicators consistent when a provider is not active.
+
+## [0.1.9] - 2026-10-20
+
+### Added
+
+- Show external subagent executions as informational task rows, matching DSH;
+  do not open or route them as local conversations.
+- Add the official Search / Fetch API switch, separate endpoint/limit drafts,
+  result counts from 1 to 50, and credentials for the selected search API.
+- Edit custom Pi provider model reasoning levels and API values from the serving
+  schema, preserving unshown model fields and automatic discovery when disabled.
+- Mask recognized credentials in sent user text, with per-value Show/Hide controls
+  in chat and task details. Use DSH 0.2.1-rc.2's matching rules; sending and explicit
+  message copying retain their original contents.
+
+### Changed
+
+- Align credential reveal icons, switches, task-detail user bubbles, and narrow
+  settings footers. Keep the active navigation item visible and keyboard-focused.
+- Retain unsaved search phases after partial failure; fence credential writes
+  and clears by namespace, revision, runtime identity and search selection.
+
+### Fixed
+
+- Handle DSH 0.2.1 workspace replacement snapshots so archived conversations
+  refresh correctly, while retaining support for older archive update frames.
+- Recognize current Typert method tables in the contract diagnostic tool and
+  report incomplete comparisons instead of an unsupported compatibility claim.
+
 ## [0.1.8] - 2026-10-16
 
 ### Fixed
