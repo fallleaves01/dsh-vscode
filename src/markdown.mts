@@ -1,4 +1,5 @@
 import DOMPurify from 'dompurify'
+export { createSubagentLinks } from './subagent-links.mjs'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
 import c from 'highlight.js/lib/languages/c'
@@ -342,3 +343,4 @@ export function scanMarkdownStream(state: MarkdownScanState, text: string): void
   }
   state.scanOffset = text.length
 }
+export { renderUserText } from './user-text.mjs'

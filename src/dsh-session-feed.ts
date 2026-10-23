@@ -1,5 +1,5 @@
 import type { DshConnection } from './dsh-connection.js'
-import type { DshFrame, HistoryEntry, RpcReceipt, SessionSummary } from './dsh-client.js'
+import type { DshFrame, HistoryEntry, RpcReceipt, SessionSummary, SessionProjectionRead } from './dsh-client.js'
 import { decodeHistory } from './dsh-history.js'
 import { DshStreams, wireRecord } from './dsh-streams.js'
 import { DshAssistantStream } from './dsh-assistant-stream.js'
@@ -38,6 +38,7 @@ interface Follow {
   reject: (error: Error) => void
 }
 export interface SessionOpening {
+  asOfSeq?: number
   events: HistoryEntry[]
   hasMore: boolean
   projections: Record<string, unknown>
@@ -114,9 +115,9 @@ export class DshSessionFeed {
       }),
       this.baseline('session/control', frame => { this.control(frame); return frame.type === 'baseline' }),
       this.baseline('workspace/follow', frame => {
-        const value = frame.type === 'baseline' ? frame.value : frame
-        if ((frame.type === 'baseline' || frame.type === 'archived') && wireRecord(value)) {
-          if (!Array.isArray(value.archivedSessionIds) || !value.archivedSessionIds.every(id => typeof id === 'string')) {
+        const value = frame.type === 'baseline' || frame.type === 'replace' ? frame.value : frame
+        if (frame.type === 'baseline' || frame.type === 'replace' || frame.type === 'archived') {
+          if (!wireRecord(value) || !Array.isArray(value.archivedSessionIds) || !value.archivedSessionIds.every(id => typeof id === 'string')) {
             throw new Error('Invalid workspace baseline.')
           }
           this.archived = value.archivedSessionIds
@@ -213,6 +214,21 @@ export class DshSessionFeed {
     return Object.fromEntries([...this.projections.get(sessionId) ?? []].map(([key, projection]) => [key, projection.value]))
   }
 
+  adoptProjections(sessionId: string, seq: number, values: Record<string, unknown>): Record<string, unknown> {
+    this.installProjections(sessionId, seq, values)
+    return this.projectionValues(sessionId)
+  }
+
+  async readProjections(sessionId: string, signal?: AbortSignal): Promise<SessionProjectionRead> {
+    const value = await this.connection.call<unknown>('session/projections', { request: { sessionId } }, 10_000, signal)
+    if (value === null) return null
+    if (!wireRecord(value) || !wireRecord(value.values)) throw new Error('Invalid DSH session projections.')
+    if (value.kind === 'migration-required') return { kind: 'migration-required', values: { ...value.values, ...this.projectionValues(sessionId) } }
+    if (value.kind !== 'sequenced' || !Number.isSafeInteger(value.asOfSeq) || (value.asOfSeq as number) < -1) throw new Error('Invalid DSH session projection sequence.')
+    return { kind: 'sequenced', asOfSeq: value.asOfSeq as number,
+      values: this.adoptProjections(sessionId, value.asOfSeq as number, value.values) }
+  }
+
   open(sessionId: string, parentSessionId?: string): Promise<SessionOpening> {
     if (parentSessionId !== undefined) this.subagentParents.set(sessionId, parentSessionId)
     this.closeFollow()
@@ -246,7 +262,7 @@ export class DshSessionFeed {
           assistant.open(raw.assistantStream, state.cursor, events)
           opened = true
           clearTimeout(timer)
-          resolve({ events, hasMore: raw.hasMore, projections: this.projectionValues(sessionId), isCurrent: () => this.follow === state, activate: () => {
+          resolve({ events, hasMore: raw.hasMore, asOfSeq: state.cursor, projections: this.projectionValues(sessionId), isCurrent: () => this.follow === state, activate: () => {
             if (this.follow !== state || state.active) return
             state.active = true
             this.requestSessions.add(sessionId)
@@ -403,7 +419,7 @@ export class DshSessionFeed {
   private trackCatalog(parentId: string, value: unknown): void {
     if (!Array.isArray(value)) return
     for (const [child, parent] of this.catalogParents) if (parent === parentId) this.catalogParents.delete(child)
-    for (const entry of value) if (wireRecord(entry) && typeof entry.id === 'string' && entry.id !== parentId) {
+    for (const entry of value) if (wireRecord(entry) && entry.mode !== 'external' && typeof entry.id === 'string' && entry.id !== parentId) {
       this.catalogParents.set(entry.id, parentId)
     }
   }

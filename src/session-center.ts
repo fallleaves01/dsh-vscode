@@ -5,8 +5,10 @@ export interface SessionAttention { approvals: number; questions: number }
 
 /** How a parent can talk to one of its subagent sessions. */
 export interface SubagentIdentity {
-  mode: 'one-shot' | 'continuable' | 'unknown'
+  mode: 'one-shot' | 'continuable' | 'unknown' | 'external'
   label?: string
+  /** Provider execution identity; external tasks have no local Session. */
+  executionId?: string
 }
 
 export interface SubagentActivity {
@@ -19,6 +21,8 @@ export interface SubagentActivity {
 }
 
 export interface SessionItem {
+  /** Membership is known from the parent catalog; its history is not loaded yet. */
+  catalogOnly?: boolean
   id: string
   agentAvailable?: boolean
   title: string
@@ -85,12 +89,29 @@ function catalogOf(summary: SessionSummary | undefined): Map<string, SubagentIde
   if (!Array.isArray(entries)) return catalog
   for (const value of entries) {
     const entry = recordOf(value)
-    if (entry === undefined || typeof entry.id !== 'string') continue
+    if (entry === undefined || typeof entry.id !== 'string' || entry.mode === 'external') continue
     const mode = entry.mode === 'one-shot' || entry.mode === 'continuable' ? entry.mode : 'unknown'
     const label = labelOf(entry.label)
     catalog.set(entry.id, { mode, ...(label === undefined ? {} : { label }) })
   }
   return catalog
+}
+
+/** Official external rows are informational and never become routable Sessions. */
+function externalTasks(summary: SessionSummary): SessionItem[] {
+  const catalog = summary.projections?.values?.subagentCatalog
+  if (!Array.isArray(catalog)) return []
+  const rows = new Map<string, SessionItem>()
+  for (const value of catalog) {
+    const entry = recordOf(value)
+    if (entry?.mode !== 'external' || typeof entry.id !== 'string' || !entry.id) continue
+    const label = labelOf(entry.label) ?? entry.id
+    const id = `external:${encodeURIComponent(summary.sessionId)}:${encodeURIComponent(entry.id)}`
+    rows.set(id, { id, title: label, parentId: summary.sessionId, subagent: { mode: 'external', executionId: entry.id, label },
+      updatedAt: typeof entry.createdAt === 'number' && Number.isFinite(entry.createdAt) ? entry.createdAt : summary.updatedAt,
+      running: false, blank: false, unread: false, childCount: 0, agentAvailable: false })
+  }
+  return [...rows.values()]
 }
 
 interface Forest {
@@ -124,6 +145,7 @@ function partition(summaries: readonly SessionSummary[]): Forest {
   const children = new Map<string, SessionSummary[]>()
   const parentOf = new Map<string, string>()
   const identity = new Map<string, SubagentIdentity>()
+  for (const [id, owner] of catalogOwner) if (id !== owner && !byId.has(id)) parentOf.set(id, owner)
   for (const summary of summaries) {
     // Only a declared subagent owns a lineage link; a fork's link is seed
     // lineage, and the catalog only ever names subagent children.
@@ -163,7 +185,8 @@ function toSessionItem(
   return {
     id: summary.sessionId,
     ...(summary.agentAvailable === undefined ? {} : { agentAvailable: summary.agentAvailable }),
-    title: sessionTitle(summary),
+    title: typeof summary.projections?.values?.title === 'string' || parentId === undefined
+      ? sessionTitle(summary) : subagent?.label ?? summary.sessionId,
     updatedAt: summary.updatedAt,
     running: summary.running,
     blank: summary.blank,
@@ -185,6 +208,7 @@ export function sessionItems(
 ): SessionItem[] {
   const forest = partition(summaries)
   const { children, parentOf, identity } = forest
+  const listedIds = new Set(summaries.map(summary => summary.sessionId))
   /** A session earns a row by being open, working, waiting, or named by its owner. */
   const earns = (summary: SessionSummary): boolean => !archivedSessionIds.has(summary.sessionId)
     && (!summary.blank || summary.sessionId === selectedId || summary.running || attention.has(summary.sessionId))
@@ -216,13 +240,22 @@ export function sessionItems(
     // Delegation can nest, so the walk is recursive; a cycle in malformed data
     // stops at the repeat instead of recursing forever.
     const next = new Set(ancestors).add(summary.sessionId)
+    const catalog = catalogOf(summary)
     const kids = (children.get(summary.sessionId) ?? [])
-      .filter(kid => !next.has(kid.sessionId) && (earns(kid) || keep.has(kid.sessionId)))
+      .filter(kid => !next.has(kid.sessionId) && !archivedSessionIds.has(kid.sessionId)
+        && (earns(kid) || keep.has(kid.sessionId) || catalog.has(kid.sessionId)))
       .sort((left, right) => left.updatedAt - right.updatedAt)
     // The count must match what expanding reveals, or the disclosure would
     // promise rows that are not there.
-    items.push(toSessionItem(summary, unreadSessionIds, attention, parentId, subagent, kids.length))
+    const external = externalTasks(summary)
+    const unloaded = [...catalog].filter(([id]) => !next.has(id) && !listedIds.has(id) && !archivedSessionIds.has(id))
+    items.push(toSessionItem(summary, unreadSessionIds, attention, parentId, subagent, kids.length + external.length + unloaded.length))
     for (const kid of kids) emit(kid, summary.sessionId, identity.get(kid.sessionId) ?? { mode: 'unknown' }, next)
+    for (const [id, child] of unloaded) {
+      items.push({ id, parentId: summary.sessionId, subagent: child, title: child.label ?? id, updatedAt: summary.updatedAt,
+        running: false, blank: true, unread: unreadSessionIds.has(id), childCount: 0, catalogOnly: true })
+    }
+    items.push(...external)
   }
   for (const root of visibleRoots) emit(root, undefined, undefined, new Set())
   return items

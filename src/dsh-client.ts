@@ -30,6 +30,9 @@ export interface HistoryEntry {
   view?: unknown
 }
 
+export type SessionProjectionRead = { kind: 'sequenced'; asOfSeq: number; values: Record<string, unknown> }
+  | { kind: 'migration-required'; values: Record<string, unknown> } | null
+
 export interface ModelSelection {
   provider: string
   model: string
@@ -273,6 +276,11 @@ export class DshClient {
     return { items: this.feed.summaries(result.items, revision) }
   }
   listWorkspaces(): Promise<{ archivedSessionIds: string[] }> { return this.feed.listWorkspaces() }
+  /** Read cold catalog metadata without opening an Agent or fetching history. */
+  sessionProjections(sessionId: string): Promise<SessionProjectionRead> { return this.feed.readProjections(sessionId, this.lifetime.signal) }
+  adoptSessionProjections(sessionId: string, seq: number, values: Record<string, unknown>): Record<string, unknown> {
+    return this.feed.adoptProjections(sessionId, seq, values)
+  }
   renameSession(sessionId: string, title: string): Promise<{ title: string; seq?: number }> { return this.api.renameSession(sessionId, title) }
   archiveSession(sessionId: string): Promise<{ archivedSessionIds: string[] }> {
     return this.call('workspace/archiveSession', { request: { sessionId } })

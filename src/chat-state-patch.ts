@@ -22,6 +22,13 @@ function compactToolView(value: unknown): unknown {
   const compact: Record<string, unknown> = {}
   if (typeof source.card === 'string') compact.card = source.card
   if (typeof source.title === 'string') compact.title = source.title
+  if (typeof source.subagentLabel === 'string') compact.subagentLabel = source.subagentLabel.slice(0, 300)
+  if (Array.isArray(source.subagentLinks)) compact.subagentLinks = source.subagentLinks.slice(0, 100).flatMap(value => {
+    if (typeof value !== 'object' || value === null) return []
+    const entry = value as Record<string, unknown>
+    return typeof entry.id === 'string' && entry.id.length > 0 && entry.id.length <= 512 && !/\s/.test(entry.id)
+      ? [{ id: entry.id, ...(typeof entry.label === 'string' ? { label: entry.label.slice(0, 300) } : {}) }] : []
+  })
   return Object.keys(compact).length === 0 ? undefined : compact
 }
 

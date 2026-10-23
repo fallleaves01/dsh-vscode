@@ -1,6 +1,13 @@
 import type { DshEvent } from './conversation.js'
+import { subagentToolLabel, subagentToolReferences } from './subagent-tools.js'
 
 type RecordValue = Record<string, unknown>
+export function presentSubagentReferences(view: unknown, name: string, raw: unknown, text = '', meta?: unknown, failed = false): unknown {
+  const label = subagentToolLabel(name, raw), refs = subagentToolReferences(name, raw, text, meta, failed)
+  if (label === undefined && refs.length === 0) return view
+  return { card: 'generic', ...toolRecord(view), ...(label === undefined ? {} : { title: label, subagentLabel: label }),
+    ...(refs.length ? { subagentLinks: refs } : {}) }
+}
 export interface FileDiff { path: string; oldText: string | null; newText: string }
 export type FileMutation =
   | { kind: 'write'; path: string; content: string }

@@ -241,6 +241,12 @@ function genericPage(message: ConversationMessage, view: View | undefined, curso
   let presented = genericTextCache.get(message)
   if (presented === undefined) {
     presented = contentText(view?.content)
+    if (call?.subagentLabel !== undefined || Array.isArray(call?.subagentLinks) || Array.isArray(view?.subagentLinks)) {
+      const output = presented || message.rawResult || ''
+      let input = message.rawInput ?? ''
+      if (input) { try { input = JSON.stringify(JSON.parse(input), null, 2) } catch { /* Preserve incomplete arguments as received. */ } }
+      presented = [input ? 'Input\n' + input : '', output ? 'Result\n' + output : ''].filter(Boolean).join('\n\n')
+    }
     genericTextCache.set(message, presented)
   }
   const raw = presented || message.rawResult || message.rawInput || (view?.rawInput === undefined ? '' : printable(view.rawInput))

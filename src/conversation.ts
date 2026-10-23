@@ -1,7 +1,7 @@
 import { withoutIdeContext } from './ide-context.js'
 import { tokenUsageOf, turnUsageOf, type TokenUsage, type TurnTokenUsage } from './token-usage.js'
 import type { ImageMediaType } from './dsh-client.js'
-import { presentToolCall, presentToolResult } from './tool-presentation.js'
+import { presentSubagentReferences, presentToolCall, presentToolResult } from './tool-presentation.js'
 import type { AssistantAttempt, AssistantStreamUpdate } from './dsh-assistant-stream.js'
 import { redactDshSecrets } from './runtime-output.js'
 
@@ -507,7 +507,7 @@ export class ConversationProjector {
         text: name,
         detail: 'Running…',
         streaming: true,
-        callView: toolView(view, 'call') ?? presentToolCall(name, data.arguments),
+        callView: presentSubagentReferences(toolView(view, 'call') ?? presentToolCall(name, data.arguments), name, data.arguments),
         ...(typeof data.arguments === 'string' ? { rawInput: data.arguments } : {}),
       })
       return
@@ -535,7 +535,8 @@ export class ConversationProjector {
         failed,
         ...(current?.callView === undefined ? {} : { callView: current.callView }),
         ...(current?.rawInput === undefined ? {} : { rawInput: current.rawInput }),
-        resultView: toolView(view, 'result') ?? presentToolResult(current?.text ?? '', current?.rawInput, event, failed),
+        resultView: presentSubagentReferences(toolView(view, 'result') ?? presentToolResult(current?.text ?? '', current?.rawInput, event, failed),
+          current?.text ?? '', current?.rawInput, rawResult, data.meta, failed),
         ...(rawResult === '' ? {} : { rawResult }),
         ...(images.length > 0 ? { images } : {}),
       })

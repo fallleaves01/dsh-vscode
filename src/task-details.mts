@@ -2,9 +2,11 @@ import type { ConversationMessage } from './conversation.js'
 import type { ToolOutputPage } from './tool-output-page.js'
 import type { MarkdownHooks } from './markdown.mjs'
 import type { TaskDetailState } from './task-details-state.js'
+import { createSubagentLinks, type SubagentLinkView } from './subagent-links.mjs'
+import type { SubagentToolReference } from './subagent-tools.js'
 interface TaskApi { postMessage(value: Record<string, unknown>): void }
 declare const acquireVsCodeApi: () => TaskApi
-declare global { interface Window { dshMarkdown: { renderMarkdown(text: string, hooks?: MarkdownHooks): HTMLElement } } }
+declare global { interface Window { dshMarkdown: { renderMarkdown(text: string, hooks?: MarkdownHooks): HTMLElement; renderUserText?(text: string): HTMLElement } } }
 const str = (value: unknown): string => typeof value === 'string' ? value : ''
 
 /** The same mounted UI is used by production and DOM regression tests. */
@@ -16,6 +18,17 @@ export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void 
   let state: TaskDetailState | undefined; let sending: { id: string; text: string } | undefined; let serial = 0; let requestKey = ''
   const rows = new Map<string, { row: HTMLElement; key: string }>()
   const bodies = new Map<string, { revision: string | undefined; pages: ConversationMessage[]; cursor?: string; pending?: string }>()
+  const subagentLinks = new Map<string, SubagentLinkView>()
+  let subagentTimer: ReturnType<typeof setInterval> | undefined
+  const syncLinks = (): void => {
+    let running = false
+    for (const [id, view] of subagentLinks) {
+      if (!view.root.isConnected) { view.dispose(); subagentLinks.delete(id); continue }
+      view.update(state?.subagents ?? []); running ||= view.running()
+    }
+    if (running && subagentTimer === undefined) subagentTimer = setInterval(syncLinks, 1000)
+    if (!running && subagentTimer !== undefined) { clearInterval(subagentTimer); subagentTimer = undefined }
+  }
   const node = (tag: string, text = '', className = ''): HTMLElement => { const value = document.createElement(tag); value.textContent = text; value.className = className; return value }
   const post = (value: Record<string, unknown>): void => api.postMessage(value)
   const action = (text: string, run: () => void): HTMLButtonElement => { const button = node('button', text) as HTMLButtonElement; button.type = 'button'; button.addEventListener('click', run, { signal: listeners.signal }); return button }
@@ -89,11 +102,27 @@ export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void 
         const thinkingOpen = cached.row.querySelector('details')?.open ?? false
         const label = (message.role === 'assistant' ? undefined : message.detail) || ({ user: 'You', assistant: 'DeepSeek', tool: 'Tool', command: 'Command' } as Record<string, string>)[message.role] || message.role
         cached.key = key; cached.row.replaceChildren(node('div', label, 'role'))
+        subagentLinks.get(message.id)?.dispose(); subagentLinks.delete(message.id)
+        const references = new Map<string, SubagentToolReference>()
+        for (const raw of [message.resultView, message.callView]) {
+          const view = raw && typeof raw === 'object' ? raw as Record<string, unknown> : undefined
+          if (Array.isArray(view?.subagentLinks)) for (const item of view.subagentLinks) {
+            if (item && typeof item.id === 'string') references.set(item.id, {id:item.id,...(typeof item.label === 'string'?{label:item.label}:{})})
+          }
+        }
+        if (references.size && state) {
+          const view = createSubagentLinks([...references.values()], state.sessionId, post)
+          cached.row.append(view.root); subagentLinks.set(message.id, view)
+        }
         const append = (item: ConversationMessage): void => {
           if (item.reasoning) { const thinking = node('details', '', 'thinking') as HTMLDetailsElement; thinking.open = thinkingOpen; thinking.append(node('summary', 'Thinking'), markdown(item.reasoning)); cached!.row.append(thinking) }
-          if (item.text) cached!.row.append(markdown(item.text))
+          if (item.text) cached!.row.append(item.role === 'user'
+            ? window.dshMarkdown.renderUserText?.(item.text) ?? node('div', 'Message renderer unavailable.')
+            : markdown(item.text))
           if (item.role === 'tool' || item.role === 'command') {
-            const content = item.rawResult ?? item.rawInput ?? (item.resultView === undefined ? item.callView : item.resultView)
+            const view = (item.resultView === undefined ? item.callView : item.resultView) as Record<string, unknown> | undefined
+            const presented = Array.isArray(view?.content) ? view.content.flatMap(part => typeof part?.text === 'string' ? [part.text] : []).join('\n') : ''
+            const content = item.rawResult ?? (presented || item.rawInput) ?? view
             if (content !== undefined) cached!.row.append(node('pre', typeof content === 'string' ? content : JSON.stringify(content, null, 2)))
           }
           for (const image of item.images ?? []) cached!.row.append(node('div', image.error || 'Image attachment · Open in chat to view', 'hint'))
@@ -148,7 +177,8 @@ export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void 
   scroll.addEventListener('scroll', () => element('latest').classList.toggle('hidden', scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 32), options)
   const receive = (event: MessageEvent): void => {
     const value = event.data
-    if (value?.type === 'state') { state = value.state; render() }
+    if (value?.type === 'state') { state = value.state; render(); syncLinks() }
+    if (value?.type === 'open-subagent-result') for (const view of subagentLinks.values()) view.reply(value)
     if (value?.type === 'body') {
       const body = bodies.get(value.messageId)
       if (body && typeof value.requestId === 'string' && body.pending === value.requestId) {
@@ -169,6 +199,6 @@ export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void 
     }
   }
   window.addEventListener('message', receive, { signal: listeners.signal }); post({ type: 'ready' })
-  return () => { listeners.abort(); rows.clear(); bodies.clear() }
+  return () => { listeners.abort(); if(subagentTimer!==undefined)clearInterval(subagentTimer);for(const view of subagentLinks.values())view.dispose();subagentLinks.clear();rows.clear();bodies.clear() }
 }
 if (typeof acquireVsCodeApi === 'function') mountTaskDetails()

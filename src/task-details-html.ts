@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import type * as vscode from 'vscode'
 import { webviewThemeCss } from './webview-theme.js'
+import { userTextCss } from './user-text-style.js'
+import { subagentLinkCss } from './subagent-link-style.js'
 
 export function taskDetailsHtml(webview: vscode.Webview, assets: { script: vscode.Uri; markdown: vscode.Uri; style: vscode.Uri }): string {
   const nonce = randomBytes(16).toString('hex')
@@ -8,6 +10,7 @@ export function taskDetailsHtml(webview: vscode.Webview, assets: { script: vscod
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
   <link rel="stylesheet" href="${assets.style}"><style>
   * { box-sizing: border-box; }
+  :root { --dsh-content-font-size: var(--vscode-font-size, 14px); --dsh-line: calc(24px + var(--dsh-content-font-size) - 14px); --dsh-bubble: color-mix(in srgb, #4d6bfe 12%, var(--vscode-editor-background)); }
   html, body { height: 100%; margin: 0; min-width: 0; }
   body { color: var(--vscode-foreground); background: var(--vscode-editor-background); font: 13px/1.6 var(--vscode-font-family); display: grid; grid-template-rows: auto auto minmax(0,1fr) auto; overflow: hidden; }
   header { grid-row: 1; padding: 18px 20px 12px; border-bottom: .5px solid var(--dsh-border); }
@@ -35,9 +38,10 @@ export function taskDetailsHtml(webview: vscode.Webview, assets: { script: vscod
   #notice:empty { display: none; }
   #scroll { grid-row: 3; overflow: auto; padding: 20px; min-height: 0; overflow-anchor: none; }
   #messages, #requests { max-width: 760px; margin-inline: auto; }
-  .message { margin-bottom: 24px; min-width: 0; overflow-wrap: anywhere; }
+  .message { margin-bottom: 12px; min-width: 0; overflow-wrap: anywhere; font-size: var(--dsh-content-font-size); line-height: var(--dsh-line); }
   .role { font-size: 11px; color: var(--dsh-muted); margin-bottom: 8px; }
-  .message[data-role="user"] { margin-left: 12%; padding: 12px 16px; border-radius: 16px; background: color-mix(in srgb, #4d6bfe 10%, var(--dsh-surface)); }
+  .message[data-role="user"] { margin-left: auto; width: fit-content; max-width: 82%; padding: 10px 16px; border-radius: 20px; background: var(--dsh-bubble); line-height: calc(22px + var(--dsh-content-font-size) - 14px); }
+  .message[data-role="user"] .role { display: none; }
   .message[data-role="tool"], .message[data-role="command"] { padding: 12px; border: .5px solid var(--dsh-border); border-radius: 10px; }
   .message p { margin: 0 0 12px; }
   .message h1, .message h2, .message h3 { margin: 20px 0 10px; line-height: 1.4; }
@@ -76,6 +80,8 @@ export function taskDetailsHtml(webview: vscode.Webview, assets: { script: vscod
   @media (max-width: 380px) { header, footer { padding-inline: 12px; } #scroll { padding: 16px 12px; } h1 { font-size: 17px; } .heading { gap: 8px; } #composer .hint { display: none; } #composer .actions { justify-content: flex-end; } }
   @media (max-height: 500px) { header { padding-block: 8px; } header .actions { margin-top: 4px; } footer { padding-block: 6px; } #draft { min-height: 44px; } }
   ${webviewThemeCss}
+  ${userTextCss}
+  ${subagentLinkCss}
   </style></head><body><header><div class="heading"><div class="heading-copy"><div id="kind" class="eyebrow">Subagent</div><h1 id="title">Task details</h1><div id="meta" class="meta"></div></div><span id="status" role="status"></span></div><nav class="actions" aria-label="Task actions"><button id="owner" title="Return to the owning conversation">← Conversation</button><button id="inChat">Open in chat</button><button id="stop">Stop</button><button id="retry">Refresh</button><button id="copy">Copy output</button></nav></header>
   <div id="notice" role="status"></div><main id="scroll" tabindex="0" aria-label="Task conversation and output"><button id="history" class="hidden">Load earlier messages</button><section id="requests"></section><section id="messages"></section><div id="detailEmpty" class="empty hidden">Waiting for task activity…</div><div id="gap" class="gap hidden">Earlier output is unavailable or was trimmed. This is a live preview.</div><pre id="output"></pre><button id="latest" class="hidden">Jump to latest</button></main>
   <footer><div id="readOnly" class="hint"></div><form id="composer"><textarea id="draft" placeholder="Message this child agent" aria-label="Message this child agent"></textarea><div class="actions"><span class="hint">Enter to send · Shift+Enter for a new line</span><select id="delivery" aria-label="Delivery"><option value="queue">Queue</option><option value="steer">Steer</option></select><button id="send" class="primary" type="submit">Send ↑</button></div></form></footer>
