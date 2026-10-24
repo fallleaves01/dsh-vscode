@@ -25,12 +25,13 @@ import {
   type AgentPresetState,
 } from './agent-presets.js'
 import {
-  permissionPresetsOf,
+  permissionConfirmationFor,
+  permissionPresetsFromCatalog,
   planModeCommand,
   planModeStateOf,
   planModeWithCommandAvailability,
-  requiresFullAccessConfirmation,
-  typedCommandRequestsFullAccess,
+  typedCommandPermissionPreset,
+  type PermissionCatalog,
   type PermissionPresetItem,
   type PlanModeState,
 } from './collaboration-state.js'
@@ -69,6 +70,7 @@ import {
 } from './image-limits.js'
 import { jobsSnapshotOf, type JobItem } from './jobs.js'
 import { todosOf, type TodoItem } from './task-state.js'
+import { agentTeamOf, type AgentTeamView } from './agent-team-state.js'
 import { TaskFeatureController, type TaskFeatureState, type GoalAction } from './task-feature-controller.js'
 import { emptyGoalState, emptyScheduleState, emptySearchState, workflowsOf, type WorkflowRun } from './task-features.js'
 import { TaskPanelManager } from './task-panels.js'
@@ -203,6 +205,13 @@ export interface ChatViewState extends TaskFeatureState {
    */
   parentSessionId: string | null
   todos: TodoItem[]
+  /**
+   * Agent Teams roster and shared task board for this conversation.
+   *
+   * `null` (never `undefined`) when the `agentTeam` projection is absent, so the
+   * JSON transport can clear a stale team after switching conversations.
+   */
+  team: AgentTeamView | null
   /** DeepSeek account sign-in state for this runtime; carries no credential. */
   account: AccountState
   /** One human line for the account row, derived from {@link account}. */
@@ -322,6 +331,7 @@ function initialState(cwd: string): ChatViewState {
     archivedSessions: [],
     parentSessionId: null,
     todos: [],
+    team: null,
     account: unavailableAccountState(),
     accountNotice: null,
     accountFailed: false,
@@ -400,6 +410,14 @@ export class DshChatController implements vscode.Disposable {
   private drainingCommands = false
   private historyEntries: HistoryEntry[] = []
   private archivedSessionIds = new Set<string>()
+  /**
+   * Process-level permission preset catalogue.
+   *
+   * Runtime-scoped, not conversation-scoped: it is fetched once per connection
+   * and dropped with it. While absent, the selector offers the presets DSH
+   * ships, which is also what a runtime without the RPC shows.
+   */
+  private permissionCatalog: PermissionCatalog | undefined
   private readonly unreadSessionIds: Set<string>
   private readonly sessionAttention = new Map<string, SessionAttention>()
   private readonly reconnectSessions = new Set<string>()
@@ -717,6 +735,7 @@ export class DshChatController implements vscode.Disposable {
       queue: [],
       jobs: [],
       todos: [],
+      team: null,
       hasMoreHistory: false,
       loadingHistory: false,
     })
@@ -733,6 +752,9 @@ export class DshChatController implements vscode.Disposable {
       this.publish({ canReconnect: true, statusText: 'Connected to DSH. Opening event streams…' })
       await client.startStreams()
       if (generation !== this.generation || this.client !== client) return
+      // Optional capability: never part of the connect handshake, so a runtime
+      // that does not serve it still opens the conversation.
+      void this.loadPermissionCatalog(client)
       this.output.appendLine(`[chat] event streams ready after ${Date.now() - connectingAt} ms; loading saved conversations`)
       this.publish({ statusText: 'Connected to DSH. Loading saved conversations…' })
       await this.loadSessions(previousSessionId === '' ? undefined : previousSessionId)
@@ -879,6 +901,7 @@ export class DshChatController implements vscode.Disposable {
       try {
         await client.startStreams()
         recovery.abort.signal.throwIfAborted()
+        void this.loadPermissionCatalog(client)
         await this.loadSessions(selectedId || undefined, false)
         recovery.abort.signal.throwIfAborted()
         if (recovery.failure !== undefined) throw recovery.failure
@@ -1754,6 +1777,9 @@ export class DshChatController implements vscode.Disposable {
 
   private disconnectClient(): void {
     this.catalogReads.clear()
+    // The catalogue belongs to the runtime, so a replacement connection reads
+    // its own: keeping the old one could offer a preset the new runtime lacks.
+    this.permissionCatalog = undefined
     this.publish({ subagentCatalogs: {} })
     this.stopAccountPoll()
     this.openedSignInAttempt = undefined
@@ -1910,6 +1936,7 @@ export class DshChatController implements vscode.Disposable {
       ...(sessionChanged ? { messages: [], changedFiles: [] } : {}),
       queue: [],
       todos: [],
+      team: null,
       // A command held for this conversation stays held; the dock is per
       // conversation, so it is republished rather than cleared.
       queuedCommands: this.queuedCommandItems(sessionId),
@@ -1973,8 +2000,11 @@ export class DshChatController implements vscode.Disposable {
       agentPreset: unavailableAgentPresetState(),
       usage: usageMeterStateOf(summary?.projections?.values),
       todos: todosOf(summary?.projections?.values?.todos),
+      // The Team projection is the data source; `agentTeamOf` folds it into the
+      // sorted view the sidebar renders and rejects a malformed value.
+      team: agentTeamOf(summary?.projections?.values) ?? null,
       imageLimits: imageLimitsOf(summary?.projections?.values?.imageLimits),
-      permissions: permissionPresetsOf(summary?.projections?.values?.permissions),
+      permissions: permissionPresetsFromCatalog(summary?.projections?.values?.permissions, this.permissionCatalog),
       messageFeedback: [],
       plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
@@ -2052,6 +2082,36 @@ export class DshChatController implements vscode.Disposable {
       const message = error instanceof Error ? error.message : String(error)
       this.output.appendLine(`[agent-preset] Discovery unavailable: ${message}`)
     }
+  }
+
+  /**
+   * Load the runtime's permission preset catalogue.
+   *
+   * The projection only names the current preset, so the catalogue is what makes
+   * the experimental `auto` preset selectable. This read is intentionally not
+   * awaited by the connection path: a runtime that does not serve the method, or
+   * one that fails to answer, leaves the built-in presets in place and the
+   * conversation opens either way.
+   */
+  private async loadPermissionCatalog(client: DshClient): Promise<void> {
+    let catalog: PermissionCatalog | undefined
+    try {
+      catalog = await client.permissionCatalog()
+    } catch (error) {
+      // Optional capability discovery: a client or runtime that cannot serve
+      // the read must leave the built-in presets in place, never fail a start.
+      this.output.appendLine(`[permissions] Preset catalogue unavailable: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+    if (this.client !== client) return
+    if (catalog === undefined) {
+      this.output.appendLine('[permissions] Preset catalogue unavailable; using the built-in presets.')
+      return
+    }
+    this.permissionCatalog = catalog
+    if (this._state.phase !== 'ready' || this._state.sessionId === '') return
+    const summary = this.summaries.find(item => item.sessionId === this._state.sessionId)
+    this.publish({ permissions: permissionPresetsFromCatalog(summary?.projections?.values?.permissions, catalog) })
   }
 
   private async loadModels(sessionId: string): Promise<void> {
@@ -2133,7 +2193,9 @@ export class DshChatController implements vscode.Disposable {
         this.runtimeActivity.set(sessionId, { running: type !== 'host/session-removed' && payload.running === true,
           revision: ++this.activityRevision })
       }
-      if (type === 'host/settings-changed' || type === 'host/credentials-changed' || type === 'host/models-changed' || type === 'host/account-changed') this.settingsChanges.fire()
+      if (type === 'host/settings-changed' || type === 'host/credentials-changed' || type === 'host/models-changed'
+        || type === 'host/account-changed' || type === 'host/plugins-changed') this.settingsChanges.fire()
+      if (type === 'host/permission-catalog-changed' && this.client !== undefined) void this.loadPermissionCatalog(this.client)
       if (this.client !== undefined && this._state.phase === 'ready' && this._state.sessionId !== '') {
         const activeId = this._state.sessionId
         if (type === 'host/commands-changed') void this.loadCommands(this.client, activeId)
@@ -2281,11 +2343,18 @@ export class DshChatController implements vscode.Disposable {
       if (payload.key === 'todos' && sessionId === this._state.sessionId) {
         this.publish({ todos: todosOf(payload.value) })
       }
+      if (payload.key === 'agentTeam' && sessionId === this._state.sessionId) {
+        // Use the merged summary so an unrelated projection frame cannot clear
+        // the roster; the frame's own value is enough when no summary exists.
+        this.publish({
+          team: agentTeamOf(summary?.projections?.values ?? { agentTeam: payload.value }) ?? null,
+        })
+      }
       if (payload.key === 'imageLimits' && sessionId === this._state.sessionId) {
         this.publish({ imageLimits: imageLimitsOf(payload.value) })
       }
       if (payload.key === 'permissions' && sessionId === this._state.sessionId) {
-        this.publish({ permissions: permissionPresetsOf(payload.value) })
+        this.publish({ permissions: permissionPresetsFromCatalog(payload.value, this.permissionCatalog) })
       }
       if (payload.key === 'plan' && sessionId === this._state.sessionId) {
         this.publish({ plan: planModeWithCommandAvailability(planModeStateOf(payload.value), this._state.commands.some(command => command.name === 'plan')) })
@@ -2806,6 +2875,24 @@ class DshSurface implements vscode.Disposable {
     this.postedState = state
   }
 
+  /**
+   * Ask before switching to a preset whose effects warrant an acknowledgement.
+   *
+   * The Host's `/permission` command switches without any prompt; DSH's own Web
+   * client gates Full access and Auto review in its UI. The sidebar therefore
+   * owns the gate for both, and a declined dialog leaves the current preset on.
+   */
+  private async confirmPermissionPreset(value: string): Promise<boolean> {
+    const confirmation = permissionConfirmationFor(value)
+    if (confirmation === undefined) return true
+    const answer = await vscode.window.showWarningMessage(
+      confirmation.title,
+      { modal: true, detail: confirmation.detail },
+      confirmation.action,
+    )
+    return answer === confirmation.action
+  }
+
   private async resyncState(): Promise<void> {
     const snapshot = this.controller.state
     this.pendingState = undefined
@@ -3255,20 +3342,13 @@ class DshSurface implements vscode.Disposable {
               await this.restoreDraft(sessionId, requestId, value.text)
               return
             }
-            // Routing splits on whitespace, so this must too.
-            if (typedCommandRequestsFullAccess(value.text)) {
-              const confirmed = await vscode.window.showWarningMessage(
-                'Enable Full access?',
-                {
-                  modal: true,
-                  detail: 'Full access reduces confirmation steps and lets the agent perform more actions directly, including sensitive operations, file changes, or external commands. Only use it when you trust the current task.',
-                },
-                'Enable Full Access',
-              )
-              if (confirmed !== 'Enable Full Access') {
-                await this.restoreDraft(sessionId, requestId, value.text)
-                return
-              }
+            // Routing splits on whitespace, so this must too. A typed preset
+            // needs the same gate the menu applies: Full access and the
+            // experimental Auto review are the two that ask before switching.
+            const typedPreset = typedCommandPermissionPreset(value.text)
+            if (typedPreset !== undefined && !(await this.confirmPermissionPreset(typedPreset))) {
+              await this.restoreDraft(sessionId, requestId, value.text)
+              return
             }
             let carriesIdeContext = false
             let ideContext: IdeContextSnapshot | undefined
@@ -3330,19 +3410,9 @@ class DshSurface implements vscode.Disposable {
         case 'select-permission':
           if (typeof value.permission === 'string'
             && this.controller.state.permissions.some(permission => permission.value === value.permission)) {
-            if (requiresFullAccessConfirmation(value.permission)) {
-              const confirmed = await vscode.window.showWarningMessage(
-                'Enable Full access?',
-                {
-                  modal: true,
-                  detail: 'Full access disables workspace confinement and approval prompts. Only use it when you trust the current task.',
-                },
-                'Enable Full Access',
-              )
-              if (confirmed !== 'Enable Full Access') {
-                await this.resyncState()
-                return
-              }
+            if (!(await this.confirmPermissionPreset(value.permission))) {
+              await this.resyncState()
+              return
             }
             await this.controller.send(`/permission ${value.permission}`)
           }

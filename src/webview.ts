@@ -221,6 +221,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .task-status.completed { color: var(--vscode-testing-iconPassed, #73c991); }
     .task-todo { display: flex; align-items: baseline; gap: 7px; padding: 4px 7px; font-size: 11px; }
     .task-todo.completed { color: var(--vscode-descriptionForeground); }
+    /* Shared Team tasks are read-only rows: the durable projection is the authority. */
+    .team-task { display: grid; gap: 2px; padding: 4px 7px; font-size: 11px; line-height: 17px; }
+    .team-task + .team-task { border-top: .5px solid var(--vscode-widget-border); }
+    .team-task-head { min-width: 0; display: flex; align-items: baseline; gap: 7px; }
+    .team-task-subject { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .team-task-note { min-width: 0; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .team-member-note { margin: 0 8px 2px; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .task-features { order: 2; background: transparent; border-color: transparent; }
     .task-features summary { cursor: pointer; padding: 5px 9px; font-size: 11px; color: var(--dsh-muted); }
     .task-features[open] { background: var(--dsh-surface); border-color: var(--dsh-border); }
@@ -582,11 +589,18 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .command-option-name { flex: 0 0 auto; font-family: var(--vscode-editor-font-family); font-weight: 600; }
     .command-option-hint { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; opacity: .72; }
     .command-option-current { margin-left: auto; padding: 1px 5px; border-radius: 999px; color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); font-family: var(--vscode-font-family); font-size: 10px; font-weight: 500; }
+    /* Marks a preset the runtime advertises as experimental. It stays visible
+       on its own line item, and the label truncates before the badge does. */
+    .command-option-badge { flex: 0 0 auto; padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font-family: var(--vscode-font-family); font-size: 9px; font-weight: 700; letter-spacing: .04em; opacity: .8; }
     .command-option-description { margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .command-option:hover .command-option-description, .command-option.selected .command-option-description { color: inherit; opacity: .82; }
     .command-section-label { padding: 6px 8px 3px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
     .policy-menu { max-height: 260px; }
     .policy-menu .command-option { padding: 6px 8px; font-size: 12px; line-height: 18px; }
+    /* A preset value may be longer than the item (a pinned custom value), so the
+       label gives way first and a badge never pushes the row past the sidebar. */
+    .policy-menu .command-option-name { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .policy-menu .command-option-current, .policy-menu .command-option-badge { flex: 0 0 auto; }
     .policy-preset-fixed { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 11px; line-height: 18px; color: var(--dsh-muted); }
     .policy-preset-name { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .policy-preset-note { flex: none; font-size: 10px; }
@@ -1554,9 +1568,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const context = { sessionId: state && state.sessionId, cwd: state && state.cwd };
       const callView = record(message.callView);
       const resultView = record(message.resultView);
+      // Team tools can only name their target (memberName); the Team projection
+      // is what maps a name to the session id a link needs. A name that does not
+      // resolve is dropped, so the card stays a generic tool card instead of a
+      // dead link to a session that does not exist.
+      const teamMemberIds = new Map();
+      for (const member of array(state && state.team && state.team.members)) {
+        const name = string(member && member.name), id = string(member && member.id);
+        if (name !== '' && id !== '') teamMemberIds.set(name, id);
+      }
       const references = [];
       for (const view of [resultView, callView]) for (const entry of array(view && view.subagentLinks)) {
-        if (entry && typeof entry.id === 'string' && !references.some(ref => ref.id === entry.id)) references.push(entry);
+        if (!entry || typeof entry.id !== 'string') continue;
+        const memberName = string(entry.memberName);
+        const id = memberName === '' ? entry.id : teamMemberIds.get(memberName);
+        if (typeof id !== 'string' || id === '' || references.some(ref => ref.id === id)) continue;
+        references.push({ id, ...(typeof entry.label === 'string' ? { label: entry.label } : {}) });
       }
       const subagent = references.length > 0 || string(callView && callView.subagentLabel) || string(resultView && resultView.subagentLabel);
       const item = document.createElement('details');
@@ -2471,12 +2498,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return (Math.round((bytes / (1024 * 1024)) * 10) / 10) + ' MB';
     }
     function effectivePlanMode(plan) { return Boolean(plan && (plan.pending ? !plan.active : plan.active)); }
-    function policyMenuOption(label, description, selected, disabled, onSelect) {
+    function policyMenuOption(label, description, selected, disabled, onSelect, badge) {
       const option = node('button', 'command-option' + (selected ? ' selected' : ''));
       option.type = 'button'; option.setAttribute('role', 'menuitemradio'); option.setAttribute('aria-checked', String(selected)); option.disabled = disabled;
       const line = node('span', 'command-option-line'); line.append(node('span', 'command-option-name', label));
+      if (badge) { const mark = node('span', 'command-option-badge', badge); mark.title = 'Experimental preset'; line.append(mark); }
       if (selected) line.append(node('span', 'command-option-current', 'Current'));
       option.append(line, node('span', 'command-option-description', description));
+      // The description is ellipsised in a narrow sidebar; the title keeps it
+      // readable on hover without growing the row.
+      option.title = description;
       option.addEventListener('click', () => { if (selected || disabled) return; policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); onSelect(); });
       return option;
     }
@@ -2520,6 +2551,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
             permission.selected === true,
             current.running === true,
             () => vscode.postMessage({ type: 'select-permission', permission: permission.value }),
+            permission.experimental === true ? 'EXP' : undefined,
           ));
         }
       }
@@ -2857,6 +2889,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         if (candidate.kind === 'permission') {
           const permission = candidate.permission;
           line.append(node('span', 'command-option-name', permission.label));
+          if (permission.experimental === true) {
+            const mark = node('span', 'command-option-badge', 'EXP'); mark.title = 'Experimental preset'; line.append(mark);
+          }
           if (permission.label !== permission.value) line.append(node('span', 'command-option-hint', permission.value));
           if (permission.selected) line.append(node('span', 'command-option-current', 'Current'));
           option.append(line, node('div', 'command-option-description', permission.description || 'Use this permission preset'));
@@ -3121,7 +3156,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const children = childTasks(current);
       const todos = array(current.todos);
       const workflows = array(current.workflows);
-      const visible = current.phase === 'ready' && (children.length > 0 || todos.length > 0 || workflows.length > 0);
+      // The Team view is null unless the agentTeam projection carries a
+      // roster, a task board or a failure; an empty team renders no section.
+      const team = record(current.team);
+      const teamMembers = array(team && team.members);
+      const teamTasks = array(team && team.tasks);
+      const teamFailure = string(team && team.failure);
+      const teamVisible = team !== undefined && (teamMembers.length > 0 || teamTasks.length > 0 || teamFailure !== '');
+      const visible = current.phase === 'ready' && (children.length > 0 || todos.length > 0 || workflows.length > 0 || teamVisible);
       elements.taskPanel.classList.toggle('hidden', !visible);
       if (!visible) { elements.taskList.replaceChildren(); return; }
       const live = children.filter(item => item.running === true).length;
@@ -3129,6 +3171,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const completed = todos.filter(item => item.status === 'completed').length;
       const counts = [];
       if (children.length) counts.push(children.length + ' subagents' + (live ? ' · ' + live + ' running' : ''));
+      if (teamVisible) counts.push(teamMembers.length + ' team ' + (teamMembers.length === 1 ? 'member' : 'members')
+        + (teamTasks.length ? ' · ' + teamTasks.filter(task => task.status === 'completed').length + '/' + teamTasks.length + ' tasks' : ''));
       if (todos.length) counts.push(completed + '/' + todos.length + ' steps done');
       if (workflows.length) counts.push(workflows.length + ' workflows');
       const expanded = !collapsedTaskPanels.has(current.sessionId);
@@ -3168,6 +3212,63 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           open.addEventListener('click', () => vscode.postMessage({ type: 'open-task-details', kind: 'subagent', sessionId }));
           const entry = node('div', 'task-entry'); entry.append(row); if (!external) entry.append(open); elements.taskList.append(entry);
         }
+      }
+      if (teamVisible) {
+        elements.taskList.append(node('div', 'task-section', 'Team'));
+        for (const member of teamMembers) {
+          const phase = string(member && member.phase);
+          const status = phase === 'failed' ? { label: 'Failed', kind: 'waiting' }
+            : phase === 'provisioning' ? { label: 'Provisioning', kind: 'idle' }
+              : { label: 'Active', kind: 'running' };
+          const name = string(member && member.name) || string(member && member.id, 'Member');
+          const role = string(member && member.role) === 'lead' ? 'Lead' : 'Teammate';
+          const row = node('button', 'task-child'); row.type = 'button';
+          row.title = name + ' · ' + role + ' · ' + status.label + ' · Open conversation';
+          row.setAttribute('aria-label', 'Open teammate ' + name + ', ' + status.label);
+          const glyph = node('span', 'task-glyph ' + status.kind); glyph.setAttribute('aria-hidden', 'true');
+          glyph.innerHTML = status.kind === 'completed' ? '<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>' : '<svg viewBox="0 0 24 24"><rect x="5" y="6" width="14" height="12" rx="3"/><path d="M9 10h.01M15 10h.01M9 14h6M12 3v3"/></svg>';
+          const copy = node('span', 'task-copy'); copy.append(node('span', 'task-name', name));
+          const meta = node('span', 'task-meta');
+          meta.append(node('span', 'task-status ' + status.kind, status.label), node('span', '', role));
+          copy.append(meta); row.append(glyph, copy);
+          const sessionId = string(member && member.id);
+          // A row without a session id cannot open a conversation; keeping it
+          // inert is better than posting a select-session that cannot resolve.
+          if (sessionId !== '') {
+            row.dataset.sessionId = sessionId;
+            row.addEventListener('click', () => vscode.postMessage({ type: 'select-session', sessionId }));
+          } else {
+            row.setAttribute('aria-disabled', 'true'); row.tabIndex = -1;
+            row.title = name + ' · ' + role + ' · ' + status.label;
+          }
+          const entry = node('div', 'task-entry'); entry.append(row); elements.taskList.append(entry);
+          if (string(member && member.error) !== '') elements.taskList.append(node('div', 'team-member-note', 'Error: ' + string(member && member.error)));
+        }
+        if (teamTasks.length) {
+          elements.taskList.append(node('div', 'task-section', 'Shared tasks'));
+          for (const task of teamTasks) {
+            const status = string(task && task.status);
+            const kind = status === 'completed' ? 'completed' : status === 'in_progress' ? 'running' : 'idle';
+            const symbol = status === 'completed' ? '✓' : status === 'in_progress' ? '●' : '○';
+            const row = node('div', 'team-task');
+            const head = node('div', 'team-task-head');
+            head.append(node('span', 'task-status ' + kind, symbol), node('span', 'team-task-subject', string(task && task.subject, 'Task')));
+            row.append(head);
+            const notes = [status === 'in_progress' ? 'In progress' : status === 'completed' ? 'Completed' : task && task.blocked === true ? 'Blocked' : task && task.ready === true ? 'Ready' : 'Pending'];
+            if (string(task && task.ownerName) !== '') notes.push('Owner: ' + string(task && task.ownerName));
+            const blockedBy = array(task && task.blockedBy).filter(id => typeof id === 'string' && id !== '');
+            if (blockedBy.length) notes.push((task && task.blocked === true ? 'Blocked by ' : 'After ') + blockedBy.join(', '));
+            const scopes = array(task && task.writeScopes).filter(scope => typeof scope === 'string' && scope !== '');
+            if (scopes.length) notes.push('Writes: ' + scopes.join(', '));
+            row.append(node('div', 'team-task-note', notes.join(' · ')));
+            for (const warning of array(task && task.writeScopeWarnings)) {
+              if (typeof warning === 'string' && warning !== '') row.append(node('div', 'team-task-note', 'Warning: ' + warning));
+            }
+            if (string(task && task.description) !== '') row.title = string(task && task.description);
+            elements.taskList.append(row);
+          }
+        }
+        if (teamFailure !== '') elements.taskList.append(node('div', 'feature-hint', 'Team: ' + teamFailure));
       }
       if (todos.length) {
         elements.taskList.append(node('div', 'task-section', 'Plan steps'));
@@ -3490,7 +3591,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (policyChanged) renderPolicyState(current);
       if (renderedChrome.usage !== current.usage) renderUsage(current);
       if (renderedChrome.jobs !== current.jobs || renderedChrome.projectJobs !== current.projectJobs || renderedChrome.jobsStatus !== current.jobsStatus || renderedChrome.phase !== current.phase) renderJobs();
-      if (renderedChrome.sessions !== current.sessions || renderedChrome.todos !== current.todos
+      if (renderedChrome.sessions !== current.sessions || renderedChrome.todos !== current.todos || renderedChrome.team !== current.team
         || renderedChrome.sessionId !== current.sessionId || renderedChrome.phase !== current.phase || renderedChrome.workflows !== current.workflows) renderTaskPanel(current);
       if (renderedChrome.goal !== current.goal || renderedChrome.schedules !== current.schedules || renderedChrome.childReadOnlyReason !== current.childReadOnlyReason || renderedChrome.sessionId !== current.sessionId || renderedChrome.phase !== current.phase) renderTaskFeatures(current);
       if (renderedChrome.account !== current.account || renderedChrome.accountNotice !== current.accountNotice || renderedChrome.accountFailed !== current.accountFailed) renderAccount(current);
@@ -3541,7 +3642,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         account: current.account, accountNotice: current.accountNotice, accountFailed: current.accountFailed,
         parentSessionId: current.parentSessionId, subagentOwnerTitle: subagentOwnerTitle(current),
         goal: current.goal, schedules: current.schedules, workflows: current.workflows, projectJobs: current.projectJobs, jobsStatus: current.jobsStatus, historySearch: current.historySearch, archivedSessions: current.archivedSessions, childReadOnlyReason: current.childReadOnlyReason,
-        phase: current.phase, usage: current.usage, jobs: current.jobs, todos: current.todos, commands: current.commands, skills: current.skills,
+        phase: current.phase, usage: current.usage, jobs: current.jobs, todos: current.todos, team: current.team, commands: current.commands, skills: current.skills,
       };
       if (preservingHistory && current.loadingHistory !== true) {
         const anchor = historyAnchor; historyAnchor = undefined;

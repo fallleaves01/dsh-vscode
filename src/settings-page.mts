@@ -109,6 +109,12 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
   const parsedFields = (form: SettingsFormView, values: Record<string, unknown>): Record<string, unknown> => {
     return Object.fromEntries(Object.entries(values).map(([key, raw]) => {
       const field = form.fields.find(item => item.key === key)!
+      if (field.type === 'string-list') {
+        if (raw === null || raw === '') return [key, []]
+        if (Array.isArray(raw)) return [key, raw]
+        if (typeof raw !== 'string') return [key, raw]
+        return [key, raw.split('\n').map(line => line.trim()).filter(line => line !== '')]
+      }
       if (raw === null || raw === '') return [key, null]
       if (field.type !== 'number') return [key, raw]
       const value = typeof raw === 'string' && raw.trim() === '' ? NaN : Number(raw)
@@ -168,7 +174,24 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
       formDraft(form).values[field.key] = checked
       if (form.section === 'general') saveSection()
     }, form.ns + ':' + field.key))
-    else {
+    else if (field.type === 'select') {
+      const control = el('select'); control.dataset.focusKey = form.ns + ':' + field.key
+      control.setAttribute('aria-label', field.label)
+      const current = value === undefined || value === null ? '' : String(value)
+      const options = field.options ?? []
+      if (current !== '' && !options.some(option => option.value === current)) control.append(new Option(current, current))
+      for (const option of options) control.append(new Option(option.label, option.value))
+      control.value = current !== '' ? current : options[0]?.value ?? ''
+      control.addEventListener('change', () => { if (form.section === 'search') captureSearchSelection(); formDraft(form).values[field.key] = control.value; updateSaveButtons() })
+      row.append(control)
+    } else if (field.type === 'string-list') {
+      const control = el('textarea'); control.dataset.focusKey = form.ns + ':' + field.key
+      control.setAttribute('aria-label', field.label); control.rows = 4; control.spellcheck = false
+      control.value = Array.isArray(value) ? value.filter(item => typeof item === 'string').join('\n') : value === undefined || value === null ? '' : String(value)
+      control.placeholder = 'https://example.com/index.json'
+      control.addEventListener('input', () => { if (form.section === 'search') captureSearchSelection(); formDraft(form).values[field.key] = control.value; updateSaveButtons() })
+      row.append(control)
+    } else {
       const control = input(value === undefined || value === null ? '' : String(value), form.ns + ':' + field.key, raw => { if (form.section === 'search') captureSearchSelection(); formDraft(form).values[field.key] = raw })
       control.setAttribute('aria-label', field.label)
       if (field.type === 'number') control.inputMode = field.integer ? 'numeric' : 'decimal'
@@ -467,6 +490,28 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
       content.append(grid)
     }
     if (!groups.some(group => group.rows.length)) content.append(el('p', 'empty', 'Plugin inventory is unavailable in this runtime.'))
+    const bundles = (state?.bundles ?? []).filter(bundle => bundle.optional)
+    if (bundles.length) {
+      content.append(el('h3', 'inventory-heading', 'Experimental bundles'))
+      content.append(el('p', 'hint', 'Optional capabilities shipped with DSH 0.2.1-rc.3. Enabling one changes the shared web profile; a runtime restart may be required.'))
+      const manage = state?.writable === true
+      if (!manage) content.append(el('p', 'notice', state?.reason || 'This runtime is read-only. Change its optional bundles from the client that manages this profile.'))
+      const fieldset = el('fieldset'); fieldset.disabled = locked() || !manage
+      const grid = el('div', 'plugin-inventory')
+      for (const bundle of bundles) {
+        const card = el('article', 'inventory-card bundle-card')
+        const label = bundle.title ?? bundle.name.replace(/^@deepseek-ai\/dsh-/, '')
+        card.append(el('div', 'inventory-name', label),
+          el('span', 'hint bundle-status', [bundle.enabled ? 'Enabled' : 'Disabled', bundle.version ? 'v' + bundle.version : '', bundle.installed ? 'Installed' : 'Provided by this installation'].filter(Boolean).join(' · ')))
+        if (bundle.description) card.append(el('span', 'hint bundle-description', bundle.description))
+        if (manage) card.append(toggle('Enabled', bundle.enabled, enabled => {
+          if (enabled === bundle.enabled) return
+          start({ type: 'set-bundle', name: bundle.name, enabled })
+        }, 'bundle:' + bundle.name))
+        grid.append(card)
+      }
+      fieldset.append(grid); content.append(fieldset)
+    }
     content.append(button('Manage runtime plugins', () => native('plugins'), 'quiet'))
   }
   function render(): void {
@@ -475,7 +520,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
     banner.textContent = state?.error ?? state?.reason ?? ''
     if (!banner.textContent && state?.loading) banner.textContent = 'Refreshing settings…'
     refresh.disabled = !!pending || state?.loading === true
-    const pluginSections = [['subagents', 'Subagents'], ['agent', 'Agent loop'], ['search', 'Web search'], ['shell', 'Shell']].filter(([id]) => state?.forms.some(form => form.section === id) || (id === 'subagents' && state?.allowedModels)) as [string, string][]
+    const pluginSections = [['subagents', 'Subagents'], ['agent', 'Agent loop'], ['search', 'Web search'], ['shell', 'Shell'], ['translation', 'Reasoning translation'], ['voice', 'Voice input'], ['market', 'Plugin market']].filter(([id]) => state?.forms.some(form => form.section === id) || (id === 'subagents' && state?.allowedModels)) as [string, string][]
     const isPlugin = section === 'inventory' || pluginSections.some(([id]) => id === section)
     const sections = [['general', 'General'], ['models', 'Models'], ...(pluginSections.length || state?.inventory?.length ? [['plugins', 'Built-in plugins']] : [])]
     navigation.replaceChildren()
@@ -576,6 +621,11 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
       if (value.ok || value.keySaved) { searchKey = ''; searchKeyRevision = undefined }
       if (value.settingsSaved && request.section === 'search') { fields.delete('web-search-deepseek'); searchKeyRevision = state?.forms.find(form => form.ns === 'web-search-deepseek')?.revision }
     } else if (request.type === 'save-allowed-models' && value.ok) allowed = undefined
+    else if (request.type === 'set-bundle') {
+      if (value.ok) message = value.restartRequired === true
+        ? 'Bundle updated. Restart the DeepSeek Harness runtime to apply the change.'
+        : 'Bundle updated.'
+    }
     else if (request.type === 'save-provider' || request.type === 'create-provider') {
       if (value.ok) { providerDrafts.delete(selectedProvider!); if (selectedProvider === NEW_PROVIDER) { providerDrafts.delete(CATALOG_DRAFT); providerDrafts.delete(CUSTOM_DRAFT) } selectedProvider = value.promotedProvider ?? selectedProvider; candidates = [] }
       else if (value.settingsSaved) {
@@ -587,7 +637,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
       }
     } else if (request.type === 'remove-provider' && value.ok) { providerDrafts.delete(selectedProvider!); selectedProvider = undefined }
     if (!value.ok && !value.cancelled) errors.set(request.section, value.error || 'The settings operation failed. Your draft was retained.')
-    else { errors.delete(request.section); if (request.type !== 'discover-models' && !value.cancelled) message = 'Saved.' }
+    else { errors.delete(request.section); if (request.type !== 'discover-models' && request.type !== 'set-bundle' && !value.cancelled) message = 'Saved.' }
     render(); next()
   }
   const refreshPage = (): void => { if (!pending) api.postMessage({ type: 'refresh' }) }

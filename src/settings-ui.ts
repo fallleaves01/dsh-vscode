@@ -56,7 +56,8 @@ export const settingsPageCss = `
   .dsh-settings .key-status { margin: 0 0 12px; }
   .dsh-settings .field-name { font-size: 12px; font-weight: 500; line-height: 18px; }
   .dsh-settings .field .hint { display: block; margin-top: 4px; }
-  .dsh-settings .field > input, .dsh-settings .field > select, .dsh-settings .field > .key-input { grid-column: 1 / -1; grid-row: 2; }
+  .dsh-settings .field > input, .dsh-settings .field > select, .dsh-settings .field > textarea, .dsh-settings .field > .key-input { grid-column: 1 / -1; grid-row: 2; }
+  .dsh-settings textarea { display: block; width: 100%; min-width: 0; min-height: 84px; padding: 8px 10px; border: .5px solid var(--vscode-input-border, var(--dsh-border)); border-radius: 12px; background: var(--vscode-input-background, var(--settings-fill)); color: inherit; font: 13px/20px var(--vscode-editor-font-family, monospace); resize: vertical; }
   .dsh-settings .field > button { grid-column: 2; grid-row: 1; }
   .dsh-settings .field:has(> .switch-row) { display: flex; }
   .dsh-settings .field:has(> .switch-row) .field-copy { flex: 1; }
@@ -112,6 +113,9 @@ export const settingsPageCss = `
   .dsh-settings .inventory-card { min-width: 0; padding: 12px 14px; border: .5px solid var(--dsh-border); border-radius: 16px; display: flex; flex-direction: column; gap: 4px; }
   .dsh-settings .inventory-name { font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
   .dsh-settings .inventory-module { display: block; font: 12px/18px var(--vscode-editor-font-family,monospace); color: var(--dsh-muted); overflow-wrap: anywhere; }
+  .dsh-settings .bundle-card .switch-row { margin-top: 4px; }
+  .dsh-settings .bundle-description { overflow-wrap: anywhere; }
+  .dsh-settings .bundle-status { font-size: 12px; color: var(--dsh-muted); }
   .dsh-settings .choice-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dsh-settings .notice { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: var(--dsh-hover); font-size: 12px; overflow-wrap: anywhere; }
   .dsh-settings .empty { padding: 16px 0; color: var(--dsh-muted); font-size: 13px; }

@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { mountSettingsPage } from '../src/settings-page.mjs'
 import { settingsPageHtml } from '../src/settings-page-html.js'
-import { pageState, searchPageState } from './settings-page.fixture.js'
+import { bundlePageState, experimentalPageState, pageState, searchPageState } from './settings-page.fixture.js'
 import type { SettingsPageState } from '../src/settings-page-state.js'
 
 let dispose: (() => void) | undefined
@@ -17,16 +17,24 @@ function harness(overrides: Partial<SettingsPageState> = {}) {
   const update = (patch: Partial<SettingsPageState>) => { state = { ...state, ...patch }; send({ type: 'state', state }) }
   const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === label)!
   const click = (label: string) => {
-    if (!button(label) && ['Shell', 'Agent loop', 'Subagents', 'Web search'].includes(label)) button('Built-in plugins').click()
+    if (!button(label) && ['Shell', 'Agent loop', 'Subagents', 'Web search', 'Reasoning translation', 'Voice input', 'Plugin market'].includes(label)) button('Built-in plugins').click()
     expect(button(label), label).toBeDefined(); button(label).click()
   }
   const input = (key: string, value: string) => {
     const control = [...document.querySelectorAll<HTMLInputElement>('input')].find(item => item.dataset.focusKey === key)!
     expect(control, key).toBeDefined(); control.value = value; control.dispatchEvent(new Event('input', { bubbles: true })); return control
   }
+  const select = (key: string, value: string) => {
+    const control = [...document.querySelectorAll<HTMLSelectElement>('select')].find(item => item.dataset.focusKey === key)!
+    expect(control, key).toBeDefined(); control.value = value; control.dispatchEvent(new Event('change', { bubbles: true })); return control
+  }
+  const textarea = (key: string, value: string) => {
+    const control = [...document.querySelectorAll<HTMLTextAreaElement>('textarea')].find(item => item.dataset.focusKey === key)!
+    expect(control, key).toBeDefined(); control.value = value; control.dispatchEvent(new Event('input', { bubbles: true })); return control
+  }
   const result = (value: Record<string, unknown> = { ok: true }) => send({ type: 'result', requestId: posts.at(-1)?.requestId, ...value })
   update({})
-  return { posts, send, update, click, input, result, button, state: () => state }
+  return { posts, send, update, click, input, select, textarea, result, button, state: () => state }
 }
 
 describe('dedicated DSH settings surface', () => {
@@ -255,5 +263,35 @@ describe('dedicated DSH settings surface', () => {
     expect(h.posts).toEqual([{ type: 'ready' }])
     h.click('General'); h.click('Keyboard shortcuts')
     expect(h.posts.at(-1)).toMatchObject({ type: 'native-action', action: 'shortcuts' })
+  })
+
+  it('renders optional bundles on the plugins page and sends a confirmed enable request', () => {
+    const h = harness(bundlePageState()); h.click('Built-in plugins')
+    expect(document.body.textContent).toContain('Experimental bundles')
+    expect(document.body.textContent).toContain('Machine translation of reasoning')
+    const toggle = document.querySelector<HTMLInputElement>('[data-focus-key="bundle:@deepseek-ai/dsh-experimental-cot-translation-bundle"]')!
+    expect(toggle.checked).toBe(false); toggle.click()
+    expect(h.posts.at(-1)).toMatchObject({ type: 'set-bundle', name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', enabled: true })
+    h.result({ ok: true, application: 'restart-required', restartRequired: true })
+    expect(document.body.textContent).toContain('Restart the DeepSeek Harness runtime')
+  })
+  it('hides bundle toggles on an attach-only runtime and explains why', () => {
+    const state = bundlePageState(); state.writable = false; state.reason = 'This external runtime is attach-only. Its settings are available for inspection.'
+    const h = harness(state); h.click('Built-in plugins')
+    expect(document.querySelector('[data-focus-key^="bundle:"]')).toBeNull()
+    expect(document.body.textContent).toContain('attach-only')
+  })
+  it('renders and saves the three experimental settings sections', () => {
+    const h = harness(experimentalPageState()); h.click('Built-in plugins')
+    h.click('Reasoning translation')
+    expect(document.querySelector('select[data-focus-key="cot-translation:provider"]')).not.toBeNull()
+    h.select('cot-translation:provider', 'google'); h.click('Save changes')
+    expect(h.posts.at(-1)).toMatchObject({ type: 'save-fields', changes: [{ ns: 'cot-translation', revision: 1, values: { provider: 'google' } }] })
+    h.result({ ok: true, results: [{ ns: 'cot-translation', ok: true }] })
+    h.click('Voice input'); h.input('speech-to-text:defaultProvider', 'whisper-local'); h.input('speech-to-text:language', 'zh-CN'); h.click('Save changes')
+    expect(h.posts.at(-1)!.changes[0]).toMatchObject({ ns: 'speech-to-text', values: { defaultProvider: 'whisper-local', language: 'zh-CN' } })
+    h.result({ ok: true, results: [{ ns: 'speech-to-text', ok: true }] })
+    h.click('Plugin market'); h.textarea('plugin-market:indexes', 'https://one.example/index.json\nhttps://two.example/index.json'); h.click('Save changes')
+    expect(h.posts.at(-1)!.changes[0]).toMatchObject({ ns: 'plugin-market', values: { indexes: ['https://one.example/index.json', 'https://two.example/index.json'] } })
   })
 })

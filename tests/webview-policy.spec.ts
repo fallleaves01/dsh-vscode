@@ -27,6 +27,12 @@ const PERMISSIONS = [
   { value: 'danger-full-access', label: 'Full Access', description: 'No sandbox.', selected: false },
 ]
 
+function typeIntoPrompt(h: Harness, text: string): void {
+  const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+  prompt.value = text
+  prompt.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
 async function show(h: Harness, overrides: Record<string, unknown> = {}): Promise<void> {
   h.sendState({ sessionId: 'session-a', permissions: PERMISSIONS, ...overrides })
   await h.settle()
@@ -72,6 +78,40 @@ describe('the permission control', () => {
     const h = open()
     await show(h, { permissions: [] })
     expect(h.document.getElementById('policyTrigger')!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('marks the experimental preset with a badge and its description', async () => {
+    const h = open()
+    await show(h, {
+      permissions: [
+        { value: 'workspace-write', label: 'Workspace', description: 'Edit this project.', selected: true },
+        {
+          value: 'auto', label: 'Auto review',
+          description: 'Auto review: the current model reviews each tool call (experimental).',
+          experimental: true, selected: false,
+        },
+      ],
+    })
+    h.click('#policyTrigger')
+    const menu = h.document.getElementById('policyMenu')!
+    const auto = [...menu.querySelectorAll('button')]
+      .find(button => (button.textContent ?? '').includes('Auto review'))!
+    // The badge is its own element: the label ellipsises first in a narrow
+    // sidebar instead of pushing the marker out of the row.
+    expect(auto.querySelector('.command-option-badge')?.textContent).toBe('EXP')
+    expect(auto.textContent).toContain('Auto review: the current model reviews each tool call (experimental).')
+    expect(auto.getAttribute('title')).toBe('Auto review: the current model reviews each tool call (experimental).')
+    // Clicking still goes through the host, which owns the risk confirmation.
+    h.posts.length = 0
+    auto.dispatchEvent(new Event('click', { bubbles: true }))
+    expect(h.posts).toContainEqual({ type: 'select-permission', permission: 'auto' })
+  })
+
+  it('keeps the badge off stable presets', async () => {
+    const h = open()
+    await show(h)
+    h.click('#policyTrigger')
+    expect(h.document.querySelector('#policyMenu .command-option-badge')).toBeNull()
   })
 
   it('marks plan mode as on without offering it as a choice', async () => {
@@ -138,5 +178,44 @@ describe('leaving a subagent conversation', () => {
     const h = open()
     await show(h, { parentSessionId: null })
     expect(h.document.getElementById('subagentBar')!.classList.contains('hidden')).toBe(true)
+  })
+})
+
+
+describe('the experimental preset in the slash-command menu', () => {
+  const AUTO = {
+    value: 'auto', label: 'Auto review',
+    description: 'Auto review: the current model reviews each tool call (experimental).',
+    experimental: true, selected: false,
+  }
+
+  it('marks the experimental preset with a badge and keeps the stable rows bare', async () => {
+    const h = open()
+    h.sendState({
+      sessionId: 'session-a', phase: 'ready', routable: true, anyRoutable: true,
+      permissions: [
+        { value: 'workspace-write', label: 'Workspace', description: 'Edit this project.', selected: true },
+        AUTO,
+      ],
+    })
+    await h.settle()
+    typeIntoPrompt(h, '/permission ')
+    await h.settle()
+
+    const options = [...h.document.querySelectorAll('#commandMenu .command-option')]
+    const auto = options.find(option => (option.textContent ?? '').includes('Auto review'))
+    expect(auto).toBeDefined()
+    expect(auto!.querySelector('.command-option-badge')?.textContent).toBe('EXP')
+    expect(auto!.querySelector('.command-option-description')?.textContent)
+      .toBe('Auto review: the current model reviews each tool call (experimental).')
+
+    const stable = options.find(option => (option.textContent ?? '').includes('Workspace'))
+    expect(stable).toBeDefined()
+    expect(stable!.querySelector('.command-option-badge')).toBeNull()
+
+    h.posts.length = 0
+    auto!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+    expect(h.posts.filter(post => post.type === 'send')).toContainEqual(
+      expect.objectContaining({ type: 'send', sessionId: 'session-a', text: '/permission auto' }))
   })
 })

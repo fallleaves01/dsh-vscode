@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerViews, publicPluginInventory, reasoningLevels, searchSelectionMutations, searchSettings, settingsForms, validProviderId } from '../src/settings-page-state.js'
-import { fixture, searchFixture } from './settings-page.fixture.js'
+import { credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerViews, publicBundles, publicPluginInventory, reasoningLevels, searchSelectionMutations, searchSettings, settingsForms, validProviderId } from '../src/settings-page-state.js'
+import { cotTranslationNamespace, experimentalPageState, fixture, pluginMarketNamespace, searchFixture } from './settings-page.fixture.js'
 
 describe('official settings form boundaries', () => {
   it('projects the plugin roster without configuration, conditions or error payloads', () => {
@@ -135,5 +135,60 @@ describe('Search / Fetch API settings boundaries', () => {
     const ns = searchFixture().description.namespaces.find(ns => ns.ns === 'web-deepseek-api')!
     expect(fieldMutations(ns, { count: 50 })).toEqual([{ op: 'set', path: ['count'], value: 50 }])
     expect(() => fieldMutations(ns, { maxUses: 3 })).toThrow('not part')
+  })
+})
+
+describe('experimental settings and bundle projection', () => {
+  it('projects only whitelisted bundle facts and drops icons, paths and raw diagnostics', () => {
+    const projected = publicBundles([
+      { name: '@deepseek-ai/dsh-base', official: false, availability: 'profile', version: '0.2.1-rc.3', description: 'Base', enabled: true, installed: true, optional: false, removable: false, icon: 'data:image/svg+xml;base64,hidden-marker', source: '/srv/hidden-marker/profile', error: { code: 'operation-error', diagnostic: 'hidden-marker' } },
+      { name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', official: true, availability: 'installation', version: '0.2.1-rc.3', enabled: false, installed: false, optional: true, removable: false, meta: { title: { en: 'Machine translation', zh: '机翻' }, description: { en: 'Translate reasoning.' }, icon: 'data:image/svg+xml;base64,hidden-marker' }, overrides: ['hidden-marker'], rows: [{ rowId: 'hidden-marker' }] },
+      { name: 12, enabled: true },
+    ])
+    expect(projected).toEqual([
+      { name: '@deepseek-ai/dsh-base', official: false, availability: 'profile', version: '0.2.1-rc.3', description: 'Base', enabled: true, installed: true, optional: false, removable: false },
+      { name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', official: true, availability: 'installation', version: '0.2.1-rc.3', title: 'Machine translation', description: 'Translate reasoning.', enabled: false, installed: false, optional: true, removable: false },
+    ])
+    expect(JSON.stringify(projected)).not.toContain('hidden-marker')
+    expect(JSON.stringify(projected)).not.toContain('data:image')
+    expect(publicBundles(undefined)).toEqual([])
+    expect(publicBundles({ entries: [] })).toEqual([])
+  })
+  it('renders the COT provider as the closed schema choice list and validates writes', () => {
+    const ns = cotTranslationNamespace()
+    const form = settingsForms({ writable: true, hasDocument: true, namespaces: [ns] })[0]!
+    expect(form.section).toBe('translation')
+    expect(form.fields.map(field => field.key)).toEqual(['provider', 'targetLanguage'])
+    expect(form.fields[0]!.type).toBe('select')
+    expect(form.fields[0]!.options).toEqual([
+      { value: 'bing', label: 'Bing' }, { value: 'google', label: 'Google' },
+      { value: 'deepseek-account', label: 'DeepSeek Account' }, { value: 'deepseek-official', label: 'DeepSeek API' },
+    ])
+    expect(fieldMutations(ns, { provider: 'google' })).toEqual([{ op: 'set', path: ['provider'], value: 'google' }])
+    expect(fieldMutations(ns, { targetLanguage: 'zh-CN' })).toEqual([{ op: 'set', path: ['targetLanguage'], value: 'zh-CN' }])
+    expect(() => fieldMutations(ns, { provider: 'invented' })).toThrow('offered values')
+    expect(() => fieldMutations(ns, { provider: 7 })).toThrow('offered values')
+  })
+  it('renders voice fields as plain strings supplied by the speech schema', () => {
+    const state = experimentalPageState(), voice = state.forms.find(form => form.section === 'voice')!
+    expect(voice.ns).toBe('speech-to-text')
+    expect(voice.fields.map(field => field.type)).toEqual(['string', 'string'])
+    expect(voice.fields[0]!.value).toBe('sensevoice-local')
+  })
+  it('renders market indexes as a deduplicated URL list with strict validation', () => {
+    const ns = pluginMarketNamespace()
+    const form = settingsForms({ writable: true, hasDocument: true, namespaces: [ns] })[0]!
+    expect(form.section).toBe('market')
+    expect(form.fields[0]!.type).toBe('string-list')
+    expect(fieldMutations(ns, { indexes: ['https://a.example/index.json', ' https://a.example/index.json ', 'https://b.example/x.json'] }))
+      .toEqual([{ op: 'set', path: ['indexes'], value: ['https://a.example/index.json', 'https://b.example/x.json'] }])
+    expect(fieldMutations(ns, { indexes: [] })).toEqual([{ op: 'set', path: ['indexes'], value: [] }])
+    expect(() => fieldMutations(ns, { indexes: ['file:///tmp/index.json'] })).toThrow()
+    expect(() => fieldMutations(ns, { indexes: ['https://name:pass@example.test/index.json'] })).toThrow()
+    expect(() => fieldMutations(ns, { indexes: Array.from({ length: 33 }, (_value, index) => `https://e.example/${String(index)}.json`) })).toThrow('32')
+  })
+  it('hides the experimental sections when their bundles are not enabled', () => {
+    const { description } = fixture()
+    expect(settingsForms(description).some(form => ['translation', 'voice', 'market'].includes(form.section))).toBe(false)
   })
 })

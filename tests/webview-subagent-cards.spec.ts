@@ -52,4 +52,19 @@ describe('subagent navigation directly in tool cards',()=>{
     const h=await mount({sessions:[sessions[0]]});h.click('.subagent-tool-main')
     expect(h.posts.at(-1)).toMatchObject({type:'open-subagent',sessionId:'child'})
   })
+  it('resolves a Team member name through the Team projection before navigating',async()=>{
+    const teamCard={...card,id:'tool:team',resultView:{card:'generic',subagentLinks:[{id:'reviewer',memberName:'reviewer',label:'Review auth'}]},callView:{card:'generic',subagentLabel:'Review auth'}}
+    const h=await mount({messages:[teamCard],team:{members:[{id:'mate-session',name:'reviewer',role:'teammate',phase:'active'}],tasks:[],completedCount:0,totalCount:0},
+      sessions:[sessions[0],{id:'mate-session',title:'Reviewer',parentId:'parent',subagent:{mode:'continuable'}}]})
+    h.click('.subagent-tool-main')
+    expect(h.posts.at(-1)).toMatchObject({type:'open-subagent',sessionId:'mate-session'})
+  })
+  it('falls back to a generic card when a Team name is not in the projection',async()=>{
+    const teamCard={...card,id:'tool:team',resultView:{card:'generic',subagentLinks:[{id:'ghost',memberName:'ghost',label:'Unknown work'}]},callView:{card:'generic',subagentLabel:'Unknown work'}}
+    const h=await mount({messages:[teamCard],team:{members:[],tasks:[],completedCount:0,totalCount:0},sessions:[sessions[0]]})
+    // No link row and no navigation: the name never became a session id.
+    expect(h.document.querySelector('.subagent-tool-links')).toBeNull()
+    expect(h.document.querySelector('.subagent-tool-card')).not.toBeNull()
+    expect(h.posts.some(post=>post.type==='open-subagent')).toBe(false)
+  })
 })

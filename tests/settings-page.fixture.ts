@@ -1,6 +1,6 @@
 import type { SettingsNamespace, SettingsSchemaNode } from '../src/runtime-settings.js'
 import type { ConfigurableProvider, SettingsPageState } from '../src/settings-page-state.js'
-import { providerViews, reasoningLevels, searchSettings, settingsForms } from '../src/settings-page-state.js'
+import { providerViews, publicBundles, reasoningLevels, searchSettings, settingsForms } from '../src/settings-page-state.js'
 
 export function namespace(ns: string, value: Record<string, unknown>, options: { base?: Record<string, unknown>; user?: Record<string, unknown>; revision?: number } = {}): SettingsNamespace {
   const refs: Record<string, SettingsSchemaNode> = { '1': { type: 'object', dict: {} } }
@@ -64,5 +64,58 @@ export function searchPageState(): SettingsPageState {
   const data = searchFixture(), state = pageState()
   state.forms = settingsForms(data.description)
   state.search = searchSettings(data.description, { ...data.credentials, SEARCH_FIXTURE_API_KEY: { configured: false, writable: true } })
+  return state
+}
+
+/** A DSH namespace whose closed choice list is declared as a const union. */
+export function cotTranslationNamespace(): SettingsNamespace {
+  const ns = namespace('cot-translation', { provider: 'bing', targetLanguage: 'auto' })
+  ns.schema = { uid: 1, refs: {
+    '1': { type: 'object', dict: { provider: 2, targetLanguage: 3 } },
+    '2': { type: 'union', list: [4, 5, 6, 7] },
+    '3': { type: 'string', meta: { default: 'auto' } },
+    '4': { type: 'const', value: 'bing' }, '5': { type: 'const', value: 'google' },
+    '6': { type: 'const', value: 'deepseek-account' }, '7': { type: 'const', value: 'deepseek-official' },
+  } }
+  return ns
+}
+/** The voice-input recognizer and language fields, both plain strings in the Host schema. */
+export function speechNamespace(): SettingsNamespace {
+  const ns = namespace('speech-to-text', { defaultProvider: 'sensevoice-local', language: 'auto' })
+  ns.schema = { uid: 1, refs: {
+    '1': { type: 'object', dict: { defaultProvider: 2, language: 3 } },
+    '2': { type: 'string', meta: { min: 1, required: true } },
+    '3': { type: 'string', meta: { min: 1, default: 'auto' } },
+  } }
+  return ns
+}
+/** The plugin market index list: an array of HTTP(S) URL strings. */
+export function pluginMarketNamespace(): SettingsNamespace {
+  const ns = namespace('plugin-market', { indexes: [] })
+  ns.schema = { uid: 1, refs: {
+    '1': { type: 'object', dict: { indexes: 2 } },
+    '2': { type: 'array', inner: 3 },
+    '3': { type: 'string', meta: { pattern: { source: '^https?:\\/\\/\\S+$', flags: 'u' } } },
+  } }
+  return ns
+}
+/** Forms state that includes the three experimental namespaces, as an enabled bundle set returns them. */
+export function experimentalPageState(): SettingsPageState {
+  const state = pageState()
+  const description = { writable: true, hasDocument: true, namespaces: [...fixture().description.namespaces, cotTranslationNamespace(), speechNamespace(), pluginMarketNamespace()] }
+  state.forms = settingsForms(description)
+  return state
+}
+/** Raw `pluginManager/listBundles` rows, including facts the projection must drop. */
+export function bundleFixture(): Record<string, unknown>[] {
+  return [
+    { name: '@deepseek-ai/dsh-base', official: false, availability: 'profile', version: '0.2.1-rc.3', enabled: true, installed: true, optional: false, removable: false, icon: 'data:image/svg+xml;base64,hidden-marker', source: '/srv/hidden-marker/profile', error: { code: 'operation-error', diagnostic: 'hidden-marker' } },
+    { name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', official: true, availability: 'installation', version: '0.2.1-rc.3', description: 'Machine translation of reasoning', enabled: false, installed: false, optional: true, removable: false, meta: { title: { en: 'Machine translation of reasoning', zh: '推理机翻' }, description: { en: 'Translate expanded reasoning.' }, icon: 'data:image/svg+xml;base64,hidden-marker' }, overrides: ['include:hidden-marker'], rows: [{ rowId: 'cot-translation', moduleName: '@deepseek-ai/dsh-experimental-client-ui-cot-translation' }] },
+    { name: '@deepseek-ai/dsh-experimental-voice-input-bundle', official: true, availability: 'installation', version: '0.2.1-rc.3', enabled: true, installed: false, optional: true, removable: false, meta: { title: 'Voice input' } },
+  ]
+}
+export function bundlePageState(): SettingsPageState {
+  const state = pageState()
+  state.bundles = publicBundles(bundleFixture())
   return state
 }

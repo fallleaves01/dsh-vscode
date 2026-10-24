@@ -65,3 +65,82 @@ describe('Goal, reminders, workflows, search and background output UI', () => {
     expect((h.document.getElementById('prompt') as HTMLTextAreaElement).disabled).toBe(false)
   })
 })
+
+describe('Agent Teams panel', () => {
+  const team = {
+    members: [
+      { id: 'lead-session', name: 'lead', role: 'lead', phase: 'active' },
+      { id: 'mate-session', name: 'reviewer', role: 'teammate', phase: 'failed', error: 'Creation was denied' },
+    ],
+    tasks: [
+      {
+        id: 'task-2', revision: 2, subject: 'Verify the permission selector', description: 'Full acceptance details.',
+        status: 'in_progress', blockedBy: [], writeScopes: ['src/collaboration-state.ts'], ownerName: 'reviewer',
+        ready: false, writeScopeWarnings: ['Overlaps task-1'], blocked: false,
+      },
+      {
+        id: 'task-1', revision: 1, subject: 'Map the contracts', description: '',
+        status: 'completed', blockedBy: [], writeScopes: [], ready: false, writeScopeWarnings: [], blocked: false,
+      },
+    ],
+    failure: 'Persistent member update rejected',
+    completedCount: 1,
+    totalCount: 2,
+  }
+
+  it('renders no task panel when the team projection is absent or empty', async () => {
+    const h = open()
+    h.sendState({ team: null }); await h.settle()
+    expect(h.document.getElementById('taskPanel')!.classList.contains('hidden')).toBe(true)
+    h.sendState({ team: { members: [], tasks: [], completedCount: 0, totalCount: 0 } }); await h.settle()
+    expect(h.document.getElementById('taskPanel')!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('renders the Team roster and the shared task board', async () => {
+    const h = open()
+    // The projection arrives after the conversation is open; the panel must
+    // appear from the state patch alone, without a new conversation list.
+    h.sendState({ team: null }); await h.settle()
+    expect(h.document.getElementById('taskPanel')!.classList.contains('hidden')).toBe(true)
+    h.sendState({ team }); await h.settle()
+    const panel = h.document.getElementById('taskPanel')!
+    expect(panel.classList.contains('hidden')).toBe(false)
+    const list = h.document.getElementById('taskList')!
+    expect(list.textContent).toContain('Team')
+    expect(list.textContent).toContain('lead')
+    expect(list.textContent).toContain('Lead')
+    expect(list.textContent).toContain('reviewer')
+    expect(list.textContent).toContain('Failed')
+    expect(list.textContent).toContain('Creation was denied')
+    expect(list.textContent).toContain('Shared tasks')
+    expect(list.textContent).toContain('Verify the permission selector')
+    expect(list.textContent).toContain('In progress')
+    expect(list.textContent).toContain('Owner: reviewer')
+    expect(list.textContent).toContain('Writes: src/collaboration-state.ts')
+    expect(list.textContent).toContain('Warning: Overlaps task-1')
+    expect(list.textContent).toContain('Map the contracts')
+    expect(list.textContent).toContain('Team: Persistent member update rejected')
+    expect(h.document.getElementById('taskToggle')!.textContent).toContain('2 team members')
+    expect(h.document.getElementById('taskToggle')!.textContent).toContain('1/2 tasks')
+  })
+
+  it('opens a teammate conversation when a member row is clicked', async () => {
+    const h = open()
+    h.sendState({ team }); await h.settle()
+    h.posts.length = 0
+    h.document.querySelector<HTMLButtonElement>('#taskList [data-session-id="mate-session"]')!
+      .dispatchEvent(new Event('click', { bubbles: true }))
+    expect(h.posts).toContainEqual({ type: 'select-session', sessionId: 'mate-session' })
+  })
+
+  it('does not make a member without a session id clickable', async () => {
+    const h = open()
+    h.sendState({ team: { ...team, members: [{ id: '', name: 'ghost', role: 'teammate', phase: 'active' }] } }); await h.settle()
+    const row = h.document.querySelector<HTMLButtonElement>('#taskList .task-child')!
+    expect(row.dataset.sessionId).toBeUndefined()
+    expect(row.getAttribute('aria-disabled')).toBe('true')
+    h.posts.length = 0
+    row.dispatchEvent(new Event('click', { bubbles: true }))
+    expect(h.posts.some(post => post.type === 'select-session')).toBe(false)
+  })
+})

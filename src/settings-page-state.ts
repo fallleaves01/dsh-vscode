@@ -11,9 +11,12 @@ export interface ConfigurableProvider {
 export interface CredentialState { configured: boolean; writable: boolean }
 export interface DiscoveredModel { id: string; name?: string; contextWindow?: number; maxTokens?: number; inputModalities?: readonly string[] }
 export interface ModelDiscoveryRequest { provider?: string; baseURL?: string; api?: string; apiKey?: string }
+export interface SettingsFieldChoice { value: string; label: string }
 export interface SettingsFieldView {
-  key: string; label: string; type: 'number' | 'string' | 'boolean'; value?: unknown; inherited?: unknown
+  key: string; label: string; type: 'number' | 'string' | 'boolean' | 'select' | 'string-list'; value?: unknown; inherited?: unknown
   overridden: boolean; min?: number; max?: number; integer?: boolean; description?: string
+  /** Present for `select` fields: the schema's closed set of accepted values. */
+  options?: SettingsFieldChoice[]
 }
 export interface SettingsFormView { ns: string; title: string; section: string; revision: number; fields: SettingsFieldView[]; restart: boolean }
 export interface ModelDraft {
@@ -40,7 +43,68 @@ export interface SettingsPageState {
   searchExtensionKey?: boolean
   search?: SearchSettingsView
   inventory?: { label: string; rows: { name: string; status: string }[] }[]
+  /** Optional profile bundles, when the runtime serves `pluginManager/listBundles`. */
+  bundles?: BundleView[]
   signedIn: boolean; accountText?: string; error?: string; modelsError?: string
+}
+
+/**
+ * One profile bundle reduced to the facts the plugins page may display.
+ *
+ * The wire row also carries an icon data URL, install source paths, patch rows
+ * and raw diagnostics; none of those may reach the Webview. This projection is
+ * the security boundary: unknown properties are dropped rather than forwarded,
+ * and every retained string is length-capped.
+ */
+export interface BundleView {
+  name: string
+  official: boolean
+  availability?: 'profile' | 'installation' | 'missing'
+  version?: string
+  title?: string
+  description?: string
+  enabled: boolean
+  installed: boolean
+  optional: boolean
+  removable: boolean
+  readOnlyReason?: 'management-required' | 'unaddressable'
+}
+
+const BUNDLE_AVAILABILITY = new Set(['profile', 'installation', 'missing'])
+const BUNDLE_READ_ONLY = new Set(['management-required', 'unaddressable'])
+function localized(value: unknown, limit: number): string | undefined {
+  if (typeof value === 'string') return value.slice(0, limit) || undefined
+  if (!record(value)) return undefined
+  for (const key of ['en', 'zh']) {
+    const text = value[key]
+    if (typeof text === 'string' && text !== '') return text.slice(0, limit)
+  }
+  return undefined
+}
+/** Project `pluginManager/listBundles` without icons, local paths or raw errors. */
+export function publicBundles(value: unknown): BundleView[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(record).slice(0, 100).flatMap((row): BundleView[] => {
+    if (typeof row.name !== 'string' || row.name === '') return []
+    const availability = typeof row.availability === 'string' && BUNDLE_AVAILABILITY.has(row.availability) ? row.availability as BundleView['availability'] : undefined
+    const readOnlyReason = typeof row.readOnlyReason === 'string' && BUNDLE_READ_ONLY.has(row.readOnlyReason) ? row.readOnlyReason as BundleView['readOnlyReason'] : undefined
+    const meta = record(row.meta) ? row.meta : undefined
+    const title = localized(meta?.title, 300)
+    const description = localized(meta?.description, 1200) ?? (typeof row.description === 'string' ? row.description.slice(0, 1200) || undefined : undefined)
+    return [{
+      name: row.name.slice(0, 300),
+      official: row.official === true,
+      ...(availability === undefined ? {} : { availability }),
+      ...(typeof row.version === 'string' ? { version: row.version.slice(0, 100) } : {}),
+      ...(title === undefined ? {} : { title }),
+      ...(description === undefined ? {} : { description }),
+      enabled: row.enabled === true,
+      installed: row.installed === true,
+      optional: row.optional === true,
+      removable: row.removable === true,
+      ...(readOnlyReason === undefined ? {} : { readOnlyReason }),
+    }]
+  })
 }
 
 /** Project the read-only roster without configuration, conditions, paths, or errors. */
@@ -73,10 +137,21 @@ export function schemaAt(namespace: SettingsNamespace, path: readonly string[]):
   return node
 }
 
+interface SettingsFieldSpec {
+  key: string
+  label: string
+  type: SettingsFieldView['type']
+  min?: number
+  max?: number
+  integer?: boolean
+  description?: string
+}
+interface SettingsFormSpec { ns: string; section: string; title: string; fields: readonly SettingsFieldSpec[] }
+
 // These fields are the official settings cards, rather than every YAML field.
-const forms = [
+const forms: readonly SettingsFormSpec[] = [
   { ns: 'session-log-deepseek', section: 'general', title: 'Privacy', fields: [{ key: 'enabled', label: 'Upload session logs with official model API requests', type: 'boolean' }] },
-  ...['bash-sandbox', 'pwsh-sandbox'].map(ns => ({ ns, section: 'shell', title: 'Shell', fields: [
+  ...(['bash-sandbox', 'pwsh-sandbox'] as const).map((ns): SettingsFormSpec => ({ ns, section: 'shell', title: 'Shell', fields: [
     { key: 'timeoutMs', label: 'Command timeout (ms)', type: 'number' },
     { key: 'maxOutputBytes', label: 'Output retained per stream (bytes)', type: 'number' },
   ] })),
@@ -93,7 +168,21 @@ const forms = [
     { key: 'baseURL', label: 'Search / Fetch API base URL', type: 'string' },
     { key: 'count', label: 'Results per search', type: 'number', min: 1, max: 50, integer: true },
   ] },
-] as const
+  // DSH 0.2.1-rc.3 experimental settings namespaces. Each appears only while
+  // its optional bundle is enabled, because the Host omits inactive entries
+  // from `settings/describe`; a missing namespace therefore hides its tab.
+  { ns: 'cot-translation', section: 'translation', title: 'Reasoning translation', fields: [
+    { key: 'provider', label: 'Provider', type: 'select' },
+    { key: 'targetLanguage', label: 'Target language', type: 'string', description: 'Use auto to follow the interface language, or enter a language tag such as zh-CN.' },
+  ] },
+  { ns: 'speech-to-text', section: 'voice', title: 'Voice input', fields: [
+    { key: 'defaultProvider', label: 'Recognizer', type: 'string' },
+    { key: 'language', label: 'Language', type: 'string' },
+  ] },
+  { ns: 'plugin-market', section: 'market', title: 'Plugin market', fields: [
+    { key: 'indexes', label: 'Index sources', type: 'string-list', description: 'Enter one HTTP(S) index URL per line. Duplicate URLs are removed when saved.' },
+  ] },
+]
 
 export const SEARCH_PROFILES = ['web-search-deepseek', 'web-deepseek-api'] as const
 export function searchSettings(description: SettingsDescription, credentials: Record<string, CredentialState>): SearchSettingsView {
@@ -112,20 +201,60 @@ export function searchSelectionMutations(namespace: SettingsNamespace, enabled: 
     .map(([key, value]) => at(namespace.base, [key]) === value ? { op: 'unset', path: [key] } : { op: 'set', path: [key], value })
 }
 
+/** Human-readable labels for the closed choices DSH schemas declare. */
+const CHOICE_LABELS: Readonly<Record<string, string>> = {
+  bing: 'Bing',
+  google: 'Google',
+  'deepseek-account': 'DeepSeek Account',
+  'deepseek-official': 'DeepSeek API',
+}
+
+function selectOptions(namespace: SettingsNamespace, node: SettingsSchemaNode): SettingsFieldChoice[] | undefined {
+  if (node.type !== 'union' || !Array.isArray(node.list)) return undefined
+  const refs = namespace.schema.refs
+  const options: SettingsFieldChoice[] = []
+  for (const uid of node.list) {
+    const choice = refs[String(uid)]
+    if (choice?.type !== 'const' || typeof choice.value !== 'string') return undefined
+    options.push({ value: choice.value, label: CHOICE_LABELS[choice.value] ?? choice.value })
+  }
+  return options.length ? options : undefined
+}
+
+function arrayItemType(namespace: SettingsNamespace, node: SettingsSchemaNode): string | undefined {
+  return node.inner === undefined ? undefined : namespace.schema.refs[String(node.inner)]?.type
+}
+
 export function settingsForms(description: SettingsDescription): SettingsFormView[] {
   return forms.flatMap(spec => {
     const namespace = description.namespaces.find(item => item.ns === spec.ns)
     if (!namespace) return []
     const fields: SettingsFieldView[] = spec.fields.flatMap(field => {
       const node = schemaAt(namespace, [field.key])
-      if (!node || node.type !== field.type || node.meta?.role === 'secret' || (namespace.secrets ?? []).some(secret => secret.path[0] === field.key)) return []
+      if (!node || node.meta?.role === 'secret' || (namespace.secrets ?? []).some(secret => secret.path[0] === field.key)) return []
+      const options = field.type === 'select' ? selectOptions(namespace, node) : undefined
+      const shapeAccepted = field.type === 'select'
+        ? options !== undefined
+        : field.type === 'string-list'
+          ? node.type === 'array' && arrayItemType(namespace, node) === 'string'
+          : node.type === field.type
+      if (!shapeAccepted) return []
       const value = at(namespace.value, [field.key]), inherited = at(namespace.base, [field.key])
       const publicValue = field.key === 'baseURL' ? publicEndpoint(value) : value
       const publicInherited = field.key === 'baseURL' ? publicEndpoint(inherited) : inherited
-      return [{ ...field, type: field.type as SettingsFieldView['type'], value: typeof publicValue === field.type ? publicValue : undefined, inherited: typeof publicInherited === field.type ? publicInherited : undefined,
+      const project = (raw: unknown): unknown => {
+        if (field.type === 'string-list') return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string').slice(0, 64) : undefined
+        if (field.type === 'select') return typeof raw === 'string' ? raw : undefined
+        return typeof raw === field.type ? raw : undefined
+      }
+      return [{ key: field.key, label: field.label, type: field.type, ...(options === undefined ? {} : { options }),
+        value: project(publicValue), inherited: project(publicInherited),
         overridden: at(namespace.user, [field.key]) !== undefined,
-        ...(typeof node.meta?.description === 'string' ? { description: node.meta.description } : {}),
+        ...(field.description !== undefined ? { description: field.description } : typeof node.meta?.description === 'string' ? { description: node.meta.description } : {}),
         ...(value && publicValue === undefined && field.key === 'baseURL' ? { description: 'Embedded credentials are hidden. Re-enter the endpoint without credentials to change it.' } : {}),
+        ...(field.min === undefined ? {} : { min: field.min }),
+        ...(field.max === undefined ? {} : { max: field.max }),
+        ...(field.integer === true ? { integer: true } : {}),
         ...(typeof node.meta?.min === 'number' ? { min: node.meta.min } : {}),
         ...(typeof node.meta?.max === 'number' ? { max: node.meta.max } : {}),
       }]
@@ -156,6 +285,18 @@ export function fieldMutations(namespace: SettingsNamespace, values: unknown): S
     const field = form.fields.find(item => item.key === key)
     if (!field) throw new Error('This field is not part of the settings page.')
     if (value === null || value === '') return { op: 'unset', path: [key] }
+    if (field.type === 'select') {
+      if (typeof value !== 'string' || !field.options?.some(option => option.value === value)) throw new Error(`${field.label}: select one of the offered values.`)
+      return { op: 'set', path: [key], value }
+    }
+    if (field.type === 'string-list') {
+      if (!Array.isArray(value) || value.length > 32) throw new Error(`${field.label}: provide no more than 32 URLs.`)
+      const urls = value.map(entry => {
+        if (typeof entry !== 'string' || entry.trim() === '') throw new Error(`${field.label}: every line must be a URL.`)
+        return endpoint(entry.trim())
+      })
+      return { op: 'set', path: [key], value: [...new Set(urls)] }
+    }
     if (field.type === 'number') {
       if (typeof value !== 'number' || !Number.isFinite(value) || (field.integer && !Number.isSafeInteger(value))) throw new Error(`${field.label}: enter a valid ${field.integer ? 'integer' : 'number'}.`)
       if (field.min !== undefined && value < field.min) throw new Error(`${field.label}: minimum ${field.min}.`)

@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   effectivePlanMode,
+  permissionCatalogOf,
+  permissionConfirmationFor,
+  permissionPresetsFromCatalog,
   permissionPresetsOf,
+  requiresPermissionConfirmation,
+  typedCommandPermissionPreset,
   typedCommandRequestsFullAccess,
   planModeCommand,
   planModeStateOf,
@@ -119,5 +124,126 @@ describe('collaboration state projections', () => {
   it('requires confirmation only for the official full-access preset', () => {
     expect(requiresFullAccessConfirmation('danger-full-access')).toBe(true)
     expect(requiresFullAccessConfirmation('workspace-write')).toBe(false)
+  })
+})
+
+describe('experimental Auto review preset', () => {
+  // The shape an rc.3 runtime with dsh-experimental-auto-review enabled returns.
+  const CATALOG = permissionCatalogOf({
+    options: [
+      { value: 'workspace-write', name: 'workspace-write' },
+      { value: 'danger-full-access', name: 'danger-full-access' },
+      { value: 'auto', name: 'auto' },
+    ],
+    defaultOptions: [{ value: 'workspace-write', name: 'workspace-write' }],
+    defaultPreset: 'workspace-write',
+  })
+
+  it('parses the runtime catalogue and rejects unusable answers', () => {
+    expect(CATALOG).toEqual({
+      options: [
+        { value: 'workspace-write', name: 'workspace-write' },
+        { value: 'danger-full-access', name: 'danger-full-access' },
+        { value: 'auto', name: 'auto' },
+      ],
+      defaultPreset: 'workspace-write',
+    })
+    // A malformed entry is dropped: `custom` is derived state, not a switch
+    // target, and an entry without a string value cannot be selected.
+    expect(permissionCatalogOf({
+      options: [
+        { value: 'read-only', name: 'read-only', description: 'Read without modifying files.' },
+        { value: 'auto', name: 'auto' },
+        { value: 'auto', name: 'duplicate' },
+        { value: 'custom', name: 'Custom' },
+        { name: 'no value' },
+      ],
+    })).toEqual({
+      options: [
+        { value: 'read-only', name: 'read-only', description: 'Read without modifying files.' },
+        { value: 'auto', name: 'auto' },
+      ],
+    })
+    for (const value of [
+      undefined, null, {}, { options: 'auto' }, { options: [] },
+      { options: [{ name: 'no value' }] }, { options: [{ value: 'custom', name: 'Custom' }] },
+    ]) {
+      expect(permissionCatalogOf(value)).toBeUndefined()
+    }
+  })
+
+  it('offers the experimental preset with its own label, description and marker', () => {
+    expect(permissionPresetsFromCatalog({ currentValue: 'workspace-write' }, CATALOG)).toEqual([
+      { value: 'workspace-write', label: 'Workspace', description: 'Edit files inside this project.', selected: true },
+      {
+        value: 'danger-full-access', label: 'Full Access',
+        description: 'Run anything, including outside the project, with no approval prompts.', selected: false,
+      },
+      {
+        value: 'auto', label: 'Auto review',
+        description: 'Auto review: the current model reviews each tool call (experimental).',
+        experimental: true, selected: false,
+      },
+    ])
+  })
+
+  it('selects the catalogue row that matches the projection', () => {
+    const presets = permissionPresetsFromCatalog({ currentValue: 'auto' }, CATALOG)
+    expect(presets.filter(preset => preset.selected)).toEqual([{
+      value: 'auto', label: 'Auto review',
+      description: 'Auto review: the current model reviews each tool call (experimental).',
+      experimental: true, selected: true,
+    }])
+  })
+
+  it('keeps the description the runtime reports for a preset it configures', () => {
+    const catalog = permissionCatalogOf({
+      options: [{ value: 'workspace-write', name: 'workspace-write', description: 'Host wording.' }],
+    })
+    expect(permissionPresetsFromCatalog({ currentValue: 'workspace-write' }, catalog)).toEqual([
+      { value: 'workspace-write', label: 'Workspace', description: 'Host wording.', selected: true },
+    ])
+  })
+
+  it('falls back to the shipped presets when the runtime has no catalogue', () => {
+    const projection = { currentValue: 'workspace-write' }
+    expect(permissionPresetsFromCatalog(projection, undefined)).toEqual(permissionPresetsOf(projection))
+    // An empty catalogue is a missing one, not a selector with no options.
+    expect(permissionPresetsFromCatalog(projection, { options: [] })).toEqual(permissionPresetsOf(projection))
+  })
+
+  it('still shows a profile-pinned auto value when no catalogue lists it', () => {
+    const presets = permissionPresetsOf({ currentValue: 'auto' })
+    expect(presets).toHaveLength(4)
+    expect(presets.at(-1)).toEqual({
+      value: 'auto', label: 'Auto review',
+      description: 'Auto review: the current model reviews each tool call (experimental).',
+      experimental: true, selected: true,
+    })
+    expect(presets.filter(preset => preset.selected)).toHaveLength(1)
+  })
+
+  it('gates Auto review with a risk acknowledgement like Full access', () => {
+    expect(requiresPermissionConfirmation('auto')).toBe(true)
+    expect(requiresPermissionConfirmation('danger-full-access')).toBe(true)
+    expect(requiresPermissionConfirmation('workspace-write')).toBe(false)
+    expect(requiresPermissionConfirmation('read-only')).toBe(false)
+
+    expect(permissionConfirmationFor('read-only')).toBeUndefined()
+    expect(permissionConfirmationFor('auto')).toMatchObject({ value: 'auto', action: 'Enable Auto review' })
+    expect(permissionConfirmationFor('auto')?.title).toContain('Experimental')
+    expect(permissionConfirmationFor('auto')?.detail).toContain('experimental')
+    expect(permissionConfirmationFor('danger-full-access')?.action).toBe('Enable Full Access')
+  })
+
+  it('recognises Auto review in a typed permission command however it is spaced', () => {
+    expect(typedCommandPermissionPreset('/permission auto')).toBe('auto')
+    expect(typedCommandPermissionPreset('/permission  auto ')).toBe('auto')
+    expect(typedCommandPermissionPreset('/permission workspace-write')).toBe('workspace-write')
+    expect(typedCommandPermissionPreset('/permission auto extra')).toBeUndefined()
+    expect(typedCommandPermissionPreset('/permissions auto')).toBeUndefined()
+    // The typed path applies the same gate as a menu click.
+    const typed = typedCommandPermissionPreset('  /permission\tauto  ')
+    expect(typed !== undefined && requiresPermissionConfirmation(typed)).toBe(true)
   })
 })

@@ -186,7 +186,9 @@ describe('DSH 0.1.2 chat transport', () => {
     it('still tears the feed down when a runtime-wide handler rejects its frame', async () => {
       const h = harness()
       await h.client.startStreams()
-      h.push('session/control', { type: 'not-a-control-frame' })
+      // An unknown top-level control type is tolerated for forward compatibility;
+      // a malformed payload of a known type is still a protocol violation.
+      h.push('session/control', { type: 'queue', sessionId: 's', items: 'rows' })
       expect(h.errors).toHaveLength(1)
       expect(h.socket.readyState).toBe(3)
       expect(h.connection.openStreamSocket).toHaveBeenCalledTimes(1)
@@ -317,6 +319,48 @@ describe('DSH 0.1.2 chat transport', () => {
     h.push('$events', { type: 'emit', event: 'settings/document-updated', args: ['agent-preset-registry', 1] })
     await h.client.listAgentPresets()
     expect(count('agentPresets/list')).toBe(2)
+  })
+
+  it('reads the runtime permission preset catalogue', async () => {
+    const h = harness()
+    h.results['permissionPresets/catalog'] = {
+      options: [
+        { value: 'workspace-write', name: 'workspace-write' },
+        { value: 'auto', name: 'auto' },
+      ],
+      defaultOptions: [{ value: 'workspace-write', name: 'workspace-write' }],
+      defaultPreset: 'workspace-write',
+    }
+    expect(await h.client.permissionCatalog()).toEqual({
+      options: [
+        { value: 'workspace-write', name: 'workspace-write' },
+        { value: 'auto', name: 'auto' },
+      ],
+      defaultPreset: 'workspace-write',
+    })
+    const request = vi.mocked(h.connection.call).mock.calls.find(([endpoint]) => endpoint === 'permissionPresets/catalog')
+    // Optional capability discovery: a stalled answer must not hang the caller.
+    expect(request?.[2]).toBe(10_000)
+  })
+
+  it('degrades to no catalogue when the runtime does not serve the read', async () => {
+    const h = harness()
+    // A runtime without the method (before DSH 0.2.1-rc.3): the gateway rejects
+    // the endpoint. That is a value for this feature, not a connection failure.
+    vi.mocked(h.connection.call).mockImplementationOnce(async () => {
+      throw new DshConnectionError('gateway/invocation-unavailable', 'Unknown method permissionPresets/catalog.')
+    })
+    expect(await h.client.permissionCatalog()).toBeUndefined()
+    // The connection stays usable: streams and other reads still work.
+    await h.client.startStreams()
+    expect(await h.client.listAgentPresets()).toEqual({ presets: [] })
+    expect(h.errors).toEqual([])
+  })
+
+  it('rejects an unusable catalogue answer instead of publishing a partial one', async () => {
+    const h = harness()
+    h.results['permissionPresets/catalog'] = { options: [{ name: 'auto' }], defaultPreset: 'auto' }
+    expect(await h.client.permissionCatalog()).toBeUndefined()
   })
 
   it('discards an old model catalog when settings or credentials change during its request', async () => {

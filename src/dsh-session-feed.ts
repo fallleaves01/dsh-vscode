@@ -6,6 +6,26 @@ import { DshAssistantStream } from './dsh-assistant-stream.js'
 
 interface Projection { seq: number; value: unknown }
 interface PendingQuestion { sessionId: string; event: string; request: Record<string, unknown> }
+/** Rate limit for reporting unrecognized top-level frame types, per stream. */
+interface UnknownFrameBudget { readonly types: Set<string>; overflow: boolean }
+
+/** Distinct unknown frame types reported per stream before the diagnostic is capped. */
+const UNKNOWN_FRAME_TYPE_LIMIT = 16
+
+/**
+ * Safe label for an untrusted wire `type`.
+ *
+ * The frame type comes from the runtime, so it is never echoed verbatim into a
+ * log: control characters are masked and the length is capped. A missing value
+ * is named by its JavaScript type rather than by `String(value)`, which would
+ * turn `null` and an empty string into indistinguishable labels.
+ */
+function frameTypeLabel(value: unknown): string {
+  if (typeof value !== 'string') return `(${value === undefined ? 'missing' : typeof value})`
+  const printable = value.replace(/[^\x20-\x7e]/gu, '?')
+  return printable.length > 64 ? `${printable.slice(0, 64)}…` : printable
+}
+
 /** Durable address of one conversation, as DSH's `SessionAddress` union defines it. */
 type SessionAddress =
   | { kind: 'session'; sessionId: string }
@@ -92,9 +112,18 @@ export class DshSessionFeed {
   private addedRevision = 0
   private readonly activity = new Map<string, number>()
   private readonly nonBlankSessions = new Set<string>()
+  /** Unknown top-level frame types already reported, keyed by stream endpoint. */
+  private readonly ignoredFrameTypes = new Map<string, UnknownFrameBudget>()
 
   constructor(private readonly connection: DshConnection, private readonly emit: (frame: DshFrame) => void,
-    private readonly error: (error: Error) => void) {
+    private readonly error: (error: Error) => void,
+    /**
+     * Non-fatal protocol diagnostics. The extension host console is the only log
+     * this module can reach without depending on `vscode`; callers that own an
+     * OutputChannel may pass their own writer. Messages carry a sanitized frame
+     * type label and no payload, so runtime text cannot forge log lines.
+     */
+    private readonly diagnostic: (message: string) => void = message => { console.warn(`[dsh] ${message}`) }) {
     this.streams = new DshStreams(connection, failure => {
       this.closeFollow(failure)
       for (const id of this.questions.keys()) this.dismissQuestion(id)
@@ -485,6 +514,14 @@ export class DshSessionFeed {
       }
       return
     }
+    // `baseline` is consumed above; these three are the only incremental types
+    // this client understands. The control carrier is non-optional and shared
+    // with every other stream, so throwing on a future type aborted them all and
+    // forced a reconnect loop, exactly like `$events` before it was hardened.
+    if (frame.type !== 'queue' && frame.type !== 'jobs' && frame.type !== 'projection') {
+      this.ignoreUnknownFrame('session/control', frame.type)
+      return
+    }
     const id = frame.sessionId
     if (typeof id !== 'string') throw new Error('Invalid control session.')
     if (frame.type === 'queue' && Array.isArray(frame.items)) {
@@ -527,6 +564,15 @@ export class DshSessionFeed {
   }
 
   private remoteEvent(frame: Record<string, unknown>): void {
+    // `ready` is consumed and validated by the `$events` baseline itself; these
+    // three are the only other top-level types this client understands. A future
+    // runtime may add one, and the carrier is shared with every other stream, so
+    // throwing here aborted all of them and forced a reconnect loop. Unknown
+    // types are therefore ignored and reported once per type instead.
+    if (frame.type !== 'emit' && frame.type !== 'cancel' && frame.type !== 'waterfall') {
+      this.ignoreUnknownFrame('$events', frame.type)
+      return
+    }
     if (frame.type === 'emit' && (frame.event === 'schedule/changed' || frame.event === 'goal/activation-changed')) {
       this.host({ type: frame.event === 'schedule/changed' ? 'host/schedules-changed' : 'host/goal-activation-changed', value: Array.isArray(frame.args) ? frame.args[0] : undefined })
     }
@@ -544,7 +590,8 @@ export class DshSessionFeed {
       this.presentQuestions()
       return
     }
-    if (frame.type !== 'emit' || typeof frame.event !== 'string' || !Array.isArray(frame.args)) throw new Error('Invalid remote event.')
+    // The top-level type is known to be `emit` here; its payload stays strict.
+    if (typeof frame.event !== 'string' || !Array.isArray(frame.args)) throw new Error('Invalid remote event.')
     const [id, value] = frame.args
     if (frame.event === 'deepseek-account/signed-out' || frame.event === 'deepseek-account/session-expired'
       || frame.event === 'deepseek-account/model-sign-in-required' || frame.event === 'credentials/record-updated') {
@@ -563,6 +610,13 @@ export class DshSessionFeed {
     } else if (frame.event === 'agent-preset/selected' && typeof id === 'string' && typeof value === 'string') {
       // Selection itself comes from the sequenced projection, not this unsequenced hint.
       this.host({ type: 'host/session-composition-changed', sessionId: id })
+    } else if (frame.event === 'plugin-manager/changed') {
+      // The settings surface re-reads bundle and inventory state; the payload
+      // only classifies the operation and never carries display facts.
+      this.host({ type: 'host/plugins-changed' })
+    } else if (frame.event === 'permission-presets/catalog-changed') {
+      // The experimental `auto` preset can appear or disappear with a bundle.
+      this.host({ type: 'host/permission-catalog-changed' })
     }
     if (frame.event === 'api-session/added' && wireRecord(id) && typeof id.sessionId === 'string'
       && typeof id.updatedAt === 'number' && Number.isFinite(id.updatedAt)
@@ -612,6 +666,32 @@ export class DshSessionFeed {
         this.host({ type: 'host/session-removed', sessionId: id })
       } else if (frame.event === 'api-session/error') this.host({ type: 'host/agent-error', sessionId: id, message: value })
     }
+  }
+
+  /**
+   * Report one unrecognized top-level frame type for a stream, once.
+   *
+   * Rate limiting matters in both directions: a runtime that repeats the same
+   * unknown frame must not flood the log, and a runtime that fabricates endless
+   * novel types must not grow the per-stream budget without bound or defeat the
+   * limiter. Each stream owns its budget, so a noisy one cannot silence another.
+   */
+  private ignoreUnknownFrame(endpoint: string, type: unknown): void {
+    let budget = this.ignoredFrameTypes.get(endpoint)
+    if (budget === undefined) {
+      budget = { types: new Set<string>(), overflow: false }
+      this.ignoredFrameTypes.set(endpoint, budget)
+    }
+    const label = frameTypeLabel(type)
+    if (budget.types.has(label)) return
+    if (budget.types.size >= UNKNOWN_FRAME_TYPE_LIMIT) {
+      if (budget.overflow) return
+      budget.overflow = true
+      this.diagnostic(`${endpoint}: further unknown frame types are suppressed for this connection (after ${String(UNKNOWN_FRAME_TYPE_LIMIT)})`)
+      return
+    }
+    budget.types.add(label)
+    this.diagnostic(`${endpoint}: ignored unknown frame type "${label}"`)
   }
 
   private presentQuestion(id: string, pending: PendingQuestion): void {

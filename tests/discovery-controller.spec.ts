@@ -67,6 +67,7 @@ function testClient() {
     forkSession: vi.fn(async () => 'child'),
     updateQueue: vi.fn(async () => ({ accepted: true })),
     executeCommand: vi.fn(async () => ({ result: { kind: 'success' } })),
+    permissionCatalog: vi.fn(async () => undefined),
     archiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
     unarchiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
     killJob: vi.fn(async () => ({ outcome: 'requested' as const })),
@@ -90,9 +91,10 @@ function testClient() {
   return { client, emit, fail }
 }
 
-async function harness(connection?: DshConnection, start = true) {
+async function harness(connection?: DshConnection, start = true, prepare?: (client: ReturnType<typeof testClient>['client']) => void) {
   if (connection !== undefined) connections.push(connection)
   const { client, emit, fail } = testClient()
+  prepare?.(client)
   mocks.client = client
   const output = { appendLine: vi.fn() }
   const runtime = {
@@ -322,6 +324,33 @@ describe('task projection state', () => {
     expect(h.controller.state.todos).toEqual([])
     h.emit({ type: 'session/projection', sessionId: 'a', key: 'todos', value: [{ content: 'Parent only', status: 'pending' }] }, 'mux')
     expect(h.controller.state.todos).toEqual([])
+  })
+
+  it('adopts the Agent Teams projection and clears it on conversation change', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/projection', sessionId: 'a', key: 'agentTeam', value: {
+      members: [{ id: 'a', name: 'lead', role: 'lead', phase: 'active' }],
+      tasks: [{
+        id: 'task-1', revision: 1, subject: 'Audit the preset', description: 'Details',
+        status: 'pending', blockedBy: [], writeScopes: ['src/a.ts'], ready: true, writeScopeWarnings: [],
+      }],
+    } }, 'mux')
+    expect(h.controller.state.team).toMatchObject({
+      members: [{ id: 'a', name: 'lead', role: 'lead', phase: 'active' }],
+      tasks: [{ id: 'task-1', subject: 'Audit the preset', status: 'pending' }],
+      completedCount: 0,
+      totalCount: 1,
+    })
+
+    // The Team belongs to one conversation; opening another must not carry it.
+    await h.controller.selectSession('b')
+    expect(h.controller.state.team).toBeNull()
+
+    // A frame for a conversation this window is not showing is ignored.
+    h.emit({ type: 'session/projection', sessionId: 'a', key: 'agentTeam', value: {
+      members: [{ id: 'a', name: 'lead', role: 'lead', phase: 'active' }], tasks: [],
+    } }, 'mux')
+    expect(h.controller.state.team).toBeNull()
   })
 })
 
@@ -1992,5 +2021,123 @@ describe('parallel child actions and authoritative parent availability', () => {
     h.emit({ type: 'session/event', sessionId: 'a', event: { seq: 2, time: 2, type: 'tool-workflow/agent-start', data: { runId: 'w', seq: 1, childId: 'c', label: 'Verify', phase: 'Testing' } } }, 'mux')
     h.emit({ type: 'session/event', sessionId: 'a', event: { seq: 3, time: 3, type: 'tool-workflow/agent-end', data: { runId: 'w', seq: 1, outcome: 'success' } } }, 'mux')
     expect(h.controller.state.workflows[0]?.members[0]?.outcome).toBe('success')
+  })
+})
+
+
+describe('runtime permission catalogue', () => {
+  const CATALOG = {
+    options: [
+      { value: 'read-only', name: 'read-only' },
+      { value: 'workspace-write', name: 'workspace-write' },
+      { value: 'danger-full-access', name: 'danger-full-access' },
+      { value: 'auto', name: 'auto' },
+    ],
+    defaultPreset: 'workspace-write',
+  }
+  const ownSession = (permissions: unknown = { currentValue: 'workspace-write' }) => ({
+    events: [], hasMore: false, isCurrent: () => true, activate() {},
+    projections: { agentPreset: 'standard', permissions },
+  })
+  const autoRow = (state: { permissions: Array<{ value: string; experimental?: boolean }> }) =>
+    state.permissions.find(item => item.value === 'auto')
+
+  it('reads the catalogue once after connecting and offers the experimental preset', async () => {
+    const h = await harness(undefined, true, client => { client.permissionCatalog.mockResolvedValue(CATALOG) })
+    await vi.waitFor(() => expect(h.client.permissionCatalog).toHaveBeenCalledTimes(1))
+    h.client.openSession.mockResolvedValue(ownSession())
+    await h.controller.selectSession('a')
+    expect(autoRow(h.controller.state)).toMatchObject({ value: 'auto', label: 'Auto review', experimental: true, selected: false })
+    expect(h.controller.state.permissions.filter(item => item.selected)).toEqual([
+      expect.objectContaining({ value: 'workspace-write', selected: true }),
+    ])
+  })
+
+  it('keeps the shipped presets when the runtime does not serve the catalogue', async () => {
+    const h = await harness(undefined, true, client => { client.permissionCatalog.mockResolvedValue(undefined) })
+    await vi.waitFor(() => expect(h.client.permissionCatalog).toHaveBeenCalledTimes(1))
+    h.client.openSession.mockResolvedValue(ownSession())
+    await h.controller.selectSession('a')
+    expect(autoRow(h.controller.state)).toBeUndefined()
+    expect(h.controller.state.permissions.map(item => item.value)).toEqual(['read-only', 'workspace-write', 'danger-full-access'])
+  })
+
+  it('drops the old catalogue on restart and reads the replacement runtime again', async () => {
+    const h = await harness(undefined, true, client => { client.permissionCatalog.mockResolvedValue(CATALOG) })
+    await vi.waitFor(() => expect(h.client.permissionCatalog).toHaveBeenCalledTimes(1))
+    h.client.openSession.mockResolvedValue(ownSession())
+    await h.controller.selectSession('a')
+    expect(autoRow(h.controller.state)).toBeDefined()
+
+    // The replacement runtime is an rc.2 build: no catalogue RPC.
+    h.client.permissionCatalog.mockResolvedValue(undefined)
+    expect(await h.controller.restart()).toBe(true)
+    await vi.waitFor(() => expect(h.client.permissionCatalog).toHaveBeenCalledTimes(2))
+    h.client.openSession.mockResolvedValue(ownSession())
+    await h.controller.selectSession('a')
+    // A stale catalogue would still offer auto here; the disconnect must drop it.
+    expect(autoRow(h.controller.state)).toBeUndefined()
+  })
+
+  it('re-reads the catalogue when the runtime reports a preset change', async () => {
+    const h = await harness(undefined, true, client => { client.permissionCatalog.mockResolvedValue(CATALOG) })
+    await vi.waitFor(() => expect(h.client.permissionCatalog).toHaveBeenCalledTimes(1))
+    h.client.openSession.mockResolvedValue(ownSession())
+    await h.controller.selectSession('a')
+    expect(autoRow(h.controller.state)).toBeDefined()
+
+    // The runtime withdrew the experimental integration: the next catalogue has
+    // no auto. The forwarded host frame must trigger the re-read and the
+    // republished selector must drop the row instead of keeping it stale.
+    h.client.permissionCatalog.mockResolvedValue({ ...CATALOG, options: CATALOG.options.slice(0, 3) })
+    h.emit({ type: 'host/permission-catalog-changed' }, 'host')
+    await vi.waitFor(() => expect(h.client.permissionCatalog).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(autoRow(h.controller.state)).toBeUndefined())
+    expect(h.controller.state.permissions.map(item => item.value)).toEqual(['read-only', 'workspace-write', 'danger-full-access'])
+  })
+})
+
+describe('Agent Teams projection on conversation load', () => {
+  const team = {
+    members: [
+      { id: 'lead-session', name: 'lead', role: 'lead', phase: 'active' },
+      { id: 'mate-session', name: 'reviewer', role: 'teammate', phase: 'active' },
+    ],
+    tasks: [{
+      id: 'task-1', revision: 1, subject: 'Audit the preset', description: 'Details',
+      status: 'pending', blockedBy: [], writeScopes: ['src/a.ts'], ready: true, writeScopeWarnings: [],
+    }],
+  }
+  const opened = (values: Record<string, unknown>) => ({
+    events: [], hasMore: false, isCurrent: () => true, activate() {},
+    projections: { agentPreset: 'standard', ...values },
+  })
+
+  it('initializes the view from the opened conversation projection and clears it on switch', async () => {
+    const h = await harness()
+    h.client.openSession.mockResolvedValueOnce(opened({ agentTeam: team }))
+    await h.controller.selectSession('a')
+    expect(h.controller.state.team).toMatchObject({
+      members: [
+        { id: 'lead-session', name: 'lead', role: 'lead', phase: 'active' },
+        { id: 'mate-session', name: 'reviewer', role: 'teammate', phase: 'active' },
+      ],
+      tasks: [{ id: 'task-1', subject: 'Audit the preset', status: 'pending' }],
+      completedCount: 0,
+      totalCount: 1,
+    })
+
+    // A conversation without the projection must not inherit the previous team.
+    h.client.openSession.mockResolvedValueOnce(opened({}))
+    await h.controller.selectSession('b')
+    expect(h.controller.state.team).toBeNull()
+  })
+
+  it('ignores an agentTeam frame that belongs to another conversation', async () => {
+    const h = await harness()
+    h.client.openSession.mockResolvedValueOnce(opened({}))
+    await h.controller.selectSession('a')
+    h.emit({ type: 'session/projection', sessionId: 'b', key: 'agentTeam', value: team }, 'mux')
+    expect(h.controller.state.team).toBeNull()
   })
 })

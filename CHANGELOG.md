@@ -9,6 +9,54 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+### Added
+
+- Read the runtime's `permissionPresets/catalog` and offer the experimental
+  `auto` (Auto review) preset in the Permission selector. Mark it `EXP`, select
+  it when `permissions.currentValue` reports `auto`, and confirm before
+  switching, because it runs without a sandbox, reviews each tool call with the
+  model, and can wrongly allow or deny actions. Require the same confirmation
+  for a typed `/permission auto`. A runtime that does not serve the catalogue
+  keeps the shipped three presets, and a failed optional read never affects the
+  connection.
+- Render the Agent Teams `agentTeam` Session projection in the Tasks panel: the
+  durable roster with lifecycle phase and Lead/Teammate role, and the read-only
+  shared task board with status, readiness, blocked-by ids, owner and write
+  scopes. Member rows open the member conversation, and Team tool cards resolve
+  a member name against the projection before linking, falling back to a generic
+  card instead of a dead link. Validate the untrusted projection in a new pure
+  module (`src/agent-team-state.ts`).
+- Recognize the DSH 0.2.1-rc.3 Team tools. `spawn_teammate` and `list_agents`
+  keep their member references, and `send_message`/`interrupt_agent` accept the
+  Team variant's `target` member name in addition to the Session-id form.
+- Ignore unrecognized top-level `$events` and `session/control` frame types
+  instead of aborting the shared event carrier. Report each distinct type once,
+  cap the diagnostics per connection, and keep the strict payload checks for
+  known frame types.
+- List the runtime's optional bundles under Settings → Plugins and toggle one
+  through `pluginManager/setBundleEnabled` when this extension owns the runtime.
+  Show each bundle's enable state, version and description; refuse the toggle
+  for an attached external runtime or while DeepSeek tasks are running; report a
+  `restart-required` result as a restart request rather than as saved; hide the
+  controls for a read-only profile. Refresh from `plugin-manager/changed`.
+- Render the runtime's experimental settings namespaces as declarative cards:
+  Reasoning translation (`cot-translation`: provider and target language),
+  Voice input (`speech-to-text`: provider and language) and Plugin market
+  (`plugin-market`: index URL list). Extend the settings field model with
+  `select` and `string-list` types, validate enum membership and HTTP(S) index
+  URLs before writing, and hide a card whose namespace is absent. Re-read the
+  permission catalogue when `permission-presets/catalog-changed` arrives.
+
+### Fixed
+
+- Accept a runtime-provided permission catalogue whose entries are not the
+  built-in three, including a profile-pinned `custom` value, and keep exactly
+  one row selected instead of hiding the current state when no shipped preset
+  matches.
+- Use a single confirmation path for the Permission selector and typed
+  `/permission` commands, so Full access keeps its acknowledgement and Auto
+  review gains one without duplicating the dialog wording.
+
 ## [0.1.16] - 2026-10-23
 
 ### Fixed

@@ -6,6 +6,7 @@ import type { DshEvent } from './conversation.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
 import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
 import type { ConfigurableProvider, CredentialState, DiscoveredModel, ModelDiscoveryRequest } from './settings-page-state.js'
+import { permissionCatalogOf, type PermissionCatalog } from './collaboration-state.js'
 import { RemoteRead } from './remote-read.js'
 import { DshCommandTransport } from './dsh-command-transport.js'
 import { goalOf, schedulesOf, type GoalView, type ScheduleEntry } from './task-features.js'
@@ -32,6 +33,39 @@ export interface HistoryEntry {
 
 export type SessionProjectionRead = { kind: 'sequenced'; asOfSeq: number; values: Record<string, unknown> }
   | { kind: 'migration-required'; values: Record<string, unknown> } | null
+
+/**
+ * One profile bundle row as `pluginManager/listBundles` reports it.
+ *
+ * The raw row also carries an icon data URL, local install paths, patch rows and
+ * raw diagnostics. `publicBundles()` in settings-page-state.ts is the projection
+ * boundary that drops them, so this interface stays close to the wire shape.
+ */
+export interface DshBundleInfo {
+  name: string
+  official?: boolean
+  availability?: 'profile' | 'installation' | 'missing'
+  version?: string
+  description?: string
+  enabled?: boolean
+  installed?: boolean
+  optional?: boolean
+  removable?: boolean
+  readOnlyReason?: 'management-required' | 'unaddressable'
+  meta?: { title?: unknown; description?: unknown }
+  error?: { code?: string }
+}
+
+/** The profile mutation outcome `pluginManager/setBundleEnabled` returns. */
+export interface DshBundleChange {
+  changed: boolean
+  application: 'applied' | 'restart-required' | 'overridden' | 'failed' | 'cancelled'
+  restartReason?: string
+  stage?: string
+  target?: string
+  enabled?: boolean
+  error?: { code?: string }
+}
 
 export interface ModelSelection {
   provider: string
@@ -372,6 +406,26 @@ export class DshClient {
     // unavailable"). An empty list is what the caller can act on.
     return { ...value, entries: Array.isArray(value?.entries) ? value.entries : [] }
   }
+  /**
+   * Read the profile's bundle layers, including optional bundles that are off.
+   *
+   * `pluginInventory/list` reports only mounted entries, so this read is the
+   * only way the settings page can offer an experimental bundle before it is
+   * enabled. A runtime that does not serve the method (before DSH 0.2.1-rc.3)
+   * resolves `undefined`, and the caller keeps the read-only inventory.
+   */
+  async listBundles(): Promise<DshBundleInfo[] | undefined> {
+    try {
+      const value = await this.call<unknown>('pluginManager/listBundles', {}, 10_000)
+      return Array.isArray(value) ? value.filter(item => typeof item === 'object' && item !== null) as DshBundleInfo[] : undefined
+    } catch {
+      return undefined
+    }
+  }
+  /** Select or deselect one bundle layer while retaining its installed files. */
+  setBundleEnabled(name: string, enabled: boolean): Promise<DshBundleChange> {
+    return this.call<DshBundleChange>('pluginManager/setBundleEnabled', { name, enabled }, 30_000)
+  }
   /** Origin of the runtime this client is bound to; used for the sign-in callback. */
   get runtimeOrigin(): URL { return this.connection.baseUrl }
 
@@ -464,6 +518,22 @@ export class DshClient {
       this.skills.set(sessionId, read)
     }
     return read.read()
+  }
+  /**
+   * Read the runtime's process-level permission preset catalogue.
+   *
+   * The `permissions` session projection carries only the current value, so this
+   * read is the only way the experimental `auto` preset becomes selectable.
+   * Runtimes that do not serve the method (before DSH 0.2.1-rc.3), a timeout, or
+   * an unparseable answer all resolve `undefined`: the caller keeps the presets
+   * DSH ships, and an optional capability read never affects the connection.
+   */
+  async permissionCatalog(): Promise<PermissionCatalog | undefined> {
+    try {
+      return permissionCatalogOf(await this.call('permissionPresets/catalog', {}, 10_000))
+    } catch {
+      return undefined
+    }
   }
   listAgentPresets(): Promise<AgentPresetRoster> { return this.presets.read() }
   async selectAgentPreset(sessionId: string, agentPreset: string): Promise<{ agentPreset: string }> {

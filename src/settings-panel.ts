@@ -1,15 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import * as vscode from 'vscode'
 import type { DshChatController } from './extension.js'
-import type { DshClient } from './dsh-client.js'
+import type { DshBundleChange, DshClient } from './dsh-client.js'
 import type { SettingsDescription, SettingsNamespace, SettingsMutation } from './runtime-settings.js'
 import { runtimeIsOurs } from './runtime-change.js'
 import { redactDshSecrets } from './runtime-output.js'
 import { settingsPageHtml } from './settings-page-html.js'
-import { at, credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerProfile, providerViews, publicPluginInventory, reasoningLevels, record, searchSettings, searchSelectionMutations, SEARCH_PROFILES, settingsForms, validProviderId,
+import { at, credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerProfile, providerViews, publicBundles, publicPluginInventory, reasoningLevels, record, searchSettings, searchSelectionMutations, SEARCH_PROFILES, settingsForms, validProviderId,
   type ConfigurableProvider, type CredentialState, type ModelDiscoveryRequest, type SettingsPageState } from './settings-page-state.js'
 
-type Host = Pick<DshChatController, 'state' | 'cwd' | 'runtimeIdentity' | 'runtimeOwnership' | 'onDidChangeState' | 'onDidChangeRuntimeSettings' | 'settings' | 'settingsClient' | 'mutateSettings' | 'start'>
+type Host = Pick<DshChatController, 'state' | 'cwd' | 'runtimeIdentity' | 'runtimeOwnership' | 'onDidChangeState' | 'onDidChangeRuntimeSettings' | 'settings' | 'settingsClient' | 'mutateSettings' | 'hasRunningTasks' | 'start'>
 type SettingsSurface = { webview: Pick<vscode.Webview, 'postMessage' | 'onDidReceiveMessage'>; onDidDispose: vscode.Event<void> }
 const text = (value: unknown): string => value instanceof Error ? value.message : String(value)
 const ALLOWLIST_NS = 'subagent-model-selection-settings'
@@ -19,6 +19,17 @@ function apiKey(value: unknown): string {
   const key = value.trim()
   if (!key || key.length > 16384 || !/^[\x21-\x7E]+$/.test(key) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(key) || /^["']|["']$/.test(key)) throw new Error('Enter the API key itself, without quotes or an environment assignment.')
   return key
+}
+
+/** Explain a profile bundle mutation the runtime refused, without forwarding raw diagnostics. */
+function bundleFailure(result: DshBundleChange): string {
+  const code = result.error?.code
+  if (code === 'management-required') return 'This runtime is managed outside this extension. Change bundles from its own plugin manager.'
+  if (code === 'incompatible-version') return 'This bundle is not compatible with the running DSH version.'
+  if (result.application === 'overridden') return 'The change was saved, but a higher-priority profile layer overrides this bundle.'
+  if (result.application === 'cancelled') return 'The bundle change was cancelled.'
+  if (code !== undefined) return `The runtime refused the bundle change (${code}).`
+  return 'The runtime could not change this bundle. Refresh and try again.'
 }
 
 /** One settings surface, bound to a runtime client rather than the selected chat. */
@@ -60,6 +71,7 @@ export class SettingsPanelManager implements vscode.Disposable {
     let directory: ConfigurableProvider[] = [], registered: { id: string; name: string }[] = [], credentials: Record<string, CredentialState> = {}
     let catalog: SettingsPageState['catalog'] = [], error: string | undefined, modelsError: string | undefined
     let inventory: NonNullable<SettingsPageState['inventory']> = []
+    let bundles: NonNullable<SettingsPageState['bundles']> = []
     let timer: NodeJS.Timeout | undefined, lifetime = new AbortController()
     const clean = (value: unknown, secrets: string[] = []): string => redactDshSecrets(text(value), secrets).slice(0, 1500)
     const connected = (): boolean => {
@@ -104,6 +116,7 @@ export class SettingsPanelManager implements vscode.Disposable {
         ...(search ? { searchExtensionKey: credentialRef(search) === 'DEEPSEEK_API_KEY' } : {}),
         search: searchSettings(description, credentials),
         inventory,
+        ...(bundles.length ? { bundles } : {}),
         signedIn: this.host.state.account?.signedIn === true,
         ...(this.host.state.accountNotice ? { accountText: this.host.state.accountNotice.slice(0, 600) } : {}),
         ...(error ? { error } : {}), ...(modelsError ? { modelsError } : {}),
@@ -116,23 +129,26 @@ export class SettingsPanelManager implements vscode.Disposable {
       const request = ++generation
       let next: DshClient
       try { next = this.host.settingsClient() } catch (cause) {
-        if (client) { lifetime.abort(); lifetime = new AbortController(); client = undefined; scope = randomUUID(); description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; catalog = []; inventory = [] }
+        if (client) { lifetime.abort(); lifetime = new AbortController(); client = undefined; scope = randomUUID(); description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; catalog = []; inventory = []; bundles = [] }
         error = clean(cause); loading = false; post(); return
       }
       if (next !== client || this.host.runtimeIdentity !== identity || this.host.cwd !== cwd) {
         lifetime.abort(); lifetime = new AbortController(); client = next; identity = this.host.runtimeIdentity; cwd = this.host.cwd; scope = randomUUID()
-        description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; registered = []; credentials = {}; catalog = []; inventory = []
+        description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; registered = []; credentials = {}; catalog = []; inventory = []; bundles = []
       }
       const readScope = scope
       loading = true; error = undefined; modelsError = undefined; post()
       try {
-        const [settings, providers, live, models, roster] = await Promise.allSettled([
-          this.host.settings(), next.listConfigurableProviders(), next.listLlmProviders(), next.models(''), next.pluginInventory?.(),
+        const [settings, providers, live, models, roster, bundleRoster] = await Promise.allSettled([
+          this.host.settings(), next.listConfigurableProviders(), next.listLlmProviders(), next.models(''), next.pluginInventory?.(), next.listBundles?.(),
         ])
         if (disposed || request !== generation || scope !== readScope || !connected()) return
         if (settings.status === 'rejected') throw settings.reason
         description = settings.value
         inventory = roster.status === 'fulfilled' ? publicPluginInventory(roster.value) : []
+        // An unavailable read (an older runtime, or an attach-only profile) leaves
+        // the bundle section absent; the read-only inventory still renders.
+        bundles = bundleRoster.status === 'fulfilled' && Array.isArray(bundleRoster.value) ? publicBundles(bundleRoster.value) : []
         directory = providers.status === 'fulfilled' && Array.isArray(providers.value) ? providers.value : []
         registered = live.status === 'fulfilled' && Array.isArray(live.value) ? live.value : []
         if (providers.status === 'rejected' || live.status === 'rejected') modelsError = 'The provider directory is unavailable. Refresh or check the DSH version.'
@@ -207,6 +223,37 @@ export class SettingsPanelManager implements vscode.Disposable {
       try {
         const current = assertCurrent()
         const keyInput = apiKey(message.apiKey)
+        if (message.type === 'set-bundle') {
+          if (!runtimeIsOurs(this.host.runtimeOwnership)) throw new Error('This external runtime is attach-only. Change its plugin bundles from the runtime that owns them.')
+          requireWrite()
+          if (this.host.hasRunningTasks) throw new Error('Finish or stop all running DeepSeek tasks before changing runtime plugins.')
+          const name = message.name, enabled = message.enabled
+          if (typeof name !== 'string' || name === '' || typeof enabled !== 'boolean') throw new Error('Invalid bundle change.')
+          const bundle = bundles.find(item => item.name === name && item.optional)
+          if (!bundle) throw new Error('This bundle is unavailable in the current runtime. Refresh settings and try again.')
+          if (bundle.enabled === enabled) {
+            void panel.webview.postMessage({ type: 'result', requestId, ok: true, application: 'applied', unchanged: true })
+            return
+          }
+          const label = bundle.title ?? name
+          const action = enabled ? 'Enable' : 'Disable'
+          const choice = await vscode.window.showWarningMessage(`${action} ${label}?`, {
+            modal: true,
+            detail: 'This changes the shared DSH web profile for every project that uses it. '
+              + (enabled ? 'The optional capability stays available until it is disabled again.' : 'The capability is removed from new sessions; its saved settings are retained.')
+              + ' A runtime restart may be required.',
+          }, action)
+          requireWrite()
+          if (choice !== action) { void panel.webview.postMessage({ type: 'result', requestId, ok: false, cancelled: true }); return }
+          const result = await requireWrite().setBundleEnabled(name, enabled)
+          await refresh(true); assertCurrent()
+          if (!result || typeof result.application !== 'string') throw new Error('DSH did not confirm the bundle change. Reload settings before retrying.')
+          const ok = result.application === 'applied' || result.application === 'restart-required'
+          void panel.webview.postMessage({ type: 'result', requestId, ok, application: result.application,
+            restartRequired: result.application === 'restart-required',
+            ...(ok ? {} : { error: bundleFailure(result), ...(result.error?.code === undefined ? {} : { code: result.error.code }) }) })
+          return
+        }
         if (message.type === 'save-search') {
           requireWrite()
           if (!Array.isArray(message.changes) || message.changes.length > 2) throw new Error('Invalid search settings changes.')
@@ -409,7 +456,7 @@ export class SettingsPanelManager implements vscode.Disposable {
         const accountChanged = lastAccountText !== this.host.state.accountNotice
         lastPhase = this.host.state.phase; lastSignedIn = this.host.state.account?.signedIn; lastAccountText = this.host.state.accountNotice
         if (!connected() && client) {
-          ++generation; lifetime.abort(); client = undefined; scope = randomUUID(); description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; catalog = []; inventory = []; post(); schedule()
+          ++generation; lifetime.abort(); client = undefined; scope = randomUUID(); description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; catalog = []; inventory = []; bundles = []; post(); schedule()
         } else if (changed || (!client && lastPhase === 'ready')) { post(); if (lastPhase === 'ready') schedule() }
         else if (accountChanged) post()
       }),

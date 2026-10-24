@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fixture, searchFixture } from './settings-page.fixture.js'
+import { bundleFixture, fixture, searchFixture } from './settings-page.fixture.js'
 import { at } from '../src/settings-page-state.js'
 
 const mocks = vi.hoisted(() => ({ panels: [] as any[], warning: vi.fn(), command: vi.fn() }))
@@ -45,10 +45,17 @@ async function harness(ownership: string = 'managed', data = fixture()) {
     setCredential: vi.fn(async (ref: string, value: string) => { secrets.set(ref, value); changes.fire() }),
     unsetCredential: vi.fn(async (ref: string) => { secrets.delete(ref); changes.fire() }),
     discoverModels: vi.fn(async () => [{ id: 'found', name: 'Found', value: 'not-a-model-field' }]),
+    listBundles: vi.fn(async () => clone((data as any).bundles ?? [])),
+    setBundleEnabled: vi.fn(async (name: string, enabled: boolean) => {
+      const row = ((data as any).bundles as any[] | undefined)?.find(item => item.name === name)
+      if (row !== undefined) row.enabled = enabled
+      changes.fire()
+      return { changed: true, application: 'applied', stage: enabled ? 'enable' : 'remove', target: name, enabled }
+    }),
   })
   let client = createClient()
   const host = {
-    cwd: '/workspace', runtimeIdentity: {}, runtimeOwnership: ownership,
+    cwd: '/workspace', runtimeIdentity: {}, runtimeOwnership: ownership, hasRunningTasks: false,
     state: { phase: 'ready', statusText: '', account: { signedIn: false } }, onDidChangeState: stateChanges.event, onDidChangeRuntimeSettings: changes.event,
     start: vi.fn(async () => {}),
     settings: vi.fn(async () => { const result = clone(data.description); result.namespaces.forEach(ns => owners.set(ns, client)); return result }),
@@ -299,5 +306,69 @@ describe('settings host ownership and credentials', () => {
     expect(mocks.command).not.toHaveBeenCalled()
     h.panel.send({ type: 'native-action', action: 'shortcuts' })
     expect(mocks.command).toHaveBeenCalledWith('workbench.action.openGlobalKeybindings')
+  })
+})
+
+describe('experimental bundle management', () => {
+  it('enables an optional bundle after confirmation and projects only public facts', async () => {
+    const data = fixture() as any; data.bundles = bundleFixture()
+    const h = await harness('managed', data)
+    expect(h.state().bundles.map((bundle: any) => bundle.name)).toContain('@deepseek-ai/dsh-experimental-cot-translation-bundle')
+    expect(JSON.stringify(h.packets())).not.toContain('hidden-marker')
+    mocks.warning.mockResolvedValueOnce('Enable')
+    const reply = await h.result(h.send({ type: 'set-bundle', name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', enabled: true }))
+    expect(reply).toMatchObject({ ok: true, application: 'applied' })
+    expect(h.client.setBundleEnabled).toHaveBeenCalledWith('@deepseek-ai/dsh-experimental-cot-translation-bundle', true)
+    expect(mocks.warning).toHaveBeenCalledOnce()
+    expect(h.state().bundles.find((bundle: any) => bundle.name === '@deepseek-ai/dsh-experimental-cot-translation-bundle').enabled).toBe(true)
+  })
+  it('reports restart-required without presenting the change as already live', async () => {
+    const data = fixture() as any; data.bundles = bundleFixture()
+    const h = await harness('managed', data)
+    mocks.warning.mockResolvedValueOnce('Enable')
+    h.client.setBundleEnabled.mockResolvedValueOnce({ changed: true, application: 'restart-required', restartReason: 'package-moved', stage: 'enable', target: 'x' })
+    const reply = await h.result(h.send({ type: 'set-bundle', name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', enabled: true }))
+    expect(reply).toMatchObject({ ok: true, application: 'restart-required', restartRequired: true })
+    expect(reply.message).toBeUndefined()
+  })
+  it('does not change bundles on an attach-only runtime', async () => {
+    const data = fixture() as any; data.bundles = bundleFixture()
+    const h = await harness('external', data)
+    const reply = await h.result(h.send({ type: 'set-bundle', name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', enabled: true }))
+    expect(reply.ok).toBe(false)
+    expect(reply.error).toContain('attach-only')
+    expect(h.client.setBundleEnabled).not.toHaveBeenCalled()
+  })
+  it('refuses bundle changes while a DeepSeek task is running', async () => {
+    const data = fixture() as any; data.bundles = bundleFixture()
+    const h = await harness('managed', data); h.host.hasRunningTasks = true
+    const reply = await h.result(h.send({ type: 'set-bundle', name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', enabled: true }))
+    expect(reply.error).toContain('running DeepSeek tasks')
+    expect(h.client.setBundleEnabled).not.toHaveBeenCalled()
+  })
+  it('keeps the bundle unchanged when the confirmation is dismissed', async () => {
+    const data = fixture() as any; data.bundles = bundleFixture()
+    const h = await harness('managed', data); mocks.warning.mockResolvedValueOnce(undefined)
+    const reply = await h.result(h.send({ type: 'set-bundle', name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', enabled: true }))
+    expect(reply).toMatchObject({ ok: false, cancelled: true })
+    expect(h.client.setBundleEnabled).not.toHaveBeenCalled()
+  })
+  it('refreshes bundle state after a runtime plugin invalidation', async () => {
+    const data = fixture() as any; data.bundles = bundleFixture()
+    const h = await harness('managed', data)
+    expect(h.state().bundles.find((bundle: any) => bundle.name === '@deepseek-ai/dsh-experimental-cot-translation-bundle').enabled).toBe(false)
+    data.bundles[1].enabled = true
+    h.changes.fire()
+    await vi.waitFor(() => {
+      expect(h.state().bundles.find((bundle: any) => bundle.name === '@deepseek-ai/dsh-experimental-cot-translation-bundle').enabled).toBe(true)
+    })
+  })
+  it('degrades to the read-only inventory when the runtime lacks bundle management', async () => {
+    const data = fixture() as any; data.bundles = bundleFixture()
+    const h = await harness('managed', data)
+    h.client.listBundles.mockRejectedValueOnce(new Error('gateway/invocation-unavailable'))
+    h.panel.send({ type: 'refresh' })
+    await vi.waitFor(() => expect(h.state().bundles).toBeUndefined())
+    expect(h.state().forms.length).toBeGreaterThan(0)
   })
 })

@@ -195,13 +195,30 @@ SecretStorage key. It is not an encrypted vault or an isolation boundary against
 tools running as the same OS user. Stored key values are never read back into the
 page, and this repository and its VSIX exclude the credential file and backups.
 
+### DSH 0.2.1-rc.3 experimental features
+
+The sidebar is verified against the official DeepSeek Harness `0.2.1-rc.3` runtime. Experimental bundles remain opt-in in the runtime profile; the sidebar does not enable them, and each feature appears only when the runtime exposes its contract. A runtime without the feature keeps the previous behavior.
+
+- **Auto review permission preset.** The Permission selector reads `permissionPresets/catalog`, so the experimental `auto` preset appears when the auto-review integration is mounted. It is marked `EXP` and switching to it, from the selector or by typing `/permission auto`, requires an explicit acknowledgement: it runs without a sandbox, asks the same model to review every tool call, can wrongly allow or deny actions, and uses additional tokens. A runtime that does not serve the catalogue keeps the shipped three presets.
+- **Agent Teams.** When the `agentTeam` Session projection is present, the Tasks panel shows the durable team roster with lifecycle phase and Lead/Teammate role, and the shared task board with status, readiness, blocked-by ids, owner, and write scopes. Member rows open the member conversation, and Team tool cards link to a member once its name resolves against the projection. The task board is read-only: task state is owned by the runtime and written through the Team tools.
+- **Live conversation titles.** The conversation-following title provider updates the existing `title` projection and `session/title` event. The sidebar already refreshes the title bar and conversation list from that projection, so titles change without reloading the list.
+- **Experimental settings and bundle management.** The Settings page lists the runtime's optional bundles under Plugins → Experimental bundles, with their enable state, version and description; when this extension owns the runtime, a switch enables or disables one through `pluginManager/setBundleEnabled`. The switch is refused for an attached external runtime and while DeepSeek tasks are running, and a change that needs a restart says so instead of reporting it as saved. When the runtime serves the corresponding settings namespaces, the same page renders Reasoning translation (`cot-translation`: provider, target language), Voice input (`speech-to-text`: provider, language) and Plugin market (`plugin-market`: index URLs); a bundle that is not mounted hides its card.
+
+Current state of the remaining experimental bundles (full package matrix and evidence in [the rc.3 adaptation record](docs/DSH-0.2.1-RC3-ADAPTATION.md)):
+
+- **Session search** adds model tools such as `session_search`; they use the generic tool card, while sidebar message search continues to use the standard `session/search` RPC. Do not enable both this bundle and the `enableHistorySearch` task service without checking the runtime profile: the deployment can mount two `session-query-sqlite` rows.
+- **Reasoning translation, plugin market, and voice input** expose their configuration cards as described above, but the feature UI is not implemented: no in-conversation translation or original/translated toggle (`cotTranslation/*`), no market discovery/search/install (`pluginMarket/*`), and no speech capture or transcription (`speech/*`, whose stream methods require the existing stream carrier). These bundles remain opt-in and Web-first; an installed but disabled bundle changes nothing in the sidebar.
+- **Persistent terminal, Ralph loops, and the badge skill** need no dedicated sidebar work: their tools and skills use the generic tool card or the existing `skills/list` view.
+- **Git worktrees:** `create_worktree` runs as a generic tool, but the effective `workingDirectory` Session projection is not consumed yet. File-path resolution and change review still use the project root, so the sidebar does not follow a conversation that changes its working directory.
+- **Agent Team profile and Inspector profile** are profile-only bundles. Agent Teams is supported through the projection and tools above; the Inspector profile is a Web DevTools surface with no Gateway RPC and is not implemented for VS Code.
+
 ### Autonomous debugging
 
 Enable **DeepSeek Harness: Autonomous Debugging** in VS Code Settings and add a debug configuration to `.vscode/launch.json`.
 
 DeepSeek can then start the debugger, set breakpoints, step through execution, inspect runtime values, fix the code, and verify the result directly from the sidebar.
 
-Core conversation and settings interfaces have also passed isolated checks against DeepSeek Harness `0.2.1-rc.2`; previous validation covers `0.2.0-rc.2`, `0.1.7-rc.1` and `0.1.7-rc.2`. Version 0.1.9 adds external task rows, Search / Fetch settings, custom reasoning mappings and user-message masks; see [the compatibility review](docs/GAP-ANALYSIS.md). Workdir/worktree integration still needs dedicated validation. Optional services depend on the installed runtime version and profile.
+Core conversation and settings interfaces have also passed isolated checks against DeepSeek Harness `0.2.1-rc.2`; previous validation covers `0.2.0-rc.2`, `0.1.7-rc.1` and `0.1.7-rc.2`. Experimental-bundle behavior has since been verified against an isolated `0.2.1-rc.3` runtime; see [the rc.3 adaptation record](docs/DSH-0.2.1-RC3-ADAPTATION.md). Version 0.1.9 adds external task rows, Search / Fetch settings, custom reasoning mappings and user-message masks; see [the compatibility review](docs/GAP-ANALYSIS.md). Workdir/worktree integration still needs dedicated validation. Optional services depend on the installed runtime version and profile.
 
 ## Privacy and verification
 

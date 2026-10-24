@@ -37,4 +37,27 @@ describe('official subagent tool navigation metadata', () => {
     expect(subagentToolReferences('subagent',{},'',{kind:'activation',subagentId:'exact'})).toEqual([{id:'exact'}])
     expect(subagentToolReferences('run_code',{},Array.from({length:150},(_,i)=>`started subagent child-${i}`).join('\n'))).toHaveLength(100)
   })
+  it('addresses rc.3 Team tools by member name for later projection resolution', () => {
+    // `spawn_teammate` returns `{"member":{"target":"reviewer",...}}`; the target
+    // is a name, and only the agentTeam projection knows its session id.
+    expect(subagentToolReferences('spawn_teammate',
+      { name: 'reviewer', description: 'Review the auth flow', prompt: 'Audit it' },
+      '{"member":{"target":"reviewer","role":"teammate","status":"running","diagnostics":[]}}'))
+      .toEqual([{ id: 'reviewer', memberName: 'reviewer', label: 'Review the auth flow' }])
+    // A result that has not finished streaming still leaves the requested name.
+    expect(subagentToolReferences('spawn_teammate',
+      { name: 'reviewer', description: 'Review the auth flow', prompt: 'Audit it' }, '{"member":{"target":'))
+      .toEqual([{ id: 'reviewer', memberName: 'reviewer', label: 'Review the auth flow' }])
+    expect(subagentToolReferences('send_message', { target: 'reviewer', message: 'hello' }))
+      .toEqual([{ id: 'reviewer', memberName: 'reviewer' }])
+    expect(subagentToolReferences('interrupt_agent', { target: 'reviewer' }))
+      .toEqual([{ id: 'reviewer', memberName: 'reviewer' }])
+    expect(subagentToolReferences('list_agents', {},
+      '[{"target":"lead","role":"lead","status":"running","diagnostics":[]},{"target":"reviewer","role":"teammate","status":"inactive","diagnostics":[]}]'))
+      .toEqual([{ id: 'lead', memberName: 'lead' }, { id: 'reviewer', memberName: 'reviewer' }])
+    // Tools that carry no addressable conversation fall back to a generic card.
+    expect(subagentToolReferences('wait_agent', { timeout_ms: 30000 }, '{"timedOut":true}')).toEqual([])
+    expect(subagentToolReferences('team_task_create', { subject: 'Audit', description: 'Details' }, '{"id":"task-1"}')).toEqual([])
+    expect(subagentToolReferences('spawn_teammate', { name: 'reviewer', description: 'R', prompt: 'P' }, '', undefined, true)).toEqual([])
+  })
 })
