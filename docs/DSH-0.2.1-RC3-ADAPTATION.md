@@ -65,7 +65,7 @@
 | 指标 | 数值 |
 |---|---|
 | 测试文件 | 112（111 通过，1 失败） |
-| 测试用例 | 1558（1556 通过，1 失败，1 跳过） |
+| 测试用例 | 1581（1579 通过，1 失败，1 跳过） |
 | 耗时 | Duration 9–10 s（多次复跑） |
 
 唯一失败为既有沙箱限制：`tests/diff-review.spec.ts:787` 向 `$HOME/dsh-open-file-spec.tmp` 写入时返回 `EPERM`。该测试文件不在本轮改动清单内，失败与 rc.3 适配无关；Vitest 因此以退出码 1 结束。新增测试文件三个：`tests/agent-team-state.spec.ts`（10 项）、`tests/dsh-session-feed.spec.ts`（16 项）、`tests/extension-surface.spec.ts`（5 项）；另在 `tests/settings-page-state.spec.ts`、`tests/settings-panel.spec.ts`、`tests/settings-page.spec.ts`、`tests/dsh-session-feed.spec.ts`、`tests/collaboration-state.spec.ts`、`tests/dsh-client.spec.ts`、`tests/discovery-controller.spec.ts`、`tests/subagent-tools.spec.ts`、`tests/webview-policy.spec.ts`、`tests/webview-subagent-cards.spec.ts`、`tests/webview-task-features.spec.ts` 中扩充用例。
@@ -181,3 +181,24 @@
 在 DSH 行为之外，本扩展额外将提供方 JSON 错误体解码为人类可读文本：仅当 message 是 JSON 对象且含非空 `error.message` 时，取该文本，并在 `error.code`/`error.status` 为数字时追加 ` (HTTP <n>)`；结果截断 2000 字符并经凭据脱敏。DSH 本体会原样显示 JSON，因此这是有意的信息增强，不改变未知 code 的原文回退规则。
 
 验证：独立验证者用真实（脱敏）`turn/end` 事件完成 projector→Webview→task-details 三段断言，并以 5 个变异确认修复被测试捕获；全量 1558 例（1556 通过、1 既有 EPERM、1 平台跳过）；`tsc --noEmit` 0；`scripts/build.mjs` 0。未对齐项（既有缺口）：输出 token 上限提示行、turn 级错误行结构，留待后续。
+
+## 10. 重试过程行与输出上限提示（0.1.23）
+
+补齐 0.1.22 遗留的两个对齐缺口。DSH 语义核对依据 `dsh-client-ui-chat` 0.2.1-rc.3：重试节点按 `retryId` 关联（`client.js:5275-5346`、`5522-5529`、`10020-10110`），输出上限提示由 `turn/end.reason.kind === 'max-tokens'` 产生（`10565-10628`、`5377-5395`）。
+
+| 功能 | 行为 |
+|---|---|
+| 重试过程行 | 每个 `retryId` 折叠为一条可展开行，显示最后一条 attempt：`Retrying model request (1/3) · 1s`（进行中）、`Retried model request`（已开始）、`Model request retry cancelled`（turn 结束时仍未开始）；上限为 `mode==='normal'` 时的 `maxRetries`，否则 `∞`；展开显示 `Retry delay: {四舍五入}ms` 与 `Failure reason:`（已知 code 优先使用 DSH 文案，未知 code 回退解码后的原因） |
+| 空 attempt 抑制 | 无可见输出的失败 attempt 不再各生成一个空回复气泡；仅保留最终 attempt 的失败块。有文本的失败 attempt 仍保留（本扩展既有增强） |
+| 输出上限提示 | `max-tokens` 结束的 turn 在回复后显示警告行：`Output token limit reached` + DSH 原文提示 `The reply was cut off; earlier output is preserved in the conversation. Send "continue" to let the model resume.` |
+| 迟到事件 | `llm/retry-started` 缺失 retry 号、号码不匹配或链已 cancelled 时忽略；`turn/end` 后不再重新打开已取消链 |
+| 行动作行 | 重试行或上限提示位于回复之后时，关闭回复的复制/评分行动作行仍保持常显（不被末项判定隐藏） |
+
+与 DSH 的有意差异（均为实现取舍，行为语义一致）：
+
+1. 秒数为事件时刻的静态快照（`max(1, ceil(delayMs/1000))`），不实现 DSH 的 250 ms 倒计时刷新。
+2. 重试行与上限提示逐消息渲染，不复刻 DSH 的 turn-process 分组/折叠层级与合成 seq 锚点；上限提示位于内嵌行动作行之后（DSH 位于行动作行之前）。
+3. 重试失败原因沿用 0.1.22 的解码与脱敏增强；DSH 重试行只显示原始 message。
+4. 失败 attempt 的可见文本保留（DSH 丢弃重试 attempt 的全部流式输出）。
+
+验证：独立验证者以真实（脱敏）重试序列完成 projector→聊天 Webview→任务详情三段断言（空 attempt 删除、单重试行、最后 attempt 状态、失败块、上限提示、行动作行可见性），7 项变异中 6 项被捕获，并补充固定「同 retry 号仅 state 变化」更新的回归用例。全量 1581 例（1579 通过、1 既有 EPERM、1 平台跳过）；`tsc --noEmit` 0；`scripts/build.mjs` 0。

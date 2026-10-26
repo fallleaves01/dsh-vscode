@@ -174,4 +174,25 @@ describe('diffConversationMessages', () => {
     const retried = { ...streaming, failureCode: 'AUTH' }
     expect(diffConversationMessages([streaming], [retried])).toEqual({ upserts: [retried] })
   })
+
+  it('keeps retry rows and limit notices replaceable as values', () => {
+    const retryMessage: ConversationMessage = {
+      id: 'retry:chain', role: 'retry', text: '',
+      retry: { retryId: 'chain', retry: 1, maxRetries: 3, mode: 'normal', delayMs: 400, state: 'scheduled', detail: 'First', failureCode: 'TIMEOUT' },
+    }
+    // A retry row has no body to compact, so it is sent unchanged.
+    expect(messageForWebview(retryMessage)).toBe(retryMessage)
+    // The started frame repeats the retry number and changes only the state; the
+    // row must still be re-sent, or the assistant stays "Retrying" forever.
+    const sameAttempt: ConversationMessage = { ...retryMessage, retry: { ...retryMessage.retry!, state: 'started' } }
+    expect(diffConversationMessages([retryMessage], [sameAttempt])).toEqual({ upserts: [sameAttempt] })
+    const started: ConversationMessage = { ...retryMessage, retry: { ...retryMessage.retry!, state: 'started', retry: 2 } }
+    expect(diffConversationMessages([retryMessage], [started])).toEqual({ upserts: [started] })
+    // Identical retry values are not re-sent.
+    expect(diffConversationMessages([started], [{ ...started, retry: { ...started.retry! } }])).toBeUndefined()
+
+    const limit: ConversationMessage = { id: 'limit:1', role: 'limit', text: '' }
+    expect(messageForWebview(limit)).toBe(limit)
+    expect(diffConversationMessages([limit], [{ ...limit, detail: 'changed' }])).toEqual({ upserts: [{ ...limit, detail: 'changed' }] })
+  })
 })

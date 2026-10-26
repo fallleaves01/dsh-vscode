@@ -5,7 +5,7 @@ import { presentSubagentReferences, presentToolCall, presentToolResult } from '.
 import type { AssistantAttempt, AssistantStreamUpdate } from './dsh-assistant-stream.js'
 import { redactDshSecrets } from './runtime-output.js'
 
-export type ConversationRole = 'user' | 'assistant' | 'tool' | 'command' | 'notice'
+export type ConversationRole = 'user' | 'assistant' | 'tool' | 'command' | 'notice' | 'retry' | 'limit'
 
 /** What the action row shows under a message; never part of the message text. */
 export interface MessageMeta {
@@ -98,6 +98,8 @@ export interface ConversationMessage {
    * sidebar renders it as its own code element, the way DSH's own client does.
    */
   failureCode?: string
+  /** The model-retry attempt this row shows; only for `role: 'retry'`. */
+  retry?: ConversationRetryState
   streaming?: boolean
   failed?: boolean
   callView?: unknown
@@ -108,6 +110,22 @@ export interface ConversationMessage {
   deferredBody?: boolean
   deferredBodyRevision?: string
   bodyLength?: number
+}
+
+/** One scheduled/taken model-request retry, correlated by the runtime's `retryId`. */
+export interface ConversationRetryState {
+  retryId: string
+  /** 1-based attempt number within this retry chain. */
+  retry: number
+  /** Configured maximum; `0` when the policy has no maximum (mode `always`). */
+  maxRetries: number
+  /** Retry policy mode: `normal` (bounded) or `always`. */
+  mode: string
+  delayMs: number
+  state: 'scheduled' | 'started' | 'cancelled'
+  /** Decoded, redacted failure reason for the attempt that scheduled this retry. */
+  detail: string
+  failureCode?: string
 }
 
 interface AssistantStreamNode {
@@ -302,6 +320,33 @@ function withFailure(message: ConversationMessage, failure: ConversationFailure)
   return next
 }
 
+function finiteNumberOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+/**
+ * The retry row a `llm/retry` event describes.
+ *
+ * DSH correlates the whole chain by `retryId` and shows the newest attempt; a
+ * bounded policy carries `maxRetries`, an `always` policy does not, which is
+ * why a missing maximum is modelled as `0` (rendered as ∞) rather than dropped.
+ */
+function retryStateOf(data: Record<string, unknown>, failure: ConversationFailure): ConversationRetryState | undefined {
+  const retryId = typeof data.retryId === 'string' && data.retryId !== '' ? data.retryId : undefined
+  if (retryId === undefined) return undefined
+  const mode = typeof data.mode === 'string' ? data.mode : ''
+  return {
+    retryId,
+    retry: finiteNumberOf(data.retry) ?? 0,
+    maxRetries: finiteNumberOf(data.maxRetries) ?? 0,
+    mode,
+    delayMs: finiteNumberOf(data.delayMs) ?? 0,
+    state: 'scheduled',
+    detail: failure.detail,
+    ...(failure.code === undefined ? {} : { failureCode: failure.code }),
+  }
+}
+
 /** Recover the durable failed stream without treating tool arguments as reply text. */
 function attemptedContent(value: unknown): Pick<ConversationMessage, 'text' | 'reasoning' | 'images'> {
   const blocks = new Map<number, { type: 'text' | 'reasoning'; parts: string[] }>()
@@ -355,6 +400,8 @@ export class ConversationProjector {
   /** A terminal event can reach the view before the live stream releases its settlement. */
   private readonly turnFailures = new Map<number, { id: string; seq: number; time: number; step?: number; failure: ConversationFailure }>()
   private readonly pendingRetryFailures = new Map<string, { seq: number; failure: ConversationFailure }>()
+  /** Retry-row message ids per turn, in first-seen order, for boundary cancellation. */
+  private readonly turnRetries = new Map<number, string[]>()
   private readonly hiddenCommandIds = new Set<string>()
   private liveAttempt: (AssistantAttempt & { message?: ConversationMessage }) | undefined
 
@@ -368,6 +415,7 @@ export class ConversationProjector {
     this.turnSteps.clear()
     this.turnFailures.clear()
     this.pendingRetryFailures.clear()
+    this.turnRetries.clear()
     this.hiddenCommandIds.clear()
     for (const entry of entries) {
       if ('event' in entry) this.apply(entry.event, entry.view)
@@ -464,16 +512,54 @@ export class ConversationProjector {
     }
 
     if (event.type === 'llm/retry' && typeof data.turn === 'number' && typeof data.step === 'number') {
-      const step = this.turnSteps.get(data.turn)
-      const current = step?.assistantId === undefined ? undefined : this.byId.get(step.assistantId)
       const failure = failureOf(data.failure)
-      if (step?.step === data.step && current?.failed === true) this.set(current.id, withFailure(current, failure))
-      else this.pendingRetryFailures.set(`${data.turn}:${data.step}`, { seq: event.seq, failure })
+      const retry = retryStateOf(data, failure)
+      if (retry === undefined) {
+        // A retry without an id cannot be correlated into one row; keep the
+        // legacy reason inheritance so the failure is still explained.
+        this.inheritRetryFailure(data.turn, data.step, event.seq, failure)
+        return
+      }
+      // The attempt that just failed carried no visible output, so its bubble
+      // would only repeat the retry row: DSH drops it before scheduling.
+      this.dropEmptyAttempt(data.turn, data.step)
+      this.inheritRetryFailure(data.turn, data.step, event.seq, failure)
+      const id = `retry:${retry.retryId}`
+      this.set(id, { id, role: 'retry', text: '', retry })
+      this.meta.set(id, { seq: event.seq, time: event.time, turn: data.turn, step: data.step })
+      const ids = this.turnRetries.get(data.turn)
+      if (ids === undefined) this.turnRetries.set(data.turn, [id])
+      else if (!ids.includes(id)) ids.push(id)
+      return
+    }
+
+    if (event.type === 'llm/retry-started') {
+      const retryId = typeof data.retryId === 'string' && data.retryId !== '' ? data.retryId : undefined
+      if (retryId === undefined) return
+      const id = `retry:${retryId}`
+      const message = this.byId.get(id)
+      if (message?.retry === undefined) return
+      const retry = finiteNumberOf(data.retry)
+      // DSH marks the attempt whose number matches; a stale id is ignored, and a
+      // start without a number cannot reopen a chain the closed turn cancelled.
+      if (retry === undefined || retry !== message.retry.retry) return
+      if (message.retry.state === 'cancelled') return
+      this.set(id, { ...message, retry: { ...message.retry, state: 'started' } })
       return
     }
 
     if (event.type === 'turn/end' && typeof data.turn === 'number') {
       const reason = record(data.reason)
+      // A scheduled retry whose owning turn closes never ran: show it cancelled.
+      this.closeRetries(data.turn)
+      if (reason?.kind === 'max-tokens') {
+        // DSH shows a warning row after the closing assistant output; the copy
+        // lives in the renderers, so the message only carries its position.
+        const id = `limit:${String(data.turn)}`
+        this.set(id, { id, role: 'limit', text: '' })
+        this.meta.set(id, { seq: event.seq, time: event.time, turn: data.turn })
+        return
+      }
       if (reason?.kind !== 'error') return
       const step = this.turnSteps.get(data.turn)
       const saved = step?.assistantId === undefined ? undefined : this.byId.get(step.assistantId)
@@ -699,6 +785,46 @@ export class ConversationProjector {
       messages.push(copy)
     }
     return messages
+  }
+
+  /**
+   * Attach a retry failure reason to the attempt it belongs to, or hold it for
+   * the next attempt when the settlement has not arrived yet.
+   */
+  private inheritRetryFailure(turn: number, step: number, seq: number, failure: ConversationFailure): void {
+    const current = this.turnSteps.get(turn)
+    const message = current?.assistantId === undefined ? undefined : this.byId.get(current.assistantId)
+    if (current?.step === step && message?.failed === true) this.set(message.id, withFailure(message, failure))
+    else this.pendingRetryFailures.set(`${turn}:${step}`, { seq, failure })
+  }
+
+  /** A scheduled retry whose owning turn closed never ran: show it cancelled. */
+  private closeRetries(turn: number): void {
+    for (const id of this.turnRetries.get(turn) ?? []) {
+      const message = this.byId.get(id)
+      if (message?.retry?.state !== 'scheduled') continue
+      this.set(id, { ...message, retry: { ...message.retry, state: 'cancelled' } })
+    }
+  }
+
+  /**
+   * Remove the empty attempt a retried request left behind.
+   *
+   * Every failed attempt is projected, but one without visible output would
+   * render as an empty "This turn failed" bubble; DSH keeps only visible output
+   * plus one retry row per chain. A text/reasoning/image-bearing attempt stays.
+   */
+  private dropEmptyAttempt(turn: number, step: number): void {
+    const current = this.turnSteps.get(turn)
+    if (current === undefined || current.step !== step || current.assistantId === undefined) return
+    const message = this.byId.get(current.assistantId)
+    if (message === undefined || message.streaming === true) return
+    if (message.text !== '' || (message.reasoning ?? '') !== '' || (message.images?.length ?? 0) > 0) return
+    this.byId.delete(message.id)
+    this.meta.delete(message.id)
+    const index = this.orderedIds.indexOf(message.id)
+    if (index >= 0) this.orderedIds.splice(index, 1)
+    this.turnSteps.set(turn, { step })
   }
 
   private set(id: string, message: ConversationMessage): void {

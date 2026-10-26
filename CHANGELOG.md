@@ -9,6 +9,30 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-10-26
+
+### Added
+
+- Show model request retries as DSH does: one collapsible row per retry chain,
+  displaying the newest attempt as `Retrying model request (1/3) · 1s`,
+  `Retried model request` or `Model request retry cancelled`, with `∞` when the
+  policy has no bound, and `Retry delay` plus `Failure reason` in the details.
+  A retry the closed turn never started reads as cancelled, and a late start
+  frame cannot reopen it.
+- Show the output-token limit notice DSH shows: a turn that ends with reason
+  `max-tokens` now gets a warning row with `Output token limit reached` and the
+  DSH hint to send `continue`.
+
+### Fixed
+
+- A failed turn with retries no longer renders one empty reply bubble per
+  attempt: attempts without visible output are dropped and the row order is the
+  retry chain followed by the final reply and its failure block.
+- The closing reply's copy/feedback row stays visible when a retry row or the
+  token-limit notice is the last entry, instead of falling back to hover-only.
+- A retry-state change on the same attempt number is treated as an update, so
+  the row cannot stay on "Retrying" after the runtime starts the retry.
+
 ## [0.1.22] - 2026-10-26
 
 ### Fixed

@@ -77,19 +77,58 @@ export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void 
     const code = message.failureCode ?? ''
     return code === 'ACCOUNT_SIGNED_OUT' || code === 'INTERRUPTED' ? 'Task stopped' : 'This turn failed'
   }
-  const failureReasonOf = (message: ConversationMessage): string => {
-    const code = message.failureCode ?? ''
+  /** DSH's per-code failure copy, shared by turn failures and retry rows. */
+  const failureReasonForCode = (code: string, detail: string): string => {
     if (code === 'AUTH') return 'API key is invalid'
     if (code === 'QUOTA' || code === 'ACCOUNT_QUOTA') return 'Request quota exhausted.'
     if (code === 'ACCOUNT_SIGNED_OUT') return 'Stopped because you signed out of DeepSeek.'
     if (code === 'ACCOUNT_SIGN_IN_REQUIRED') return 'Sign in to DeepSeek and ensure the request destination supports account authentication.'
     if (code === 'INTERRUPTED') return 'The DSH process exited before this turn finished (for example, it was killed, crashed, or timed out while shutting down), so the turn was closed when DSH restarted. Unfinished tool calls have unknown outcomes.'
-    return message.detail || 'Error details are not available in the loaded history.'
+    return detail
+  }
+  const failureReasonOf = (message: ConversationMessage): string => {
+    const code = message.failureCode ?? ''
+    return failureReasonForCode(code, message.detail || 'Error details are not available in the loaded history.')
   }
   /** The runtime code shown beside the reason; `INTERRUPTED` has no chip. */
   const failureCodeOf = (message: ConversationMessage): string => {
     const code = message.failureCode ?? ''
     return code === '' || code === 'INTERRUPTED' ? '' : code
+  }
+  const retrySeconds = (delayMs: number): number => Math.max(1, Math.ceil((Number.isFinite(delayMs) ? delayMs : 0) / 1000))
+  const retryLabelOf = (state: string): string => state === 'started' ? 'Retried model request'
+    : state === 'cancelled' ? 'Model request retry cancelled'
+      // DSH renders the scheduled state through its active branch.
+      : 'Retrying model request'
+  /** One collapsible process row per retry chain, showing its newest attempt. */
+  const renderRetryRow = (message: ConversationMessage): HTMLElement => {
+    const retry = message.retry
+    const row = node('details', '', 'retry-row') as HTMLDetailsElement
+    if (retry === undefined) return row
+    if (retry.state === 'scheduled') row.setAttribute('data-active', '')
+    row.setAttribute('data-state', retry.state)
+    const summary = node('summary', '', 'retry-summary')
+    const maximum = retry.mode === 'normal' ? String(retry.maxRetries) : '∞'
+    const text = node('span', retryLabelOf(retry.state) + ' (' + String(retry.retry) + '/' + maximum + ') · ' + String(retrySeconds(retry.delayMs)) + 's', 'retry-text')
+    text.setAttribute('role', 'status')
+    summary.append(text); row.append(summary)
+    const details = node('div', '', 'retry-details')
+    const delay = node('div')
+    delay.append(node('span', 'Retry delay: ', 'retry-detail-label'), document.createTextNode(String(Math.round(retry.delayMs)) + 'ms'))
+    const failure = node('div')
+    failure.append(node('span', 'Failure reason: ', 'retry-detail-label'),
+      document.createTextNode(failureReasonForCode(retry.failureCode ?? '', retry.detail || 'Error details are not available in the loaded history.')))
+    details.append(delay, failure); row.append(details)
+    return row
+  }
+  const renderLimitRow = (): HTMLElement => {
+    const row = node('div', '', 'turn-limit'); row.setAttribute('role', 'status')
+    row.append(node('span', '', 'turn-limit-dot'))
+    const copy = node('div', '', 'turn-limit-copy')
+    copy.append(node('span', 'Output token limit reached', 'turn-limit-title'),
+      node('span', 'The reply was cut off; earlier output is preserved in the conversation. Send "continue" to let the model resume.', 'turn-limit-text'))
+    row.append(copy)
+    return row
   }
   const render = (): void => {
     if (!state) return
@@ -118,6 +157,12 @@ export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void 
       cached.row.dataset.role = message.role
       const key = JSON.stringify([message, body])
       if (cached.key !== key) {
+        cached.key = key
+        if (message.role === 'retry' || message.role === 'limit') {
+          cached.row.replaceChildren(message.role === 'retry' ? renderRetryRow(message) : renderLimitRow())
+          messages.append(cached.row)
+          continue
+        }
         const thinkingOpen = cached.row.querySelector('details')?.open ?? false
         const label = (message.role === 'assistant' ? undefined : message.detail) || ({ user: 'You', assistant: 'DeepSeek', tool: 'Tool', command: 'Command' } as Record<string, string>)[message.role] || message.role
         cached.key = key; cached.row.replaceChildren(node('div', label, 'role'))

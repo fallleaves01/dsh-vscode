@@ -541,6 +541,18 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .assistant-failure-line { display: flex; align-items: baseline; gap: 6px; margin-top: 2px; flex-wrap: wrap; }
     .assistant-failure-detail { min-width: 0; flex: 1 1 auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
     .assistant-failure-code { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 500; }
+    /* A model request retried by the runtime: one collapsible process row. */
+    .retry-row { margin-top: 8px; border: .5px solid var(--vscode-widget-border, var(--dsh-border)); border-radius: 6px; font-size: 12px; line-height: 1.5; }
+    .retry-summary { padding: 6px 9px; cursor: pointer; }
+    .retry-text { min-width: 0; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); }
+    .retry-row[data-active] .retry-text { color: var(--vscode-textLink-foreground); }
+    .retry-details { padding: 0 9px 7px; color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+    .retry-detail-label { font-weight: 600; }
+    /* The turn ended at the output-token cap: a warning row after the reply. */
+    .turn-limit { display: flex; align-items: flex-start; gap: 7px; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--vscode-editorWarning-foreground, #cca700); border-radius: 6px; font-size: 12px; line-height: 1.5; }
+    .turn-limit-dot { flex: none; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--vscode-editorWarning-foreground, #cca700); }
+    .turn-limit-copy { min-width: 0; overflow-wrap: anywhere; }
+    .turn-limit-title { display: block; color: var(--vscode-editorWarning-foreground, #cca700); font-weight: 600; }
     /**
      * No typing caret while a reply streams.
      *
@@ -2247,8 +2259,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const row = node('div', 'message-actions end');
       const list = (state && state.messages) || [];
       // Only the newest turn's row stays visible; the rest reveal on hover, as
-      // DSH does, so a long transcript is not a wall of buttons.
-      if (list.length > 0 && list[list.length - 1].id === message.id) row.classList.add('always');
+      // DSH does, so a long transcript is not a wall of buttons. A retry chain or
+      // a token-limit notice can trail the closing reply without closing the
+      // turn, so the search looks past those procedural rows to the newest reply.
+      let newest = list.length - 1;
+      while (newest >= 0) {
+        const role = list[newest] && list[newest].role;
+        if (role === 'retry' || role === 'limit') { newest -= 1; continue; }
+        break;
+      }
+      if (newest >= 0 && list[newest].id === message.id) row.classList.add('always');
       const copy = node('button', 'message-action message-icon message-copy');
       copy.type = 'button'; copy.title = 'Copy'; copy.setAttribute('aria-label', 'Copy');
       copy.append(icon(COPY_SHAPES, false));
@@ -2286,34 +2306,90 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     }
     function failureReasonOf(message) {
       const code = typeof message.failureCode === 'string' ? message.failureCode : '';
+      return failureReasonForCode(code, message.detail || 'Error details are not available in the loaded history.');
+    }
+    /** DSH's per-code failure copy, shared by turn failures and retry rows. */
+    function failureReasonForCode(code, detail) {
       if (code === 'AUTH') return 'API key is invalid';
       if (code === 'QUOTA' || code === 'ACCOUNT_QUOTA') return 'Request quota exhausted.';
       if (code === 'ACCOUNT_SIGNED_OUT') return 'Stopped because you signed out of DeepSeek.';
       if (code === 'ACCOUNT_SIGN_IN_REQUIRED') return 'Sign in to DeepSeek and ensure the request destination supports account authentication.';
       if (code === 'INTERRUPTED') return 'The DSH process exited before this turn finished (for example, it was killed, crashed, or timed out while shutting down), so the turn was closed when DSH restarted. Unfinished tool calls have unknown outcomes.';
-      return message.detail || 'Error details are not available in the loaded history.';
+      return detail;
     }
     /** The runtime code shown beside the reason; INTERRUPTED has no chip. */
     function failureCodeOf(message) {
       const code = typeof message.failureCode === 'string' ? message.failureCode : '';
       return code === '' || code === 'INTERRUPTED' ? '' : code;
     }
+    function retrySeconds(delayMs) {
+      const milliseconds = Number(delayMs);
+      return Math.max(1, Math.ceil((Number.isFinite(milliseconds) ? milliseconds : 0) / 1000));
+    }
+    function retryLabelOf(retry) {
+      // DSH's own active-state copy: a scheduled retry is shown as retrying,
+      // not as waiting, because the active branch is the one that renders.
+      if (retry.state === 'started') return 'Retried model request';
+      if (retry.state === 'cancelled') return 'Model request retry cancelled';
+      return 'Retrying model request';
+    }
+    /** One collapsible process row per retry chain, showing its newest attempt. */
+    function renderRetry(message) {
+      const retry = record(message.retry);
+      const row = node('details', 'retry-row');
+      if (retry === undefined) return row;
+      const active = retry.state === 'scheduled';
+      if (active) row.setAttribute('data-active', '');
+      row.setAttribute('data-state', string(retry.state));
+      const summary = node('summary', 'retry-summary');
+      const maximum = string(retry.mode) === 'normal' ? String(Number(retry.maxRetries) || 0) : '∞';
+      const text = node('span', 'retry-text', retryLabelOf(retry)
+        + ' (' + String(Number(retry.retry) || 0) + '/' + maximum + ') · ' + retrySeconds(retry.delayMs) + 's');
+      text.setAttribute('role', 'status');
+      summary.append(text); row.append(summary);
+      const details = node('div', 'retry-details');
+      const delay = node('div');
+      delay.append(node('span', 'retry-detail-label', 'Retry delay: '),
+        document.createTextNode(String(Math.round(Number(retry.delayMs) || 0)) + 'ms'));
+      const failure = node('div');
+      failure.append(node('span', 'retry-detail-label', 'Failure reason: '),
+        document.createTextNode(failureReasonForCode(string(retry.failureCode), string(retry.detail) || 'Error details are not available in the loaded history.')));
+      details.append(delay, failure); row.append(details);
+      return row;
+    }
+    function renderLimit() {
+      const row = node('div', 'turn-limit'); row.setAttribute('role', 'status');
+      row.append(node('span', 'turn-limit-dot'));
+      const copy = node('div', 'turn-limit-copy');
+      copy.append(node('span', 'turn-limit-title', 'Output token limit reached'),
+        node('span', 'turn-limit-text', 'The reply was cut off; earlier output is preserved in the conversation. Send "continue" to let the model resume.'));
+      row.append(copy);
+      return row;
+    }
     function renderMessage(message) {
       if (message.role === 'tool') return { message, node: renderTool(message) };
       if (message.role === 'command') return { message, node: renderCommand(message) };
       if (message.role === 'notice') return { message, node: node('div', 'status' + (message.failed ? ' error' : ''), message.text) };
+      if (message.role === 'retry') return { message, node: renderRetry(message) };
+      if (message.role === 'limit') return { message, node: renderLimit() };
       const item = node('article', 'message ' + message.role);
+      // A failed attempt without visible output shows only its failure block; an
+      // empty body would render as a blank reply bubble.
+      const emptyFailure = message.role === 'assistant' && message.failed === true && message.deferredBody !== true
+        && message.text === '' && (message.reasoning ?? '') === '' && (message.images?.length ?? 0) === 0;
       const markdown = message.role === 'assistant' && message.streaming === true ? createMarkdownStream(message.text) : undefined;
       const thinking = message.role === 'assistant' && hasThinking(message) ? renderThinking(message) : undefined;
-      const body = message.role === 'assistant'
-        ? message.deferredBody === true ? node('div', 'markdown') : (markdown ? markdown.root : renderMarkdown(message.text))
-        : (window.dshMarkdown && typeof window.dshMarkdown.renderUserText === 'function'
-          ? window.dshMarkdown.renderUserText(message.text) : node('div', '', 'Message renderer unavailable.'));
-      body.classList.add('message-body');
-      if (message.deferredBody === true) attachDeferredOutput(message, body, renderAssistantPage, false, 'Show full response' + (message.bodyLength ? ' · ' + String(message.bodyLength) + ' characters' : ''));
-      else appendImages(body, message.images);
       if (thinking) item.append(thinking.root);
-      item.append(body);
+      if (!emptyFailure) {
+        const body = message.role === 'assistant'
+          ? message.deferredBody === true ? node('div', 'markdown') : (markdown ? markdown.root : renderMarkdown(message.text))
+          : (window.dshMarkdown && typeof window.dshMarkdown.renderUserText === 'function'
+            ? window.dshMarkdown.renderUserText(message.text) : node('div', '', 'Message renderer unavailable.'));
+        body.classList.add('message-body');
+        if (message.deferredBody === true) attachDeferredOutput(message, body, renderAssistantPage, false, 'Show full response' + (message.bodyLength ? ' · ' + String(message.bodyLength) + ' characters' : ''));
+        else appendImages(body, message.images);
+        item.append(body);
+      }
       if (message.role === 'assistant' && message.failed === true) {
         const failure = node('div', 'assistant-failure'); failure.setAttribute('role', 'status');
         failure.append(node('div', 'assistant-failure-title', failureTitleOf(message)));
@@ -2340,6 +2416,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
      * everything else.
      */
     function messageRowKey(message) {
+      // The retry row is replaced as a value and the limit row is fixed: each
+      // needs its own key, or an update to the same message would be swallowed.
+      if (message.role === 'retry') return JSON.stringify(['retry', message.retry]);
+      if (message.role === 'limit') return JSON.stringify(['limit']);
       const meta = messageMetaFor(message.id);
       const failure = message.role === 'assistant' && message.failed === true ? [message.failed, message.detail, message.failureCode] : [];
       if (meta === undefined) return JSON.stringify(failure);

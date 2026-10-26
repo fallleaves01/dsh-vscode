@@ -1,4 +1,4 @@
-import { assistantStreamAppend, type ConversationImage, type ConversationMessage } from './conversation.js'
+import { assistantStreamAppend, type ConversationImage, type ConversationMessage, type ConversationRetryState } from './conversation.js'
 
 export const WEBVIEW_INLINE_CHAR_LIMIT = 20_000
 
@@ -62,6 +62,7 @@ export function messageForWebview(message: ConversationMessage): ConversationMes
     ...(message.streaming === undefined ? {} : { streaming: message.streaming }),
     ...(message.detail === undefined ? {} : { detail: message.detail }),
     ...(message.failureCode === undefined ? {} : { failureCode: message.failureCode }),
+    ...(message.retry === undefined ? {} : { retry: message.retry }),
     ...(message.failed === undefined ? {} : { failed: message.failed }),
     ...(callView === undefined ? {} : { callView }),
     ...(resultView === undefined ? {} : { resultView }),
@@ -100,6 +101,20 @@ function sameImages(left: readonly ConversationImage[] | undefined, right: reado
   })
 }
 
+/** A retry row is replaced as a value: its state and reason change in place. */
+function sameRetry(left: ConversationRetryState | undefined, right: ConversationRetryState | undefined): boolean {
+  if (left === right) return true
+  if (left === undefined || right === undefined) return false
+  return left.retryId === right.retryId
+    && left.retry === right.retry
+    && left.maxRetries === right.maxRetries
+    && left.mode === right.mode
+    && left.delayMs === right.delayMs
+    && left.state === right.state
+    && left.detail === right.detail
+    && left.failureCode === right.failureCode
+}
+
 function sameMessage(left: ConversationMessage, right: ConversationMessage): boolean {
   return left.id === right.id
     && left.role === right.role
@@ -107,6 +122,7 @@ function sameMessage(left: ConversationMessage, right: ConversationMessage): boo
     && left.reasoning === right.reasoning
     && left.detail === right.detail
     && left.failureCode === right.failureCode
+    && sameRetry(left.retry, right.retry)
     && left.streaming === right.streaming
     && left.failed === right.failed
     && left.callView === right.callView
@@ -126,6 +142,7 @@ function appendedAssistantParts(left: ConversationMessage, right: ConversationMe
     && left.streaming === true
     && left.detail === right.detail
     && left.failureCode === right.failureCode
+    && sameRetry(left.retry, right.retry)
     && left.failed === right.failed
     && left.callView === right.callView
     && left.resultView === right.resultView

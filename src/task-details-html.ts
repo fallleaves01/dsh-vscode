@@ -58,6 +58,18 @@ export function taskDetailsHtml(webview: vscode.Webview, assets: { script: vscod
   .assistant-failure-line { display: flex; align-items: baseline; gap: 6px; margin-top: 2px; flex-wrap: wrap; }
   .assistant-failure-detail { min-width: 0; flex: 1 1 auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
   .assistant-failure-code { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 500; }
+  /* A model request retried by the runtime: one collapsible process row. */
+  .retry-row { margin-top: 8px; border: .5px solid var(--vscode-widget-border, var(--dsh-border)); border-radius: 6px; font-size: 12px; line-height: 1.5; }
+  .retry-summary { padding: 6px 9px; cursor: pointer; }
+  .retry-text { min-width: 0; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); }
+  .retry-row[data-active] .retry-text { color: var(--vscode-textLink-foreground); }
+  .retry-details { padding: 0 9px 7px; color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+  .retry-detail-label { font-weight: 600; }
+  /* The turn ended at the output-token cap: a warning row after the reply. */
+  .turn-limit { display: flex; align-items: flex-start; gap: 7px; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--vscode-editorWarning-foreground, #cca700); border-radius: 6px; font-size: 12px; line-height: 1.5; }
+  .turn-limit-dot { flex: none; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--vscode-editorWarning-foreground, #cca700); }
+  .turn-limit-copy { min-width: 0; overflow-wrap: anywhere; }
+  .turn-limit-title { display: block; color: var(--vscode-editorWarning-foreground, #cca700); font-weight: 600; }
   a, .message button { color: var(--dsh-accent); } .message button { padding: 2px 6px; }
   #output { max-width: 960px; margin: 0 auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 var(--vscode-editor-font-family); }
   #output:not(:empty) { padding: 16px; border: .5px solid var(--dsh-border); border-radius: 12px; background: var(--vscode-textCodeBlock-background, var(--dsh-hover)); }

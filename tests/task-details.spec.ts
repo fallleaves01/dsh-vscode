@@ -67,6 +67,36 @@ describe('independent task detail interactions', () => {
     expect(document.querySelector('.assistant-failure-code')?.textContent).toBe('TIMEOUT')
     expect(document.querySelector('#messages button')?.textContent).toBe('Show full message')
   })
+  it('renders model retry rows and the output limit notice like the main chat', () => {
+    sendState({ messages: [
+      {
+        id: 'retry:chain', role: 'retry', text: '',
+        retry: { retryId: 'chain', retry: 2, maxRetries: 3, mode: 'normal', delayMs: 400, state: 'started', detail: 'Gateway timeout', failureCode: 'TIMEOUT' },
+      },
+      {
+        id: 'retry:pending', role: 'retry', text: '',
+        retry: { retryId: 'pending', retry: 1, maxRetries: 3, mode: 'normal', delayMs: 900, state: 'scheduled', detail: 'Upstream failed' },
+      },
+      { id: 'limit:1', role: 'limit', text: '' },
+    ] })
+    const rows = [...document.querySelectorAll('.retry-row')]
+    expect(rows[0]?.getAttribute('data-state')).toBe('started')
+    expect(rows[0]?.querySelector('.retry-text')?.textContent).toBe('Retried model request (2/3) · 1s')
+    expect(rows[0]?.querySelector('.retry-details')?.textContent).toContain('Retry delay: 400ms')
+    expect(rows[0]?.querySelector('.retry-details')?.textContent).toContain('Failure reason: Gateway timeout')
+    // DSH renders a scheduled retry through its active branch.
+    expect(rows[1]?.getAttribute('data-state')).toBe('scheduled')
+    expect(rows[1]?.querySelector('.retry-text')?.textContent).toBe('Retrying model request (1/3) · 1s')
+    expect(document.querySelector('.turn-limit-title')?.textContent).toBe('Output token limit reached')
+    expect(document.querySelector('.turn-limit-text')?.textContent)
+      .toBe('The reply was cut off; earlier output is preserved in the conversation. Send "continue" to let the model resume.')
+  })
+  it('shows only the failure block for an empty failed attempt', () => {
+    sendState({ messages: [{ id: 'attempt', role: 'assistant', text: '', failed: true, detail: 'Upstream failed', failureCode: 'SERVER' }] })
+    expect(document.querySelector('.assistant-failure-code')?.textContent).toBe('SERVER')
+    // The role label is still drawn, but no empty reply body is appended.
+    expect(document.querySelector('#messages .message')?.children.length).toBe(2)
+  })
   it('ignores unsolicited output pages that have no matching pending request', () => {
     message({ type: 'body', messageId: 'unknown' })
     message({ type: 'body', messageId: 'unknown', requestId: 'unknown' })
