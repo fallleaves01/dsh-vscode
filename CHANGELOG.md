@@ -9,6 +9,17 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-10-26
+
+### Fixed
+
+- Show settings operation results in a persistent toast above the scrolling
+  body instead of only at the end of the section content, where a long plugin or
+  model list pushed a failure out of view. A failure stays visible until it is
+  dismissed or replaced; a confirmation fades after a short pause and is never
+  repeated by later re-renders. The toast carries `role="alert"`, names the
+  failure text verbatim, and can be dismissed with its close button.
+
 ## [0.1.17] - 2026-10-26
 
 ### Added

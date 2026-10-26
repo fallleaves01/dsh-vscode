@@ -19,6 +19,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
   const root = options.root ?? document.getElementById('settingsRoot')!
   const content = root.querySelector<HTMLElement>('#content')!, navigation = root.querySelector<HTMLElement>('#navigation')!
   const banner = root.querySelector<HTMLElement>('#banner')!, refresh = root.querySelector<HTMLButtonElement>('#refresh')!
+  const toast = root.querySelector<HTMLElement>('#settings-toast')!, toastText = root.querySelector<HTMLElement>('#settings-toast-text')!, toastClose = root.querySelector<HTMLButtonElement>('#settings-toast-close')!
   const NEW_PROVIDER = Symbol('new-provider'), CATALOG_DRAFT = Symbol('catalog-draft'), CUSTOM_DRAFT = Symbol('custom-draft')
   let state: SettingsPageState | undefined, section = 'general', selectedProvider: string | typeof NEW_PROVIDER | undefined, serial = 0
   let inventorySearch = ''
@@ -31,6 +32,8 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
   let pending: { id: string; scope: string; type: string; provider?: string; section: string } | undefined
   let queue: Message[] = [], candidates: DiscoveredModel[] = [], selectedModels = new Set<string>(), modelSearch = '', allowSearch = ''
   let message = ''
+  let toastKey = '', announcedToastKey = ''
+  let toastTimer: number | undefined
   const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] => {
     const element = document.createElement(tag); element.className = className; if (text) element.textContent = text; return element
   }
@@ -38,6 +41,33 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
   const button = (label: string, action: () => void, className = '', disabled = false): HTMLButtonElement => {
     const control = el('button', className, label); control.type = 'button'; control.disabled = disabled
     control.addEventListener('click', () => { if (!control.disabled) action() }); return control
+  }
+  /**
+   * Keep operation feedback visible above the scrolling body.
+   *
+   * The inline error paragraph at the end of the content stays for context, but
+   * a long section (a plugin list, a model catalogue) pushes it out of view.
+   * The toast repeats the newest failure or confirmation, dismisses an error on
+   * request, and fades a success without re-announcing it on the next render.
+   */
+  const hideToast = (): void => {
+    if (toastTimer !== undefined) { document.defaultView!.clearTimeout(toastTimer); toastTimer = undefined }
+    if (!toast.hidden) toast.hidden = true
+    toastKey = ''
+  }
+  const dismissToast = (): void => { hideToast() }
+  const syncToast = (): void => {
+    const error = errors.get(section) ?? ''
+    const current = error !== '' ? 'error|' + error : message !== '' ? 'success|' + message : ''
+    if (current === '') { announcedToastKey = ''; hideToast(); return }
+    if (current === announcedToastKey) return
+    announcedToastKey = current
+    hideToast()
+    toastKey = current
+    toastText.textContent = error !== '' ? error : message
+    toast.className = 'settings-toast ' + (error !== '' ? 'error' : 'success')
+    toast.hidden = false
+    if (error === '') toastTimer = document.defaultView!.setTimeout(() => { if (toastKey === current) hideToast() }, 8000)
   }
   const input = (value: string, key: string, update: (value: string) => void, type = 'text'): HTMLInputElement => {
     const control = el('input'); control.type = type; control.value = value; control.dataset.focusKey = key
@@ -576,6 +606,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
         content.append(el('p', 'general-row', 'DSH Sidebar ' + state.version), button('Manage runtime plugins', () => native('plugins'), 'quiet'))
       }
     }
+    syncToast()
     content.append(el('p', 'error', errors.get(section) ?? ''), el('p', 'success', message))
     if (isPlugin) {
       const panel = el('div'); panel.id = 'plugin-panel'; panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', 'plugin-tab-' + section)
@@ -651,11 +682,11 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
   }
   const closeButton = root.querySelector<HTMLButtonElement>('#settingsClose')!
-  refresh.addEventListener('click', refreshPage); closeButton.addEventListener('click', close); root.addEventListener('keydown', keydown)
+  refresh.addEventListener('click', refreshPage); closeButton.addEventListener('click', close); toastClose.addEventListener('click', dismissToast); root.addEventListener('keydown', keydown)
   if (!options.externalMessages) document.defaultView!.addEventListener('message', receive)
   document.defaultView!.addEventListener('resize', revealSection)
   api.postMessage({ type: 'ready' })
-  return { receive(value: unknown): void { receive({ data: value } as MessageEvent) }, dispose(): void { document.defaultView!.removeEventListener('message', receive); document.defaultView!.removeEventListener('resize', revealSection); refresh.removeEventListener('click', refreshPage); closeButton.removeEventListener('click', close); root.removeEventListener('keydown', keydown); fields.clear(); providerDrafts.clear(); searchKey = ''; searchKeyTarget = undefined; queue = [] } }
+  return { receive(value: unknown): void { receive({ data: value } as MessageEvent) }, dispose(): void { document.defaultView!.removeEventListener('message', receive); document.defaultView!.removeEventListener('resize', revealSection); refresh.removeEventListener('click', refreshPage); closeButton.removeEventListener('click', close); toastClose.removeEventListener('click', dismissToast); hideToast(); root.removeEventListener('keydown', keydown); fields.clear(); providerDrafts.clear(); searchKey = ''; searchKeyTarget = undefined; queue = [] } }
 }
 
 if (typeof acquireVsCodeApi === 'function' && document.getElementById('settingsRoot')) {

@@ -228,6 +228,33 @@ describe('dedicated DSH settings surface', () => {
     expect(h.button('Save changes').disabled).toBe(false)
     h.click('Save changes'); expect(h.posts.filter(post => post.type === 'save-fields')).toHaveLength(2)
   })
+  it('repeats an operation failure in an alert toast above the scrolling body', () => {
+    const state = pageState(); state.forms = state.forms.map(form => form.section === 'general' ? { ...form, fields: form.fields.map(field => ({ ...field, overridden: true, value: false })) } : form)
+    const h = harness(state); h.click('Reset')
+    h.result({ ok: false, error: 'Try again', results: [{ ns: 'session-log-deepseek', ok: false }] })
+    const toast = document.querySelector<HTMLElement>('#settings-toast')!
+    // The inline error still exists for context; the toast keeps it visible.
+    expect(toast.hidden).toBe(false)
+    expect(toast.getAttribute('role')).toBe('alert')
+    expect(toast.className).toContain('error')
+    expect(toast.textContent).toContain('Try again')
+    document.querySelector<HTMLButtonElement>('#settings-toast-close')!.click()
+    expect(toast.hidden).toBe(true)
+    // A later render must not resurrect a dismissed message.
+    h.update({})
+    expect(toast.hidden).toBe(true)
+  })
+  it('confirms a successful save in a dismissible success toast', () => {
+    const state = pageState(); state.forms = state.forms.map(form => form.section === 'general' ? { ...form, fields: form.fields.map(field => ({ ...field, overridden: true, value: false })) } : form)
+    const h = harness(state); h.click('Reset')
+    h.result({ ok: true, results: [{ ns: 'session-log-deepseek', ok: true }] })
+    const toast = document.querySelector<HTMLElement>('#settings-toast')!
+    expect(toast.hidden).toBe(false)
+    expect(toast.className).toContain('success')
+    expect(toast.textContent).toContain('Saved.')
+    document.querySelector<HTMLButtonElement>('#settings-toast-close')!.click()
+    expect(toast.hidden).toBe(true)
+  })
   it('keeps API key drafts after a partial provider save and retries only the credential phase', () => {
     const h = harness(); h.click('Models'); document.querySelector<HTMLButtonElement>('[data-provider="anthropic"]')!.click()
     h.input('provider-endpoint', 'https://changed.example/v1'); h.input('api-key', 'fixture-key'); h.click('Save changes')

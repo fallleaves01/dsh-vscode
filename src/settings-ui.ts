@@ -14,6 +14,7 @@ export function settingsShellHtml(): string {
   return `<section id="settingsRoot" class="dsh-settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" tabindex="-1">
     <aside class="settings-nav"><h1 id="settingsTitle">Settings</h1><nav id="navigation" aria-label="Settings sections"></nav></aside>
     <div class="settings-content"><header class="settings-header"><div class="settings-header-actions"><button id="refresh" class="settings-icon" type="button" title="Refresh settings" aria-label="Refresh settings">${settingsIcon('refresh')}</button><button id="settingsClose" class="settings-icon" type="button" title="Close settings" aria-label="Close settings">${settingsIcon('close')}</button></div></header>
+    <div id="settings-toast" class="settings-toast" role="alert" aria-live="assertive" hidden><span id="settings-toast-text" class="settings-toast-text"></span><button id="settings-toast-close" class="settings-icon settings-toast-close" type="button" title="Dismiss notification" aria-label="Dismiss notification">${settingsIcon('close')}</button></div>
     <div id="banner" role="status"></div><main class="settings-options"><div id="content"><p class="empty">Loading settings…</p></div></main></div>
   </section>`
 }
@@ -35,6 +36,15 @@ export const settingsPageCss = `
   .dsh-settings svg { width: 16px; height: 16px; flex: none; }
   .dsh-settings #banner { flex: none; margin: 0 24px 12px; max-height: 90px; overflow-y: auto; color: var(--dsh-warning); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
   .dsh-settings #banner:empty { display: none; }
+  /* Operation feedback stays above the scrolling body so a save result or a
+     failure is visible without scrolling. Errors persist until dismissed or the
+     message changes; success fades after a short pause. */
+  .dsh-settings .settings-toast { flex: none; display: flex; align-items: flex-start; gap: 10px; margin: 0 24px 12px; padding: 9px 9px 9px 12px; border: .5px solid var(--dsh-border); border-radius: 12px; background: var(--settings-card); font-size: 12.5px; line-height: 18px; }
+  .dsh-settings .settings-toast.error { color: var(--vscode-errorForeground, #f48771); border-color: currentColor; background: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 12%, transparent); }
+  .dsh-settings .settings-toast.success { color: var(--vscode-foreground); border-color: var(--dsh-success); background: color-mix(in srgb, var(--dsh-success) 14%, transparent); }
+  .dsh-settings .settings-toast-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .dsh-settings .settings-toast-close { flex: none; width: 26px; min-height: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: inherit; opacity: .75; display: inline-flex; align-items: center; justify-content: center; }
+  .dsh-settings .settings-toast-close:hover:not(:disabled) { opacity: 1; background: var(--dsh-hover); }
   .dsh-settings .settings-options { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 0 24px 24px; }
   .dsh-settings #content { width: 100%; max-width: 720px; margin: 0; min-width: 0; }
   .dsh-settings h2 { margin: 0 0 12px; font-size: 16px; font-weight: 500; line-height: 24px; }
@@ -126,6 +136,6 @@ export const settingsPageCss = `
   .dsh-settings .settings-plugin-tabs button[aria-selected="true"]:after { content: ''; position: absolute; bottom: 0; inset-inline: 0; height: 2px; border-radius: 2px 2px 0 0; background: currentColor; }
   .dsh-settings .hidden, .dsh-settings [hidden] { display: none !important; }
   .settings-overlay { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: #0006; }
-  @media(max-width:620px) { .dsh-settings { max-width: calc(100vw - 16px); height: calc(100vh - 16px); border-radius: 16px; } .dsh-settings .settings-nav { width: 52px; padding: 14px 6px; gap: 14px; } .dsh-settings .settings-nav h1, .dsh-settings .nav-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } .dsh-settings #navigation button { width: 40px; padding: 0; justify-content: center; } .dsh-settings .settings-header { height: 44px; padding: 8px 8px 8px 0; } .dsh-settings .settings-options { padding: 0 16px 16px; } .dsh-settings #banner { margin-inline: 16px; } .dsh-settings .section-save { bottom: -16px; } .dsh-settings .card { padding: 12px; } }
+  @media(max-width:620px) { .dsh-settings { max-width: calc(100vw - 16px); height: calc(100vh - 16px); border-radius: 16px; } .dsh-settings .settings-nav { width: 52px; padding: 14px 6px; gap: 14px; } .dsh-settings .settings-nav h1, .dsh-settings .nav-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } .dsh-settings #navigation button { width: 40px; padding: 0; justify-content: center; } .dsh-settings .settings-header { height: 44px; padding: 8px 8px 8px 0; } .dsh-settings .settings-options { padding: 0 16px 16px; } .dsh-settings #banner, .dsh-settings .settings-toast { margin-inline: 16px; } .dsh-settings .section-save { bottom: -16px; } .dsh-settings .card { padding: 12px; } }
   @media(max-width:380px) { .dsh-settings .model-grid, .dsh-settings .plugin-inventory { grid-template-columns: minmax(0,1fr); } .dsh-settings .general-row { flex-wrap: wrap; gap: 8px; } .dsh-settings .section-save .hint { flex-basis: 100%; } }
 `
