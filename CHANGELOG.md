@@ -9,6 +9,31 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-10-26
+
+### Added
+
+- Translate reasoning in place when the experimental cot-translation bundle is
+  mounted. Expanding Thinking now calls `cotTranslation/limits` to learn the
+  accepted provider, target language and request limit, then translates
+  completed fragments through `cotTranslation/translate`: the translation is
+  shown by default, a View original toggle switches back, a pending spinner
+  marks an in-flight request, and a failed request returns to the original with
+  "Translation failed. Showing the original." and a Retry action. Fragments
+  follow DSH's splitter (blank-line paragraphs, then request-sized UTF-16
+  slices that never split a surrogate pair and prefer whitespace); a streaming
+  tail is not requested until its paragraph completes. Results are cached per
+  fragment and cleared when the provider, language or limit changes.
+- Capability refreshes follow settings, credential, account, model and plugin
+  changes, and the editor language resolves an `auto` target language.
+
+### Fixed
+
+- The reasoning translation settings card no longer implies working
+  translation on its own: the conversation now consumes the runtime's
+  translation capability as DSH's web client does, including the failed
+  request path instead of silently showing the untranslated text.
+
 ## [0.1.23] - 2026-10-26
 
 ### Added

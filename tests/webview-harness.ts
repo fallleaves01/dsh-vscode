@@ -105,6 +105,7 @@ export function harness(): Harness {
         usage: { available: false, percent: 0, usedTokens: 0, contextWindow: 0 },
         permissions: [], plan: { available: false, active: false, pending: false },
         changedFiles: [], queue: [], jobs: [], imageLimits: undefined,
+        translation: null,
         hasMoreHistory: false, loadingHistory: false, ...overrides,
       },
     })

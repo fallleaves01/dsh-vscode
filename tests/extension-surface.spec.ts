@@ -128,7 +128,14 @@ vi.mock('../src/dsh-client.js', () => ({
   },
 }))
 
-import { activate, deactivate } from '../src/extension.js'
+import * as vscode from 'vscode'
+import {
+  activate,
+  deactivate,
+  normalizedTranslationLanguage,
+  translationFailureText,
+  translationTargetLanguage,
+} from '../src/extension.js'
 
 const models = (id = 'model'): SessionModels => ({ current: { provider: 'p', model: id }, routable: true,
   groups: [{ id: 'p', name: 'Provider', models: [{ id, name: id }] }], failures: [] })
@@ -164,6 +171,8 @@ function testClient() {
     updateQueue: vi.fn(async () => ({ accepted: true })),
     executeCommand: vi.fn(async () => ({ result: { kind: 'success' } })),
     permissionCatalog: vi.fn(async () => undefined),
+    cotTranslationLimits: vi.fn(async () => undefined),
+    cotTranslationTranslate: vi.fn(async (request: { text: string }) => `translated:${request.text}`),
     archiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
     unarchiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
     killJob: vi.fn(async () => ({ outcome: 'requested' as const })),
@@ -188,7 +197,7 @@ function testClient() {
 }
 
 
-describe('host permission confirmation', () => {
+describe('host surface wiring', () => {
   const CATALOG = {
     options: [
       { value: 'read-only', name: 'read-only' },
@@ -207,16 +216,19 @@ describe('host permission confirmation', () => {
     mocks.command.mockResolvedValue(undefined)
     mocks.panels.length = 0
     mocks.commands.clear()
+    ;(vscode.env as { language: string }).language = 'en'
   })
 
-  async function activated(options: { catalog?: unknown } = {}) {
-    const { client, emit } = testClient()
+  async function activated(options: { catalog?: unknown; translation?: unknown; language?: string } = {}) {
+    const { client, emit, fail } = testClient()
     mocks.client = client
     client.listCommands.mockResolvedValue([
       { name: 'permission', description: 'Choose a permission preset' },
       { name: 'plan', description: 'Plan mode' },
     ])
     client.permissionCatalog.mockResolvedValue(options.catalog === undefined ? CATALOG : options.catalog)
+    client.cotTranslationLimits.mockResolvedValue(options.translation)
+    if (options.language !== undefined) (vscode.env as { language: string }).language = options.language
     const context: any = {
       subscriptions: [] as Array<{ dispose(): void }>,
       extensionUri: { fsPath: '/extension' },
@@ -236,6 +248,15 @@ describe('host permission confirmation', () => {
       entry.panel.webview.postMessage.mock.calls.map((call: any[]) => call[0] as Record<string, any>)
     const latestState = (): Record<string, any> | undefined =>
       posts().filter(packet => packet.type === 'state' || packet.type === 'state-update').at(-1)
+    /** The state as the Webview would hold it: whole-state posts merged with patches. */
+    const mergedState = (): Record<string, any> => {
+      let state: Record<string, any> = {}
+      for (const packet of posts()) {
+        if (packet.type === 'state') state = { ...(packet.state ?? {}) }
+        else if (packet.type === 'state-update' && packet.update?.patch !== undefined) state = { ...state, ...packet.update.patch }
+      }
+      return state
+    }
     // The surface posts the whole state on `ready`, and a projection frame only
     // publishes the merged permissions list once the asynchronous catalogue read
     // has landed. Re-emitting until the full state shows `auto` is deterministic
@@ -252,7 +273,7 @@ describe('host permission confirmation', () => {
     }
     await publishPermissions()
     const send = (message: Record<string, unknown>): void => { entry.send(message) }
-    return { context, client, entry, posts, send, publishPermissions }
+    return { context, client, entry, posts, send, publishPermissions, mergedState, emit, fail }
   }
 
   it('asks before switching to Auto review from the permission menu and cancels cleanly', async () => {
@@ -310,5 +331,141 @@ describe('host permission confirmation', () => {
     expect(mocks.warning.mock.calls[0][0]).toContain('Auto review')
     expect(h.client.executeCommand).toHaveBeenCalledWith('a', '/permission auto', undefined)
     expect(h.posts().some(packet => packet.type === 'restore-draft')).toBe(false)
+  })
+
+  describe('cot translation bridge', () => {
+    const LIMITS = {
+      maxTextChars: 4_000,
+      preferences: { provider: 'bing', targetLanguage: 'auto' },
+      availableProviders: ['bing', 'google'],
+    }
+
+    it('normalizes editor languages for an auto translation target', () => {
+      expect(normalizedTranslationLanguage('zh-cn')).toBe('zh')
+      expect(normalizedTranslationLanguage('zh-TW')).toBe('zh')
+      expect(normalizedTranslationLanguage('en-US')).toBe('en')
+      expect(normalizedTranslationLanguage('ja')).toBe('ja')
+      expect(normalizedTranslationLanguage('pt_BR')).toBe('pt')
+      expect(normalizedTranslationLanguage('')).toBe('en')
+      expect(translationTargetLanguage('auto', 'zh-cn')).toBe('zh')
+      expect(translationTargetLanguage('ja', 'zh-cn')).toBe('ja')
+    })
+
+    it('exposes the probed capability with the editor-resolved target language', async () => {
+      const h = await activated({ translation: LIMITS, language: 'zh-cn' })
+      await vi.waitFor(() => expect(h.mergedState().translation).toMatchObject({
+        provider: 'bing', targetLanguage: 'zh', available: true, maxTextChars: 4_000,
+      }))
+      expect(h.client.cotTranslationLimits).toHaveBeenCalled()
+    })
+
+    it('still tries the runtime provider when it is not listed as routable', async () => {
+      // DSH does not pre-check `availableProviders`: that list only annotates
+      // its settings form. A routing failure must come back from the translate
+      // RPC so the UI can show a failed translation with Retry.
+      const h = await activated({
+        translation: { ...LIMITS, preferences: { provider: 'google', targetLanguage: 'zh-cn' }, availableProviders: ['bing'] },
+      })
+      await vi.waitFor(() => expect(h.mergedState().translation).toMatchObject({
+        provider: 'google', targetLanguage: 'zh-cn', available: true, maxTextChars: 4_000,
+      }))
+      h.send({ type: 'translate-reasoning', requestId: 'r-unlisted', text: 'Reasoning' })
+      await vi.waitFor(() => expect(h.posts()).toContainEqual({
+        type: 'translate-reasoning-result', requestId: 'r-unlisted', ok: true, text: 'translated:Reasoning',
+      }))
+      expect(h.client.cotTranslationTranslate).toHaveBeenCalledWith({
+        text: 'Reasoning', targetLanguage: 'zh-cn', provider: 'google', sessionId: 'a',
+      })
+    })
+
+    it('translates reasoning through the preferred provider and scopes it to the session', async () => {
+      const h = await activated({ translation: LIMITS })
+      await vi.waitFor(() => expect(h.mergedState().translation?.available).toBe(true))
+      h.send({ type: 'translate-reasoning', requestId: 'r-1', text: 'Reasoning paragraph' })
+      await vi.waitFor(() => expect(h.posts()).toContainEqual({
+        type: 'translate-reasoning-result', requestId: 'r-1', ok: true, text: 'translated:Reasoning paragraph',
+      }))
+      expect(h.client.cotTranslationTranslate).toHaveBeenCalledWith({
+        text: 'Reasoning paragraph', targetLanguage: 'en', provider: 'bing', sessionId: 'a',
+      })
+    })
+
+    it('rejects an invalid request without calling the runtime', async () => {
+      const h = await activated({ translation: LIMITS })
+      await vi.waitFor(() => expect(h.mergedState().translation?.available).toBe(true))
+      h.send({ type: 'translate-reasoning', requestId: 'r-empty', text: '' })
+      h.send({ type: 'translate-reasoning', requestId: 'r-long', text: 'x'.repeat(4_001) })
+      h.send({ type: 'translate-reasoning', requestId: '', text: 'Reasoning' })
+      await vi.waitFor(() => expect(h.posts().filter(packet => packet.type === 'translate-reasoning-result')).toHaveLength(2))
+      const results = h.posts().filter(packet => packet.type === 'translate-reasoning-result')
+      expect(results.map(packet => packet.ok)).toEqual([false, false])
+      expect(h.client.cotTranslationTranslate).not.toHaveBeenCalled()
+    })
+
+    it('replies with the readable part of a provider failure', async () => {
+      const h = await activated({ translation: LIMITS })
+      await vi.waitFor(() => expect(h.mergedState().translation?.available).toBe(true))
+      h.client.cotTranslationTranslate.mockRejectedValueOnce(
+        Object.assign(new Error('Translation failed: provider timeout'), { code: 'cotTranslation/failed' }),
+      )
+      h.send({ type: 'translate-reasoning', requestId: 'r-fail', text: 'Reasoning' })
+      await vi.waitFor(() => expect(h.posts()).toContainEqual({
+        type: 'translate-reasoning-result', requestId: 'r-fail', ok: false, error: 'provider timeout',
+      }))
+    })
+
+    it('answers a request that outlived its conversation instead of leaving it pending', async () => {
+      const h = await activated({ translation: LIMITS })
+      await vi.waitFor(() => expect(h.mergedState().translation?.available).toBe(true))
+      const outgoing = Promise.withResolvers<string>()
+      h.client.cotTranslationTranslate.mockReturnValueOnce(outgoing.promise)
+      h.send({ type: 'translate-reasoning', requestId: 'r-late', text: 'Reasoning' })
+      await vi.waitFor(() => expect(h.client.cotTranslationTranslate).toHaveBeenCalled())
+      h.send({ type: 'select-session', sessionId: 'b' })
+      await vi.waitFor(() => expect(h.mergedState().sessionId).toBe('b'))
+      outgoing.resolve('translated late')
+      await vi.waitFor(() => expect(h.posts()).toContainEqual({
+        type: 'translate-reasoning-result', requestId: 'r-late', ok: false,
+        error: expect.stringContaining('conversation changed'),
+      }))
+    })
+
+    it('re-probes the capability when runtime settings change', async () => {
+      const h = await activated({ translation: LIMITS })
+      await vi.waitFor(() => expect(h.mergedState().translation?.provider).toBe('bing'))
+      h.client.cotTranslationLimits.mockResolvedValue({
+        maxTextChars: 2_000,
+        preferences: { provider: 'deepseek-official', targetLanguage: 'ja' },
+        availableProviders: ['deepseek-official'],
+      })
+      h.emit({ type: 'host/settings-changed', ns: 'cot-translation', revision: 2 }, 'host')
+      await vi.waitFor(() => expect(h.mergedState().translation).toMatchObject({
+        provider: 'deepseek-official', targetLanguage: 'ja', available: true, maxTextChars: 2_000,
+      }))
+    })
+
+    it('clears the capability when the connection drops', async () => {
+      const h = await activated({ translation: LIMITS })
+      await vi.waitFor(() => expect(h.mergedState().translation?.available).toBe(true))
+      h.fail(new Error('event stream lost'))
+      await vi.waitFor(() => expect(h.mergedState().translation).toBeNull())
+    })
+
+    it('does not block the other surface actions while a translation is in flight', async () => {
+      const h = await activated({ translation: LIMITS })
+      await vi.waitFor(() => expect(h.mergedState().translation?.available).toBe(true))
+      h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+      const outgoing = Promise.withResolvers<string>()
+      h.client.cotTranslationTranslate.mockReturnValueOnce(outgoing.promise)
+      h.send({ type: 'translate-reasoning', requestId: 'r-busy', text: 'Reasoning' })
+      await vi.waitFor(() => expect(h.client.cotTranslationTranslate).toHaveBeenCalled())
+      // The translation is still pending; a cancel must reach the runtime now.
+      h.send({ type: 'cancel' })
+      await vi.waitFor(() => expect(h.client.cancel).toHaveBeenCalled())
+      outgoing.resolve('translated')
+      await vi.waitFor(() => expect(h.posts()).toContainEqual({
+        type: 'translate-reasoning-result', requestId: 'r-busy', ok: true, text: 'translated',
+      }))
+    })
   })
 })

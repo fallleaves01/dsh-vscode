@@ -73,6 +73,52 @@ export interface ModelSelection {
   reasoningEffort?: string
 }
 
+/** Providers the cot-translation Host can route through. */
+export const TRANSLATION_PROVIDERS = ['google', 'bing', 'deepseek-account', 'deepseek-official'] as const
+export type DshTranslationProvider = (typeof TRANSLATION_PROVIDERS)[number]
+
+/** `cotTranslation/limits`: the preference and the per-request text ceiling. */
+export interface DshTranslationLimits {
+  maxTextChars: number
+  preferences: { provider: DshTranslationProvider; targetLanguage: string }
+  availableProviders: DshTranslationProvider[]
+}
+
+/** One `cotTranslation/translate` request; the Host normalizes the language tag. */
+export interface DshTranslationRequest {
+  text: string
+  targetLanguage: string
+  provider?: DshTranslationProvider
+  sessionId?: string
+}
+
+/** The Host's provider vocabulary; anything else is not a routable translation provider. */
+function isTranslationProvider(value: unknown): value is DshTranslationProvider {
+  return typeof value === 'string' && (TRANSLATION_PROVIDERS as readonly string[]).includes(value)
+}
+
+/**
+ * Validate a `cotTranslation/limits` answer.
+ *
+ * This is an optional capability read, so an unusable answer means "no
+ * translation" rather than an error the UI has to explain.
+ */
+function translationLimitsOf(value: unknown): DshTranslationLimits | undefined {
+  if (!wireRecord(value)) return undefined
+  const limits = value
+  const maxTextChars = typeof limits.maxTextChars === 'number' && Number.isFinite(limits.maxTextChars) && limits.maxTextChars > 0
+    ? limits.maxTextChars
+    : undefined
+  const preferences = wireRecord(limits.preferences) ? limits.preferences : undefined
+  const provider = preferences !== undefined && isTranslationProvider(preferences.provider) ? preferences.provider : undefined
+  const targetLanguage = preferences !== undefined && typeof preferences.targetLanguage === 'string'
+    && preferences.targetLanguage.trim() !== '' ? preferences.targetLanguage : undefined
+  const reported = limits.availableProviders
+  if (!Array.isArray(reported) || !reported.every(item => typeof item === 'string')) return undefined
+  if (maxTextChars === undefined || provider === undefined || targetLanguage === undefined) return undefined
+  return { maxTextChars, preferences: { provider, targetLanguage }, availableProviders: reported.filter(isTranslationProvider) }
+}
+
 export interface CommandDescriptor {
   name: string
   description: string
@@ -543,6 +589,33 @@ export class DshClient {
     }
   }
   listAgentPresets(): Promise<AgentPresetRoster> { return this.presets.read() }
+  /**
+   * Read the runtime's cot-translation capability.
+   *
+   * The translation itself is a client-side RPC, so a runtime without the
+   * experimental bundle (or with a malformed answer) reports no capability and
+   * the sidebar keeps the original reasoning text.
+   */
+  async cotTranslationLimits(): Promise<DshTranslationLimits | undefined> {
+    try {
+      return translationLimitsOf(await this.call('cotTranslation/limits', {}, 10_000))
+    } catch {
+      return undefined
+    }
+  }
+  /** Translate one reasoning fragment; failures are the caller's to explain. */
+  async cotTranslationTranslate(request: DshTranslationRequest): Promise<string> {
+    const translated = await this.call<unknown>('cotTranslation/translate', {
+      request: {
+        text: request.text,
+        targetLanguage: request.targetLanguage,
+        ...(request.provider === undefined ? {} : { provider: request.provider }),
+        ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
+      },
+    }, 60_000)
+    if (typeof translated !== 'string' || translated.trim() === '') throw new Error('DSH returned no translated text.')
+    return translated
+  }
   async selectAgentPreset(sessionId: string, agentPreset: string): Promise<{ agentPreset: string }> {
     const selected = await this.call<string>('agentPresets/select', { agentId: sessionId, agentPreset })
     this.invalidateSessionDiscovery(sessionId)

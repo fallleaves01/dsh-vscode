@@ -48,6 +48,8 @@ import {
   DshClient,
   type CommandDescriptor,
   type DshFrame,
+  type DshTranslationLimits,
+  type DshTranslationProvider,
   type FileUploadReceipt,
   type HistoryEntry,
   type ImageMediaType,
@@ -270,6 +272,13 @@ export interface ChatViewState extends TaskFeatureState {
   agentPreset: AgentPresetState
   usage: UsageMeterState
   imageLimits: ImageAttachmentLimits | undefined
+  /**
+   * Cot-translation capability of this runtime.
+   *
+   * `null` means the experimental bundle is not composed (or answered with an
+   * unusable shape), so the UI keeps showing the original reasoning text.
+   */
+  translation: DshTranslationState | null
   permissions: PermissionPresetItem[]
   plan: PlanModeState
   changedFiles: ChangedFileGroup[]
@@ -295,6 +304,52 @@ export interface ChatViewState extends TaskFeatureState {
 interface ChatViewStateUpdate {
   patch: Partial<Omit<ChatViewState, 'messages'>>
   messages?: ConversationMessagesPatch
+}
+
+/** What the Webview needs to request one reasoning translation. */
+export interface DshTranslationState {
+  /** The runtime's preferred provider; the Host normalizes it. */
+  provider: DshTranslationProvider
+  /** Resolved target language (`auto` follows the editor language). */
+  targetLanguage: string
+  /**
+   * Informational: true whenever the runtime serves translation limits.
+   *
+   * DSH's own client uses `availableProviders` only to annotate its settings
+   * form; it never refuses a translate request because a provider is missing
+   * from that list. A routing failure is reported by the RPC as
+   * `cotTranslation/failed` and shown as a failed translation with Retry, so
+   * this field must not gate a request.
+   */
+  available: boolean
+  /** Longest text the runtime accepts in one translate request. */
+  maxTextChars: number
+}
+
+/**
+ * Normalize an editor language tag for the translation service.
+ *
+ * The service normalizes common regional tags itself, but the sidebar sends the
+ * shortened form it already understands (`zh-cn` → `zh`) and never sends empty.
+ */
+export function normalizedTranslationLanguage(language: string): string {
+  const first = language.trim().toLowerCase().split(/[-_]/u)[0] ?? ''
+  return first === '' ? 'en' : first
+}
+
+/** `auto` follows the editor language; an explicit runtime preference is kept. */
+export function translationTargetLanguage(configured: string, editorLanguage: string): string {
+  return configured === 'auto' ? normalizedTranslationLanguage(editorLanguage) : configured
+}
+
+/** A bare generic translation failure says nothing the UI's fixed copy does not. */
+export function translationFailureText(error: unknown): string {
+  const text = redactDshSecrets(dshErrorText(error)).slice(0, 300)
+  const detail = text
+    .replace(/^\s*cotTranslation\/failed\s*:\s*/iu, '')
+    .replace(/^\s*Translation failed\s*:\s*/iu, '')
+    .trim()
+  return detail === '' ? 'Translation failed' : detail
 }
 
 function stateUpdate(previous: ChatViewState, next: ChatViewState): ChatViewStateUpdate | undefined {
@@ -361,6 +416,7 @@ function initialState(cwd: string): ChatViewState {
     agentPreset: unavailableAgentPresetState(),
     usage: unavailableUsageMeterState(),
     imageLimits: undefined,
+    translation: null,
     permissions: [],
     plan: planModeStateOf(undefined),
     changedFiles: [],
@@ -424,6 +480,8 @@ export class DshChatController implements vscode.Disposable {
    * ships, which is also what a runtime without the RPC shows.
    */
   private permissionCatalog: PermissionCatalog | undefined
+  /** Monotonic cot-translation probe id: only the newest answer may publish. */
+  private translationRevision = 0
   private readonly unreadSessionIds: Set<string>
   private readonly sessionAttention = new Map<string, SessionAttention>()
   private readonly reconnectSessions = new Set<string>()
@@ -739,6 +797,7 @@ export class DshChatController implements vscode.Disposable {
       skills: [],
       agentPreset: unavailableAgentPresetState(),
       usage: unavailableUsageMeterState(),
+      translation: null,
       permissions: [],
       plan: planModeStateOf(undefined),
       changedFiles: [],
@@ -762,9 +821,10 @@ export class DshChatController implements vscode.Disposable {
       this.publish({ canReconnect: true, statusText: 'Connected to DSH. Opening event streams…' })
       await client.startStreams()
       if (generation !== this.generation || this.client !== client) return
-      // Optional capability: never part of the connect handshake, so a runtime
-      // that does not serve it still opens the conversation.
+      // Optional capabilities: never part of the connect handshake, so a
+      // runtime that does not serve them still opens the conversation.
       void this.loadPermissionCatalog(client)
+      void this.loadTranslation(client)
       this.output.appendLine(`[chat] event streams ready after ${Date.now() - connectingAt} ms; loading saved conversations`)
       this.publish({ statusText: 'Connected to DSH. Loading saved conversations…' })
       await this.loadSessions(previousSessionId === '' ? undefined : previousSessionId)
@@ -912,6 +972,7 @@ export class DshChatController implements vscode.Disposable {
         await client.startStreams()
         recovery.abort.signal.throwIfAborted()
         void this.loadPermissionCatalog(client)
+        void this.loadTranslation(client)
         await this.loadSessions(selectedId || undefined, false)
         recovery.abort.signal.throwIfAborted()
         if (recovery.failure !== undefined) throw recovery.failure
@@ -1827,6 +1888,9 @@ export class DshChatController implements vscode.Disposable {
     // The catalogue belongs to the runtime, so a replacement connection reads
     // its own: keeping the old one could offer a preset the new runtime lacks.
     this.permissionCatalog = undefined
+    // Same for cot-translation: a capability probe answers for one connection.
+    ++this.translationRevision
+    this.publish({ translation: null })
     // A stop acknowledgement is a fact about a connection that is going away.
     this.clearStoppingAcknowledgement()
     this.publish({ subagentCatalogs: {} })
@@ -2103,6 +2167,9 @@ export class DshChatController implements vscode.Disposable {
     void this.loadCommands(client, sessionId)
     void this.loadSkills(client, sessionId)
     void this.loadAgentPresets(client, sessionId)
+    // The translation capability is runtime-wide, but a conversation becoming
+    // active is another moment where the runtime may have just enabled it.
+    void this.loadTranslation(client)
     // Fire-and-forget like the other discoveries: the conversation is already
     // shown, and `loadModels` catches its own failures.
     void this.loadModels(sessionId)
@@ -2180,6 +2247,75 @@ export class DshChatController implements vscode.Disposable {
     if (this._state.phase !== 'ready' || this._state.sessionId === '') return
     const summary = this.summaries.find(item => item.sessionId === this._state.sessionId)
     this.publish({ permissions: permissionPresetsFromCatalog(summary?.projections?.values?.permissions, catalog) })
+  }
+
+  /**
+   * Probe the runtime's cot-translation capability.
+   *
+   * Translation is a client-side RPC (`cotTranslation/translate`) rather than a
+   * runtime push, so the sidebar must know the preference, the text ceiling and
+   * whether the preferred provider is routable before it can offer anything.
+   * The probe is intentionally quiet: a runtime without the experimental bundle
+   * simply leaves `translation` null.
+   */
+  private async loadTranslation(client: DshClient): Promise<void> {
+    const revision = ++this.translationRevision
+    let limits: DshTranslationLimits | undefined
+    try {
+      limits = await client.cotTranslationLimits()
+    } catch (error) {
+      // Optional capability discovery: a client or runtime that cannot serve
+      // the read must leave the original reasoning text in place, never fail a
+      // conversation load.
+      this.output.appendLine(`[translation] Capability probe unavailable: ${error instanceof Error ? error.message : String(error)}`)
+      limits = undefined
+    }
+    // A late answer from a replaced connection must not resurrect a capability.
+    if (this.client !== client || revision !== this.translationRevision) return
+    this.publish({ translation: this.translationStateOf(limits) })
+  }
+
+  /** Map the wire limits to the UI state; a stale probe is the caller's concern. */
+  private translationStateOf(limits: DshTranslationLimits | undefined): DshTranslationState | null {
+    if (limits === undefined) return null
+    return {
+      provider: limits.preferences.provider,
+      targetLanguage: translationTargetLanguage(limits.preferences.targetLanguage, vscode.env.language),
+      // The Host answers limits whenever the capability exists. `availableProviders`
+      // is deliberately not consulted here: routing failures belong to the
+      // translate RPC, not to a client-side pre-check.
+      available: true,
+      maxTextChars: limits.maxTextChars,
+    }
+  }
+
+  /**
+   * Translate one reasoning fragment for the open conversation.
+   *
+   * The provider is the runtime's preference; `sessionId` is passed so the Host
+   * can cache the translation. A conversation or connection change during the
+   * call is an error rather than a silent success, so the request cannot be
+   * attributed to the wrong conversation.
+   */
+  async translateReasoning(text: string): Promise<string> {
+    this.requireReady()
+    const state = this._state
+    const translation = state.translation
+    if (translation === null) throw new Error('Reasoning translation is not available on this runtime.')
+    if (state.sessionId === '') throw new Error('Open a conversation before translating.')
+    if (text === '' || text.length > translation.maxTextChars) throw new Error('This reasoning section is too long to translate in one request.')
+    const client = this.requireClient()
+    const sessionId = state.sessionId
+    const translated = await client.cotTranslationTranslate({
+      text,
+      targetLanguage: translation.targetLanguage,
+      provider: translation.provider,
+      sessionId,
+    })
+    if (this.client !== client || this._state.sessionId !== sessionId || this._state.phase !== 'ready') {
+      throw new Error('The conversation changed before the translation completed. Try again.')
+    }
+    return translated
   }
 
   private async loadModels(sessionId: string): Promise<void> {
@@ -2262,7 +2398,12 @@ export class DshChatController implements vscode.Disposable {
           revision: ++this.activityRevision })
       }
       if (type === 'host/settings-changed' || type === 'host/credentials-changed' || type === 'host/models-changed'
-        || type === 'host/account-changed' || type === 'host/plugins-changed') this.settingsChanges.fire()
+        || type === 'host/account-changed' || type === 'host/plugins-changed') {
+        this.settingsChanges.fire()
+        // Provider preferences, routed providers and the experimental bundle can
+        // all change the cot-translation capability without a reconnect.
+        if (this.client !== undefined) void this.loadTranslation(this.client)
+      }
       if (type === 'host/permission-catalog-changed' && this.client !== undefined) void this.loadPermissionCatalog(this.client)
       if (this.client !== undefined && this._state.phase === 'ready' && this._state.sessionId !== '') {
         const activeId = this._state.sessionId
@@ -3483,6 +3624,35 @@ class DshSurface implements vscode.Disposable {
             await this.publishDraftAttachments(sessionId)
           }
           return
+        case 'translate-reasoning': {
+          const requestId = typeof value.requestId === 'string' && value.requestId !== '' && value.requestId.length <= 100
+            ? value.requestId
+            : undefined
+          // Without a correlating id there is no caller to answer.
+          if (requestId === undefined) return
+          const reply = (result: { ok: true; text: string } | { ok: false; error: string }): Thenable<boolean> =>
+            this.webview.postMessage({ type: 'translate-reasoning-result', requestId, ...result })
+          const text = typeof value.text === 'string' ? value.text : ''
+          const translation = this.controller.state.translation
+          // The provider list is informational only: a routing failure comes
+          // back from the translate RPC and is shown as a failed translation,
+          // exactly as DSH's own client does.
+          if (translation === null
+            || this.controller.state.sessionId === '' || this.controller.state.phase !== 'ready') {
+            await reply({ ok: false, error: 'Reasoning translation is not available in this conversation.' })
+            return
+          }
+          if (text === '' || text.length > translation.maxTextChars) {
+            await reply({ ok: false, error: 'This reasoning section is too long to translate in one request.' })
+            return
+          }
+          try {
+            await reply({ ok: true, text: await this.controller.translateReasoning(text) })
+          } catch (error) {
+            await reply({ ok: false, error: translationFailureText(error) })
+          }
+          return
+        }
         case 'select-permission':
           if (typeof value.permission === 'string'
             && this.controller.state.permissions.some(permission => permission.value === value.permission)) {

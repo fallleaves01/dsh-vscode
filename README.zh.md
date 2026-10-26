@@ -8,7 +8,7 @@
 
 DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目会话、独立子代理详情、显式文件引用和原生差异审阅。
 
-当前源码版本为 **0.1.23**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.1.24**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文** | [日本語](README.ja.md)
 
@@ -168,7 +168,7 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 - **Auto review 权限预设。** 权限选择器读取 `permissionPresets/catalog`；auto-review 集成挂载后，选择器出现实验性 `auto` 预设并标注 `EXP`。无论从菜单选择还是键入 `/permission auto`，切换前都要求显式确认：该预设不使用沙箱，由同一模型逐次复审每个工具调用，可能误放行或误拒绝操作，并额外消耗 token。运行时不提供该目录时，继续使用内置三档预设。
 - **Agent Teams。** 存在 `agentTeam` Session 投影时，Tasks 面板显示持久团队名册（生命周期阶段、Lead/Teammate 角色）与共享任务板（状态、就绪、blocked-by、owner、write scopes）。成员行可打开对应会话；Team 工具卡在成员名与投影匹配后链接到该成员。任务板为只读：任务状态由运行时持有，通过 Team 工具写入。
 - **会话标题实时刷新。** 随对话更新标题的提供者沿用既有 `title` 投影与 `session/title` 事件；侧边栏本就从该投影刷新标题栏与会话列表，因此标题无需重新加载列表即可更新。
-- **实验性设置与 bundle 管理。** 设置页在 Plugins → Experimental bundles 下列出运行时的可选 bundle（启用状态、版本、描述）；当运行时由本扩展管理时，可通过 `pluginManager/setBundleEnabled` 启停。仅在附加到外部运行时才拒绝：运行中的对话或任务不再阻止修改，因为该决定由运行时作出，它返回 `applied` 或 `restart-required`，页面如实呈现而不是假装已经生效。运行时提供相应设置 namespace 时，同一页面还呈现 Reasoning translation（`cot-translation`：提供方、目标语言）、Voice input（`speech-to-text`：提供方、语言）与 Plugin market（`plugin-market`：索引 URL 列表）；未挂载的 bundle 会隐藏对应卡片。
+- **实验性设置与 bundle 管理。** 设置页在 Plugins → Experimental bundles 下列出运行时的可选 bundle（启用状态、版本、描述）；当运行时由本扩展管理时，可通过 `pluginManager/setBundleEnabled` 启停。仅在附加到外部运行时才拒绝：运行中的对话或任务不再阻止修改，因为该决定由运行时作出，它返回 `applied` 或 `restart-required`，页面如实呈现而不是假装已经生效。运行时提供相应设置 namespace 时，同一页面还呈现 Reasoning translation（`cot-translation`：提供方、目标语言）、Voice input（`speech-to-text`：提供方、语言）与 Plugin market（`plugin-market`：索引 URL 列表）；未挂载的 bundle 会隐藏对应卡片。挂载翻译 bundle 后，展开的思考内容会经 `cotTranslation/limits` 与 `cotTranslation/translate` 就地翻译，默认显示译文，可切换到原文；所选服务不可用时显示 Retry。展开的思考内容会发送给该翻译服务，可能包含私有代码或对话细节。
 
 其余实验性 bundle 的现状（完整 13 包矩阵与证据见 [rc.3 适配记录](docs/DSH-0.2.1-RC3-ADAPTATION.md)）：
 

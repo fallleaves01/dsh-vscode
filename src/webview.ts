@@ -327,6 +327,20 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .thinking-duration[hidden] { display: none; }
     .thinking-preview { min-width: 0; flex: auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsh-line-secondary); }
     .thinking-body { margin: 0; padding: 4px 0 4px 22px; border: 0; color: var(--vscode-descriptionForeground); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--dsh-content-font-size-secondary); line-height: calc(20px + var(--dsh-content-font-delta-secondary)); }
+    /* DSH cot-translation: translated fragments replace the original text in the
+       same measured body, with a compact toolbar above them. The pending spinner
+       and the failure sentence share the toolbar so the body never jumps. */
+    .thinking-translation { display: grid; gap: 4px; min-width: 0; }
+    .thinking-translation-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 22px; }
+    .thinking-translation-toggle, .thinking-translation-retry { flex: none; padding: 1px 7px; border: 1px solid var(--vscode-widget-border, var(--dsh-border)); border-radius: 5px; background: transparent; color: var(--vscode-textLink-foreground); font-size: 11px; line-height: 16px; cursor: pointer; }
+    .thinking-translation-toggle:hover:not(:disabled), .thinking-translation-retry:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .thinking-translation-toggle:disabled { opacity: .55; cursor: default; }
+    .thinking-translation-spinner { flex: none; width: 10px; height: 10px; border: 1.5px solid color-mix(in srgb, var(--vscode-foreground) 25%, transparent); border-top-color: var(--vscode-textLink-foreground); border-radius: 50%; animation: thinking-translation-spin .8s linear infinite; }
+    .thinking-translation-spinner[hidden], .thinking-translation-failure[hidden], .thinking-translation-retry[hidden] { display: none; }
+    .thinking-translation-failure { min-width: 0; flex: 1 1 auto; color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 16px; overflow-wrap: anywhere; }
+    .thinking-translation-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    @keyframes thinking-translation-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .thinking-translation-spinner { animation: none; } }
     .live-status { display: flex; align-items: center; gap: 6px; margin: 6px 0 3px; color: var(--vscode-descriptionForeground); font-size: calc(var(--dsh-content-font-size) - 2px); line-height: calc(22px + var(--dsh-content-font-delta)); }
     .live-status-mark { position: relative; flex: none; width: 14px; height: 14px; display: inline-flex; color: var(--vscode-charts-blue, #4d6bfe); }
     .live-status-mark svg { display: block; width: 100%; height: 100%; }
@@ -1851,6 +1865,200 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         clearInterval(thinkingTicker); thinkingTicker = undefined;
       }
     }
+    /**
+     * Reasoning translation (DSH cot-translation, Webview side).
+     *
+     * DSH mounts one controller per expanded reasoning body: it splits the text
+     * into blank-line paragraphs and request-sized fragments, translates each
+     * completed fragment once, and renders translated fragments over the
+     * original remainder. The Webview has no component to hold that controller,
+     * so the same state lives in these module maps keyed by message id and the
+     * DOM is patched in place; requests use the existing message channel.
+     */
+    const cotStates = new Map();
+    const cotRequests = new Map();
+    let cotSerial = 0;
+
+    /**
+     * The translator's request limits whenever the runtime advertises the
+     * capability.
+     *
+     * DSH's own client does not pre-check provider availability: the
+     * availability flag only labels a choice in the settings form, and a
+     * provider that cannot answer surfaces as a failed fragment with Retry. The
+     * controls therefore render whenever the capability is composed, and the
+     * selection key tracks only what changes a cached translation.
+     */
+    function cotLimits() {
+      const value = state && state.translation;
+      if (!value || typeof value !== 'object') return undefined;
+      const maxTextChars = typeof value.maxTextChars === 'number' && Number.isFinite(value.maxTextChars) ? Math.floor(value.maxTextChars) : 0;
+      if (maxTextChars <= 0) return undefined;
+      const provider = string(value.provider), targetLanguage = string(value.targetLanguage);
+      return { provider, targetLanguage, maxTextChars, key: JSON.stringify([provider, targetLanguage, maxTextChars]) };
+    }
+
+    /**
+     * DSH's exact fragmenter: blank-line paragraphs, then request-sized slices.
+     * A high surrogate is never split from its low half, a slice prefers a
+     * whitespace boundary, and the whitespace cut through is appended to the
+     * fragment's suffix so the rendered text keeps the original spacing.
+     */
+    function reasoningFragments(text, running, maxTextChars) {
+      const fragments = [];
+      const separator = /\\r?\\n(?:[\\t ]*\\r?\\n)+/g;
+      let start = 0;
+      for (;;) {
+        const match = separator.exec(text);
+        let remaining = text.slice(start, match === null ? text.length : match.index);
+        while (remaining.length > maxTextChars) {
+          let cut = maxTextChars;
+          const code = remaining.charCodeAt(cut - 1);
+          if (code >= 0xD800 && code <= 0xDBFF) cut -= 1;
+          const whitespace = remaining.slice(0, cut).search(/\\s+\\S*$/);
+          if (whitespace > 0) cut = whitespace;
+          const source = remaining.slice(0, cut);
+          remaining = remaining.slice(cut);
+          const suffix = (remaining.match(/^\\s+/) ?? [''])[0];
+          remaining = remaining.slice(suffix.length);
+          fragments.push({ text: source, suffix, complete: true });
+        }
+        fragments.push({ text: remaining, suffix: match === null ? '' : match[0], complete: match !== null || !running });
+        if (match === null) return fragments;
+        start = match.index + match[0].length;
+      }
+    }
+
+    /** Cached controller state for one message, rebuilt when the selection changes. */
+    function cotEntry(message) {
+      if (typeof message.id !== 'string' || !hasThinking(message)) return undefined;
+      const limits = cotLimits();
+      if (limits === undefined) return undefined;
+      let entry = cotStates.get(message.id);
+      if (entry === undefined) {
+        entry = { selectionKey: limits.key, fragments: [], cache: new Map(), failed: false, showOriginal: false, requestId: undefined };
+        cotStates.set(message.id, entry);
+      } else if (entry.selectionKey !== limits.key) {
+        // A translated fragment belongs to the selection that produced it.
+        if (entry.requestId !== undefined) cotRequests.delete(entry.requestId);
+        entry.selectionKey = limits.key; entry.cache.clear(); entry.failed = false; entry.showOriginal = false; entry.requestId = undefined;
+      }
+      entry.fragments = reasoningFragments(message.reasoning || '', message.streaming === true, limits.maxTextChars);
+      return entry;
+    }
+
+    /** What an expanded body shows: translations where cached, the original elsewhere. */
+    function cotComposed(entry) {
+      return entry.fragments.map(fragment => {
+        const translated = fragment.complete ? entry.cache.get(fragment.text) : undefined;
+        return (translated === undefined ? fragment.text : translated) + fragment.suffix;
+      }).join('');
+    }
+
+    /** Ask for the next completed, non-empty, uncached fragment; one request per message. */
+    function cotPump(messageId) {
+      const entry = cotStates.get(messageId);
+      if (entry === undefined || entry.failed || entry.requestId !== undefined) return;
+      if (cotLimits() === undefined) return;
+      const next = entry.fragments.find(fragment => fragment.complete && fragment.text.trim() !== '' && !entry.cache.has(fragment.text));
+      if (next === undefined) return;
+      const requestId = 'cot-' + String(++cotSerial);
+      entry.requestId = requestId;
+      cotRequests.set(requestId, { messageId, text: next.text });
+      vscode.postMessage({ type: 'translate-reasoning', requestId, text: next.text });
+    }
+
+    /** One thinking body's translation controls and translated text slot. */
+    function cotCreateView(thinking) {
+      const wrapper = node('div', 'thinking-translation');
+      const toolbar = node('div', 'thinking-translation-toolbar');
+      const toggle = node('button', 'thinking-translation-toggle'); toggle.type = 'button';
+      const spinner = node('span', 'thinking-translation-spinner');
+      spinner.setAttribute('role', 'status');
+      spinner.setAttribute('aria-label', 'Translating reasoning');
+      const failure = node('span', 'thinking-translation-failure');
+      failure.setAttribute('role', 'status');
+      failure.textContent = 'Translation failed. Showing the original.';
+      const retry = node('button', 'thinking-translation-retry', 'Retry'); retry.type = 'button';
+      const text = node('div', 'thinking-translation-text');
+      toggle.addEventListener('click', () => {
+        const current = thinking.message;
+        const entry = cotEntry(current);
+        if (entry === undefined || entry.failed) return;
+        entry.showOriginal = !entry.showOriginal;
+        cotRender(thinking, current);
+      });
+      retry.addEventListener('click', () => {
+        const current = thinking.message;
+        const entry = cotEntry(current);
+        if (entry === undefined) return;
+        entry.failed = false;
+        cotRender(thinking, current);
+      });
+      toolbar.append(toggle, spinner, failure, retry);
+      wrapper.append(toolbar, text);
+      return { wrapper, toggle, spinner, failure, retry, text };
+    }
+
+    /** Patch one expanded thinking body from its translation state. */
+    function cotRender(thinking, message) {
+      const entry = cotEntry(message);
+      if (entry === undefined) {
+        thinking.translation = undefined;
+        thinking.body.textContent = message.reasoning || '';
+        return;
+      }
+      let view = thinking.translation;
+      if (view === undefined) { view = cotCreateView(thinking); thinking.translation = view; thinking.body.replaceChildren(view.wrapper); }
+      // Pump before painting: the request it starts is what makes this frame
+      // pending, and the spinner must appear with the request, not one frame late.
+      cotPump(message.id);
+      const failed = entry.failed === true;
+      const pending = !failed && entry.requestId !== undefined;
+      const showOriginal = entry.showOriginal || failed;
+      view.wrapper.dataset.translationState = failed ? 'failed' : pending ? 'pending' : 'ready';
+      view.wrapper.dataset.translationView = showOriginal ? 'original' : 'translated';
+      view.toggle.textContent = showOriginal ? 'View translation' : 'View original';
+      view.toggle.disabled = failed;
+      view.spinner.hidden = !pending;
+      view.failure.hidden = !failed;
+      view.retry.hidden = !failed;
+      view.text.textContent = showOriginal ? (message.reasoning || '') : cotComposed(entry);
+    }
+
+    /** Re-render a message's translation DOM after a result or capability change. */
+    function cotRefresh(messageId) {
+      const rendered = renderedMessages.get(messageId);
+      if (rendered === undefined || rendered.thinking === undefined) return;
+      if (rendered.thinking.root.open) cotRender(rendered.thinking, rendered.thinking.message);
+    }
+
+    function cotAcceptResult(value) {
+      if (typeof value.requestId !== 'string') return;
+      const pending = cotRequests.get(value.requestId);
+      if (pending === undefined) return;
+      cotRequests.delete(value.requestId);
+      const entry = cotStates.get(pending.messageId);
+      if (entry === undefined || entry.requestId !== value.requestId) return;
+      entry.requestId = undefined;
+      if (value.ok === true && typeof value.text === 'string') entry.cache.set(pending.text, value.text);
+      else entry.failed = true;
+      cotRefresh(pending.messageId);
+      if (!entry.failed) cotPump(pending.messageId);
+    }
+
+    /** Capability changed: every expanded body gains or loses its toolbar. */
+    function cotApplyCapability() {
+      for (const rendered of renderedMessages.values()) {
+        if (rendered.thinking !== undefined && rendered.thinking.root.open) cotRender(rendered.thinking, rendered.thinking.message);
+      }
+    }
+
+    function cotReset() {
+      cotStates.clear();
+      cotRequests.clear();
+    }
+
     /** Collapsed-by-default model thinking, folded above the answer. */
     function renderThinking(message) {
       const root = document.createElement('details');
@@ -1866,11 +2074,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       summary.append(glyph, title, duration, separator, preview);
       const body = node('div', 'thinking-body');
       root.append(summary, body);
-      const thinking = { root, title, duration, separator, preview, body, message };
+      const thinking = { root, title, duration, separator, preview, body, message, translation: undefined };
       applyThinkingState(thinking, message);
       // A collapsed body is never materialized, so long thinking stays cheap.
-      root.addEventListener('toggle', () => { if (root.open) body.textContent = thinking.message.reasoning || ''; });
-      if (root.open) body.textContent = message.reasoning || '';
+      // Opening is also what starts translation: the toolbar is body content.
+      root.addEventListener('toggle', () => { if (root.open) cotRender(thinking, thinking.message); });
+      if (root.open) cotRender(thinking, message);
       return thinking;
     }
     /** One place decides what a thinking summary shows, for render and refresh. */
@@ -1889,7 +2098,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // DSH highlights the summary while the model is still writing it.
       thinking.preview.classList.toggle('shimmer', live);
       thinking.preview.textContent = summary;
-      if (thinking.root.open) thinking.body.textContent = message.reasoning || '';
+      if (thinking.root.open) cotRender(thinking, message);
     }
     function syncThinking(thinking, message) {
       applyThinkingState(thinking, message);
@@ -2482,12 +2691,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     }
     function reconcileMessages(messages, current) {
       if (!messages.length) {
-        renderedMessages.clear(); elements.messages.replaceChildren(renderEmpty(current)); syncThinkingTicker(); return;
+        renderedMessages.clear(); cotReset(); elements.messages.replaceChildren(renderEmpty(current)); syncThinkingTicker(); return;
       }
       const ids = new Set(messages.map(message => message.id));
       for (const [id, rendered] of renderedMessages) {
         if (!ids.has(id)) {
           rendered.node.remove(); renderedMessages.delete(id); toolOpenIntent.delete(id); resetDeferredOutput(id); pendingMessageAppends.delete(id);
+          // A message that left the transcript cannot answer its translation.
+          cotStates.delete(id);
         }
       }
       let cursor = elements.messages.firstChild;
@@ -3605,6 +3816,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedSessionId !== current.sessionId) {
         if (renderedSessionId) sessionDrafts.set(renderedSessionId, elements.prompt.value);
         renderedSessionId = current.sessionId; renderedMessages.clear(); thinkingTiming.clear(); syncThinkingTicker(); elements.messages.replaceChildren();
+        // Translation controllers belong to the conversation that requested
+        // them; a switch (or a rebuilt list) must not answer into old nodes.
+        cotReset();
         closeContextMenu(false); contextCandidates = []; contextRequestId++;
         ideContext = ideContextBySession.get(current.sessionId) || { pinned: [] }; renderIdeContext();
         if (current.sessionId) vscode.postMessage({ type: 'request-ide-context', sessionId: current.sessionId });
@@ -3634,6 +3848,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         // The message nodes are gone, so the thinking ticker must not keep
         // writing into them; it only stops when no live entry remains.
         renderedMessages.clear(); thinkingTiming.clear(); syncThinkingTicker();
+        // The bodies are gone with the messages, so nothing may keep translating.
+        cotReset();
         renderedHistoryKey = ''; renderedTail = {};
         // The turn clock is gone with the tail, and a dead runtime must not keep
         // ticking it.
@@ -3754,6 +3970,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       renderRoutableNotice(current);
       renderHeldNotice(current);
       renderConversation(current);
+      // The translator capability can arrive after the transcript was rendered:
+      // an expanded body gains (or loses) its toolbar without a message reload.
+      if (renderedChrome.translation !== current.translation) cotApplyCapability();
       syncSubagentToolLinks();
       const enabled = composerReady() && Boolean(current.sessionId);
       elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true || Boolean(pendingConversationCreation); elements.newSession.disabled = current.phase !== 'ready'; elements.policyTrigger.disabled = current.phase !== 'ready' || Boolean(pendingConversationCreation);
@@ -3805,6 +4024,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         parentSessionId: current.parentSessionId, subagentOwnerTitle: subagentOwnerTitle(current),
         goal: current.goal, schedules: current.schedules, workflows: current.workflows, projectJobs: current.projectJobs, jobsStatus: current.jobsStatus, historySearch: current.historySearch, archivedSessions: current.archivedSessions, childReadOnlyReason: current.childReadOnlyReason,
         phase: current.phase, usage: current.usage, jobs: current.jobs, todos: current.todos, team: current.team, commands: current.commands, skills: current.skills,
+        translation: current.translation,
       };
       if (preservingHistory && current.loadingHistory !== true) {
         const anchor = historyAnchor; historyAnchor = undefined;
@@ -4397,6 +4617,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       if (event.data.type === 'state') { pendingMessageAppends.clear(); scheduleRender(event.data.state); }
       if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
+      // The Host answers one reasoning translation per request id.
+      if (event.data.type === 'translate-reasoning-result') cotAcceptResult(event.data);
       if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && typeof event.data.messageId === 'string') {
         const request = loadingToolRequests.get(event.data.messageId);
         if (!request || request.requestId !== event.data.requestId) return;

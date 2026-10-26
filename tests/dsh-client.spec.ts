@@ -1084,3 +1084,79 @@ describe('read-only cold catalog projections',()=>{
     await expect(h.client.sessionProjections('s')).rejects.toThrow('projection sequence')
   })
 })
+
+describe('cot translation capability', () => {
+  const LIMITS = {
+    maxTextChars: 4_000,
+    preferences: { provider: 'bing', targetLanguage: 'auto' },
+    availableProviders: ['bing', 'google'],
+  }
+
+  it('reads and validates the translation limits with a capability-sized timeout', async () => {
+    const h = harness()
+    h.results['cotTranslation/limits'] = LIMITS
+    expect(await h.client.cotTranslationLimits()).toEqual({
+      maxTextChars: 4_000,
+      preferences: { provider: 'bing', targetLanguage: 'auto' },
+      availableProviders: ['bing', 'google'],
+    })
+    const request = vi.mocked(h.connection.call).mock.calls.find(([endpoint]) => endpoint === 'cotTranslation/limits')
+    expect(request?.[1]).toEqual({})
+    // Optional capability discovery: a stalled answer must not hang the caller.
+    expect(request?.[2]).toBe(10_000)
+  })
+
+  it.each([
+    ['missing answer', {}],
+    ['non-positive max text', { maxTextChars: 0, preferences: LIMITS.preferences, availableProviders: LIMITS.availableProviders }],
+    ['unknown provider', { ...LIMITS, preferences: { provider: 'internal', targetLanguage: 'auto' } }],
+    ['empty target language', { ...LIMITS, preferences: { provider: 'bing', targetLanguage: ' ' } }],
+    ['non-array providers', { ...LIMITS, availableProviders: 'bing' }],
+    ['non-string provider entry', { ...LIMITS, availableProviders: [42] }],
+  ])('reports no capability for an unusable limits answer: %s', async (_name, value) => {
+    const h = harness()
+    h.results['cotTranslation/limits'] = value
+    expect(await h.client.cotTranslationLimits()).toBeUndefined()
+  })
+
+  it('reports no capability when the limits RPC fails', async () => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError('gateway/invocation-unavailable', 'Unknown method.'))
+    expect(await h.client.cotTranslationLimits()).toBeUndefined()
+    expect(h.errors).toEqual([])
+  })
+
+  it('sends the translate request shape and returns the translated string', async () => {
+    const h = harness()
+    h.results['cotTranslation/translate'] = '你好，世界。'
+    expect(await h.client.cotTranslationTranslate({
+      text: 'Hello, world.', targetLanguage: 'zh-cn', provider: 'bing', sessionId: 's',
+    })).toBe('你好，世界。')
+    const request = vi.mocked(h.connection.call).mock.calls.find(([endpoint]) => endpoint === 'cotTranslation/translate')
+    expect(request?.[1]).toEqual({ request: { text: 'Hello, world.', targetLanguage: 'zh-cn', provider: 'bing', sessionId: 's' } })
+    // A slow provider (anonymous Bing endpoints) may legitimately need this long.
+    expect(request?.[2]).toBe(60_000)
+  })
+
+  it('omits optional translate fields when the caller leaves them out', async () => {
+    const h = harness()
+    h.results['cotTranslation/translate'] = 'Hallo.'
+    await h.client.cotTranslationTranslate({ text: 'Hello.', targetLanguage: 'de' })
+    expect(h.requests.at(-1)).toEqual({ endpoint: 'cotTranslation/translate', args: { request: { text: 'Hello.', targetLanguage: 'de' } } })
+  })
+
+  it.each([
+    ['a non-string answer', 42],
+    ['an empty answer', '   '],
+  ])('rejects %s as a failed translation', async (_name, value) => {
+    const h = harness()
+    h.results['cotTranslation/translate'] = value
+    await expect(h.client.cotTranslationTranslate({ text: 'Hello.', targetLanguage: 'de' })).rejects.toThrow('no translated text')
+  })
+
+  it('propagates a translate RPC failure to the caller', async () => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError('cotTranslation/failed', 'Translation failed'))
+    await expect(h.client.cotTranslationTranslate({ text: 'Hello.', targetLanguage: 'de' })).rejects.toThrow('Translation failed')
+  })
+})

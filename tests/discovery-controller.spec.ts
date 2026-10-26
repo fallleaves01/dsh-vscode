@@ -68,6 +68,7 @@ function testClient() {
     updateQueue: vi.fn(async () => ({ accepted: true })),
     executeCommand: vi.fn(async () => ({ result: { kind: 'success' } })),
     permissionCatalog: vi.fn(async () => undefined),
+    cotTranslationLimits: vi.fn(async () => undefined),
     archiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
     unarchiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
     killJob: vi.fn(async () => ({ outcome: 'requested' as const })),

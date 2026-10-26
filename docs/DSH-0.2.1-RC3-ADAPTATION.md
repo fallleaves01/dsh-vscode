@@ -17,7 +17,7 @@
 | 3 | `dsh-experimental-auto-review` | Host 插件 | 已适配 | `src/dsh-client.ts:478` 读取 `permissionPresets/catalog`；`src/collaboration-state.ts:78,125,230,242,263` 解析目录、`EXP` 标记、选择态与风险确认；`src/extension.ts:2096,2883` 装配与确认；`src/webview.ts:2505,2893` 徽标；测试 `tests/collaboration-state.spec.ts`、`tests/dsh-client.spec.ts`、`tests/webview-policy.spec.ts` | 审批面板不标注 Auto 来源；`displayReason`/`callId` 仍丢弃（rc.2 既有）；`AUTO_REVIEW_DENIED` 按通用 `tool/result` 错误呈现 |
 | 4 | `dsh-experimental-session-titles-bundle` | 纯 profile bundle | 已适配（零代码改动） | 既有 `title` projection 与 `session/title` 事件链路；真实运行时观察到 `session/title` 与 `session/title-llm-request` 事件、重命名后的 `{type:'projection', key:'title'}` 帧（`seq=3`） | LLM 标题生成需已登录模型账户；隔离环境回退为 `source.kind='fallback'`；生成失败保留旧标题 |
 | 5 | `dsh-experimental-session-search` | 纯 profile bundle | 部分 | 5 个智能体工具（`session_search`、`session_trace`、`session_event_read/search/trace`）出现在真实工具目录，经通用工具卡呈现；侧栏正文搜索继续使用基础 `session/search` | 未接入工具专用卡片；与 `enableHistorySearch` 任务服务补丁存在双 SQLite 行风险（实测 `include:session-query-sqlite` 与 `include:optional-session-query-sqlite` 同时 active） |
-| 6 | `dsh-experimental-cot-translation-bundle` | 纯 profile bundle | 部分 | 设置页新增 Reasoning translation 卡片（`cot-translation` namespace：`provider` 下拉 4 值、`targetLanguage`），经 `settings/mutate` 保存（`src/settings-page-state.ts` forms/`fieldMutations`，`src/settings-page.mts` select 控件）；bundle 可经设置页启停 | 会话内思考正文的翻译/原文切换 UI 未实现（`cotTranslation/limits|translate`） |
+| 6 | `dsh-experimental-cot-translation-bundle` | 纯 profile bundle | 已适配 | 设置页 Reasoning translation 卡片（`cot-translation`：`provider` 4 值、`targetLanguage`）；会话内 Thinking 按 DSH 方式翻译显示：`cotTranslation/limits` 探测能力与上限、`cotTranslation/translate` 按段落/长度分片串行请求、默认译文、View original 切换、pending spinner、失败时原文 + Retry（`src/dsh-client.ts`、`src/extension.ts` 的 `translate-reasoning` 协议、`src/webview.ts` 的 `thinking-translation` 渲染）；测试 `tests/dsh-client.spec.ts`、`tests/extension-surface.spec.ts`、`tests/webview-translation.spec.ts` | 译文按纯文本渲染（与既有 reasoning 一致；DSH 用 Markdown）；折叠 Thinking 不取消在途请求（结果入缓存，切换会话清理）；`auto` 语言按编辑器语言主子标签解析（DSH 内置仅 zh/en，本扩展可发 ja）；展开的思考内容会发送给所选翻译服务 |
 | 7 | `dsh-experimental-plugin-market-bundle` | 纯 profile bundle | 部分 | 设置页新增 Plugin market 卡片（`plugin-market` namespace 的 `indexes` URL 列表，`string-list` 控件与 HTTP(S) 校验）；既有社区 registry 与 CLI 安装路径保留（`src/plugin-catalog.ts`、`src/plugin-manager.ts`） | 市场 Discover、搜索与图形化安装未实现（`pluginMarket/listIndexes|search|setIndexes` 与 `pluginManager/installBundle` 等） |
 | 8 | `dsh-experimental-voice-input-bundle` | 纯 profile bundle | 部分 | 设置页新增 Voice input 卡片（`speech-to-text` namespace：`defaultProvider` 与 `language` 两个字符串字段），经 `settings/mutate` 保存；bundle 可经设置页启停 | 音频采集与转写未实现（`speech/follow|transcribe` 流经 `/api/remote.mux`、设备准备 UI） |
 | 9 | `dsh-experimental-terminal-bundle` | 纯 profile bundle | 不适用 | 仅新增 6 个模型工具，通用工具卡可渲染；用户侧持久终端面板属基础 `terminal/*` RPC，不是本包的客户端契约 | 无持久终端面板；既有 bash/pwsh 卡片保持原状 |
@@ -64,8 +64,8 @@
 
 | 指标 | 数值 |
 |---|---|
-| 测试文件 | 112（111 通过，1 失败） |
-| 测试用例 | 1581（1579 通过，1 失败，1 跳过） |
+| 测试文件 | 115（114 通过，1 失败） |
+| 测试用例 | 1618（1616 通过，1 失败，1 跳过） |
 | 耗时 | Duration 9–10 s（多次复跑） |
 
 唯一失败为既有沙箱限制：`tests/diff-review.spec.ts:787` 向 `$HOME/dsh-open-file-spec.tmp` 写入时返回 `EPERM`。该测试文件不在本轮改动清单内，失败与 rc.3 适配无关；Vitest 因此以退出码 1 结束。新增测试文件三个：`tests/agent-team-state.spec.ts`（10 项）、`tests/dsh-session-feed.spec.ts`（16 项）、`tests/extension-surface.spec.ts`（5 项）；另在 `tests/settings-page-state.spec.ts`、`tests/settings-panel.spec.ts`、`tests/settings-page.spec.ts`、`tests/dsh-session-feed.spec.ts`、`tests/collaboration-state.spec.ts`、`tests/dsh-client.spec.ts`、`tests/discovery-controller.spec.ts`、`tests/subagent-tools.spec.ts`、`tests/webview-policy.spec.ts`、`tests/webview-subagent-cards.spec.ts`、`tests/webview-task-features.spec.ts` 中扩充用例。
@@ -202,3 +202,28 @@
 4. 失败 attempt 的可见文本保留（DSH 丢弃重试 attempt 的全部流式输出）。
 
 验证：独立验证者以真实（脱敏）重试序列完成 projector→聊天 Webview→任务详情三段断言（空 attempt 删除、单重试行、最后 attempt 状态、失败块、上限提示、行动作行可见性），7 项变异中 6 项被捕获，并补充固定「同 retry 号仅 state 变化」更新的回归用例。全量 1581 例（1579 通过、1 既有 EPERM、1 平台跳过）；`tsc --noEmit` 0；`scripts/build.mjs` 0。
+
+## 11. 实验性插件适配审计与 Thinking 翻译（0.1.24）
+
+用户询问“新增的实验性插件是否全适配”。审计结论：**并非全部**。按“客户端可见契约是否被消费”统计：8 个包已完整覆盖或无需专属 UI，5 个包仍有部分缺口。
+
+| 类别 | 包 | 说明 |
+|---|---|---|
+| 完整/无需 UI | agent-team、agent-team-profile、session-titles、session-search、terminal（工具）、badge-skill、ralph、inspector | 侧栏已消费可见投影/工具；inspector 为 Web-only CDP，不适用于 VS Code；session-search 无专属 UI（Web 同为工具调用），仅保留双 SQLite 配置风险 |
+| 本轮补齐 | cot-translation | 会话内 Thinking 翻译（见下） |
+| 部分 | plugin-market、voice-input、tool-worktree、auto-review | market：仅 indexes 设置，缺 Discover/搜索/安装（RPC 齐备）；voice-input：仅设置，缺麦克风采集/设备准备/流式转写；tool-worktree：未消费 `workingDirectory` 投影（文件/审阅路径仍以项目根为基准）；auto-review：缺 “Rejected by Auto review” 专用呈现（按通用工具错误显示） |
+
+后续优先级建议：1) plugin-market 完整闭环；2) tool-worktree `workingDirectory` 整合；3) auto-review 呈现打磨；voice-input 属最大单项新功能，建议单独立项评估。持久终端面板属基础 `terminal/*` RPC，不在这批实验包内。
+
+### 11.1 Thinking 翻译实现（cot-translation）
+
+翻译由客户端 RPC 驱动，运行时不会推送译文。实现路径：
+
+1. **能力探测**：连接/会话打开/设置与凭据事件后调用 `cotTranslation/limits`（10 s，失败即视为能力不存在），读取 `maxTextChars`、`preferences.provider`、`preferences.targetLanguage` 与 `availableProviders`；`auto` 目标语言在宿主侧按 `vscode.env.language` 归一化（zh-cn→zh 等）。
+2. **分片与请求**：Thinking 展开后按 DSH 算法分片（空行分段；超过上限按 UTF-16 切分，不切开代理对、尽量在空白处截断，后缀空白只用于显示）；完整且非空且未缓存的片段按消息串行请求 `cotTranslation/translate`（60 s），跨消息并发；请求携带 provider、解析后的目标语言与当前会话 id（命中宿主持久缓存）。
+3. **展示**：默认显示译文；未完成片段显示原文并显示 pending spinner（aria-label “Translating reasoning”）；工具条按钮在 “View original / View translation” 间切换；失败时整段回退原文并显示 “Translation failed. Showing the original.” 与 Retry（重试从第一个未缓存片段继续）。`availableProviders` 只用于设置表单标注，不阻止请求（与 DSH 一致）；provider 调用失败由上述失败态呈现。
+4. **缓存与清理**：片段译文按文本缓存；provider/目标语言/上限变化时清空；会话切换、消息移除与断连时清理在途请求状态。
+
+已知差异（有意）：译文按纯文本渲染（侧栏既有 reasoning 为纯文本，XSS 安全）；折叠 Thinking 不取消在途请求（结果入缓存，避免重复请求）；`auto` 语言可解析出 zh/en 之外的标签（DSH 内置仅 zh/en）；固定 60 s 超时替代取消式等待。
+
+验证：独立验证者以真实运行时完成 `limits`/`translate` 实测（Bing 返回中文译文、Google 在本机失败），并以真实 limits 值与真实译文完成宿主→Webview 边界 E2E（三段逐段替换、toggle、失败→Retry、会话切换清理），7 项变异全部被捕获。全量 1618 例（1616 通过、1 既有 EPERM、1 平台跳过，115 个测试文件）；`tsc --noEmit` 0；`scripts/build.mjs` 0。
