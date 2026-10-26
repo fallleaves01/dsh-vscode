@@ -9,6 +9,8 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-10-26
+
 ### Added
 
 - Read the runtime's `permissionPresets/catalog` and offer the experimental
