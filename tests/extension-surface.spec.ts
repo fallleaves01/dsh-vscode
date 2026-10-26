@@ -507,4 +507,47 @@ describe('host surface wiring', () => {
       await vi.waitFor(() => expect(h.mergedState().approval?.reason).toBe('fallback reason'))
     })
   })
+
+  describe('stale stop and switching feedback', () => {
+    const messages = (h: { posts: () => Array<Record<string, any>> }): Array<Record<string, any>> => {
+      const all: Array<Record<string, any>> = []
+      for (const packet of h.posts()) {
+        if (packet.type === 'state') all.push(...(packet.state?.messages ?? []))
+        else if (packet.type === 'state-update') {
+          all.push(...(packet.update?.messages?.reset ?? []), ...(packet.update?.messages?.upserts ?? []))
+        }
+      }
+      return all
+    }
+
+    it('forwards Stop when this window does not believe a turn is running', async () => {
+      const h = await activated()
+      h.client.cancel.mockClear()
+      h.send({ type: 'cancel' })
+      // The Stop click is never dropped on a stale-false local flag.
+      await vi.waitFor(() => expect(h.client.cancel).toHaveBeenCalledWith('a'))
+      expect(h.mergedState().stopping).toBe(false)
+      expect(h.mergedState().cancelRequested).toBe(false)
+    })
+
+    it('shows the held banner when a stop request cannot be delivered', async () => {
+      const h = await activated()
+      h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+      h.client.cancel.mockRejectedValueOnce(Object.assign(
+        new Error('conversation is already owned by an active write handle'),
+        { code: 'session/writer-held' },
+      ))
+      h.send({ type: 'cancel' })
+      // Held is explained by the composer banner, not by silence.
+      await vi.waitFor(() => expect(h.mergedState().occupancyNotice).toContain('already in use'))
+      await vi.waitFor(() => expect(h.mergedState().stopping).toBe(false))
+    })
+
+    it('reports a conversation this window cannot find instead of ignoring the click', async () => {
+      const h = await activated()
+      h.send({ type: 'select-session', sessionId: 'ghost' })
+      await vi.waitFor(() => expect(messages(h).some(message => message.role === 'notice'
+        && String(message.text).includes('not in the current project'))).toBe(true))
+    })
+  })
 })

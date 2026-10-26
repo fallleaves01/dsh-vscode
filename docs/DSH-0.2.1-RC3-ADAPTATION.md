@@ -64,8 +64,8 @@
 
 | 指标 | 数值 |
 |---|---|
-| 测试文件 | 117（116 通过，1 失败） |
-| 测试用例 | 1649（1647 通过，1 失败，1 跳过） |
+| 测试文件 | 118（117 通过，1 失败） |
+| 测试用例 | 1680（1678 通过，1 失败，1 跳过） |
 | 耗时 | Duration 9–10 s（多次复跑） |
 
 唯一失败为既有沙箱限制：`tests/diff-review.spec.ts:787` 向 `$HOME/dsh-open-file-spec.tmp` 写入时返回 `EPERM`。该测试文件不在本轮改动清单内，失败与 rc.3 适配无关；Vitest 因此以退出码 1 结束。新增测试文件三个：`tests/agent-team-state.spec.ts`（10 项）、`tests/dsh-session-feed.spec.ts`（16 项）、`tests/extension-surface.spec.ts`（5 项）；另在 `tests/settings-page-state.spec.ts`、`tests/settings-panel.spec.ts`、`tests/settings-page.spec.ts`、`tests/dsh-session-feed.spec.ts`、`tests/collaboration-state.spec.ts`、`tests/dsh-client.spec.ts`、`tests/discovery-controller.spec.ts`、`tests/subagent-tools.spec.ts`、`tests/webview-policy.spec.ts`、`tests/webview-subagent-cards.spec.ts`、`tests/webview-task-features.spec.ts` 中扩充用例。
@@ -244,3 +244,21 @@
 与 DSH 的差异（有意/已知）：未实现审批面板的来源徽标（DSH 也只显示本地化 displayReason 文案）；拒绝与审批的真实端到端路径仍需模型凭据，当前覆盖到契约与事件级。其余文案（`Rejected by Auto review`、`Tool was not executed. Reason: …`、fallback）与 DSH en locale 逐字一致。
 
 验证：独立验证者以真实 wire 形状事件完成 projector→Webview→任务详情 E2E，并对 6 处实现做变异验证；全量 1649 例（1647 通过、1 既有 EPERM、1 平台跳过，117 个测试文件）；`tsc --noEmit` 0；`scripts/build.mjs` 0。
+
+## 13. 多窗口共享 runtime 的 Stop/切换修复（0.1.26）
+
+用户报告：多个 VS Code 窗口共享同一 DSH runtime、且存在 active 会话时，无法停止当前 turn、无法切换会话。
+
+诊断结论（依据运行中的 runtime broker 记录与双客户端探针）：拓扑是**同一 runtime、两个客户端**；DSH 宿主的跨客户端原语本身正常（第二客户端可以 follow、cancel 返回 accepted、切换/打开其他会话不受影响），根因在扩展状态机：
+
+| 编号 | 根因 | 修复 |
+|---|---|---|
+| R1 | Stop 以本地 `running` 为硬门控：陈旧 false 时按钮消失/点击无效；陈旧 true 时对 idle agent 的 cancel 虽被接受，但宿主不会再发任何 turn/status 事件，界面永久等待 | 取消硬早退：会话存在即发送 cancel（不 ready 也可）；仅本地 running=true 时给出乐观确认；6 秒窗口到期后用 `session/list` 复核 running——false 清理、true 保留可重试的 “Stop requested”；cancel 返回 held 时显示可见横幅 |
+| R2 | 切换会话在 cwd 过滤后的 summaries 中找不到目标时静默返回 | 先刷新一次会话列表再解析；仍不存在/已归档时抛出可读错误（由 notice 呈现），不再静默 |
+| R3 | 加载/切换期间沿用旧的 running/停止确认；失败打开后缺少就地恢复入口 | loading 发布时重置 running/stopping/cancelRequested；error 页新增 Retry Conversation，held 时走 Check again；当前会话行在 error 下也可重试 |
+| R4 | 错误页在共享/外部 runtime 上仍提供 Restart Runtime；ownership 变化时状态区可能不重建 | Restart 仅在自有 managed runtime 显示；ownership 纳入状态渲染键 |
+| R5 | 新建会话 pending 期间禁用了会话切换入口 | pending 期间保持会话行/选择器可用，点击即放弃 pending 创建（宿主 newSession 的竞态守卫兜底） |
+
+限制与已知行为：若两个窗口实际各启动了一个 runtime（共用 DSH profile 而非同一进程），非所有者窗口的 Stop 无法跨进程停止，会显示可读的占用提示——此时应关闭多余窗口或改用共享 runtime；held 状态的清除仍依赖成功写入或 “Check again”（宿主不广播锁释放）。宿主 rc.2 与 rc.3 的相关包逐文件一致，本修复不要求升级 runtime。
+
+验证：独立验证者用真实双客户端/双 runtime 探针确认宿主义语，并以 fake harness 完成宿主→Webview 全链路 E2E（192 例），9 个变异全部被捕获；全量 1680 例（1678 通过、1 既有 EPERM、1 平台跳过，118 个测试文件）；`tsc --noEmit` 0；`scripts/build.mjs` 0。

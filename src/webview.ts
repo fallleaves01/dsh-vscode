@@ -1122,21 +1122,26 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       main.setAttribute('aria-label', archived ? 'Restore ' + title : title + (detail ? ' — ' + detail : ''));
       main.append(indicator, node('span', 'session-name', title), node('span', 'session-meta', archived && snippet !== undefined ? 'Archived' : detail));
       if (snippet !== undefined) main.append(node('span', 'session-snippet', string(snippet)));
-      main.disabled = Boolean(pendingConversationCreation);
       main.addEventListener('click', () => {
-        if (pendingConversationCreation) return;
+        // Switching is how a user leaves a conversation that will not open, so
+        // the pending new-conversation request must never lock the list. A
+        // switch abandons it locally; the Host's newSession(expected) guard
+        // rejects the late completion without moving this window back.
+        if (pendingConversationCreation) { pendingConversationCreation = undefined; creationError(''); }
         if (archived) { closeSessionActions(false); vscode.postMessage({ type: 'unarchive-session', sessionId: session.id }); return; }
         if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
         closeSessionMenu(false); homeOpen = false;
         if (state) renderNavigation(state);
         if (!state || session.id !== state.sessionId) vscode.postMessage({ type: 'select-session', sessionId: session.id });
+        // A conversation that failed to open is retried by selecting it again;
+        // in ready the same row only restores the view.
+        else if (state.phase === 'error') vscode.postMessage({ type: 'select-session', sessionId: session.id });
         else { if (state) render(state); elements.prompt.focus(); }
       });
       row.append(main);
       if (!session.blank) {
         const more = node('button', 'session-more', '…'); more.type = 'button'; more.title = 'Conversation actions';
         more.setAttribute('aria-label', 'Actions for ' + title); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
-        more.disabled = Boolean(pendingConversationCreation);
         more.addEventListener('click', event => {
           event.stopPropagation();
           if (sessionAction && sessionAction.id === session.id && sessionAction.anchor === more) closeSessionActions(true);
@@ -1224,7 +1229,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         if (current.phase !== 'ready') elements.homeRuntime.append(renderStatus(current));
       }
       const creating = Boolean(pendingConversationCreation);
-      elements.sessionTrigger.disabled = creating || ![...array(current.sessions), ...array(current.archivedSessions)].some(mainConversation);
+      // Only an empty directory disables the switcher. A pending new conversation
+      // must not: switching is the escape from a creation that does not return,
+      // and the row click abandons the pending request locally.
+      elements.sessionTrigger.disabled = ![...array(current.sessions), ...array(current.archivedSessions)].some(mainConversation);
       elements.newSession.disabled = creating || current.phase !== 'ready';
       elements.newSession.title = creating ? 'Opening new conversation…' : 'New conversation';
       elements.newSession.setAttribute('aria-label', elements.newSession.title);
@@ -2789,12 +2797,34 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           const connect = node('button', 'primary', 'Connect Existing Runtime'); connect.addEventListener('click', () => vscode.postMessage({ type: 'connect-existing-runtime' })); actions.append(connect);
           const managed = node('button', 'secondary', 'Start Managed Runtime'); managed.addEventListener('click', () => vscode.postMessage({ type: 'start-managed-runtime' })); actions.append(managed);
         } else {
+          // A failed open is retried in place: the conversation list remains
+          // usable in every phase, but the broken conversation itself needs its
+          // own way back. Without it a single held conversation leaves only a
+          // runtime restart, which in a shared runtime stops every window.
+          if (current.sessionId !== undefined && current.sessionId !== '') {
+            const retryConversation = node('button', 'primary', 'Retry Conversation');
+            retryConversation.addEventListener('click', () => {
+              if (typeof current.occupancyNotice === 'string' && current.occupancyNotice !== '') {
+                // Held: re-check the ownership before reopening the conversation.
+                vscode.postMessage({ type: 'retry-occupancy' });
+              } else {
+                vscode.postMessage({ type: 'select-session', sessionId: current.sessionId });
+              }
+            });
+            actions.append(retryConversation);
+          }
           if (current.canReconnect) {
             const retry = node('button', 'secondary', 'Reconnect'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(retry);
           } else {
             const retry = node('button', 'secondary', 'Retry Connection'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(retry);
           }
-          const restart = node('button', 'secondary', 'Restart Runtime'); restart.addEventListener('click', () => vscode.postMessage({ type: 'restart' })); actions.append(restart);
+          // Only a runtime this window owns may be restarted from here: adopted
+          // and external runtimes are shared with other windows, so restarting
+          // would stop their turns too.
+          const connection = current.runtimeConnection;
+          if (connection !== null && connection !== undefined && connection.ownership === 'managed') {
+            const restart = node('button', 'secondary', 'Restart Runtime'); restart.addEventListener('click', () => vscode.postMessage({ type: 'restart' })); actions.append(restart);
+          }
         }
         if (setup !== 'workspace') { const output = node('button', 'secondary', 'Show Output'); output.addEventListener('click', () => vscode.postMessage({ type: 'output' })); actions.append(output); }
         box.append(actions);
@@ -3881,7 +3911,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
         loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear(); deferredOutputViews.clear(); pendingMessageAppends.clear();
       }
-      const statusKey = current.phase + '::' + current.statusText + '::' + current.setup + '::' + current.canReconnect;
+      // Ownership decides which recovery actions are legal (Restart is only
+      // offered for a runtime this window started), so it belongs in the key: a
+      // reconnect can change it without changing phase, status text or setup.
+      const ownership = current.runtimeConnection && typeof current.runtimeConnection === 'object' ? current.runtimeConnection.ownership : undefined;
+      const statusKey = current.phase + '::' + current.statusText + '::' + current.setup + '::' + current.canReconnect + '::' + String(ownership);
       if (statusKey !== renderedStatusKey) {
         renderedStatusKey = statusKey;
         elements.conversationStatus.replaceChildren();
@@ -4025,9 +4059,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // open, so no phase may lock it: a conversation stuck in loading is
       // exactly when the user has to reach another one. It is disabled only when
       // there is nothing to switch to, and a click it does accept reports its own
-      // failure rather than doing nothing.
+      // failure rather than doing nothing. A pending new conversation does not
+      // lock it either: a row click abandons that request locally.
       elements.sessionTrigger.disabled = array(current.sessions).length === 0 && array(current.archivedSessions).length === 0;
-      elements.sessionTrigger.disabled ||= Boolean(pendingConversationCreation);
       elements.newSession.disabled ||= Boolean(pendingConversationCreation);
       // The picker answers a different question from the composer. When the
       // selected model is unavailable but another provider can route, disabling
@@ -4046,7 +4080,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
       const stopping = current.stopping === true && current.running === true;
       const requested = current.cancelRequested === true && current.running === true && !stopping;
-      elements.cancel.classList.toggle('hidden', current.running !== true);
+      // Cancellation requires a ready conversation: the Host refuses a stop while
+      // a conversation is opening or failed, and showing the control there only
+      // offers a click with no visible effect.
+      elements.cancel.classList.toggle('hidden', current.running !== true || current.phase !== 'ready');
       elements.cancel.classList.toggle('stopping', stopping);
       elements.cancel.classList.toggle('requested', requested);
       // A stopping turn refuses a second click while the acknowledgement is on
@@ -4174,7 +4211,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let heldNoticeText = null;
     function renderHeldNotice(current) {
       const text = typeof current.occupancyNotice === 'string' ? current.occupancyNotice : '';
-      const show = current.phase === 'ready' && text !== '';
+      // Ownership is independent of the conversation phase: a held conversation
+      // that failed to open still needs its recovery actions, and hiding them
+      // here left only a runtime restart (which affects every shared window).
+      const show = text !== '';
       elements.heldNotice.classList.toggle('hidden', !show);
       if (heldNoticeText === text) return;
       heldNoticeText = text;

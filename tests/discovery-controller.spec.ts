@@ -400,13 +400,33 @@ describe('stopping the active turn', () => {
     expect(h.controller.state.cancelRequested).toBe(true)
   })
 
-  it('ignores a click when no turn is running', async () => {
+  it('forwards a stop request even when this window believes no turn is running', async () => {
     const h = await harness()
     h.client.cancel.mockClear()
+    h.client.listSessions.mockClear()
+    // Another window sharing this runtime may own the turn, and this window can
+    // have missed the status event: the local flag is stale-false.
     await h.controller.cancel()
-    // Nothing to stop: the idle turn must not leave an acknowledgement behind
-    // for the next turn to inherit.
-    expect(h.client.cancel).not.toHaveBeenCalled()
+    expect(h.client.cancel).toHaveBeenCalledWith('a')
+    // A forwarded request must not leave an acknowledgement behind, though: the
+    // runtime decides whether there was a turn to stop.
+    expect(h.controller.state.stopping).toBe(false)
+    expect(h.controller.state.cancelRequested).toBe(false)
+    await vi.waitFor(() => expect(h.client.listSessions).toHaveBeenCalled())
+  })
+
+  it('recovers the Stop control when the runtime reports a turn this window missed', async () => {
+    const h = await harness()
+    const listed = await h.client.listSessions()
+    h.client.listSessions.mockResolvedValue({
+      items: listed.items.map(item => item.sessionId === 'a' ? { ...item, running: true } : item),
+    })
+    h.client.cancel.mockClear()
+    await h.controller.cancel()
+    expect(h.client.cancel).toHaveBeenCalledWith('a')
+    // The list is the authority: the turn is real even though this window never
+    // saw status=true, so the Stop control has to come back.
+    await vi.waitFor(() => expect(h.controller.state.running).toBe(true))
     expect(h.controller.state.stopping).toBe(false)
     expect(h.controller.state.cancelRequested).toBe(false)
   })
@@ -479,6 +499,12 @@ describe('stopping the active turn', () => {
   it('hands the control back as a retryable request when the window elapses', async () => {
     vi.useFakeTimers()
     const h = await harness()
+    // The runtime still reports the turn running: the Host accepted the stop,
+    // but the agent is finishing its current step.
+    const listed = await h.client.listSessions()
+    h.client.listSessions.mockResolvedValue({
+      items: listed.items.map(item => item.sessionId === 'a' ? { ...item, running: true } : item),
+    })
     h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
     await h.controller.cancel()
     expect(h.controller.state.stopping).toBe(true)
@@ -496,9 +522,28 @@ describe('stopping the active turn', () => {
     vi.useRealTimers()
   })
 
+  it('clears the acknowledgement when the runtime list says the turn ended', async () => {
+    vi.useFakeTimers()
+    const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.cancel()
+    expect(h.controller.state.stopping).toBe(true)
+    // The Host accepted an idle cancel and therefore sends no status event: the
+    // deadline has to ask the list, which reports the conversation as idle.
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect(h.controller.state.stopping).toBe(false)
+    expect(h.controller.state.cancelRequested).toBe(false)
+    expect(h.controller.state.running).toBe(false)
+    vi.useRealTimers()
+  })
+
   it('never carries the previous turn’s request into a new turn', async () => {
     vi.useFakeTimers()
     const h = await harness()
+    const listed = await h.client.listSessions()
+    h.client.listSessions.mockResolvedValue({
+      items: listed.items.map(item => item.sessionId === 'a' ? { ...item, running: true } : item),
+    })
     h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
     await h.controller.cancel()
     await vi.advanceTimersByTimeAsync(6_000)
@@ -510,6 +555,68 @@ describe('stopping the active turn', () => {
     expect(h.controller.state.stopping).toBe(false)
     expect(h.controller.state.cancelRequested).toBe(false)
     vi.useRealTimers()
+  })
+
+  it('surfaces a held conversation instead of failing a stop silently', async () => {
+    const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    h.client.cancel.mockRejectedValue(new DshConnectionError('session/writer-held',
+      'conversation is already owned by an active write handle'))
+    await h.controller.cancel()
+    // Held is a state, not a throw: the banner explains why this window cannot
+    // stop the turn, and the acknowledgement does not linger.
+    expect(h.controller.state.occupancyNotice).toContain('already in use')
+    expect(h.controller.state.stopping).toBe(false)
+    expect(h.controller.state.cancelRequested).toBe(false)
+  })
+
+  it('clears a stale running flag while another conversation loads', async () => {
+    const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    expect(h.controller.state.running).toBe(true)
+    const opening = Promise.withResolvers<any>()
+    h.client.openSession.mockReturnValueOnce(opening.promise)
+    const switching = h.controller.selectSession('b')
+    await vi.waitFor(() => expect(h.controller.state.phase).toBe('loading'))
+    // The previous conversation's turn must not leave a Stop button on the
+    // loading target.
+    expect(h.controller.state.running).toBe(false)
+    expect(h.controller.state.stopping).toBe(false)
+    expect(h.controller.state.cancelRequested).toBe(false)
+    opening.resolve({ events: [], hasMore: false,
+      projections: { agentPreset: 'standard', plan: { active: false, pending: false } },
+      isCurrent: () => true, activate() {} })
+    await switching
+    expect(h.controller.state.sessionId).toBe('b')
+  })
+})
+
+describe('switching conversations that the list does not know yet', () => {
+  it('refreshes the list once before opening a conversation another window created', async () => {
+    const h = await harness()
+    const listed = await h.client.listSessions()
+    h.client.listSessions.mockResolvedValue({ items: [...listed.items, { ...listed.items[0], sessionId: 'c' }] })
+    h.client.listSessions.mockClear()
+    await h.controller.selectSession('c')
+    expect(h.client.listSessions).toHaveBeenCalled()
+    expect(h.controller.state.sessionId).toBe('c')
+    expect(h.client.openSession).toHaveBeenCalledWith('c', undefined)
+  })
+
+  it('reports an unknown conversation instead of swallowing the click', async () => {
+    const h = await harness()
+    h.client.listSessions.mockClear()
+    await expect(h.controller.selectSession('ghost')).rejects.toThrow('not in the current project on this runtime')
+    // One refresh only: the click cannot loop through the list.
+    expect(h.client.listSessions.mock.calls.length).toBeLessThanOrEqual(2)
+  })
+
+  it('reports an archived conversation explicitly', async () => {
+    const h = await harness(undefined, true, client => {
+      client.listWorkspaces.mockResolvedValue({ archivedSessionIds: ['b'] })
+    })
+    await expect(h.controller.selectSession('b')).rejects.toThrow('archived')
+    expect(h.client.openSession).not.toHaveBeenCalledWith('b', undefined)
   })
 })
 

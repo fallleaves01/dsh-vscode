@@ -130,14 +130,21 @@ describe('new conversations use the full chat composer', () => {
     expect(h.posts).toEqual([])
   })
 
-  it('disables directory selection while creating and re-enables it after failure', async () => {
-    const h = open(); await h.settle(); h.click('#conversationHome'); const pending = request(h)
-    expect((h.document.querySelector('#homeSessionList .session-main') as HTMLButtonElement).disabled).toBe(true)
-    expect((h.document.querySelector('#homeSessionList .session-more') as HTMLButtonElement).disabled).toBe(true)
-    h.click('#homeSessionList .session-main')
-    expect(h.posts.some(item => item.type === 'select-session')).toBe(false)
+  it('keeps directory switching usable while creating and ignores the abandoned receipt', async () => {
+    const other = { id: 'other', title: 'Other task', blank: false }
+    const h = open(); h.sendState({ sessionId: 'parent', sessions: [parent, other], ...controls }); await h.settle()
+    h.click('#conversationHome'); const pending = request(h)
+    // Creating a conversation must not lock the list: switching abandons it.
+    const rows = [...h.document.querySelectorAll<HTMLButtonElement>('#homeSessionList .session-main')]
+    expect(rows.every(row => !row.disabled)).toBe(true)
+    const otherRow = rows.find(row => row.closest('.session-row')!.getAttribute('data-session-id') === 'other')!
+    otherRow.click()
+    expect(h.posts.at(-1)).toEqual({ type: 'select-session', sessionId: 'other' })
+    // The abandoned request no longer owns the new-conversation control.
+    expect((h.document.getElementById('newSession') as HTMLButtonElement).disabled).toBe(false)
     receipt(h, pending, { error: 'Cancelled' })
-    expect((h.document.querySelector('#homeSessionList .session-main') as HTMLButtonElement).disabled).toBe(false)
+    expect(h.posts.some(item => item.type === 'select-session' && item.sessionId === 'created')).toBe(false)
+    expect(h.document.getElementById('homeError')!.textContent).toBe('')
   })
 
   it('re-enables the composer when selecting the current conversation after a directory update', async () => {

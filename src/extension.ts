@@ -1114,9 +1114,29 @@ export class DshChatController implements vscode.Disposable {
     // the only way out of it; `loadSession` supersedes the load in flight and
     // reports its own failure, so refusing here would only turn the escape into
     // a no-op.
-    if (!(this.summaries.find(summary => summary.sessionId === sessionId && summary.cwd === this.cwd) ?? this.materializeChild(sessionId))
-      || this.archivedSessionIds.has(sessionId)) return
+    let summary = this.summaries.find(item => item.sessionId === sessionId && item.cwd === this.cwd)
+      ?? this.materializeChild(sessionId)
+    let refreshed = false
+    if (summary === undefined || this.archivedSessionIds.has(sessionId)) {
+      // The list can be stale: another window sharing this runtime may have
+      // created or archived the conversation after this window last refreshed.
+      // Refresh once, then tell the user why a click cannot be honoured instead
+      // of leaving it as a silent no-op.
+      await this.loadSessions(sessionId, false)
+      refreshed = true
+      summary = this.summaries.find(item => item.sessionId === sessionId && item.cwd === this.cwd)
+        ?? this.materializeChild(sessionId)
+      if (this.archivedSessionIds.has(sessionId)) {
+        throw new Error('This conversation is archived. Restore it from the archived list to continue.')
+      }
+      if (summary === undefined) {
+        throw new Error('This conversation is not in the current project on this runtime. Switch project or reopen it from its window.')
+      }
+    }
     this.markRead(sessionId)
+    // The refresh selects the preferred conversation itself, so a successful
+    // refresh has already opened the target.
+    if (refreshed && this._state.sessionId === sessionId && this._state.phase === 'ready') return
     await this.loadSession(sessionId)
   }
 
@@ -1442,43 +1462,60 @@ export class DshChatController implements vscode.Disposable {
    * waiting for the round trip left the button inert for up to 30 s during a
    * long tool call. A session owned by subagent routing is stopped through its
    * parent, because `session/cancel` refuses those.
+   *
+   * The local `running` flag can be stale when several windows share one
+   * runtime: this window may have missed the status event (stale-false), or a
+   * turn that already finished elsewhere can leave it true. A stop click is
+   * therefore always forwarded — the Host treats an idle cancel as a safe
+   * no-op — and the acknowledgement is only claimed while the turn is known to
+   * be running here.
    */
   async cancel(): Promise<void> {
-    this.requireReady()
     const sessionId = this._state.sessionId
-    if (sessionId === '') return
-    // A click on a turn that already ended must not leave an acknowledgement
-    // behind: the Host would accept an idle cancel, and the next turn would
-    // inherit a disabled "Stopping…" button.
-    if (this._state.running !== true) return
+    if (sessionId === '') throw new Error('Open a conversation before asking DeepSeek to stop.')
     const client = this.requireClient()
     const parentSessionId = this._state.parentSessionId
-    // Optimistic feedback: the RPC can take seconds, but the click has landed.
-    this.stoppingSessionId = sessionId
-    this.cancelRequestedSessionId = sessionId
-    this.clearStoppingDeadline()
-    this.publish({ stopping: true, cancelRequested: true })
+    const acknowledged = this._state.running === true
+    if (acknowledged) {
+      // Optimistic feedback: the RPC can take seconds, but the click has landed.
+      this.stoppingSessionId = sessionId
+      this.cancelRequestedSessionId = sessionId
+      this.clearStoppingDeadline()
+      this.publish({ stopping: true, cancelRequested: true })
+    }
     try {
       await (parentSessionId === null
         ? client.cancel(sessionId)
         : client.interruptSubagent(sessionId, parentSessionId))
     } catch (error) {
-      if (this.client === client && this._state.sessionId === sessionId) {
+      if (this.client === client && this._state.sessionId === sessionId && acknowledged) {
         this.clearStoppingAcknowledgement()
         this.publish({ stopping: false, cancelRequested: false })
+      }
+      if (isConversationHeld(error)) {
+        // Another DSH process owns the conversation. A stop from this window
+        // cannot reach it, so the banner already used by the composer is the
+        // honest answer instead of a silent rollback.
+        this.markConversationHeld(sessionId)
+        this.output.appendLine(`[cancel] ${sessionId} is held by another DSH process; the stop request was not delivered`)
+        return
       }
       throw error
     }
     if (this.client !== client || this._state.sessionId !== sessionId) return
-    // The turn ended while the request was in flight: nothing is left to
-    // acknowledge, and a late deadline would outlive the state it describes.
-    if (this._state.running !== true) return
+    this.output.appendLine(`[cancel] requested for ${sessionId}${parentSessionId === null ? '' : ' (subagent)'}`)
+    if (!acknowledged) {
+      // The click was forwarded on a stale-false flag: ask the runtime's own
+      // list what it believes so a still-running turn gets its Stop control
+      // back (and an idle one stays cleanly idle).
+      void this.recheckRunning(sessionId)
+      return
+    }
     // Keep the acknowledgement and bound it. The Host ack is synchronous; only
-    // the turn's own end proves the cancellation completed.
+    // the turn's own end (or the runtime's list) proves completion.
     this.stoppingSessionId = sessionId
     this.cancelRequestedSessionId = sessionId
     this.armStoppingDeadline(sessionId)
-    this.output.appendLine(`[cancel] requested for ${sessionId}${parentSessionId === null ? '' : ' (subagent)'}`)
   }
 
   /**
@@ -1486,8 +1523,9 @@ export class DshChatController implements vscode.Disposable {
    *
    * The request is cooperative, so a turn inside a long tool call legitimately
    * stays running after the Host acknowledged the cancel. At the deadline the
-   * button becomes usable again as "Stop requested"; only the turn reporting
-   * its end clears the request.
+   * button becomes usable again as "Stop requested", and the runtime's list is
+   * consulted once: if the conversation is idle there, nothing else will ever
+   * clear the acknowledgement, so it is cleared here instead.
    */
   private armStoppingDeadline(sessionId: string): void {
     this.clearStoppingDeadline()
@@ -1499,7 +1537,57 @@ export class DshChatController implements vscode.Disposable {
       this.cancelRequestedSessionId = sessionId
       this.output.appendLine(`[cancel] ${sessionId} acknowledged; still running, waiting for the current step to finish`)
       this.publish({ stopping: false, cancelRequested: true })
+      // Bound the wait: the Host sends no second status for an idle cancel.
+      void this.recheckRunning(sessionId, true)
     }, STOPPING_ACKNOWLEDGEMENT_MS)
+  }
+
+  /**
+   * Re-read the runtime's live `running` flag for one conversation.
+   *
+   * `session/list` reports the Host's own agent status. It is the only
+   * authority that can end an acknowledgement the event stream will never
+   * settle, because an idle cancel is accepted without producing any event.
+   * Failures are logged, never surfaced: this is a correction of the local
+   * view, not a user action of its own.
+   */
+  private async recheckRunning(sessionId: string, keepRequest = false): Promise<void> {
+    const client = this.client
+    if (client === undefined || sessionId !== this._state.sessionId) return
+    const loadGeneration = this.sessionLoadGeneration
+    let listed: SessionSummary | undefined
+    try {
+      const { items } = await client.listSessions()
+      listed = items.find(item => item.sessionId === sessionId)
+    } catch (error) {
+      if (this.client !== client) return
+      this.output.appendLine(`[cancel] Could not re-check whether ${sessionId} is still running: ${redactDshSecrets(dshErrorText(error))}`)
+      return
+    }
+    // A conversation switch (or a newer load) owns the state now: this answer
+    // belongs to a view that is no longer on screen.
+    if (this.client !== client || this._state.sessionId !== sessionId || loadGeneration !== this.sessionLoadGeneration) return
+    // A missing session has no live agent, so it cannot be running.
+    const running = listed?.running === true
+    this.runtimeActivity.set(sessionId, { running, revision: ++this.activityRevision })
+    const summary = this.summaries.find(item => item.sessionId === sessionId)
+    if (summary !== undefined && summary.running !== running) {
+      summary.running = running
+      this.publishSessionItems()
+    }
+    this.stoppingSessionId = undefined
+    this.clearStoppingDeadline()
+    if (running) {
+      if (keepRequest) this.cancelRequestedSessionId = sessionId
+      this.output.appendLine(`[cancel] ${sessionId} is still running after the stop request`)
+      this.publish(keepRequest
+        ? { ...this.runningPatch(true, sessionId), stopping: false, cancelRequested: true }
+        : this.runningPatch(true, sessionId))
+      return
+    }
+    this.clearStoppingAcknowledgement()
+    this.output.appendLine(`[cancel] ${sessionId} is no longer running`)
+    this.publish(this.runningPatch(false, sessionId))
   }
 
   /** Withdraw a pending stop acknowledgement and any request of this turn. */
@@ -2059,7 +2147,11 @@ export class DshChatController implements vscode.Disposable {
       phase: 'loading',
       statusText: 'Loading project conversation…',
       sessionId,
-      ...(sessionChanged ? { messages: [], changedFiles: [], stopping: false, cancelRequested: false } : {}),
+      ...(sessionChanged ? { messages: [], changedFiles: [] } : {}),
+      // Loading is a boundary: the previous conversation's turn is not this
+      // one's, and a stale Stop must not appear while the target is resolved.
+      // The loaded summary restores `running` below.
+      ...this.runningPatch(false, sessionId),
       queue: [],
       todos: [],
       team: null,
@@ -2088,6 +2180,9 @@ export class DshChatController implements vscode.Disposable {
       // sidebar disables send, the picker and the session list with no way back;
       // the error phase is the one that offers recovery.
       const message = redactDshSecrets(dshErrorText(error))
+      // A held conversation is readable but not writable from this window; the
+      // banner says so, and the error phase below still offers the way out.
+      if (isConversationHeld(error)) this.markConversationHeld(sessionId)
       this.publish({
         phase: 'error',
         statusText: message,

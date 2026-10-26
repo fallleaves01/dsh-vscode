@@ -3,7 +3,7 @@
   "displayName": "DSH Sidebar",
   "description": "A project-aware VS Code chat sidebar powered by the official DeepSeek Harness runtime.",
   "icon": "media/deepseek.png",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "private": true,
   "publisher": "fallleaves01",
   "license": "MIT",

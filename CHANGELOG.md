@@ -9,6 +9,34 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.1.26] - 2026-10-26
+
+### Fixed
+
+- Stop and conversation switching now keep working while several VS Code windows
+  share one DSH runtime. The host's cross-client primitives were healthy; the
+  sidebar's own state machine could wait forever:
+  - A click on Stop no longer depends on the local `running` flag: it sends the
+    cancellation whenever a conversation is open, acknowledges optimistically
+    only when a turn is known to run, and re-reads `session/list` when the
+    acknowledgement window elapses. An accepted cancel for an already-idle
+    agent produces no further host events, which previously left "Stop
+    requested" on screen forever. A held conversation now explains itself in
+    the banner instead of swallowing the click.
+  - Switching to a conversation missing from the filtered list refreshes that
+    list once, then reports an actionable error for a conversation that is
+    archived or belongs to another project, instead of silently returning.
+  - Loading a conversation clears the previous running/stop acknowledgement, so
+    the Stop control can never describe the conversation being left.
+- Recovery actions survive a shared runtime: the held banner is visible in every
+  phase, the error page offers Retry Conversation, clicking the current
+  conversation row retries it, and Restart Runtime is offered only for a runtime
+  this window started (never for an adopted or attached runtime another window
+  uses).
+- A pending new-conversation request no longer locks the session list; choosing
+  another conversation abandons the pending creation and the host's generation
+  guard prevents a late creation from navigating away.
+
 ## [0.1.25] - 2026-10-26
 
 ### Fixed
