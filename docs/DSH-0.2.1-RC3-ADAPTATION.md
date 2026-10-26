@@ -14,7 +14,7 @@
 |---|---|---|---|---|---|
 | 1 | `dsh-experimental-agent-team` | Host 服务 + Session projection | 已适配 | 新增纯视图模型 `src/agent-team-state.ts`（`agentTeamOf`/`agentTeamSummaryOf`）；投影接入 `src/extension.ts:211,2005,2344`；面板渲染 `src/webview.ts:3165-3175,3216-3272`；测试 `tests/agent-team-state.spec.ts`（10 项）与 `tests/webview-task-features.spec.ts` | 只读展示持久投影；不合并 `agent/status` 的运行中状态；任务写操作仍由模型工具完成 |
 | 2 | `dsh-experimental-agent-team-profile` | 纯 profile bundle | 已适配（无需独立代码） | 运行时 `pluginInventory/list` 显示 `agent-team`、`tool-agent-team`、`ui-agent-team` 三项 `enabled=true/fiberPhase=active`；真实 `request/header` 的 42 个工具含全部 9 个 Team 工具；设置页 Plugins 分区可查看并启停该 bundle | 标准 agent preset 仍同时暴露 `subagent`、`subagent_fork`（实测），既有委派卡继续可用 |
-| 3 | `dsh-experimental-auto-review` | Host 插件 | 已适配 | `src/dsh-client.ts:478` 读取 `permissionPresets/catalog`；`src/collaboration-state.ts:78,125,230,242,263` 解析目录、`EXP` 标记、选择态与风险确认；`src/extension.ts:2096,2883` 装配与确认；`src/webview.ts:2505,2893` 徽标；测试 `tests/collaboration-state.spec.ts`、`tests/dsh-client.spec.ts`、`tests/webview-policy.spec.ts` | 审批面板不标注 Auto 来源；`displayReason`/`callId` 仍丢弃（rc.2 既有）；`AUTO_REVIEW_DENIED` 按通用 `tool/result` 错误呈现 |
+| 3 | `dsh-experimental-auto-review` | Host 插件 | 已适配 | `src/dsh-client.ts:478` 读取 `permissionPresets/catalog`；`src/collaboration-state.ts:78,125,230,242,263` 解析目录、`EXP` 标记、选择态与风险确认；`src/extension.ts:2096,2883` 装配与确认；`src/webview.ts:2505,2893` 徽标；拒绝调用专用呈现：`tool/result` 的 `AutoReviewDeniedError`/`AUTO_REVIEW_DENIED` 投影为 `autoReviewDenied`，工具卡折叠行显示 `Rejected by Auto review`、展开显示 `Tool was not executed. Reason: …`（`src/conversation.ts`、`src/webview.ts`、`src/task-details.mts`）；审批提示优先使用 `displayReason.en`；测试 `tests/collaboration-state.spec.ts`、`tests/conversation-auto-review.spec.ts`、`tests/webview-auto-review.spec.ts`、`tests/extension-surface.spec.ts` | 审批面板不单独标注 Auto 来源（文案本身含 Auto review 字样）；拒绝/审批的端到端验证仍依赖模型凭据（当前为契约级 + 事件级覆盖） |
 | 4 | `dsh-experimental-session-titles-bundle` | 纯 profile bundle | 已适配（零代码改动） | 既有 `title` projection 与 `session/title` 事件链路；真实运行时观察到 `session/title` 与 `session/title-llm-request` 事件、重命名后的 `{type:'projection', key:'title'}` 帧（`seq=3`） | LLM 标题生成需已登录模型账户；隔离环境回退为 `source.kind='fallback'`；生成失败保留旧标题 |
 | 5 | `dsh-experimental-session-search` | 纯 profile bundle | 部分 | 5 个智能体工具（`session_search`、`session_trace`、`session_event_read/search/trace`）出现在真实工具目录，经通用工具卡呈现；侧栏正文搜索继续使用基础 `session/search` | 未接入工具专用卡片；与 `enableHistorySearch` 任务服务补丁存在双 SQLite 行风险（实测 `include:session-query-sqlite` 与 `include:optional-session-query-sqlite` 同时 active） |
 | 6 | `dsh-experimental-cot-translation-bundle` | 纯 profile bundle | 已适配 | 设置页 Reasoning translation 卡片（`cot-translation`：`provider` 4 值、`targetLanguage`）；会话内 Thinking 按 DSH 方式翻译显示：`cotTranslation/limits` 探测能力与上限、`cotTranslation/translate` 按段落/长度分片串行请求、默认译文、View original 切换、pending spinner、失败时原文 + Retry（`src/dsh-client.ts`、`src/extension.ts` 的 `translate-reasoning` 协议、`src/webview.ts` 的 `thinking-translation` 渲染）；测试 `tests/dsh-client.spec.ts`、`tests/extension-surface.spec.ts`、`tests/webview-translation.spec.ts` | 译文按纯文本渲染（与既有 reasoning 一致；DSH 用 Markdown）；折叠 Thinking 不取消在途请求（结果入缓存，切换会话清理）；`auto` 语言按编辑器语言主子标签解析（DSH 内置仅 zh/en，本扩展可发 ja）；展开的思考内容会发送给所选翻译服务 |
@@ -64,8 +64,8 @@
 
 | 指标 | 数值 |
 |---|---|
-| 测试文件 | 115（114 通过，1 失败） |
-| 测试用例 | 1618（1616 通过，1 失败，1 跳过） |
+| 测试文件 | 117（116 通过，1 失败） |
+| 测试用例 | 1649（1647 通过，1 失败，1 跳过） |
 | 耗时 | Duration 9–10 s（多次复跑） |
 
 唯一失败为既有沙箱限制：`tests/diff-review.spec.ts:787` 向 `$HOME/dsh-open-file-spec.tmp` 写入时返回 `EPERM`。该测试文件不在本轮改动清单内，失败与 rc.3 适配无关；Vitest 因此以退出码 1 结束。新增测试文件三个：`tests/agent-team-state.spec.ts`（10 项）、`tests/dsh-session-feed.spec.ts`（16 项）、`tests/extension-surface.spec.ts`（5 项）；另在 `tests/settings-page-state.spec.ts`、`tests/settings-panel.spec.ts`、`tests/settings-page.spec.ts`、`tests/dsh-session-feed.spec.ts`、`tests/collaboration-state.spec.ts`、`tests/dsh-client.spec.ts`、`tests/discovery-controller.spec.ts`、`tests/subagent-tools.spec.ts`、`tests/webview-policy.spec.ts`、`tests/webview-subagent-cards.spec.ts`、`tests/webview-task-features.spec.ts` 中扩充用例。
@@ -227,3 +227,20 @@
 已知差异（有意）：译文按纯文本渲染（侧栏既有 reasoning 为纯文本，XSS 安全）；折叠 Thinking 不取消在途请求（结果入缓存，避免重复请求）；`auto` 语言可解析出 zh/en 之外的标签（DSH 内置仅 zh/en）；固定 60 s 超时替代取消式等待。
 
 验证：独立验证者以真实运行时完成 `limits`/`translate` 实测（Bing 返回中文译文、Google 在本机失败），并以真实 limits 值与真实译文完成宿主→Webview 边界 E2E（三段逐段替换、toggle、失败→Retry、会话切换清理），7 项变异全部被捕获。全量 1618 例（1616 通过、1 既有 EPERM、1 平台跳过，115 个测试文件）；`tsc --noEmit` 0；`scripts/build.mjs` 0。
+
+## 12. Auto review 拒绝的专用呈现（0.1.25）
+
+此前 Auto review 拒绝一次工具调用时，侧栏把 `AUTO_REVIEW_DENIED` 当普通工具失败显示原始错误文本。DSH 的客户端对该事实有专用文案，本轮补齐。
+
+| 环节 | 行为 |
+|---|---|
+| 事件识别 | `tool/result` 的 `data.error` 为 `{ name: 'AutoReviewDeniedError', code: 'AUTO_REVIEW_DENIED', reason?: string }` 时识别为拒绝；其它错误码/仅 `isError` 仍按普通工具失败 |
+| 投影 | `ConversationMessage.autoReviewDenied = { reason: string \| null }`（reason 去空白后为空则 null）；`failed=true`、`detail='Rejected by Auto review'`，原始结果文本仍保留供诊断 |
+| 工具卡 | 折叠行状态显示 `Rejected by Auto review`（标题仍是工具名/参数摘要）；展开显示 `Tool was not executed. Reason: {reason}`，无原因时 `Auto review did not authorize this action`；不展示原始错误文本；details 保持可折叠、失败时默认展开 |
+| 任务详情 | 同一文案替换原始输出（纯文本渲染） |
+| 审批提示 | `approval/requested` 的 `displayReason.en` 优先作为提示文案（Auto review 的 ask 路径会给出本地化原因），缺失或形状非法时回退 `reason` |
+| 安全 | 原因与文案全部经 textContent 渲染；迟到的原因更新触发重渲染，不残留旧原因 |
+
+与 DSH 的差异（有意/已知）：未实现审批面板的来源徽标（DSH 也只显示本地化 displayReason 文案）；拒绝与审批的真实端到端路径仍需模型凭据，当前覆盖到契约与事件级。其余文案（`Rejected by Auto review`、`Tool was not executed. Reason: …`、fallback）与 DSH en locale 逐字一致。
+
+验证：独立验证者以真实 wire 形状事件完成 projector→Webview→任务详情 E2E，并对 6 处实现做变异验证；全量 1649 例（1647 通过、1 既有 EPERM、1 平台跳过，117 个测试文件）；`tsc --noEmit` 0；`scripts/build.mjs` 0。

@@ -1,4 +1,4 @@
-import { assistantStreamAppend, type ConversationImage, type ConversationMessage, type ConversationRetryState } from './conversation.js'
+import { assistantStreamAppend, type AutoReviewDenial, type ConversationImage, type ConversationMessage, type ConversationRetryState } from './conversation.js'
 
 export const WEBVIEW_INLINE_CHAR_LIMIT = 20_000
 
@@ -63,6 +63,7 @@ export function messageForWebview(message: ConversationMessage): ConversationMes
     ...(message.detail === undefined ? {} : { detail: message.detail }),
     ...(message.failureCode === undefined ? {} : { failureCode: message.failureCode }),
     ...(message.retry === undefined ? {} : { retry: message.retry }),
+    ...(message.autoReviewDenied === undefined ? {} : { autoReviewDenied: message.autoReviewDenied }),
     ...(message.failed === undefined ? {} : { failed: message.failed }),
     ...(callView === undefined ? {} : { callView }),
     ...(resultView === undefined ? {} : { resultView }),
@@ -115,6 +116,13 @@ function sameRetry(left: ConversationRetryState | undefined, right: Conversation
     && left.failureCode === right.failureCode
 }
 
+/** An Auto review denial is replaced as a value: its reviewer reason may change. */
+function sameAutoReviewDenial(left: AutoReviewDenial | undefined, right: AutoReviewDenial | undefined): boolean {
+  if (left === right) return true
+  if (left === undefined || right === undefined) return false
+  return left.reason === right.reason
+}
+
 function sameMessage(left: ConversationMessage, right: ConversationMessage): boolean {
   return left.id === right.id
     && left.role === right.role
@@ -123,6 +131,7 @@ function sameMessage(left: ConversationMessage, right: ConversationMessage): boo
     && left.detail === right.detail
     && left.failureCode === right.failureCode
     && sameRetry(left.retry, right.retry)
+    && sameAutoReviewDenial(left.autoReviewDenied, right.autoReviewDenied)
     && left.streaming === right.streaming
     && left.failed === right.failed
     && left.callView === right.callView
@@ -143,6 +152,7 @@ function appendedAssistantParts(left: ConversationMessage, right: ConversationMe
     && left.detail === right.detail
     && left.failureCode === right.failureCode
     && sameRetry(left.retry, right.retry)
+    && sameAutoReviewDenial(left.autoReviewDenied, right.autoReviewDenied)
     && left.failed === right.failed
     && left.callView === right.callView
     && left.resultView === right.resultView

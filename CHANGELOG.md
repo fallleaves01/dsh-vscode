@@ -9,6 +9,23 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.1.25] - 2026-10-26
+
+### Fixed
+
+- Present an Auto review refusal as DSH does instead of as a generic tool
+  failure. A `tool/result` carrying `AutoReviewDeniedError` /
+  `AUTO_REVIEW_DENIED` now shows `Rejected by Auto review` in the collapsed row
+  and `Tool was not executed. Reason: …` when expanded, falling back to
+  `Auto review did not authorize this action` when the reviewer gave no reason.
+  The raw error text and any tool output are not shown; the task-details pane
+  uses the same wording.
+- Prefer the approval request's localized `displayReason.en` for the approval
+  prompt, so the Auto review "ask" path explains itself in its own words
+  instead of the terse fallback reason.
+- Update the collapsed row when a denial reason arrives late, and keep ordinary
+  tool failures on their existing path.
+
 ## [0.1.24] - 2026-10-26
 
 ### Added

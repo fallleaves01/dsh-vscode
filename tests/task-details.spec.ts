@@ -177,6 +177,26 @@ describe('independent task detail interactions', () => {
     draft.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     expect(posts).toHaveLength(count)
   })
+  it('shows an Auto review refusal instead of the raw tool error', () => {
+    const reason = 'Deleting the build directory was not authorized.'
+    sendState({ messages: [{ id: 'tool:auto', role: 'tool', text: 'bash', failed: true, detail: 'Rejected by Auto review',
+      autoReviewDenied: { reason }, rawResult: 'SECRET raw tool error', callView: { card: 'terminal', title: 'bash' } } as any] })
+    expect([...document.querySelectorAll('#messages .role')].map(node => node.textContent)).toContain('Rejected by Auto review')
+    const body = document.querySelector<HTMLElement>('#messages .auto-review-body')
+    expect(body?.textContent).toBe('Tool was not executed. Reason: ' + reason)
+    expect(document.getElementById('messages')!.textContent).not.toContain('SECRET raw tool error')
+    // Missing/blank reasons fall back to DSH's sentence; hostile reasons are text.
+    sendState({ messages: [
+      { id: 'tool:blank', role: 'tool', failed: true, autoReviewDenied: { reason: '   ' }, rawResult: 'raw one' } as any,
+      { id: 'tool:hostile', role: 'tool', failed: true, autoReviewDenied: { reason: '<img src=x onerror=bad()>' }, rawResult: 'raw two' } as any,
+    ] })
+    const bodies = [...document.querySelectorAll<HTMLElement>('#messages .auto-review-body')].map(node => node.textContent)
+    expect(bodies).toContain('Tool was not executed. Reason: Auto review did not authorize this action')
+    expect(bodies).toContain('Tool was not executed. Reason: <img src=x onerror=bad()>')
+    expect(document.querySelector('#messages .auto-review-body img')).toBeNull()
+    expect(document.getElementById('messages')!.textContent).not.toContain('raw one')
+    expect(document.getElementById('messages')!.textContent).not.toContain('raw two')
+  })
 })
 
 it('preserves expanded thinking while a child streams a new answer', () => {

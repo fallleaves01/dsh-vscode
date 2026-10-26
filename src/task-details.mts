@@ -9,6 +9,29 @@ declare const acquireVsCodeApi: () => TaskApi
 declare global { interface Window { dshMarkdown: { renderMarkdown(text: string, hooks?: MarkdownHooks): HTMLElement; renderUserText?(text: string): HTMLElement } } }
 const str = (value: unknown): string => typeof value === 'string' ? value : ''
 
+/** DSH's Auto review denial facts attached to a tool message, if any. */
+interface AutoReviewDenial { reason: string | null }
+const AUTO_REVIEW_REJECTED = 'Rejected by Auto review'
+const AUTO_REVIEW_REASON_FALLBACK = 'Auto review did not authorize this action'
+/**
+ * Read the durable denial without depending on a host type export.
+ *
+ * The projection owns the field; this surface renders it defensively so a
+ * missing or malformed value falls back to the ordinary tool row.
+ */
+const autoReviewDenialOf = (message: ConversationMessage): AutoReviewDenial | undefined => {
+  const value = (message as unknown as { autoReviewDenied?: unknown }).autoReviewDenied
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const reason = (value as Record<string, unknown>).reason
+  return { reason: typeof reason === 'string' ? reason : null }
+}
+/** One display line, exactly as DSH normalizes it: no markup, no line breaks. */
+const autoReviewReasonText = (reason: string | null): string => {
+  if (reason === null) return AUTO_REVIEW_REASON_FALLBACK
+  const normalized = reason.trim().replace(/[\r\n\u2028\u2029]+/gu, ' ')
+  return normalized === '' ? AUTO_REVIEW_REASON_FALLBACK : normalized
+}
+
 /** The same mounted UI is used by production and DOM regression tests. */
 export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void {
   const listeners = new AbortController()
@@ -164,7 +187,9 @@ export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void 
           continue
         }
         const thinkingOpen = cached.row.querySelector('details')?.open ?? false
-        const label = (message.role === 'assistant' ? undefined : message.detail) || ({ user: 'You', assistant: 'DeepSeek', tool: 'Tool', command: 'Command' } as Record<string, string>)[message.role] || message.role
+        const denial = autoReviewDenialOf(message)
+        const label = (message.role === 'assistant' ? undefined : (denial !== undefined ? AUTO_REVIEW_REJECTED : message.detail))
+          || ({ user: 'You', assistant: 'DeepSeek', tool: 'Tool', command: 'Command' } as Record<string, string>)[message.role] || message.role
         cached.key = key; cached.row.replaceChildren(node('div', label, 'role'))
         subagentLinks.get(message.id)?.dispose(); subagentLinks.delete(message.id)
         const references = new Map<string, SubagentToolReference>()
@@ -184,10 +209,17 @@ export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void 
             ? window.dshMarkdown.renderUserText?.(item.text) ?? node('div', 'Message renderer unavailable.')
             : markdown(item.text))
           if (item.role === 'tool' || item.role === 'command') {
-            const view = (item.resultView === undefined ? item.callView : item.resultView) as Record<string, unknown> | undefined
-            const presented = Array.isArray(view?.content) ? view.content.flatMap(part => typeof part?.text === 'string' ? [part.text] : []).join('\n') : ''
-            const content = item.rawResult ?? (presented || item.rawInput) ?? view
-            if (content !== undefined) cached!.row.append(node('pre', typeof content === 'string' ? content : JSON.stringify(content, null, 2)))
+            // DSH reports the reviewer's refusal instead of the tool's own error
+            // text: the body still exists only to say the tool never executed.
+            const itemDenial = autoReviewDenialOf(item)
+            if (itemDenial !== undefined) {
+              cached!.row.append(node('pre', 'Tool was not executed. Reason: ' + autoReviewReasonText(itemDenial.reason), 'auto-review-body'))
+            } else {
+              const view = (item.resultView === undefined ? item.callView : item.resultView) as Record<string, unknown> | undefined
+              const presented = Array.isArray(view?.content) ? view.content.flatMap(part => typeof part?.text === 'string' ? [part.text] : []).join('\n') : ''
+              const content = item.rawResult ?? (presented || item.rawInput) ?? view
+              if (content !== undefined) cached!.row.append(node('pre', typeof content === 'string' ? content : JSON.stringify(content, null, 2)))
+            }
           }
           for (const image of item.images ?? []) cached!.row.append(node('div', image.error || 'Image attachment · Open in chat to view', 'hint'))
         }

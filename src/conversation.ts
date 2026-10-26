@@ -100,6 +100,8 @@ export interface ConversationMessage {
   failureCode?: string
   /** The model-retry attempt this row shows; only for `role: 'retry'`. */
   retry?: ConversationRetryState
+  /** Auto review's refusal fact for a tool result, distinct from a tool failure. */
+  autoReviewDenied?: AutoReviewDenial
   streaming?: boolean
   failed?: boolean
   callView?: unknown
@@ -126,6 +128,18 @@ export interface ConversationRetryState {
   /** Decoded, redacted failure reason for the attempt that scheduled this retry. */
   detail: string
   failureCode?: string
+}
+
+/**
+ * One Auto review denial carried by a settled tool result.
+ *
+ * DSH distinguishes this from an ordinary tool failure: the call never reached
+ * the tool, so the row says the reviewer rejected it instead of showing a
+ * provider or tool error.
+ */
+export interface AutoReviewDenial {
+  /** Reviewer reason, verbatim, or `null` when the runtime recorded none. */
+  reason: string | null
 }
 
 interface AssistantStreamNode {
@@ -318,6 +332,19 @@ function withFailure(message: ConversationMessage, failure: ConversationFailure)
   if (failure.code === undefined) delete next.failureCode
   else next.failureCode = failure.code
   return next
+}
+
+/**
+ * DSH's dedicated Auto review denial fact on a tool result.
+ *
+ * A declined call never runs the tool, so DSH reports `AutoReviewDeniedError`
+ * with `AUTO_REVIEW_DENIED` and, when the reviewer gave one, a reason. Anything
+ * else remains an ordinary tool failure.
+ */
+function autoReviewDeniedOf(value: unknown): AutoReviewDenial | undefined {
+  const error = record(value)
+  if (error?.name !== 'AutoReviewDeniedError' || error.code !== 'AUTO_REVIEW_DENIED') return undefined
+  return { reason: typeof error.reason === 'string' && error.reason.trim() !== '' ? error.reason : null }
 }
 
 function finiteNumberOf(value: unknown): number | undefined {
@@ -678,14 +705,18 @@ export class ConversationProjector {
       const id = `tool:${callId}`
       const current = this.byId.get(id)
       const failed = data.error !== undefined || firstBlock?.isError === true
+      const denial = autoReviewDeniedOf(data.error)
       const rawResult = resultContent(firstBlock)
       const images = imageContent(message?.content)
       this.set(id, {
         id,
         role: 'tool',
         text: current?.text ?? 'Tool',
-        detail: failed ? 'Failed' : 'Completed',
+        // DSH labels the collapsed row "Rejected by Auto review"; the reason
+        // itself is kept structured so the UI can show its dedicated line.
+        detail: denial !== undefined ? 'Rejected by Auto review' : failed ? 'Failed' : 'Completed',
         failed,
+        ...(denial === undefined ? {} : { autoReviewDenied: denial }),
         ...(current?.callView === undefined ? {} : { callView: current.callView }),
         ...(current?.rawInput === undefined ? {} : { rawInput: current.rawInput }),
         resultView: presentSubagentReferences(toolView(view, 'result') ?? presentToolResult(current?.text ?? '', current?.rawInput, event, failed),

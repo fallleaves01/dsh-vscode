@@ -508,6 +508,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .tool-detail:not(:empty)::before { content: ''; flex: none; width: 2px; height: 2px; margin: 0 8px; border-radius: 1px; background: color-mix(in srgb, currentColor 55%, transparent); }
     .tool-body { margin: 4px 0 0 22px; padding: 0; min-width: 0; overflow: hidden; color: var(--vscode-descriptionForeground); }
     .tool-body pre { margin: 4px 0; padding: 10px 12px; border-radius: var(--dsh-radius-md); color: var(--vscode-foreground); background: var(--vscode-textCodeBlock-background); font: 11px/16px var(--dsh-code-font); }
+    /* An Auto review denial is a tool outcome, not the tool's own error text:
+       one explicit refusal line, at the body's reading size and colour. */
+    .auto-review-body { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-foreground); }
     .tool-output-more { margin: 5px 0 0; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: var(--dsh-radius-xs); color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; }
     .tool-output-more:hover { background: var(--dsh-hover); }
     /* A slash command DSH ran on its own is the same disclosure row, verbatim. */
@@ -1597,10 +1600,36 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (intent !== undefined) return intent;
       return message.streaming === true || message.failed === true;
     }
+    /**
+     * DSH's Auto review denial attached to a tool message.
+     *
+     * The durable denial replaces the tool's own error text: the reviewer's raw
+     * reason is presentation data only, normalized to one line and never used as
+     * markup. A missing or blank reason falls back to DSH's fixed sentence.
+     */
+    const AUTO_REVIEW_REJECTED = 'Rejected by Auto review';
+    const AUTO_REVIEW_REASON_FALLBACK = 'Auto review did not authorize this action';
+    function autoReviewDenialOf(message) {
+      const value = record(message && message.autoReviewDenied);
+      return value === undefined ? undefined : { reason: typeof value.reason === 'string' ? value.reason : null };
+    }
+    function autoReviewReasonText(reason) {
+      if (typeof reason !== 'string') return AUTO_REVIEW_REASON_FALLBACK;
+      const normalized = reason.trim().replace(/[\\r\\n\\u2028\\u2029]+/gu, ' ');
+      return normalized === '' ? AUTO_REVIEW_REASON_FALLBACK : normalized;
+    }
+    function renderAutoReviewBody(reason) {
+      const body = node('div', 'tool-body auto-review-body');
+      body.append(node('div', 'auto-review-note', 'Tool was not executed. Reason: ' + autoReviewReasonText(reason)));
+      return body;
+    }
     function renderTool(message) {
       const context = { sessionId: state && state.sessionId, cwd: state && state.cwd };
       const callView = record(message.callView);
       const resultView = record(message.resultView);
+      // A reviewer denial is its own outcome: the tool never ran, so its own
+      // error text and output are not what the reader should see.
+      const denial = autoReviewDenialOf(message);
       // Team tools can only name their target (memberName); the Team projection
       // is what maps a name to the session id a link needs. A name that does not
       // resolve is dropped, so the card stays a generic tool card instead of a
@@ -1630,14 +1659,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         ? shimmerNode('tool-title', toolTitle(message, callView, resultView))
         : node('span', 'tool-title', toolTitle(message, callView, resultView));
       summary.append(title);
-      summary.append(node('span', 'tool-detail', subagent ? (message.failed ? 'Failed' : '') : message.detail || ''));
+      summary.append(node('span', 'tool-detail',
+        denial !== undefined ? AUTO_REVIEW_REJECTED : subagent ? (message.failed ? 'Failed' : '') : message.detail || ''));
       summary.addEventListener('click', () => { if (!item.open) conversationScroller.pause(); });
       item.append(summary);
       let contentInitialized = false;
       const initializeContent = () => {
         if (contentInitialized) return;
         contentInitialized = true;
-        if (message.deferredBody === true) {
+        if (denial !== undefined) item.append(renderAutoReviewBody(denial.reason));
+        else if (message.deferredBody === true) {
           const body = node('div', 'tool-body'); item.append(body); attachDeferredOutput(message, body, page => renderToolBody(page, record(page.callView), record(page.resultView), context));
         } else item.append(renderToolBody(message, callView, resultView, context));
       };
@@ -2629,10 +2660,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // needs its own key, or an update to the same message would be swallowed.
       if (message.role === 'retry') return JSON.stringify(['retry', message.retry]);
       if (message.role === 'limit') return JSON.stringify(['limit']);
+      const autoReview = autoReviewKey(message);
       const meta = messageMetaFor(message.id);
       const failure = message.role === 'assistant' && message.failed === true ? [message.failed, message.detail, message.failureCode] : [];
-      if (meta === undefined) return JSON.stringify(failure);
-      if (message.role === 'assistant' ? meta.turnEnd !== true : message.role !== 'user') return JSON.stringify(failure);
+      if (meta === undefined) return JSON.stringify([failure, autoReview]);
+      if (message.role === 'assistant' ? meta.turnEnd !== true : message.role !== 'user') return JSON.stringify([failure, autoReview]);
       const feedback = feedbackFor(message.id);
       return JSON.stringify([
         feedback === undefined ? null : [feedback.rating, feedback.version],
@@ -2641,7 +2673,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         typeof meta.seq === 'number' ? meta.seq : null,
         typeof meta.time === 'number' ? meta.time : null,
         failure,
+        autoReview,
       ]);
+    }
+    /**
+     * Stable part of a tool row's reuse key: a late denial reason must repaint.
+     *
+     * The incremental patch normally upserts a new message object, which already
+     * forces the repaint; this key matters when a caller mutates the nested
+     * denial in place and the row identity stays the same.
+     */
+    function autoReviewKey(message) {
+      const denial = autoReviewDenialOf(message);
+      return denial === undefined ? null : [true, autoReviewReasonText(denial.reason)];
     }
     /**
      * The Team projection a tool card resolves member names against.

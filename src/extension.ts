@@ -2487,12 +2487,19 @@ export class DshChatController implements vscode.Disposable {
 
     if (frame.channel === 'mux' && type === 'approval/requested' && sessionId === this._state.sessionId) {
       if (typeof payload.approvalId !== 'string' || typeof payload.toolName !== 'string') return
+      // Auto review's ask path carries a localized display reason; DSH's own
+      // approval panel prefers it over the audited English `reason`.
+      const display = payload.displayReason
+      const displayText = wireRecord(display) && typeof display.en === 'string' && display.en.trim() !== ''
+        ? display.en
+        : undefined
+      const reason = displayText ?? (typeof payload.reason === 'string' ? payload.reason : undefined)
       this.publish({
         approval: {
           rpcId: frame.rpcId,
           approvalId: payload.approvalId,
           toolName: payload.toolName,
-          ...(typeof payload.reason === 'string' ? { reason: payload.reason } : {}),
+          ...(reason === undefined ? {} : { reason }),
         },
       })
       return

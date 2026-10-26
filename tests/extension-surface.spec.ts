@@ -468,4 +468,43 @@ describe('host surface wiring', () => {
       }))
     })
   })
+
+  describe('auto review approval reasons', () => {
+    const request = (payload: Record<string, unknown>): Record<string, unknown> => ({
+      type: 'approval/requested', sessionId: 'a', approvalId: 'ap-1', toolName: 'bash', ...payload,
+    })
+
+    it('prefers the localized display reason over the audited reason', async () => {
+      const h = await activated()
+      h.emit(request({
+        reason: 'Auto review denied tool "bash"',
+        displayReason: {
+          en: 'Auto review denied this call: it deletes build output',
+          zh: 'Auto review 拒绝了此调用：它会删除构建产物',
+        },
+      }), 'mux')
+      await vi.waitFor(() => expect(h.mergedState().approval).toMatchObject({
+        approvalId: 'ap-1',
+        toolName: 'bash',
+        reason: 'Auto review denied this call: it deletes build output',
+      }))
+    })
+
+    it('falls back to the runtime reason when no display reason exists', async () => {
+      const h = await activated()
+      h.emit(request({ reason: 'Auto review denied tool "bash"' }), 'mux')
+      await vi.waitFor(() => expect(h.mergedState().approval?.reason).toBe('Auto review denied tool "bash"'))
+    })
+
+    it.each([
+      ['a non-object display reason', 'Auto review denied this call.'],
+      ['a non-string en', { en: 42, zh: 'Auto review 拒绝了此调用。' }],
+      ['a blank en', { en: '   ', zh: 'Auto review 拒绝了此调用。' }],
+      ['an empty object', {}],
+    ])('falls back to the runtime reason for %s', async (_name, displayReason) => {
+      const h = await activated()
+      h.emit(request({ reason: 'fallback reason', displayReason }), 'mux')
+      await vi.waitFor(() => expect(h.mergedState().approval?.reason).toBe('fallback reason'))
+    })
+  })
 })

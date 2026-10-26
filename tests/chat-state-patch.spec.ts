@@ -196,3 +196,51 @@ describe('diffConversationMessages', () => {
     expect(diffConversationMessages([limit], [{ ...limit, detail: 'changed' }])).toEqual({ upserts: [{ ...limit, detail: 'changed' }] })
   })
 })
+
+describe('auto review denial patches', () => {
+  const denied = (reason: string | null): ConversationMessage => ({
+    id: 'tool:call-1', role: 'tool', text: 'bash', detail: 'Rejected by Auto review', failed: true,
+    rawResult: 'denied content',
+    resultView: { card: 'terminal', title: 'bash', output: 'denied content' },
+    autoReviewDenied: { reason },
+  })
+
+  it('passes the denial through compacted tool bodies', () => {
+    const compact = messageForWebview(denied('Not allowed.'))
+    expect(compact.deferredBody).toBe(true)
+    expect(compact.autoReviewDenied).toEqual({ reason: 'Not allowed.' })
+    // The reason is part of the row's value, not a body byte count.
+    expect(messageForWebview({ ...denied(null), rawResult: undefined, resultView: undefined })).toMatchObject({
+      autoReviewDenied: { reason: null },
+    })
+  })
+
+  it('re-sends a denial when its reason changes and keeps identical values quiet', () => {
+    const before = denied('First reason.')
+    const after = denied('Second reason.')
+    expect(diffConversationMessages([before], [after])).toEqual({ upserts: [after] })
+    // The same projected object (the normal delta path) compares quiet.
+    expect(diffConversationMessages([after], [after])).toBeUndefined()
+  })
+
+  it('re-sends a denial when the reason appears or disappears', () => {
+    const withReason = denied('Because.')
+    const withoutReason = denied(null)
+    expect(diffConversationMessages([withReason], [withoutReason])).toEqual({ upserts: [withoutReason] })
+    expect(diffConversationMessages([withoutReason], [withReason])).toEqual({ upserts: [withReason] })
+    const generic: ConversationMessage = { ...withoutReason, detail: 'Failed', autoReviewDenied: undefined }
+    expect(diffConversationMessages([withoutReason], [generic])).toEqual({ upserts: [generic] })
+  })
+
+  it('compares the denial of an already deferred body', () => {
+    const deferred = (reason: string | null): ConversationMessage => ({
+      ...denied(reason), deferredBody: true, deferredBodyRevision: 'rev:1', bodyLength: 14,
+    })
+    const first = deferred('First.')
+    const second = deferred('Second.')
+    // Deferred bodies are sent as-is, and the value still drives the patch.
+    expect(messageForWebview(first)).toBe(first)
+    expect(diffConversationMessages([first], [second])).toEqual({ upserts: [second] })
+    expect(diffConversationMessages([second], [second])).toBeUndefined()
+  })
+})
