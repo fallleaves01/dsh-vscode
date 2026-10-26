@@ -9,7 +9,7 @@ import { settingsPageHtml } from './settings-page-html.js'
 import { at, credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerProfile, providerViews, publicBundles, publicPluginInventory, reasoningLevels, record, searchSettings, searchSelectionMutations, SEARCH_PROFILES, settingsForms, validProviderId,
   type ConfigurableProvider, type CredentialState, type ModelDiscoveryRequest, type SettingsPageState } from './settings-page-state.js'
 
-type Host = Pick<DshChatController, 'state' | 'cwd' | 'runtimeIdentity' | 'runtimeOwnership' | 'onDidChangeState' | 'onDidChangeRuntimeSettings' | 'settings' | 'settingsClient' | 'mutateSettings' | 'hasRunningTasks' | 'start'>
+type Host = Pick<DshChatController, 'state' | 'cwd' | 'runtimeIdentity' | 'runtimeOwnership' | 'onDidChangeState' | 'onDidChangeRuntimeSettings' | 'settings' | 'settingsClient' | 'mutateSettings' | 'start'>
 type SettingsSurface = { webview: Pick<vscode.Webview, 'postMessage' | 'onDidReceiveMessage'>; onDidDispose: vscode.Event<void> }
 const text = (value: unknown): string => value instanceof Error ? value.message : String(value)
 const ALLOWLIST_NS = 'subagent-model-selection-settings'
@@ -229,7 +229,9 @@ export class SettingsPanelManager implements vscode.Disposable {
         if (message.type === 'set-bundle') {
           if (!runtimeIsOurs(this.host.runtimeOwnership)) throw new Error('This external runtime is attach-only. Change its plugin bundles from the runtime that owns them.')
           requireWrite()
-          if (this.host.hasRunningTasks) throw new Error('Finish or stop all running DeepSeek tasks before changing runtime plugins.')
+          // A running task is not a reason to refuse the change: the runtime
+          // owns that decision and answers with `applied` or `restart-required`,
+          // which the result below already surfaces.
           const name = message.name, enabled = message.enabled
           if (typeof name !== 'string' || name === '' || typeof enabled !== 'boolean') throw new Error('Invalid bundle change.')
           const bundle = bundles.find(item => item.name === name && item.optional)

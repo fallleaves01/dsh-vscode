@@ -39,7 +39,7 @@
 
 1. **纯视图模型**：`src/agent-team-state.ts` 对 `agentTeam` 投影做防御性校验，丢弃重复/非法成员与任务，派生 `blocked` 与完成计数，成员按 Lead 优先排序，任务按 `in_progress`→`pending`→`completed` 排序（同状态按 `task-N` 数字序）；无 I/O、无 `vscode` 依赖、不抛错。
 2. **投影接入**：`ChatViewState.team` 为 `AgentTeamView | null`；会话加载与 `session/projection` 帧（`payload.key === 'agentTeam'`）都更新该字段，切换会话时清空（`src/extension.ts:211,2005,2344`）。
-3. **面板渲染**：Tasks 面板新增 `Team` 名册与 `Shared tasks` 任务板；名册显示角色与生命周期阶段（`provisioning/active/failed`），点击成员行打开其会话；任务板显示状态、`ready`/`blocked`、`blockedBy`、owner 与 write scopes，只读（`src/webview.ts:3165-3175,3216-3272`）。
+3. **面板渲染**：Tasks 面板新增 `Team` 名册与 `Shared tasks` 任务板；名册显示角色与**会话运行态**（Running/Inactive）以及 `provisioning/failed` 生命周期阶段——投影的 `phase` 只表示成员记录已建立，运行态来自会话列表的 `running` 标志，Lead 行同规则；点击成员行打开其会话；任务板显示状态、`ready`/`blocked`、`blockedBy`、owner 与 write scopes，只读（`src/webview.ts` 的 `renderTaskPanel`）。
 4. **工具引用**：`subagent-tools.ts` 识别 `spawn_teammate`、`list_agents`，以及按成员名寻址的 `send_message`/`interrupt_agent`（rc.3 Team 工具使用 `target` 而非 `agent_id`）；Webview 用 `agentTeam.members` 把成员名解析为会话 id，解析失败时退回通用工具卡而非死链（`src/subagent-tools.ts:29,85`，`src/webview.ts:1575`）。
 
 ### 2.3 会话标题实时刷新
@@ -52,7 +52,7 @@
 
 ### 2.5 实验性插件设置入口
 
-1. **实验 bundle 启停**：设置页 Plugins 分区在只读 inventory 之外新增 Experimental bundles 区。数据来自 `pluginManager/listBundles`，由 `publicBundles()` 白名单投影（丢弃图标 data URL、来源路径与原始诊断）；开关经 `pluginManager/setBundleEnabled` 写入。写入前依次校验：运行时归属（外部 attach-only 运行时只读）、profile 可写、无运行中任务、用户确认。结果按 `ChangeResult.application` 呈现：`applied` 立即生效，`restart-required` 明确提示重启运行时，`overridden`/`failed`/`cancelled` 显示原因，不复用通用的“已保存”文案。
+1. **实验 bundle 启停**：设置页 Plugins 分区在只读 inventory 之外新增 Experimental bundles 区。数据来自 `pluginManager/listBundles`，由 `publicBundles()` 白名单投影（丢弃图标 data URL、来源路径与原始诊断）；开关经 `pluginManager/setBundleEnabled` 写入。写入前依次校验：运行时归属（外部 attach-only 运行时只读）、profile 可写、用户确认。运行中的对话或任务**不**阻止修改：宿主侧不检查运行状态，只按 HMR 返回 `applied` 或 `restart-required`，页面据此呈现。结果按 `ChangeResult.application` 呈现：`applied` 立即生效，`restart-required` 明确提示重启运行时，`overridden`/`failed`/`cancelled` 显示原因，不复用通用的“已保存”文案。
 2. **实验设置卡片**：复用既有的 `settings/describe` + `settings/mutate` 路径，新增三个声明式卡片与可达标签页：Reasoning translation（`cot-translation`：`provider` 下拉、`targetLanguage`）、Voice input（`speech-to-text`：`defaultProvider`、`language`）、Plugin market（`plugin-market`：`indexes` URL 列表）。字段类型扩展为 `select` 与 `string-list`；写入前校验枚举归属、HTTP(S) 端点、去重与数量上限。bundle 未启用时对应 namespace 缺失，卡片与标签页自动隐藏。
 3. **事件刷新**：`plugin-manager/changed` 与 `permission-presets/catalog-changed` 由事件流转发到宿主，分别触发设置面板防抖刷新与权限目录重读，运行期启停后无需重连即可反映。
 
@@ -65,7 +65,7 @@
 | 指标 | 数值 |
 |---|---|
 | 测试文件 | 112（111 通过，1 失败） |
-| 测试用例 | 1529（1527 通过，1 失败，1 跳过） |
+| 测试用例 | 1536（1534 通过，1 失败，1 跳过） |
 | 耗时 | Duration 9–10 s（多次复跑） |
 
 唯一失败为既有沙箱限制：`tests/diff-review.spec.ts:787` 向 `$HOME/dsh-open-file-spec.tmp` 写入时返回 `EPERM`。该测试文件不在本轮改动清单内，失败与 rc.3 适配无关；Vitest 因此以退出码 1 结束。新增测试文件三个：`tests/agent-team-state.spec.ts`（10 项）、`tests/dsh-session-feed.spec.ts`（16 项）、`tests/extension-surface.spec.ts`（5 项）；另在 `tests/settings-page-state.spec.ts`、`tests/settings-panel.spec.ts`、`tests/settings-page.spec.ts`、`tests/dsh-session-feed.spec.ts`、`tests/collaboration-state.spec.ts`、`tests/dsh-client.spec.ts`、`tests/discovery-controller.spec.ts`、`tests/subagent-tools.spec.ts`、`tests/webview-policy.spec.ts`、`tests/webview-subagent-cards.spec.ts`、`tests/webview-task-features.spec.ts` 中扩充用例。
@@ -136,3 +136,18 @@
 | 回归审查 | 文档测试计数滞后于实际用例数 | 更新为 1529 例 |
 
 回归验证：全量 1529 例（1527 通过、1 既有沙箱 EPERM、1 平台跳过）；`tsc --noEmit` 0；`scripts/build.mjs` 0；新增审查回归测试 7 例。
+
+## 7. 运行中修改设置与团队活动状态的修复（0.1.20）
+
+用户报告：存在 active 对话时修改设置被阻止；Agent Teams 的 Lead 在工作结束后仍显示 Active。经宿主源码核对与独立验证，确认两处都是扩展侧的过度限制/错误派生，修复如下。
+
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| 运行中无法启停实验 bundle | `set-bundle` 分支用 `hasRunningTasks` 直接拒绝；DSH 宿主 `pluginManager/setBundleEnabled` 不检查运行状态 | 删除该客户端拒绝，只保留外部 attach-only、可写、确认与结果呈现；宿主返回 `applied`/`restart-required` 由页面如实展示 |
+| 运行中无法保存 `applies=restart` 的设置 | `mutateSettings()` 对 restart namespace 加了客户端拒绝；实测三个 DSH 版本的 `applies` 恒为 `live`，该分支为死逻辑 | 删除整段拒绝，直接转发宿主并呈现结果 |
+| 已结束会话仍阻塞设置 | `runtimeActivity` 只按事件更新、不随会话列表清理，已消失会话可永久置 `hasRunningTasks=true` | `loadSessions()` 收到 runtime-wide 列表后清理不在列表内且 revision 不高于快照的条目；保留飞行中事件保护 |
+| Lead 工作结束后仍显示 Active | 面板把投影 `phase=active`（持久生命周期，宿主对 Lead 恒为 active）直接映射为 Running | 成员状态改为按会话 `running` 判定：Running；否则 Failed/Provisioning；其余（含 active）为 Inactive。Lead 行同规则，当前会话 running 兜底 |
+
+保留的拦截（有意为之，非设置修改）：切换运行时/项目（会结束会话）、CLI 插件安装/更新（会重启运行时）。命令行启动的运行时切换流程不受本次修改影响。
+
+验证：独立验证者用 4 个变异确认修复被测试捕获（恢复两处拒绝 → 3 例失败；删清理 → 1 例失败；改回 phase 映射 → 5 例失败）；DSH 0.2.1-rc.3 宿主包检索无任何运行中拒绝逻辑，Web 端 TeamMemberRow 派生方式与本次修复一致（`client.js:90-92`）。全量 1536 例（1534 通过、1 既有 EPERM、1 平台跳过）；`tsc --noEmit` 0；`scripts/build.mjs` 0。

@@ -9,6 +9,24 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-10-26
+
+### Fixed
+
+- Allow changing settings while DeepSeek tasks are running, matching DSH. The
+  runtime serves `settings/mutate` and `pluginManager/setBundleEnabled` without
+  a running-task check: it answers with `applied` or `restart-required`, which
+  the page already reports. Remove the sidebar's extra `hasRunningTasks`
+  refusals for bundle switches and for restart-scoped settings; the latter was
+  dead code because DSH reports every settings namespace as `live`.
+- Drop stale runtime activity entries when a session list arrives. A session the
+  runtime no longer lists could otherwise pin `hasRunningTasks` true for the rest
+  of the connection and keep blocking settings changes the runtime accepts.
+- Show Agent Teams members by their Session's live running state instead of the
+  durable `phase`. The projection marks the Lead `active` for the life of the
+  team, so an idle Lead read as Active; it now reads Inactive, and the roster
+  reports how many members are actually running.
+
 ## [0.1.19] - 2026-10-26
 
 ### Fixed

@@ -3180,6 +3180,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const teamMembers = array(team && team.members);
       const teamTasks = array(team && team.tasks);
       const teamFailure = string(team && team.failure);
+      // A member's durable phase only says whether the Team record is
+      // established; it is not turn activity. Every member row — the Lead
+      // included — addresses a Session, and the session list carries the live
+      // running flag, which is the only source for a Running row.
+      const runningById = new Map(array(current.sessions).map(item => [string(item && item.id), item && item.running === true]));
+      // The Lead row names the open conversation. Keep it answerable even when
+      // the visible list does not carry that row (an archived selection, or a
+      // list snapshot still loading).
+      const currentSessionId = string(current.sessionId);
+      if (currentSessionId !== '' && !runningById.has(currentSessionId)) runningById.set(currentSessionId, current.running === true);
       const teamVisible = team !== undefined && (teamMembers.length > 0 || teamTasks.length > 0 || teamFailure !== '');
       const visible = current.phase === 'ready' && (children.length > 0 || todos.length > 0 || workflows.length > 0 || teamVisible);
       elements.taskPanel.classList.toggle('hidden', !visible);
@@ -3189,8 +3199,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const completed = todos.filter(item => item.status === 'completed').length;
       const counts = [];
       if (children.length) counts.push(children.length + ' subagents' + (live ? ' · ' + live + ' running' : ''));
-      if (teamVisible) counts.push(teamMembers.length + ' team ' + (teamMembers.length === 1 ? 'member' : 'members')
-        + (teamTasks.length ? ' · ' + teamTasks.filter(task => task.status === 'completed').length + '/' + teamTasks.length + ' tasks' : ''));
+      if (teamVisible) {
+        const runningMembers = teamMembers.filter(member => runningById.get(string(member && member.id)) === true).length;
+        counts.push(teamMembers.length + ' team ' + (teamMembers.length === 1 ? 'member' : 'members')
+          + (runningMembers ? ' · ' + runningMembers + ' running' : '')
+          + (teamTasks.length ? ' · ' + teamTasks.filter(task => task.status === 'completed').length + '/' + teamTasks.length + ' tasks' : ''));
+      }
       if (todos.length) counts.push(completed + '/' + todos.length + ' steps done');
       if (workflows.length) counts.push(workflows.length + ' workflows');
       const expanded = !collapsedTaskPanels.has(current.sessionId);
@@ -3235,9 +3249,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         elements.taskList.append(node('div', 'task-section', 'Team'));
         for (const member of teamMembers) {
           const phase = string(member && member.phase);
-          const status = phase === 'failed' ? { label: 'Failed', kind: 'waiting' }
-            : phase === 'provisioning' ? { label: 'Provisioning', kind: 'idle' }
-              : { label: 'Active', kind: 'running' };
+          const sessionRunning = runningById.get(string(member && member.id)) === true;
+          // Durable lifecycle only decides the fallback label; a member is
+          // Running only while its Session reports an active turn.
+          const status = sessionRunning ? { label: 'Running', kind: 'running' }
+            : phase === 'failed' ? { label: 'Failed', kind: 'waiting' }
+              : phase === 'provisioning' ? { label: 'Provisioning', kind: 'idle' }
+                : { label: 'Inactive', kind: 'idle' };
           const name = string(member && member.name) || string(member && member.id, 'Member');
           const role = string(member && member.role) === 'lead' ? 'Lead' : 'Teammate';
           const row = node('button', 'task-child'); row.type = 'button';

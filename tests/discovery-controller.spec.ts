@@ -666,13 +666,42 @@ describe('runtime selection', () => {
     expect(h.controller.hasRunningTasks).toBe(false)
   })
 
-  it('blocks restart-required settings while a job outlives its agent', async () => {
+  it('allows restart-required settings while a job outlives its agent', async () => {
     const h = await harness()
     h.client.settings.mockResolvedValue({ namespaces: [{ ns: 'plugin', revision: 1, applies: 'restart' }] })
     const [ns] = (await h.controller.settings()).namespaces
     h.emit({ type: 'session/jobs', sessionId: 'b', jobs: [{ id: 'server', kind: 'bash', label: 'Server', startedAt: 1, status: 'running' }] }, 'mux')
-    expect(() => h.controller.mutateSettings(ns!, [])).toThrow('all running DeepSeek tasks')
-    expect(h.client.mutateSettings).not.toHaveBeenCalled()
+    expect(h.controller.hasRunningTasks).toBe(true)
+    // The runtime reports `restart-required` itself; the client sends the
+    // mutation instead of refusing it because a job is still running.
+    h.client.mutateSettings.mockResolvedValueOnce({ ns: 'plugin', revision: 2 })
+    await expect(h.controller.mutateSettings(ns!, [])).resolves.toMatchObject({ ns: 'plugin', revision: 2 })
+    expect(h.client.mutateSettings).toHaveBeenCalledWith('plugin', [], 1)
+  })
+
+  it('drops activity for sessions the runtime no longer lists', async () => {
+    const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'ghost', running: true })
+    expect(h.controller.hasRunningTasks).toBe(true)
+    // The session list is runtime-wide: a session it does not name is gone, so
+    // its activity must not pin `hasRunningTasks` for the rest of the connection.
+    h.emit({ type: 'host/archived-sessions-changed', archivedSessionIds: [] })
+    await vi.waitFor(() => expect(h.controller.hasRunningTasks).toBe(false))
+  })
+
+  it('keeps activity recorded after a session list request started', async () => {
+    const h = await harness()
+    const list = Promise.withResolvers<{ items: Array<Record<string, unknown>> }>()
+    h.client.listSessions.mockReturnValueOnce(list.promise as any)
+    h.emit({ type: 'host/archived-sessions-changed', archivedSessionIds: [] })
+    await vi.waitFor(() => expect(h.client.listSessions).toHaveBeenCalled())
+    // This status arrives while the list response is still in flight; the
+    // snapshot must not clear it.
+    h.emit({ type: 'host/session-status', sessionId: 'late', running: true })
+    h.client.openSession.mockClear()
+    list.resolve({ items: [{ sessionId: 'a', cwd: '/workspace', updatedAt: 1, blank: false, running: false, agentAvailable: true, agentPreset: 'standard', projections: { values: {} } }] })
+    await vi.waitFor(() => expect(h.client.openSession).toHaveBeenCalledWith('a', undefined))
+    expect(h.controller.hasRunningTasks).toBe(true)
   })
 
   it('blocks switching projects while another conversation is running', async () => {
@@ -728,20 +757,20 @@ describe('runtime selection', () => {
     expect(h.controller.hasRunningTasks).toBe(false)
   })
 
-  it('rechecks background tasks before saving restart-required settings, but allows live settings', async () => {
+  it('saves restart-required and live settings while a background task runs', async () => {
     const h = await harness()
     const restart = { ns: 'restart-setting', revision: 1, applies: 'restart' }
     const live = { ns: 'live-setting', revision: 1, applies: 'live' }
     h.client.settings.mockResolvedValue({ namespaces: [restart, live] })
     const [restartDraft, liveDraft] = (await h.controller.settings()).namespaces
     h.emit({ type: 'host/session-status', sessionId: 'b', running: true })
-    expect(() => h.controller.mutateSettings(restartDraft!, [])).toThrow('all running DeepSeek tasks')
-    expect(h.client.mutateSettings).not.toHaveBeenCalled()
-    await h.controller.mutateSettings(liveDraft!, [])
-    expect(h.client.mutateSettings).toHaveBeenCalledWith('live-setting', [], 1)
-    h.emit({ type: 'host/session-status', sessionId: 'b', running: false })
+    expect(h.controller.hasRunningTasks).toBe(true)
+    // The runtime decides whether a restart is needed and reports the result;
+    // the client no longer refuses a restart-required namespace on its own.
     await h.controller.mutateSettings(restartDraft!, [])
     expect(h.client.mutateSettings).toHaveBeenCalledWith('restart-setting', [], 1)
+    await h.controller.mutateSettings(liveDraft!, [])
+    expect(h.client.mutateSettings).toHaveBeenCalledWith('live-setting', [], 1)
   })
 
   it('disconnects the old client and passes the explicit target without publishing its credentials', async () => {

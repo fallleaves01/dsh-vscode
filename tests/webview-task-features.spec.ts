@@ -143,4 +143,97 @@ describe('Agent Teams panel', () => {
     row.dispatchEvent(new Event('click', { bubbles: true }))
     expect(h.posts.some(post => post.type === 'select-session')).toBe(false)
   })
+
+  it('shows an idle Lead as Inactive instead of Active', async () => {
+    const h = open()
+    // The Lead row addresses the Lead's own Session; its durable phase is
+    // `active`, but no turn is running, so the row must not claim activity.
+    h.sendState({ team, sessions: [{ id: 'lead-session', title: 'Lead' }, { id: 'mate-session', title: 'Reviewer' }] }); await h.settle()
+    const lead = h.document.querySelector<HTMLButtonElement>('#taskList [data-session-id="lead-session"]')!
+    expect(lead.textContent).toContain('Inactive')
+    expect(lead.textContent).not.toContain('Active')
+    expect(lead.querySelector('.task-status')!.classList.contains('idle')).toBe(true)
+    expect(lead.querySelector('.task-status')!.classList.contains('running')).toBe(false)
+    expect(lead.querySelector('.task-glyph')!.classList.contains('running')).toBe(false)
+    expect(lead.getAttribute('aria-label')).toBe('Open teammate lead, Inactive')
+    expect(lead.getAttribute('title')).toContain('Inactive')
+    // A failed member keeps its durable failure label while idle.
+    const failed = h.document.querySelector<HTMLButtonElement>('#taskList [data-session-id="mate-session"]')!
+    expect(failed.textContent).toContain('Failed')
+    expect(failed.querySelector('.task-status')!.classList.contains('waiting')).toBe(true)
+  })
+
+  it('shows a running member as Running and counts running members', async () => {
+    const h = open()
+    const runningTeam = {
+      members: [
+        { id: 'lead-session', name: 'lead', role: 'lead', phase: 'active' },
+        { id: 'mate-session', name: 'reviewer', role: 'teammate', phase: 'active' },
+      ],
+      tasks: [], completedCount: 0, totalCount: 0,
+    }
+    h.sendState({ team: runningTeam, sessions: [{ id: 'lead-session', title: 'Lead' }, { id: 'mate-session', title: 'Reviewer', running: true }] }); await h.settle()
+    const lead = h.document.querySelector<HTMLButtonElement>('#taskList [data-session-id="lead-session"]')!
+    const member = h.document.querySelector<HTMLButtonElement>('#taskList [data-session-id="mate-session"]')!
+    expect(lead.textContent).toContain('Inactive')
+    expect(member.textContent).toContain('Running')
+    expect(member.querySelector('.task-status')!.classList.contains('running')).toBe(true)
+    expect(member.querySelector('.task-glyph')!.classList.contains('running')).toBe(true)
+    expect(member.getAttribute('aria-label')).toBe('Open teammate reviewer, Running')
+    expect(h.document.getElementById('taskToggle')!.textContent).toContain('2 team members')
+    expect(h.document.getElementById('taskToggle')!.textContent).toContain('1 running')
+  })
+
+  it('keeps failed and provisioning labels for sessions that are not running', async () => {
+    const h = open()
+    const mixed = {
+      members: [
+        { id: 'lead-session', name: 'lead', role: 'lead', phase: 'active' },
+        { id: 'failed-session', name: 'failed-member', role: 'teammate', phase: 'failed', error: 'Creation was denied' },
+        { id: 'prov-session', name: 'new-member', role: 'teammate', phase: 'provisioning' },
+      ],
+      tasks: [], completedCount: 0, totalCount: 0,
+    }
+    h.sendState({ team: mixed, sessions: [
+      { id: 'lead-session', title: 'Lead' },
+      { id: 'failed-session', title: 'Failed member' },
+      { id: 'prov-session', title: 'New member' },
+    ] }); await h.settle()
+    const status = (id: string) => h.document.querySelector<HTMLButtonElement>(`#taskList [data-session-id="${id}"] .task-status`)!
+    expect(status('failed-session').textContent).toBe('Failed')
+    expect(status('prov-session').textContent).toBe('Provisioning')
+    expect(status('lead-session').textContent).toBe('Inactive')
+    expect(h.document.getElementById('taskToggle')!.textContent).not.toContain('running')
+  })
+
+  it('keeps session activity correct when the team projection arrives late', async () => {
+    const h = open()
+    const runningTeam = {
+      members: [
+        { id: 'lead-session', name: 'lead', role: 'lead', phase: 'active' },
+        { id: 'mate-session', name: 'reviewer', role: 'teammate', phase: 'active' },
+      ],
+      tasks: [], completedCount: 0, totalCount: 0,
+    }
+    h.sendState({ team: null, sessions: [{ id: 'lead-session', title: 'Lead' }, { id: 'mate-session', title: 'Reviewer', running: true }] }); await h.settle()
+    expect(h.document.getElementById('taskPanel')!.classList.contains('hidden')).toBe(true)
+    h.sendState({ team: runningTeam, sessions: [{ id: 'lead-session', title: 'Lead' }, { id: 'mate-session', title: 'Reviewer', running: true }] }); await h.settle()
+    const member = h.document.querySelector<HTMLButtonElement>('#taskList [data-session-id="mate-session"]')!
+    expect(member.textContent).toContain('Running')
+    // A later idle status repaints the row without rebuilding the projection.
+    h.sendState({ team: runningTeam, sessions: [{ id: 'lead-session', title: 'Lead' }, { id: 'mate-session', title: 'Reviewer', running: false }] }); await h.settle()
+    expect(h.document.querySelector<HTMLButtonElement>('#taskList [data-session-id="mate-session"]')!.textContent).toContain('Inactive')
+    expect(h.document.getElementById('taskToggle')!.textContent).not.toContain('running')
+  })
+
+  it('reads the Lead row activity from the open conversation when the list lacks it', async () => {
+    const h = open()
+    const leadTeam = { members: [{ id: 'session-a', name: 'lead', role: 'lead', phase: 'active' }], tasks: [], completedCount: 0, totalCount: 0 }
+    h.sendState({ team: leadTeam, sessionId: 'session-a', sessions: [], running: true }); await h.settle()
+    const lead = () => h.document.querySelector<HTMLButtonElement>('#taskList [data-session-id="session-a"]')!
+    expect(lead().textContent).toContain('Running')
+    h.sendState({ team: leadTeam, sessionId: 'session-a', sessions: [], running: false }); await h.settle()
+    expect(lead().textContent).toContain('Inactive')
+    expect(lead().textContent).not.toContain('Running')
+  })
 })

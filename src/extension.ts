@@ -1528,9 +1528,10 @@ export class DshChatController implements vscode.Disposable {
     if (runtimeIsNotOurs(this.runtimeOwnership)) throw new Error('This external runtime is attach-only. Use a managed runtime to edit settings.')
     const client = this.requireClient()
     if (this.settingsOwners.get(namespace) !== client) throw new Error('The DSH runtime changed. Reopen runtime settings before saving.')
-    if (namespace.applies === 'restart' && this.hasRunningTasks) {
-      throw new Error('Finish or stop all running DeepSeek tasks before changing settings that require a runtime restart.')
-    }
+    // A restart-required namespace is a setting the runtime itself accepts: it
+    // reports whether a restart is needed and the sidebar shows that result.
+    // Refusing it here only because a turn or job is running blocked the user
+    // from changing settings DSH is willing to change.
     return client.mutateSettings(namespace.ns, ops, namespace.revision)
   }
 
@@ -1820,6 +1821,16 @@ export class DshChatController implements vscode.Disposable {
       this.refreshArchivedSessions(client, listGeneration),
     ])
     if (this.client !== client || this.cwd !== cwd || listGeneration !== this.sessionListGeneration) return
+    // The list is runtime-wide, so an activity entry it does not name belongs to
+    // a session the runtime no longer has. Keeping such an entry would pin
+    // `hasRunningTasks` true for the rest of the connection and block settings
+    // changes DSH would accept. A revision newer than this snapshot is an event
+    // that arrived while the request was in flight: that session may be new, so
+    // it is kept and the loop below leaves it alone.
+    const listed = new Set(items.map(summary => summary.sessionId))
+    for (const [sessionId, activity] of this.runtimeActivity) {
+      if (!listed.has(sessionId) && activity.revision <= activityRevision) this.runtimeActivity.delete(sessionId)
+    }
     for (const summary of items) {
       // A list response must not undo a status notification received while it was in flight.
       if ((this.runtimeActivity.get(summary.sessionId)?.revision ?? -1) <= activityRevision) {

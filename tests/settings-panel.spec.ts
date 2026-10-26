@@ -339,12 +339,15 @@ describe('experimental bundle management', () => {
     expect(reply.error).toContain('attach-only')
     expect(h.client.setBundleEnabled).not.toHaveBeenCalled()
   })
-  it('refuses bundle changes while a DeepSeek task is running', async () => {
+  it('allows bundle changes while a DeepSeek task is running', async () => {
+    // The runtime owns the restart decision and answers with `applied` or
+    // `restart-required`; a running turn must not block the change client-side.
     const data = fixture() as any; data.bundles = bundleFixture()
     const h = await harness('managed', data); h.host.hasRunningTasks = true
+    mocks.warning.mockResolvedValueOnce('Enable')
     const reply = await h.result(h.send({ type: 'set-bundle', name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', enabled: true }))
-    expect(reply.error).toContain('running DeepSeek tasks')
-    expect(h.client.setBundleEnabled).not.toHaveBeenCalled()
+    expect(reply).toMatchObject({ ok: true, application: 'applied' })
+    expect(h.client.setBundleEnabled).toHaveBeenCalledWith('@deepseek-ai/dsh-experimental-cot-translation-bundle', true)
   })
   it('keeps the bundle unchanged when the confirmation is dismissed', async () => {
     const data = fixture() as any; data.bundles = bundleFixture()
