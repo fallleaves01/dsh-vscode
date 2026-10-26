@@ -38,17 +38,33 @@ describe('independent task detail interactions', () => {
     expect(document.getElementById('messages')!.innerHTML).not.toContain(secret)
   })
   it('retains failed assistant text and shows the precise reason without interpreting error HTML', () => {
-    const detail = 'PI_AI_ERROR: <img src=x onerror=bad()> content_filter'
-    sendState({ messages: [{ id: 'failed', role: 'assistant', text: 'Received answer', failed: true, detail }] })
+    const detail = '<img src=x onerror=bad()> content_filter'
+    sendState({ messages: [{ id: 'failed', role: 'assistant', text: 'Received answer', failed: true, detail, failureCode: 'PI_AI_ERROR' }] })
     expect(document.querySelector('#messages .role')?.textContent).toBe('DeepSeek')
-    expect(document.querySelector('.assistant-failure-title')?.textContent).toBe('Response failed')
+    expect(document.querySelector('.assistant-failure-title')?.textContent).toBe('This turn failed')
     expect(document.querySelector('.assistant-failure-detail')?.textContent).toBe(detail)
+    expect(document.querySelector('.assistant-failure-code')?.textContent).toBe('PI_AI_ERROR')
     expect(document.querySelector('.assistant-failure img')).toBeNull()
     expect(document.getElementById('messages')?.textContent).toContain('Received answer')
   })
+  it('uses the same failure copy and code chip as the main chat', () => {
+    sendState({ messages: [
+      { id: 'auth', role: 'assistant', text: '', failed: true, detail: 'raw', failureCode: 'AUTH' },
+      { id: 'interrupted', role: 'assistant', text: '', failed: true, detail: 'raw', failureCode: 'INTERRUPTED' },
+    ] })
+    const failures = [...document.querySelectorAll('.assistant-failure')]
+    expect(failures[0]?.querySelector('.assistant-failure-title')?.textContent).toBe('This turn failed')
+    expect(failures[0]?.querySelector('.assistant-failure-detail')?.textContent).toBe('API key is invalid')
+    expect(failures[0]?.querySelector('.assistant-failure-code')?.textContent).toBe('AUTH')
+    expect(failures[1]?.querySelector('.assistant-failure-title')?.textContent).toBe('Task stopped')
+    expect(failures[1]?.querySelector('.assistant-failure-detail')?.textContent)
+      .toBe('The DSH process exited before this turn finished (for example, it was killed, crashed, or timed out while shutting down), so the turn was closed when DSH restarted. Unfinished tool calls have unknown outcomes.')
+    expect(failures[1]?.querySelector('.assistant-failure-code')).toBeNull()
+  })
   it('shows failure before a deferred assistant response is expanded', () => {
-    sendState({ messages: [{ id: 'large', role: 'assistant', text: '', failed: true, detail: 'TIMEOUT: Request timed out', deferredBody: true, deferredBodyRevision: 'rev' }] })
-    expect(document.querySelector('.assistant-failure-detail')?.textContent).toBe('TIMEOUT: Request timed out')
+    sendState({ messages: [{ id: 'large', role: 'assistant', text: '', failed: true, detail: 'Request timed out', failureCode: 'TIMEOUT', deferredBody: true, deferredBodyRevision: 'rev' }] })
+    expect(document.querySelector('.assistant-failure-detail')?.textContent).toBe('Request timed out')
+    expect(document.querySelector('.assistant-failure-code')?.textContent).toBe('TIMEOUT')
     expect(document.querySelector('#messages button')?.textContent).toBe('Show full message')
   })
   it('ignores unsolicited output pages that have no matching pending request', () => {

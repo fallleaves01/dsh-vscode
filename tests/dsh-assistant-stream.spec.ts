@@ -117,7 +117,7 @@ describe('DSH 0.1.5 assistant presentation stream', () => {
     expect(h.projector.messages()).toMatchObject([{ text: 'Received prefix', failed: true, detail: expect.stringContaining('content_filter') }])
     h.stream.frame(end(1, 'committed', 'assistant/attempt'), 8)
     expect(h.projector.messages()).toEqual([{ id: 'assistant-attempt:6', role: 'assistant', text: 'Received prefix', failed: true, streaming: false,
-      detail: 'PI_AI_ERROR: Provider finish_reason: content_filter' }])
+      detail: 'Provider finish_reason: content_filter', failureCode: 'PI_AI_ERROR' }])
   })
 
   it('keeps a retry reason that arrives before its failed settlement is released', () => {
@@ -132,7 +132,7 @@ describe('DSH 0.1.5 assistant presentation stream', () => {
     h.stream.frame(end(1, 'committed', 'assistant/attempt'), 7)
     h.stream.frame(start('retry', 4), 7); h.stream.frame(chunk('New response', 0, 'retry', 5), 7)
     expect(h.projector.messages()).toMatchObject([
-      { id: 'assistant-attempt:6', text: 'Received prefix', failed: true, detail: 'TIMEOUT: Stream idle timeout' },
+      { id: 'assistant-attempt:6', text: 'Received prefix', failed: true, detail: 'Stream idle timeout', failureCode: 'TIMEOUT' },
       { text: 'New response', streaming: true },
     ])
   })

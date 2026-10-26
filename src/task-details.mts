@@ -72,6 +72,25 @@ export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void 
       requests.append(card)
     }
   }
+  /** DSH's own failure copy: the runtime code picks the title and the reason. */
+  const failureTitleOf = (message: ConversationMessage): string => {
+    const code = message.failureCode ?? ''
+    return code === 'ACCOUNT_SIGNED_OUT' || code === 'INTERRUPTED' ? 'Task stopped' : 'This turn failed'
+  }
+  const failureReasonOf = (message: ConversationMessage): string => {
+    const code = message.failureCode ?? ''
+    if (code === 'AUTH') return 'API key is invalid'
+    if (code === 'QUOTA' || code === 'ACCOUNT_QUOTA') return 'Request quota exhausted.'
+    if (code === 'ACCOUNT_SIGNED_OUT') return 'Stopped because you signed out of DeepSeek.'
+    if (code === 'ACCOUNT_SIGN_IN_REQUIRED') return 'Sign in to DeepSeek and ensure the request destination supports account authentication.'
+    if (code === 'INTERRUPTED') return 'The DSH process exited before this turn finished (for example, it was killed, crashed, or timed out while shutting down), so the turn was closed when DSH restarted. Unfinished tool calls have unknown outcomes.'
+    return message.detail || 'Error details are not available in the loaded history.'
+  }
+  /** The runtime code shown beside the reason; `INTERRUPTED` has no chip. */
+  const failureCodeOf = (message: ConversationMessage): string => {
+    const code = message.failureCode ?? ''
+    return code === '' || code === 'INTERRUPTED' ? '' : code
+  }
   const render = (): void => {
     if (!state) return
     const follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 32
@@ -142,7 +161,12 @@ export function mountTaskDetails(api: TaskApi = acquireVsCodeApi()): () => void 
         }
         if (message.role === 'assistant' && message.failed === true) {
           const failure = node('div', '', 'assistant-failure'); failure.setAttribute('role', 'status')
-          failure.append(node('div', 'Response failed', 'assistant-failure-title'), node('div', message.detail || 'Error details are not available in the loaded history.', 'assistant-failure-detail'))
+          failure.append(node('div', failureTitleOf(message), 'assistant-failure-title'))
+          const line = node('div', '', 'assistant-failure-line')
+          line.append(node('div', failureReasonOf(message), 'assistant-failure-detail'))
+          const code = failureCodeOf(message)
+          if (code !== '') line.append(node('code', code, 'assistant-failure-code'))
+          failure.append(line)
           cached.row.append(failure)
         }
       }

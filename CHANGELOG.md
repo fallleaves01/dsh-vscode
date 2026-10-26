@@ -9,6 +9,27 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-10-26
+
+### Fixed
+
+- Present a failed response as DSH does: the block now says `This turn failed`
+  (or `Task stopped` for a signed-out or interrupted run), replaces known
+  provider codes with the same wording DSH uses (`AUTH`, quota, signed-out,
+  sign-in required, interrupted), keeps an unknown code as a separate
+  monospace badge instead of prefixing the reason, and never renders a badge
+  for `INTERRUPTED`. The failure reason no longer carries a `CODE: ` prefix.
+- Decode a provider JSON error body for display. When the runtime stores a raw
+  HTTP error envelope such as `{"error":{"message":"Internal Server Error",
+  "code":500,...}}`, the reason becomes `Internal Server Error (HTTP 500)`;
+  the runtime code still appears as its badge. The body is truncated to 2,000
+  characters and passes the existing credential redaction. DSH itself shows
+  the raw body, so this is a deliberate readability improvement documented in
+  the adaptation notes.
+- Keep the failure reason and code in step across retries and streamed
+  attempts, including a late `llm/retry` failure and a message whose code was
+  removed; a deferred long response refreshes its failure block too.
+
 ## [0.1.21] - 2026-10-26
 
 ### Fixed

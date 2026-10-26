@@ -61,6 +61,7 @@ export function messageForWebview(message: ConversationMessage): ConversationMes
     ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
     ...(message.streaming === undefined ? {} : { streaming: message.streaming }),
     ...(message.detail === undefined ? {} : { detail: message.detail }),
+    ...(message.failureCode === undefined ? {} : { failureCode: message.failureCode }),
     ...(message.failed === undefined ? {} : { failed: message.failed }),
     ...(callView === undefined ? {} : { callView }),
     ...(resultView === undefined ? {} : { resultView }),
@@ -105,6 +106,7 @@ function sameMessage(left: ConversationMessage, right: ConversationMessage): boo
     && left.text === right.text
     && left.reasoning === right.reasoning
     && left.detail === right.detail
+    && left.failureCode === right.failureCode
     && left.streaming === right.streaming
     && left.failed === right.failed
     && left.callView === right.callView
@@ -123,6 +125,7 @@ function appendedAssistantParts(left: ConversationMessage, right: ConversationMe
     && right.role === 'assistant'
     && left.streaming === true
     && left.detail === right.detail
+    && left.failureCode === right.failureCode
     && left.failed === right.failed
     && left.callView === right.callView
     && left.resultView === right.resultView

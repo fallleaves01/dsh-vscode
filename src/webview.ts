@@ -536,7 +536,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .failed, .error-text { color: var(--vscode-errorForeground); }
     .assistant-failure { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); border-radius: 6px; font-size: 12px; line-height: 1.5; }
     .assistant-failure-title { color: var(--vscode-errorForeground); font-weight: 600; }
-    .assistant-failure-detail { margin-top: 2px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+    /* The runtime code is its own element beside the reason: a narrow sidebar
+       wraps it rather than widening, and it never sits in the title row. */
+    .assistant-failure-line { display: flex; align-items: baseline; gap: 6px; margin-top: 2px; flex-wrap: wrap; }
+    .assistant-failure-detail { min-width: 0; flex: 1 1 auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+    .assistant-failure-code { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 500; }
     /**
      * No typing caret while a reply streams.
      *
@@ -2272,6 +2276,28 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (end.childNodes.length > 0) row.append(end);
       return row;
     }
+    /**
+     * DSH's own failure copy: the runtime code picks both the title and the
+     * reason, while a code the sidebar does not know keeps the provider text.
+     */
+    function failureTitleOf(message) {
+      const code = typeof message.failureCode === 'string' ? message.failureCode : '';
+      return code === 'ACCOUNT_SIGNED_OUT' || code === 'INTERRUPTED' ? 'Task stopped' : 'This turn failed';
+    }
+    function failureReasonOf(message) {
+      const code = typeof message.failureCode === 'string' ? message.failureCode : '';
+      if (code === 'AUTH') return 'API key is invalid';
+      if (code === 'QUOTA' || code === 'ACCOUNT_QUOTA') return 'Request quota exhausted.';
+      if (code === 'ACCOUNT_SIGNED_OUT') return 'Stopped because you signed out of DeepSeek.';
+      if (code === 'ACCOUNT_SIGN_IN_REQUIRED') return 'Sign in to DeepSeek and ensure the request destination supports account authentication.';
+      if (code === 'INTERRUPTED') return 'The DSH process exited before this turn finished (for example, it was killed, crashed, or timed out while shutting down), so the turn was closed when DSH restarted. Unfinished tool calls have unknown outcomes.';
+      return message.detail || 'Error details are not available in the loaded history.';
+    }
+    /** The runtime code shown beside the reason; INTERRUPTED has no chip. */
+    function failureCodeOf(message) {
+      const code = typeof message.failureCode === 'string' ? message.failureCode : '';
+      return code === '' || code === 'INTERRUPTED' ? '' : code;
+    }
     function renderMessage(message) {
       if (message.role === 'tool') return { message, node: renderTool(message) };
       if (message.role === 'command') return { message, node: renderCommand(message) };
@@ -2290,8 +2316,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       item.append(body);
       if (message.role === 'assistant' && message.failed === true) {
         const failure = node('div', 'assistant-failure'); failure.setAttribute('role', 'status');
-        failure.append(node('div', 'assistant-failure-title', 'Response failed'));
-        failure.append(node('div', 'assistant-failure-detail', message.detail || 'Error details are not available in the loaded history.'));
+        failure.append(node('div', 'assistant-failure-title', failureTitleOf(message)));
+        const line = node('div', 'assistant-failure-line');
+        line.append(node('div', 'assistant-failure-detail', failureReasonOf(message)));
+        const code = failureCodeOf(message);
+        if (code !== '') line.append(node('code', 'assistant-failure-code', code));
+        failure.append(line);
         item.append(failure);
       }
       const meta = messageMetaFor(message.id);
@@ -2311,7 +2341,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
      */
     function messageRowKey(message) {
       const meta = messageMetaFor(message.id);
-      const failure = message.role === 'assistant' && message.failed === true ? [message.failed, message.detail] : [];
+      const failure = message.role === 'assistant' && message.failed === true ? [message.failed, message.detail, message.failureCode] : [];
       if (meta === undefined) return JSON.stringify(failure);
       if (message.role === 'assistant' ? meta.turnEnd !== true : message.role !== 'user') return JSON.stringify(failure);
       const feedback = feedbackFor(message.id);

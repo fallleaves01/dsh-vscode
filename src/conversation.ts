@@ -91,6 +91,13 @@ export interface ConversationMessage {
   /** Model thinking for this turn, shown collapsed above the answer. */
   reasoning?: string
   detail?: string
+  /**
+   * Original runtime failure code (`AUTH`, `SERVER`, `INTERRUPTED`, …).
+   *
+   * Kept beside the message rather than prefixed into {@link detail}: the
+   * sidebar renders it as its own code element, the way DSH's own client does.
+   */
+  failureCode?: string
   streaming?: boolean
   failed?: boolean
   callView?: unknown
@@ -237,11 +244,62 @@ function toolView(value: unknown, expected: 'call' | 'result'): unknown {
 
 const missingFailureReason = 'Error details are not available in this part of the conversation history.'
 
-function failureDetail(value: unknown): string {
+/** Longest decoded provider message rendered inline. */
+const FAILURE_DETAIL_LIMIT = 2_000
+
+/** One recorded failure, split into what the sidebar shows and the runtime's code. */
+export interface ConversationFailure {
+  /** Human-readable reason, redacted and without the runtime code prefix. */
+  detail: string
+  /** Original runtime code when it supplied one; absent for live-stream failures. */
+  code?: string
+}
+
+/**
+ * Read the provider error body many model gateways return in the failure text.
+ *
+ * A gateway HTTP 500 arrives as a JSON document, e.g.
+ * `{"error":{"message":"Internal Server Error","code":500}}`. The raw document
+ * is correct on the wire and useless in the sidebar, so the visible reason is
+ * the provider's own message with the numeric HTTP status appended. Anything
+ * that does not parse — or does not have the `error.message` shape — is kept
+ * verbatim, because a provider can also report a plain sentence.
+ */
+function decodedFailureDetail(raw: string): string {
+  if (raw.length > 1_000_000) return raw
+  let value: unknown
+  try { value = JSON.parse(raw) } catch { return raw }
+  const error = record(record(value)?.error)
+  if (error === undefined) return raw
+  const message = typeof error.message === 'string' && error.message.trim() !== '' ? error.message : undefined
+  if (message === undefined) return raw
+  const httpStatus = typeof error.code === 'number' && Number.isFinite(error.code) ? error.code
+    : typeof error.status === 'number' && Number.isFinite(error.status) ? error.status
+      : undefined
+  return httpStatus === undefined ? message : `${message} (HTTP ${String(httpStatus)})`
+}
+
+function truncatedFailureDetail(value: string): string {
+  return value.length <= FAILURE_DETAIL_LIMIT ? value : `${value.slice(0, FAILURE_DETAIL_LIMIT)}…`
+}
+
+function failureOf(value: unknown): ConversationFailure {
   const failure = record(value)
   const message = typeof failure?.message === 'string' && failure.message !== '' ? failure.message
     : typeof value === 'string' && value !== '' ? value : missingFailureReason
-  return redactDshSecrets(typeof failure?.code === 'string' && failure.code !== '' ? `${failure.code}: ${message}` : message)
+  const code = typeof failure?.code === 'string' && failure.code !== '' ? failure.code : undefined
+  return {
+    detail: redactDshSecrets(truncatedFailureDetail(decodedFailureDetail(message))),
+    ...(code === undefined ? {} : { code }),
+  }
+}
+
+/** Apply one failure to a message, clearing a stale code when the newer one has none. */
+function withFailure(message: ConversationMessage, failure: ConversationFailure): ConversationMessage {
+  const next: ConversationMessage = { ...message, failed: true, detail: failure.detail }
+  if (failure.code === undefined) delete next.failureCode
+  else next.failureCode = failure.code
+  return next
 }
 
 /** Recover the durable failed stream without treating tool arguments as reply text. */
@@ -295,8 +353,8 @@ export class ConversationProjector {
   private readonly turnStarts = new Map<number, number>()
   private readonly turnSteps = new Map<number, { step: number; assistantId?: string }>()
   /** A terminal event can reach the view before the live stream releases its settlement. */
-  private readonly turnFailures = new Map<number, { id: string; seq: number; time: number; step?: number; detail: string }>()
-  private readonly pendingRetryFailures = new Map<string, { seq: number; detail: string }>()
+  private readonly turnFailures = new Map<number, { id: string; seq: number; time: number; step?: number; failure: ConversationFailure }>()
+  private readonly pendingRetryFailures = new Map<string, { seq: number; failure: ConversationFailure }>()
   private readonly hiddenCommandIds = new Set<string>()
   private liveAttempt: (AssistantAttempt & { message?: ConversationMessage }) | undefined
 
@@ -329,10 +387,11 @@ export class ConversationProjector {
     const active = this.liveAttempt
     if (active?.attemptId !== update.attemptId) return
     if (update.kind === 'end') {
-      if (active.message !== undefined) this.set(active.message.id, {
-        ...active.message, streaming: false, failed: true,
+      // A live stream has no runtime code to show: this is the client noticing
+      // that the response never settled, not a Host-reported failure.
+      if (active.message !== undefined) this.set(active.message.id, withFailure({ ...active.message, streaming: false }, {
         detail: 'The response ended before it could be saved. The received output is retained in this view only.',
-      })
+      }))
       this.liveAttempt = undefined
       return
     }
@@ -387,11 +446,18 @@ export class ConversationProjector {
         if (index >= 0) this.orderedIds.splice(index, 1)
         terminal.id = id
       }
-      this.set(id, {
-        id, role: 'assistant', ...attemptedContent(data.stream), failed: true,
-        detail: terminal?.detail ?? retry?.detail ?? this.byId.get(id)?.detail ?? missingFailureReason,
+      // The terminal reason and a queued retry each carry the code beside the
+      // detail; terminal wins over retry, and both win over earlier attempts.
+      const inherited = terminal?.failure ?? retry?.failure
+      const existing = this.byId.get(id)
+      const failure = inherited ?? {
+        detail: existing?.detail ?? missingFailureReason,
+        ...(existing?.failureCode === undefined ? {} : { code: existing.failureCode }),
+      }
+      this.set(id, withFailure({
+        id, role: 'assistant', ...attemptedContent(data.stream),
         ...(terminal === undefined ? {} : { streaming: false }),
-      })
+      }, failure))
       this.meta.set(id, { seq: event.seq, time: terminal?.time ?? event.time, turn: data.turn, step: data.step })
       this.turnSteps.set(data.turn, { step: data.step, assistantId: id })
       return
@@ -400,8 +466,9 @@ export class ConversationProjector {
     if (event.type === 'llm/retry' && typeof data.turn === 'number' && typeof data.step === 'number') {
       const step = this.turnSteps.get(data.turn)
       const current = step?.assistantId === undefined ? undefined : this.byId.get(step.assistantId)
-      if (step?.step === data.step && current?.failed === true) this.set(current.id, { ...current, detail: failureDetail(data.failure) })
-      else this.pendingRetryFailures.set(`${data.turn}:${data.step}`, { seq: event.seq, detail: failureDetail(data.failure) })
+      const failure = failureOf(data.failure)
+      if (step?.step === data.step && current?.failed === true) this.set(current.id, withFailure(current, failure))
+      else this.pendingRetryFailures.set(`${data.turn}:${data.step}`, { seq: event.seq, failure })
       return
     }
 
@@ -413,9 +480,9 @@ export class ConversationProjector {
       const live = this.liveAttempt?.turn === data.turn ? this.liveAttempt.message : undefined
       const current = live ?? (saved?.failed === true || saved?.streaming === true ? saved : undefined)
       const id = current?.id ?? `assistant-error:${String(event.seq)}`
-      const detail = failureDetail(reason.error)
-      this.set(id, { ...(current ?? { id, role: 'assistant', text: '' }), streaming: false, failed: true, detail })
-      this.turnFailures.set(data.turn, { id, seq: event.seq, time: event.time, ...(step === undefined ? {} : { step: step.step }), detail })
+      const failure = failureOf(reason.error)
+      this.set(id, withFailure({ ...(current ?? { id, role: 'assistant', text: '' }), streaming: false }, failure))
+      this.turnFailures.set(data.turn, { id, seq: event.seq, time: event.time, ...(step === undefined ? {} : { step: step.step }), failure })
       this.meta.set(id, { seq: this.meta.get(id)?.seq ?? event.seq, time: event.time, turn: data.turn, ...(step === undefined ? {} : { step: step.step }) })
       if (this.liveAttempt?.turn === data.turn) this.liveAttempt = undefined
       return

@@ -53,7 +53,11 @@ export function taskDetailsHtml(webview: vscode.Webview, assets: { script: vscod
   .thinking { color: var(--dsh-muted); margin-bottom: 12px; } .thinking summary { cursor: pointer; }
   .assistant-failure { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); border-radius: 6px; font-size: 12px; line-height: 1.5; }
   .assistant-failure-title { color: var(--vscode-errorForeground); font-weight: 600; }
-  .assistant-failure-detail { margin-top: 2px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+  /* The runtime code is its own element beside the reason; a narrow panel wraps
+     it instead of widening, and it never shares the title row. */
+  .assistant-failure-line { display: flex; align-items: baseline; gap: 6px; margin-top: 2px; flex-wrap: wrap; }
+  .assistant-failure-detail { min-width: 0; flex: 1 1 auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+  .assistant-failure-code { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 500; }
   a, .message button { color: var(--dsh-accent); } .message button { padding: 2px 6px; }
   #output { max-width: 960px; margin: 0 auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 var(--vscode-editor-font-family); }
   #output:not(:empty) { padding: 16px; border: .5px solid var(--dsh-border); border-radius: 12px; background: var(--vscode-textCodeBlock-background, var(--dsh-hover)); }

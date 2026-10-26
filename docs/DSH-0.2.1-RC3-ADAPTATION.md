@@ -65,7 +65,7 @@
 | 指标 | 数值 |
 |---|---|
 | 测试文件 | 112（111 通过，1 失败） |
-| 测试用例 | 1544（1542 通过，1 失败，1 跳过） |
+| 测试用例 | 1558（1556 通过，1 失败，1 跳过） |
 | 耗时 | Duration 9–10 s（多次复跑） |
 
 唯一失败为既有沙箱限制：`tests/diff-review.spec.ts:787` 向 `$HOME/dsh-open-file-spec.tmp` 写入时返回 `EPERM`。该测试文件不在本轮改动清单内，失败与 rc.3 适配无关；Vitest 因此以退出码 1 结束。新增测试文件三个：`tests/agent-team-state.spec.ts`（10 项）、`tests/dsh-session-feed.spec.ts`（16 项）、`tests/extension-surface.spec.ts`（5 项）；另在 `tests/settings-page-state.spec.ts`、`tests/settings-panel.spec.ts`、`tests/settings-page.spec.ts`、`tests/dsh-session-feed.spec.ts`、`tests/collaboration-state.spec.ts`、`tests/dsh-client.spec.ts`、`tests/discovery-controller.spec.ts`、`tests/subagent-tools.spec.ts`、`tests/webview-policy.spec.ts`、`tests/webview-subagent-cards.spec.ts`、`tests/webview-task-features.spec.ts` 中扩充用例。
@@ -164,3 +164,20 @@
 保留的宿主限制：取消是协作式的，turn 在长工具调用中会等待该调用结算；无公开 RPC 可强制终止，客户端只保证及时反馈与可重试。真实运行时证据：`session/cancel` 往返 0.8–1.0 ms 且 idle 重复调用返回 `accepted`；`session/follow` 快照 1.7–4.9 ms；`session/projections` 1.2–1.8 ms。
 
 验证：独立验证者以 5 个变异确认修复被测试捕获（删除乐观发布 → 5 例失败；90 s 窗口 → 1 例；删除 running 校验 → 1 例；models 改回串行 → 2 例；超时/错误文案相关用例）；并补充固定 8 s 数值与 Stop 三态 UI 的回归测试。全量 1544 例（1542 通过、1 既有 EPERM、1 平台跳过）；`tsc --noEmit` 0；`scripts/build.mjs` 0。
+
+## 9. 失败响应呈现对齐 DSH（0.1.22）
+
+用户报告插件把模型失败显示为 `Response failed` 与 `SERVER: {"error":{...}}`，难以理解。核对会话事件后确认：运行时把提供方 HTTP 错误体原样存进失败原因（`code=SERVER`，`message` 为响应体 JSON），DSH 的重试器已自动重试 3 次；DSH Web 对已知 code 有本地化文案，对未知 code 显示原始 message，并把 code 单独显示。
+
+呈现规则对齐如下（来源：`dsh-client-ui-chat` 的 failure 渲染与本地化文案）：
+
+| 元素 | 对齐后行为 |
+|---|---|
+| 标题 | `This turn failed`；`ACCOUNT_SIGNED_OUT`/`INTERRUPTED` 为 `Task stopped` |
+| 已知 code 文案 | `AUTH`→API key is invalid；`QUOTA`/`ACCOUNT_QUOTA`→Request quota exhausted.；`ACCOUNT_SIGNED_OUT`/`ACCOUNT_SIGN_IN_REQUIRED` 使用 DSH 原文 |
+| 未知 code | 显示原始 message，并在正文右侧以独立等宽 `code` 元素显示运行时 code（`INTERRUPTED` 不显示） |
+| 数据结构 | `detail` 不再拼接 `CODE: ` 前缀；新增 `failureCode` 随消息投影、Webview 与任务详情传递 |
+
+在 DSH 行为之外，本扩展额外将提供方 JSON 错误体解码为人类可读文本：仅当 message 是 JSON 对象且含非空 `error.message` 时，取该文本，并在 `error.code`/`error.status` 为数字时追加 ` (HTTP <n>)`；结果截断 2000 字符并经凭据脱敏。DSH 本体会原样显示 JSON，因此这是有意的信息增强，不改变未知 code 的原文回退规则。
+
+验证：独立验证者用真实（脱敏）`turn/end` 事件完成 projector→Webview→task-details 三段断言，并以 5 个变异确认修复被测试捕获；全量 1558 例（1556 通过、1 既有 EPERM、1 平台跳过）；`tsc --noEmit` 0；`scripts/build.mjs` 0。未对齐项（既有缺口）：输出 token 上限提示行、turn 级错误行结构，留待后续。

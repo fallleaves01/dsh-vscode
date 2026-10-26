@@ -152,4 +152,26 @@ describe('diffConversationMessages', () => {
     const hydrated = messageForWebview({ ...base, images: base.images?.map(image => ({ ...image, data: 'abc' })) })
     expect(hydrated.deferredBodyRevision).not.toBe(messageForWebview(base).deferredBodyRevision)
   })
+
+  it('keeps the failure code on a deferred failed response', () => {
+    const deferred = messageForWebview(message('assistant:failed', 'x'.repeat(50_000), {
+      failed: true, detail: 'Internal Server Error (HTTP 500)', failureCode: 'SERVER',
+    }))
+    expect(deferred.deferredBody).toBe(true)
+    expect(deferred.failureCode).toBe('SERVER')
+    expect(deferred.detail).toBe('Internal Server Error (HTTP 500)')
+  })
+
+  it('treats a changed failure code as a real update', () => {
+    const failed = message('assistant:1', '', { failed: true, detail: 'Server error' })
+    const coded = { ...failed, failureCode: 'SERVER' }
+    expect(diffConversationMessages([failed], [coded])).toEqual({ upserts: [coded] })
+    // Identical failure facts produce no patch at all.
+    expect(diffConversationMessages([coded], [{ ...failed, failureCode: 'SERVER' }])).toBeUndefined()
+    // A code change can never be folded into a streaming append: that path
+    // carries text only, so the update would be lost.
+    const streaming = message('assistant:2', 'Hello', { streaming: true, failed: true, detail: 'Failed' })
+    const retried = { ...streaming, failureCode: 'AUTH' }
+    expect(diffConversationMessages([streaming], [retried])).toEqual({ upserts: [retried] })
+  })
 })
