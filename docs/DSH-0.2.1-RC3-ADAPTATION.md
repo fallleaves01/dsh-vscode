@@ -259,6 +259,8 @@
 | R4 | 错误页在共享/外部 runtime 上仍提供 Restart Runtime；ownership 变化时状态区可能不重建 | Restart 仅在自有 managed runtime 显示；ownership 纳入状态渲染键 |
 | R5 | 新建会话 pending 期间禁用了会话切换入口 | pending 期间保持会话行/选择器可用，点击即放弃 pending 创建（宿主 newSession 的竞态守卫兜底） |
 
-限制与已知行为：若两个窗口实际各启动了一个 runtime（共用 DSH profile 而非同一进程），非所有者窗口的 Stop 无法跨进程停止，会显示可读的占用提示——此时应关闭多余窗口或改用共享 runtime；held 状态的清除仍依赖成功写入或 “Check again”（宿主不广播锁释放）。宿主 rc.2 与 rc.3 的相关包逐文件一致，本修复不要求升级 runtime。
+主场景与验证：用户实际场景是**同一 runtime、两个窗口各自持有自己的 active 会话**（并非两个窗口同时操作同一会话）。该场景经双客户端探针验证：两个会话可同时 running，从一个客户端对另一会话发 `session/cancel` 在 10 ms 内返回 accepted，running 立即清除；因此 0.1.26 的修复（cancel 不再受本地 running 门控、6 秒后 list 复核、loading 重置、各处恢复入口）使该路径在两个窗口内都可达。自动化测试覆盖：宿主在本地 running=false/跨会话并发时仍发送正确 cancel；Webview 在 ready+running 下 Stop 三态可用，loading/error 不显示假按钮。
+
+限制与已知行为（与上述主场景无关的另一种拓扑）：若两个窗口实际各启动了一个 runtime（共用 DSH profile 而非同一进程），非所有者窗口的 Stop 无法跨进程停止，会显示可读的占用提示——此时应关闭多余窗口或改用共享 runtime。held 状态的清除仍依赖成功写入或 “Check again”（宿主不广播锁释放）。宿主 rc.2 与 rc.3 的相关包逐文件一致，本修复不要求升级 runtime。
 
 验证：独立验证者用真实双客户端/双 runtime 探针确认宿主义语，并以 fake harness 完成宿主→Webview 全链路 E2E（192 例），9 个变异全部被捕获；全量 1680 例（1678 通过、1 既有 EPERM、1 平台跳过，118 个测试文件）；`tsc --noEmit` 0；`scripts/build.mjs` 0。
