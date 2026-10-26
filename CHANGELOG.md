@@ -9,6 +9,29 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-10-26
+
+### Fixed
+
+- Acknowledge a Stop click immediately. The request used to wait for the
+  `session/cancel` round trip before changing the button, and cancellation is
+  cooperative, so a click could look ignored for up to the RPC timeout. The
+  sidebar now enters `Stopping…` before the request, keeps that state for six
+  seconds, then hands the control back as an enabled `Stop requested` button:
+  DSH accepts repeated cancels, so another click is safe. A click without a
+  running turn no longer leaves an acknowledgement, and a new turn or another
+  conversation never inherits one.
+- Open a conversation without waiting for the model catalogue. The follow
+  snapshot used to be followed by a serial `session/modelCatalog` request, so a
+  switch could spend two RPC timeouts in loading; the catalogue now refreshes in
+  the background while the conversation becomes ready.
+- Give a follow snapshot eight seconds instead of thirty and say what to do
+  when it does not arrive: open the conversation again, or reconnect the
+  runtime. The timeout also closes the superseded subscription, so retrying is a
+  fresh read rather than a stuck state.
+- Pin the snapshot wait and the Stop button's three states with tests, so a
+  silent return to the long waits cannot pass the suite.
+
 ## [0.1.20] - 2026-10-26
 
 ### Fixed

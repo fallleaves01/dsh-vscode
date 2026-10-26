@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DshFrame } from '../src/dsh-client.js'
 import type { DshConnection } from '../src/dsh-connection.js'
-import { DshSessionFeed } from '../src/dsh-session-feed.js'
+import { DshSessionFeed, FOLLOW_SNAPSHOT_TIMEOUT_MS } from '../src/dsh-session-feed.js'
 
 const feeds: DshSessionFeed[] = []
 afterEach(() => {
@@ -223,5 +223,103 @@ describe('plugin management invalidation hints', () => {
     expect(h.errors).toEqual([])
     expect(h.frames).toContainEqual({ channel: 'host', rpcId: '', payload: { type: 'host/plugins-changed' } })
     expect(h.frames).toContainEqual({ channel: 'host', rpcId: '', payload: { type: 'host/permission-catalog-changed' } })
+  })
+})
+
+/** The `session/follow` snapshot the sidebar requires before it can show a conversation. */
+const snapshot = (id: string, cursor = 0, values: Record<string, unknown> = {}) => ({
+  type: 'snapshot', header: { id }, cursor, records: [], hasMore: false,
+  projections: { asOfSeq: cursor, values },
+})
+
+/** The stream id of the newest `session/follow` open, for cancel/failure assertions. */
+function newestFollowStream(h: ReturnType<typeof harness>): string {
+  const opened = h.outgoing.filter(message => message.type === 'open' && message.endpoint === 'session/follow').at(-1)
+  if (opened === undefined || typeof opened.streamId !== 'string') throw new Error('No session/follow subscription was opened.')
+  return opened.streamId
+}
+
+describe('follow snapshot wait', () => {
+  it('rejects with actionable text after the snapshot deadline and can open again', async () => {
+    vi.useFakeTimers()
+    const h = harness()
+    await h.feed.start()
+
+    const first = h.feed.open('a')
+    const firstError = first.catch((error: unknown) => error as Error)
+    const firstStream = newestFollowStream(h)
+    // Nothing settles before the bound: the stream is quiet, not failed.
+    await vi.advanceTimersByTimeAsync(FOLLOW_SNAPSHOT_TIMEOUT_MS - 1)
+    expect(await Promise.race([firstError.then(() => 'settled'), Promise.resolve('pending')])).toBe('pending')
+
+    await vi.advanceTimersByTimeAsync(1)
+    const timeout = await firstError
+    expect(timeout).toBeInstanceOf(Error)
+    expect(timeout.message).toBe('The conversation snapshot timed out: DSH did not send it in time. Open the conversation again; if it keeps timing out, reconnect the runtime.')
+    // Cleanup: the failed follow is no longer current, its stream was cancelled
+    // and the failure is the opener's alone (no feed-level error).
+    expect(h.feed.handledSessionIds).not.toContain('a')
+    expect(h.outgoing).toContainEqual({ type: 'cancel', streamId: firstStream })
+    expect(h.errors).toEqual([])
+
+    // A replacement open is not affected by the old deadline.
+    const second = h.feed.open('a')
+    h.push('session/follow', snapshot('a', 2, { title: 'Recovered' }))
+    const opening = await second
+    expect(opening.asOfSeq).toBe(2)
+    expect(opening.projections).toMatchObject({ title: 'Recovered' })
+    opening.activate()
+    await vi.advanceTimersByTimeAsync(FOLLOW_SNAPSHOT_TIMEOUT_MS * 3)
+    expect(h.errors).toEqual([])
+    expect(h.feed.handledSessionIds).toContain('a')
+  })
+
+  it('resolves a snapshot that arrives inside the window and keeps streaming events', async () => {
+    vi.useFakeTimers()
+    const h = harness()
+    await h.feed.start()
+
+    const pending = h.feed.open('a')
+    await vi.advanceTimersByTimeAsync(FOLLOW_SNAPSHOT_TIMEOUT_MS - 1)
+    h.push('session/follow', snapshot('a', 3, { title: 'A' }))
+    const opening = await pending
+    expect(opening.asOfSeq).toBe(3)
+    expect(opening.isCurrent()).toBe(true)
+    // The snapshot timer is cleared, so a later durable event still arrives and
+    // the stale deadline never rejects a live conversation.
+    opening.activate()
+    h.push('session/follow', { type: 'event', event: { seq: 4, time: 40, type: 'turn/end', data: { turn: 1 } } })
+    expect(h.frames.some(frame => frame.payload.type === 'session/event')).toBe(true)
+    await vi.advanceTimersByTimeAsync(FOLLOW_SNAPSHOT_TIMEOUT_MS * 2)
+    expect(h.errors).toEqual([])
+    expect(h.feed.handledSessionIds).toContain('a')
+  })
+
+  it('keeps a superseded open timer from firing against the next conversation', async () => {
+    vi.useFakeTimers()
+    const h = harness()
+    await h.feed.start()
+
+    const first = h.feed.open('a')
+    const firstError = first.catch((error: unknown) => error as Error)
+    const second = h.feed.open('b')
+    // The superseded open reports the ordinary supersession, never the timeout.
+    expect((await firstError).message).toBe('The conversation subscription changed.')
+    // Advancing past A's original deadline must not produce a second rejection
+    // or a feed-level error for B, whose own deadline is still open.
+    await vi.advanceTimersByTimeAsync(FOLLOW_SNAPSHOT_TIMEOUT_MS - 1)
+    expect(h.errors).toEqual([])
+    h.push('session/follow', snapshot('b', 1))
+    const opening = await second
+    expect(opening.asOfSeq).toBe(1)
+    opening.activate()
+    await vi.advanceTimersByTimeAsync(FOLLOW_SNAPSHOT_TIMEOUT_MS * 2)
+    expect(h.errors).toEqual([])
+    expect(h.feed.handledSessionIds).toEqual(['b'])
+  })
+  it('pins the snapshot wait to eight seconds', () => {
+    // The other cases advance by this constant, so only an explicit assertion
+    // keeps a silent return to the old thirty-second wait from passing.
+    expect(FOLLOW_SNAPSHOT_TIMEOUT_MS).toBe(8_000)
   })
 })

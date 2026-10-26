@@ -354,9 +354,28 @@ describe('task projection state', () => {
   })
 })
 
+describe('opening a conversation', () => {
+  it('reaches ready without waiting for the model catalogue', async () => {
+    const h = await harness()
+    // A catalogue read that never settles: showing the conversation must not
+    // queue behind it, or every switch pays the model RPC's timeout.
+    h.client.currentModels.mockReturnValue(undefined)
+    h.client.models.mockReturnValue(new Promise<never>(() => {}))
+    h.client.openSession.mockClear()
+    await h.controller.selectSession('b')
+    expect(h.client.openSession).toHaveBeenCalledWith('b', undefined)
+    expect(h.controller.state.phase).toBe('ready')
+    expect(h.controller.state.sessionId).toBe('b')
+    // The refresh still runs in the background; the conversation was not held
+    // back waiting for it.
+    await vi.waitFor(() => expect(h.client.models).toHaveBeenCalled())
+  })
+})
+
 describe('stopping the active turn', () => {
   it('cancels an ordinary session through session/cancel', async () => {
     const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
     h.client.cancel.mockClear()
     h.client.interruptSubagent.mockClear()
     await h.controller.cancel()
@@ -364,13 +383,31 @@ describe('stopping the active turn', () => {
     expect(h.client.interruptSubagent).not.toHaveBeenCalled()
   })
 
-  it('acknowledges the request so the click is visible', async () => {
+  it('shows the request before the cancel round trip returns', async () => {
     const h = await harness()
-    expect(h.controller.state.stopping).toBe(false)
-    await h.controller.cancel()
-    // Cancellation is cooperative: the turn is still running, and the sidebar
-    // has to show that the request landed rather than appearing inert.
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    const request = Promise.withResolvers<{ accepted: true }>()
+    h.client.cancel.mockReturnValueOnce(request.promise as Promise<{ accepted: true }>)
+    const cancelled = h.controller.cancel()
+    // The RPC is still in flight, yet the click is already acknowledged: the
+    // old code published `stopping` only after the round trip (up to 30 s).
     expect(h.controller.state.stopping).toBe(true)
+    expect(h.controller.state.cancelRequested).toBe(true)
+    request.resolve({ accepted: true })
+    await cancelled
+    expect(h.controller.state.stopping).toBe(true)
+    expect(h.controller.state.cancelRequested).toBe(true)
+  })
+
+  it('ignores a click when no turn is running', async () => {
+    const h = await harness()
+    h.client.cancel.mockClear()
+    await h.controller.cancel()
+    // Nothing to stop: the idle turn must not leave an acknowledgement behind
+    // for the next turn to inherit.
+    expect(h.client.cancel).not.toHaveBeenCalled()
+    expect(h.controller.state.stopping).toBe(false)
+    expect(h.controller.state.cancelRequested).toBe(false)
   })
 
   it('stops a subagent session through its parent', async () => {
@@ -387,6 +424,7 @@ describe('stopping the active turn', () => {
     await h.controller.cancel()
     expect(h.client.interruptSubagent).toHaveBeenCalledWith('child', 'a')
     expect(h.client.cancel).not.toHaveBeenCalled()
+    expect(h.controller.state.stopping).toBe(true)
   })
 
   it('does not carry an acknowledgement into another conversation', async () => {
@@ -400,6 +438,7 @@ describe('stopping the active turn', () => {
     await h.controller.selectSession('b')
     expect(h.controller.state.running).toBe(true)
     expect(h.controller.state.stopping).toBe(false)
+    expect(h.controller.state.cancelRequested).toBe(false)
   })
 
   it('follows the owner when the open conversation changes', async () => {
@@ -416,31 +455,59 @@ describe('stopping the active turn', () => {
 
   it('clears the acknowledgement when the turn ends', async () => {
     const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
     await h.controller.cancel()
     expect(h.controller.state.stopping).toBe(true)
     h.emit({ type: 'host/session-status', sessionId: 'a', running: false })
     expect(h.controller.state.stopping).toBe(false)
+    expect(h.controller.state.cancelRequested).toBe(false)
     expect(h.controller.state.running).toBe(false)
   })
 
   it('clears the acknowledgement when the request is refused', async () => {
     const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
     h.client.cancel.mockRejectedValue(new Error('session/not-found: not attached'))
     await expect(h.controller.cancel()).rejects.toThrow('not attached')
-    // Nothing is pending, so the button must not stay disabled.
+    // Nothing is pending, so the control must not stay in a stopping state.
     expect(h.controller.state.stopping).toBe(false)
+    expect(h.controller.state.cancelRequested).toBe(false)
+    expect(h.controller.state.running).toBe(true)
   })
 
-  it('releases the acknowledgement if the turn never reports finishing', async () => {
+  it('hands the control back as a retryable request when the window elapses', async () => {
     vi.useFakeTimers()
     const h = await harness()
     h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
     await h.controller.cancel()
     expect(h.controller.state.stopping).toBe(true)
-    await vi.advanceTimersByTimeAsync(90_000)
-    // A missed status frame must not leave the button disabled forever.
+    await vi.advanceTimersByTimeAsync(6_000)
+    // The Host accepted the request but the turn is still finishing its step:
+    // stop pretending to be disabled, keep the request visible.
     expect(h.controller.state.stopping).toBe(false)
+    expect(h.controller.state.cancelRequested).toBe(true)
     expect(h.controller.state.running).toBe(true)
+    // The button is usable again; a second click re-sends the idempotent cancel.
+    h.client.cancel.mockClear()
+    await h.controller.cancel()
+    expect(h.client.cancel).toHaveBeenCalledWith('a')
+    expect(h.controller.state.stopping).toBe(true)
+    vi.useRealTimers()
+  })
+
+  it('never carries the previous turn’s request into a new turn', async () => {
+    vi.useFakeTimers()
+    const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.cancel()
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect(h.controller.state.cancelRequested).toBe(true)
+    // The old turn ends, the next one starts inside the former window.
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: false })
+    expect(h.controller.state.cancelRequested).toBe(false)
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    expect(h.controller.state.stopping).toBe(false)
+    expect(h.controller.state.cancelRequested).toBe(false)
     vi.useRealTimers()
   })
 })
@@ -1037,7 +1104,7 @@ describe('sidebar reconnect', () => {
       messages: [{ id: 'a-prompt', role: 'user', text: 'Durable A' }] })
   })
 
-  it.each(['snapshot', 'models'])('does not restore an archived session transcript when the fallback %s fails', async stage => {
+  it('does not restore an archived session transcript when the fallback snapshot fails', async () => {
     const h = await harness()
     h.emit({ type: 'session/event', sessionId: 'a', event: { type: 'user/message', seq: 1, time: 10,
       data: { id: 'a-prompt', source: { kind: 'user' }, content: [{ type: 'text', text: 'Only belongs to A' }] },
@@ -1045,10 +1112,28 @@ describe('sidebar reconnect', () => {
     h.controller.publish({ changedFiles: [{ turn: 1, files: [{ path: 'a.ts', additions: 1, deletions: 0, canRevert: false }] }] })
     const next = h.next()
     next.client.listWorkspaces.mockResolvedValue({ archivedSessionIds: ['a'] })
-    if (stage === 'snapshot') next.client.openSession.mockRejectedValue(new DshStreamError('Invalid session snapshot'))
-    else next.client.models.mockRejectedValue(new Error('Model catalog unavailable'))
+    next.client.openSession.mockRejectedValue(new DshStreamError('Invalid session snapshot'))
     await h.controller.reconnect()
     expect(h.controller.state).toMatchObject({ sessionId: 'b', phase: 'error', messages: [], changedFiles: [] })
+  })
+
+  it('shows the restored conversation even when the model catalogue fails', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/event', sessionId: 'a', event: { type: 'user/message', seq: 1, time: 10,
+      data: { id: 'a-prompt', source: { kind: 'user' }, content: [{ type: 'text', text: 'Only belongs to A' }] },
+    } }, 'mux')
+    h.controller.publish({ changedFiles: [{ turn: 1, files: [{ path: 'a.ts', additions: 1, deletions: 0, canRevert: false }] }] })
+    const next = h.next()
+    next.client.listWorkspaces.mockResolvedValue({ archivedSessionIds: ['a'] })
+    // Model discovery is display metadata, not a precondition for the
+    // conversation: its failure is logged, not promoted to an error phase.
+    next.client.models.mockRejectedValue(new Error('Model catalog unavailable'))
+    await h.controller.reconnect()
+    expect(h.controller.state.sessionId).toBe('b')
+    expect(h.controller.state.phase).toBe('ready')
+    expect(h.controller.state.changedFiles).toEqual([])
+    expect(JSON.stringify(h.controller.state.messages)).not.toContain('Only belongs to A')
+    expect(h.output.appendLine).toHaveBeenCalledWith(expect.stringContaining('[models]'))
   })
 
   it('keeps a restored empty snapshot authoritative if the stream then fails', async () => {

@@ -231,6 +231,11 @@ export interface ChatViewState extends TaskFeatureState {
   occupancyNotice: string | null
   /** A stop was admitted and the turn has not ended yet. */
   stopping: boolean
+  /**
+   * A stop was requested and is still being awaited after the short
+   * acknowledgement window. The Stop control stays usable so it can be retried.
+   */
+  cancelRequested: boolean
   sessionId: string
   messages: ConversationMessage[]
   /** Per-message facts for the action row, indexed by message id. */
@@ -338,6 +343,7 @@ function initialState(cwd: string): ChatViewState {
     routableNotice: null,
     occupancyNotice: null,
     stopping: false,
+    cancelRequested: false,
     sessionId: '',
     messages: [],
     messageMeta: [],
@@ -429,6 +435,8 @@ export class DshChatController implements vscode.Disposable {
   private stoppingDeadline: NodeJS.Timeout | undefined
   /** Which conversation the acknowledgement belongs to, so it cannot leak. */
   private stoppingSessionId: string | undefined
+  /** Which conversation a post-window cancellation request belongs to. */
+  private cancelRequestedSessionId: string | undefined
   /** The running-turn clock: when it started, and when it last heard anything. */
   private turnStartedAt = 0
   private turnActivityAt = 0
@@ -718,6 +726,8 @@ export class DshChatController implements vscode.Disposable {
       archivedSessions: [],
       sessionId: '',
       running: false,
+      stopping: false,
+      cancelRequested: false,
       turnStartedAt: 0,
       turnActivityAt: 0,
       routable: this.cwd !== '',
@@ -974,7 +984,10 @@ export class DshChatController implements vscode.Disposable {
     this.queueRawText.clear()
     this.jobsBySession.clear()
     this.sessionAttention.clear()
-    this.publish({ approval: null, question: null, queue: [], jobs: [], todos: [], loadingHistory: false })
+    // Nothing is observable from this connection any more, so no stop it
+    // acknowledged can still be pending.
+    this.clearStoppingAcknowledgement()
+    this.publish({ approval: null, question: null, queue: [], jobs: [], todos: [], loadingHistory: false, stopping: false, cancelRequested: false })
     this.publishSessionItems()
   }
 
@@ -1363,72 +1376,105 @@ export class DshChatController implements vscode.Disposable {
   /**
    * Request cancellation of the active turn.
    *
-   * DSH admits the request and the agent stops at its next interruptible point,
-   * so the acknowledgement is shown: without it a click during a long tool call
-   * looks like nothing happened. A session owned by subagent routing is stopped
-   * through its parent, because `session/cancel` refuses those.
+   * DSH admits the request synchronously and the agent stops at its next
+   * interruptible point, so the acknowledgement is published before the RPC:
+   * waiting for the round trip left the button inert for up to 30 s during a
+   * long tool call. A session owned by subagent routing is stopped through its
+   * parent, because `session/cancel` refuses those.
    */
   async cancel(): Promise<void> {
     this.requireReady()
     const sessionId = this._state.sessionId
     if (sessionId === '') return
+    // A click on a turn that already ended must not leave an acknowledgement
+    // behind: the Host would accept an idle cancel, and the next turn would
+    // inherit a disabled "Stopping…" button.
+    if (this._state.running !== true) return
     const client = this.requireClient()
     const parentSessionId = this._state.parentSessionId
+    // Optimistic feedback: the RPC can take seconds, but the click has landed.
+    this.stoppingSessionId = sessionId
+    this.cancelRequestedSessionId = sessionId
+    this.clearStoppingDeadline()
+    this.publish({ stopping: true, cancelRequested: true })
     try {
       await (parentSessionId === null
         ? client.cancel(sessionId)
         : client.interruptSubagent(sessionId, parentSessionId))
     } catch (error) {
-      if (this.client === client) {
-        this.stoppingSessionId = undefined
-        this.publish({ stopping: false })
+      if (this.client === client && this._state.sessionId === sessionId) {
+        this.clearStoppingAcknowledgement()
+        this.publish({ stopping: false, cancelRequested: false })
       }
       throw error
     }
     if (this.client !== client || this._state.sessionId !== sessionId) return
+    // The turn ended while the request was in flight: nothing is left to
+    // acknowledge, and a late deadline would outlive the state it describes.
+    if (this._state.running !== true) return
+    // Keep the acknowledgement and bound it. The Host ack is synchronous; only
+    // the turn's own end proves the cancellation completed.
     this.stoppingSessionId = sessionId
-    this.publish({ stopping: true })
+    this.cancelRequestedSessionId = sessionId
     this.armStoppingDeadline(sessionId)
     this.output.appendLine(`[cancel] requested for ${sessionId}${parentSessionId === null ? '' : ' (subagent)'}`)
   }
 
   /**
-   * Stop showing the acknowledgement after a while.
+   * Turn the acknowledgement into a retryable request after a short window.
    *
    * The request is cooperative, so a turn inside a long tool call legitimately
-   * stays running. The deadline only exists so a missed status frame cannot
-   * leave the button disabled forever.
+   * stays running after the Host acknowledged the cancel. At the deadline the
+   * button becomes usable again as "Stop requested"; only the turn reporting
+   * its end clears the request.
    */
   private armStoppingDeadline(sessionId: string): void {
-    if (this.stoppingDeadline !== undefined) clearTimeout(this.stoppingDeadline)
+    this.clearStoppingDeadline()
     this.stoppingDeadline = setTimeout(() => {
       this.stoppingDeadline = undefined
       if (this.stoppingSessionId !== sessionId) return
       this.stoppingSessionId = undefined
-      this.output.appendLine(`[cancel] ${sessionId} still running after the acknowledgement window`)
-      this.publish({ stopping: false })
+      if (this._state.sessionId !== sessionId || this._state.running !== true) return
+      this.cancelRequestedSessionId = sessionId
+      this.output.appendLine(`[cancel] ${sessionId} acknowledged; still running, waiting for the current step to finish`)
+      this.publish({ stopping: false, cancelRequested: true })
     }, STOPPING_ACKNOWLEDGEMENT_MS)
   }
 
-  /**
-   * Publish a turn's running state, which is also the only thing that ends a
-   * stop acknowledgement: a turn that finished cannot still be stopping.
-   */
-  /** Withdraw a pending stop acknowledgement, arming or not. */
+  /** Withdraw a pending stop acknowledgement and any request of this turn. */
+  private clearStoppingAcknowledgement(): void {
+    this.stoppingSessionId = undefined
+    this.cancelRequestedSessionId = undefined
+    this.clearStoppingDeadline()
+  }
+
+  /** Withdraw only the deadline of a pending stop acknowledgement. */
   private clearStoppingDeadline(): void {
     if (this.stoppingDeadline === undefined) return
     clearTimeout(this.stoppingDeadline)
     this.stoppingDeadline = undefined
   }
 
-  private runningPatch(running: boolean, sessionId: string = this._state.sessionId): Pick<ChatViewState, 'running' | 'stopping' | 'turnStartedAt' | 'turnActivityAt'> {
-    // An acknowledgement belongs to the turn it was requested for: another
-    // conversation may be running, but its turn was never asked to stop.
+  private runningPatch(running: boolean, sessionId: string = this._state.sessionId): Pick<ChatViewState, 'running' | 'stopping' | 'cancelRequested' | 'turnStartedAt' | 'turnActivityAt'> {
+    // An acknowledgement belongs to the turn it was requested for, and a turn
+    // that starts now is never that turn: clear the previous request first, or
+    // a new turn inside the window inherits a disabled Stop button.
+    const continuingTurn = running && this._state.running && this.turnClockSessionId === sessionId
+    if (!continuingTurn) {
+      this.clearStoppingAcknowledgement()
+    } else {
+      if (this.stoppingSessionId !== sessionId) this.stoppingSessionId = undefined
+      if (this.cancelRequestedSessionId !== sessionId) this.cancelRequestedSessionId = undefined
+    }
     const stopping = running && this.stoppingSessionId === sessionId
-    if (!stopping) this.clearStoppingDeadline()
-    if (!stopping) this.stoppingSessionId = undefined
+    if (!stopping) {
+      this.clearStoppingDeadline()
+      this.stoppingSessionId = undefined
+    }
+    const cancelRequested = running && this.cancelRequestedSessionId === sessionId
+    if (!cancelRequested) this.cancelRequestedSessionId = undefined
     this.turnClock(running, sessionId)
-    return { running, stopping, turnStartedAt: this.turnStartedAt, turnActivityAt: this.turnActivityAt }
+    return { running, stopping, cancelRequested, turnStartedAt: this.turnStartedAt, turnActivityAt: this.turnActivityAt }
   }
 
   /**
@@ -1781,6 +1827,8 @@ export class DshChatController implements vscode.Disposable {
     // The catalogue belongs to the runtime, so a replacement connection reads
     // its own: keeping the old one could offer a preset the new runtime lacks.
     this.permissionCatalog = undefined
+    // A stop acknowledgement is a fact about a connection that is going away.
+    this.clearStoppingAcknowledgement()
     this.publish({ subagentCatalogs: {} })
     this.stopAccountPoll()
     this.openedSignInAttempt = undefined
@@ -1938,13 +1986,16 @@ export class DshChatController implements vscode.Disposable {
     if (sessionChanged) {
       this.historyEntries = []
       this.projector.reset([])
+      // A stop acknowledgement belongs to the conversation it was requested
+      // in; another conversation's Stop button must never inherit it.
+      this.clearStoppingAcknowledgement()
     }
     this.queueRawText.clear()
     this.publish({
       phase: 'loading',
       statusText: 'Loading project conversation…',
       sessionId,
-      ...(sessionChanged ? { messages: [], changedFiles: [] } : {}),
+      ...(sessionChanged ? { messages: [], changedFiles: [], stopping: false, cancelRequested: false } : {}),
       queue: [],
       todos: [],
       team: null,
@@ -1961,8 +2012,11 @@ export class DshChatController implements vscode.Disposable {
       // records one too, and is still an ordinary session).
       const opening = await client.openSession(sessionId, parentIdOf(this.summaries, sessionId))
       if (!opening.isCurrent()) return undefined
-      const models = await client.models(sessionId)
-      return { opening, models }
+      // Model discovery is display metadata, not a precondition for showing the
+      // conversation. The cached catalogue answers synchronously; a miss is
+      // filled in after `ready` by `loadModels`, so a slow model RPC can no
+      // longer add up to 30 s of extra loading to every conversation switch.
+      return { opening, models: client.currentModels(sessionId) }
     })().catch((error: unknown) => {
       if (this.client !== client || loadGeneration !== this.sessionLoadGeneration) return undefined
       // Opening a conversation can fail for good reasons — it was archived in
@@ -2030,7 +2084,7 @@ export class DshChatController implements vscode.Disposable {
       hasMoreHistory: hasMore,
       loadingHistory: false,
       occupancyNotice: this.occupancyNoticeFor(sessionId),
-      ...this.modelPatch(models),
+      ...(models === undefined ? {} : this.modelPatch(models)),
     })
     // Ratings belong to the conversation, and the runtime is the authority on
     // them, so they are adopted after the conversation is shown rather than
@@ -2049,6 +2103,9 @@ export class DshChatController implements vscode.Disposable {
     void this.loadCommands(client, sessionId)
     void this.loadSkills(client, sessionId)
     void this.loadAgentPresets(client, sessionId)
+    // Fire-and-forget like the other discoveries: the conversation is already
+    // shown, and `loadModels` catches its own failures.
+    void this.loadModels(sessionId)
   }
 
   private async loadCommands(client: DshClient, sessionId: string): Promise<void> {
@@ -2744,8 +2801,16 @@ type DraftImage = PromptImage & { id: string }
 /** One staged file waiting for the next prompt; its receipt is the wire handle. */
 type DraftFile = PromptFile & { id: string; name: string; bytes: number }
 
-/** How long a stop acknowledgement is shown before a still-running turn may retry. */
-const STOPPING_ACKNOWLEDGEMENT_MS = 90_000
+/**
+ * How long the optimistic "Stopping…" acknowledgement is shown before the
+ * control returns to "Stop requested".
+ *
+ * The Host acknowledges `session/cancel` synchronously, but the turn ends only
+ * when in-flight tool work settles, which has no bounded duration. A short
+ * window keeps the click responsive; a still-running turn then offers a retry
+ * instead of a disabled button that looks like a hang.
+ */
+const STOPPING_ACKNOWLEDGEMENT_MS = 6_000
 
 /** How often the sidebar re-reads account state while a sign-in attempt is live. */
 const ACCOUNT_POLL_INTERVAL_MS = 1500

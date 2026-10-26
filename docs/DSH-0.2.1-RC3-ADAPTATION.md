@@ -65,7 +65,7 @@
 | 指标 | 数值 |
 |---|---|
 | 测试文件 | 112（111 通过，1 失败） |
-| 测试用例 | 1536（1534 通过，1 失败，1 跳过） |
+| 测试用例 | 1544（1542 通过，1 失败，1 跳过） |
 | 耗时 | Duration 9–10 s（多次复跑） |
 
 唯一失败为既有沙箱限制：`tests/diff-review.spec.ts:787` 向 `$HOME/dsh-open-file-spec.tmp` 写入时返回 `EPERM`。该测试文件不在本轮改动清单内，失败与 rc.3 适配无关；Vitest 因此以退出码 1 结束。新增测试文件三个：`tests/agent-team-state.spec.ts`（10 项）、`tests/dsh-session-feed.spec.ts`（16 项）、`tests/extension-surface.spec.ts`（5 项）；另在 `tests/settings-page-state.spec.ts`、`tests/settings-panel.spec.ts`、`tests/settings-page.spec.ts`、`tests/dsh-session-feed.spec.ts`、`tests/collaboration-state.spec.ts`、`tests/dsh-client.spec.ts`、`tests/discovery-controller.spec.ts`、`tests/subagent-tools.spec.ts`、`tests/webview-policy.spec.ts`、`tests/webview-subagent-cards.spec.ts`、`tests/webview-task-features.spec.ts` 中扩充用例。
@@ -151,3 +151,16 @@
 保留的拦截（有意为之，非设置修改）：切换运行时/项目（会结束会话）、CLI 插件安装/更新（会重启运行时）。命令行启动的运行时切换流程不受本次修改影响。
 
 验证：独立验证者用 4 个变异确认修复被测试捕获（恢复两处拒绝 → 3 例失败；删清理 → 1 例失败；改回 phase 映射 → 5 例失败）；DSH 0.2.1-rc.3 宿主包检索无任何运行中拒绝逻辑，Web 端 TeamMemberRow 派生方式与本次修复一致（`client.js:90-92`）。全量 1536 例（1534 通过、1 既有 EPERM、1 平台跳过）；`tsc --noEmit` 0；`scripts/build.mjs` 0。
+
+## 8. Stop 与会话切换卡顿的修复（0.1.21）
+
+用户报告：会话进行中点击 Stop 或切换会话可能长时间“卡住”。经宿主源码核对、单元变异与真实 rc.3 运行时探针，确认原因为客户端等待方式，宿主侧 RPC 本身为毫秒级。
+
+| 症状 | 根因 | 修复 |
+|---|---|---|
+| Stop 无反馈/长时间禁用 | `stopping` 在 `await session/cancel` 之后才发布（RPC 默认超时 30 s）；确认窗口 90 s；非 running 点击也会留下确认态，且可被下一 turn 继承 | RPC 之前乐观发布 `stopping`/`cancelRequested`；仅 running 时进入；窗口缩短为 6 s，到期后停止态结束、`cancelRequested` 保留且 Stop 可再次点击（宿主取消幂等）；turn 结束/新 turn/切换/失败均正确清理 |
+| 切换会话长时间 loading | `loadSession` 在 follow 快照（30 s 超时）之后串行等待模型目录 RPC（另 30 s），最坏约 60 s 不进入 ready | follow 快照超时缩短为 8 s 并给出可操作错误；模型目录移出关键路径（后台刷新）；快照超时后清理 follow/stream，可重新打开 |
+
+保留的宿主限制：取消是协作式的，turn 在长工具调用中会等待该调用结算；无公开 RPC 可强制终止，客户端只保证及时反馈与可重试。真实运行时证据：`session/cancel` 往返 0.8–1.0 ms 且 idle 重复调用返回 `accepted`；`session/follow` 快照 1.7–4.9 ms；`session/projections` 1.2–1.8 ms。
+
+验证：独立验证者以 5 个变异确认修复被测试捕获（删除乐观发布 → 5 例失败；90 s 窗口 → 1 例；删除 running 校验 → 1 例；models 改回串行 → 2 例；超时/错误文案相关用例）；并补充固定 8 s 数值与 Stop 三态 UI 的回归测试。全量 1544 例（1542 通过、1 既有 EPERM、1 平台跳过）；`tsc --noEmit` 0；`scripts/build.mjs` 0。

@@ -13,6 +13,26 @@ interface UnknownFrameBudget { readonly types: Set<string>; overflow: boolean }
 const UNKNOWN_FRAME_TYPE_LIMIT = 16
 
 /**
+ * How long one conversation may wait for its `session/follow` snapshot.
+ *
+ * A healthy runtime sends the snapshot as soon as it has resumed and projected
+ * the session; eight seconds leaves a cold, large session room to finish while
+ * keeping a switch on a stalled runtime short. Waiting longer cannot make a
+ * missing snapshot appear, so the caller gets a retryable failure instead of a
+ * permanently loading conversation.
+ */
+export const FOLLOW_SNAPSHOT_TIMEOUT_MS = 8_000
+
+/**
+ * Actionable failure text for a follow snapshot that never arrived.
+ *
+ * It names the timeout so a conversation stuck in loading is reported as a
+ * failed read rather than an unspecified error, and it points at the two
+ * recovery actions: open the conversation again, or reconnect the runtime.
+ */
+const FOLLOW_SNAPSHOT_TIMEOUT_MESSAGE = 'The conversation snapshot timed out: DSH did not send it in time. Open the conversation again; if it keeps timing out, reconnect the runtime.'
+
+/**
  * Safe label for an untrusted wire `type`.
  *
  * The frame type comes from the runtime, so it is never echoed verbatim into a
@@ -272,8 +292,13 @@ export class DshSessionFeed {
       )
       let opened = false
       const timer = setTimeout(() => {
-        if (this.follow === state) this.closeFollow(new Error('DSH session snapshot timed out.'))
-      }, 30_000)
+        // A superseded open must never touch its successor: the follow identity
+        // is the only state this timer may close. Closing through closeFollow
+        // cancels the stream, clears the pending frames and rejects the opener
+        // with the actionable text, so no second timer can fire for this state.
+        if (this.follow !== state) return
+        this.closeFollow(new Error(FOLLOW_SNAPSHOT_TIMEOUT_MESSAGE))
+      }, FOLLOW_SNAPSHOT_TIMEOUT_MS)
       state.reject = error => { clearTimeout(timer); reject(error) }
       state.cancel = this.streams.open('session/follow', { request: { address, maxMessages: 100, assistantStream: true } }, raw => {
         if (this.follow !== state) return

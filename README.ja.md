@@ -8,7 +8,7 @@
 
 DSH Sidebar は公式 DeepSeek Harness ランタイムを VS Code に統合します。プロジェクト別の会話、独立したサブエージェント詳細、明示的なファイル参照、ネイティブの差分レビューを提供します。
 
-現在のソースバージョンは **0.1.20** です。変更履歴は [CHANGELOG.md](CHANGELOG.md) を参照してください。元の拡張機能は [Lixxx1](https://github.com/Lixxx1) が作成しました。
+現在のソースバージョンは **0.1.21** です。変更履歴は [CHANGELOG.md](CHANGELOG.md) を参照してください。元の拡張機能は [Lixxx1](https://github.com/Lixxx1) が作成しました。
 
 [English](README.md) | [简体中文](README.zh.md) | **日本語**
 

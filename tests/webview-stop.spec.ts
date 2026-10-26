@@ -25,8 +25,8 @@ function stopButton(h: Harness): HTMLButtonElement {
   return h.document.getElementById('cancel') as HTMLButtonElement
 }
 
-async function show(h: Harness, running: boolean, stopping = false): Promise<void> {
-  h.sendState({ sessionId: 'session-a', running, stopping })
+async function show(h: Harness, running: boolean, stopping = false, cancelRequested = false): Promise<void> {
+  h.sendState({ sessionId: 'session-a', running, stopping, cancelRequested })
   await h.settle()
 }
 
@@ -74,6 +74,21 @@ describe('the stop button', () => {
     await show(h, true)
     h.posts.length = 0
     stopButton(h).dispatchEvent(new Event('click', { bubbles: true }))
+    expect(h.posts).toContainEqual({ type: 'cancel' })
+  })
+
+  it('hands the control back as a retryable request after the acknowledgement window', async () => {
+    const h = open()
+    await show(h, true, false, true)
+    const button = stopButton(h)
+    expect(button.classList.contains('requested')).toBe(true)
+    expect(button.disabled).toBe(false)
+    expect(button.title).toBe('Stop requested; waiting for the current step to finish. Click again to retry.')
+    expect(button.getAttribute('aria-label')).toBe('Stop requested; click to retry.')
+    expect(h.document.querySelector('.live-status')?.textContent).toContain('Stop requested')
+    // The runtime cancels idempotently, so another click is safe and must reach it.
+    h.posts.length = 0
+    button.dispatchEvent(new Event('click', { bubbles: true }))
     expect(h.posts).toContainEqual({ type: 'cancel' })
   })
 })

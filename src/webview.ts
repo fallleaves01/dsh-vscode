@@ -425,6 +425,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .cancel.stopping .cancel-spinner { display: block; }
     .cancel.stopping > svg { display: none; }
     .cancel.stopping { opacity: .8; cursor: default; }
+    /* The request landed, but the turn is still winding down: keep it clickable
+       (a second click re-sends the idempotent cancel) and mark it as pending. */
+    .cancel.requested { color: var(--vscode-editorWarning-foreground, #cca700); opacity: .9; }
     @keyframes cancel-spin { to { transform: rotate(360deg); } }
     @media (prefers-reduced-motion: reduce) { .cancel-spinner { animation-duration: 2.4s; } }
     /* DSH's code card: one surface at the large radius, a banner at 11px, and a
@@ -1774,6 +1777,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
      */
     function liveStatusText(current) {
       if (current.stopping === true) return 'Stopping…';
+      // The acknowledgement window elapsed while the turn kept running: the
+      // request is still in effect, so say so instead of reverting to a plain
+      // "Deep diving" clock that hides it.
+      if (current.cancelRequested === true) return 'Stop requested; waiting for the current step…';
       const startedAt = Number(current.turnStartedAt) || 0;
       const activityAt = Number(current.turnActivityAt) || 0;
       const label = startedAt === 0 ? 'Deep diving…' : 'Deep diving for ' + formatLiveDuration(Date.now() - startedAt);
@@ -1782,10 +1789,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return quiet < QUIET_AFTER_MS ? label : label + ' · no new output for ' + formatLiveDuration(quiet);
     }
     function renderLiveStatus(current) {
-      const box = node('div', 'live-status' + (current.stopping === true ? ' stopping' : ''));
+      const requested = current.cancelRequested === true && current.stopping !== true;
+      const box = node('div', 'live-status' + (current.stopping === true || requested ? ' stopping' : ''));
       // The announcement is a separate, constant string: the visible clock
       // rewrites itself every second, and a live region would read all of it.
-      const announced = node('span', 'sr-only', current.stopping === true ? 'Stopping' : 'Deep diving');
+      const announced = node('span', 'sr-only', current.stopping === true ? 'Stopping' : requested ? 'Stop requested' : 'Deep diving');
       announced.setAttribute('role', 'status');
       const mark = node('span', 'live-status-mark');
       mark.append(icon([{ tag: 'path', attrs: { d: TAIL_PATH } }], false), node('span', 'live-status-swim'));
@@ -3553,7 +3561,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       // The turn clock is its own slot: it ticks once a second, and rebuilding
       // the changed-files and approval cards on every tick would be absurd.
-      const liveKey = current.running === true ? current.sessionId + '::' + String(current.stopping === true) : '';
+      const liveKey = current.running === true ? current.sessionId + '::' + String(current.stopping === true) + '::' + String(current.cancelRequested === true) : '';
       if (liveKey !== renderedLiveKey) {
         renderedLiveKey = liveKey;
         if (liveStatusNode !== undefined) { liveStatusNode.remove(); liveStatusNode = undefined; }
@@ -3664,11 +3672,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
       const stopping = current.stopping === true && current.running === true;
+      const requested = current.cancelRequested === true && current.running === true && !stopping;
       elements.cancel.classList.toggle('hidden', current.running !== true);
       elements.cancel.classList.toggle('stopping', stopping);
+      elements.cancel.classList.toggle('requested', requested);
+      // A stopping turn refuses a second click while the acknowledgement is on
+      // screen. Once that window elapsed the request is still pending, but the
+      // Host accepts another idempotent cancel, so the button becomes usable and
+      // says so instead of mimicking a hang.
       elements.cancel.disabled = stopping;
-      elements.cancel.title = stopping ? 'Stopping…' : 'Stop';
-      elements.cancel.setAttribute('aria-label', stopping ? 'Stopping…' : 'Stop');
+      elements.cancel.title = stopping ? 'Stopping…'
+        : requested ? 'Stop requested; waiting for the current step to finish. Click again to retry.'
+          : 'Stop';
+      elements.cancel.setAttribute('aria-label', stopping ? 'Stopping…' : requested ? 'Stop requested; click to retry.' : 'Stop');
       elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue(); renderNavigation(current);
       if (renderedChrome.commands !== current.commands || renderedChrome.skills !== current.skills || renderedChrome.permissions !== current.permissions) renderCommandMenu();
       renderedChrome = {
