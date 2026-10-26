@@ -32,7 +32,9 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
   let pending: { id: string; scope: string; type: string; provider?: string; section: string } | undefined
   let queue: Message[] = [], candidates: DiscoveredModel[] = [], selectedModels = new Set<string>(), modelSearch = '', allowSearch = ''
   let message = ''
-  let toastKey = '', announcedToastKey = ''
+  let toastKey = '', toastEpoch = 0
+  let pendingBundle: { name: string; enabled: boolean } | undefined
+  const announcedToasts = new Set<string>()
   let toastTimer: number | undefined
   const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] => {
     const element = document.createElement(tag); element.className = className; if (text) element.textContent = text; return element
@@ -59,9 +61,14 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
   const syncToast = (): void => {
     const error = errors.get(section) ?? ''
     const current = error !== '' ? 'error|' + error : message !== '' ? 'success|' + message : ''
-    if (current === '') { announcedToastKey = ''; hideToast(); return }
-    if (current === announcedToastKey) return
-    announcedToastKey = current
+    if (current === '') { hideToast(); return }
+    // One announcement per result epoch, not per render. Switching sections must
+    // not replay an error the user already saw, while a new result carrying the
+    // same text must be shown again.
+    const key = toastEpoch + '|' + current
+    if (announcedToasts.has(key)) return
+    if (announcedToasts.size > 64) announcedToasts.clear()
+    announcedToasts.add(key)
     hideToast()
     toastKey = current
     toastText.textContent = error !== '' ? error : message
@@ -98,6 +105,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
     if (!state || pending) return
     const id = 'settings-' + (++serial)
     pending = { id, scope: state.scope, type: String(body.type), section, ...(typeof body.provider === 'string' ? { provider: body.provider } : {}) }
+    if (body.type === 'set-bundle' && typeof body.name === 'string' && typeof body.enabled === 'boolean') pendingBundle = { name: body.name, enabled: body.enabled }
     message = ''; api.postMessage({ ...body, requestId: id, scope: state.scope }); render()
   }
   const next = (): void => { const body = queue.shift(); if (body) start(body) }
@@ -531,11 +539,13 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
       for (const bundle of bundles) {
         const card = el('article', 'inventory-card bundle-card')
         const label = bundle.title ?? bundle.name.replace(/^@deepseek-ai\/dsh-/, '')
+        const applying = pendingBundle?.name === bundle.name
+        const current = applying ? pendingBundle!.enabled : bundle.enabled
         card.append(el('div', 'inventory-name', label),
-          el('span', 'hint bundle-status', [bundle.enabled ? 'Enabled' : 'Disabled', bundle.version ? 'v' + bundle.version : '', bundle.installed ? 'Installed' : 'Provided by this installation'].filter(Boolean).join(' · ')))
+          el('span', 'hint bundle-status', [applying ? 'Applying…' : current ? 'Enabled' : 'Disabled', bundle.version ? 'v' + bundle.version : '', bundle.installed ? 'Installed' : 'Provided by this installation'].filter(Boolean).join(' · ')))
         if (bundle.description) card.append(el('span', 'hint bundle-description', bundle.description))
-        if (manage) card.append(toggle('Enabled', bundle.enabled, enabled => {
-          if (enabled === bundle.enabled) return
+        if (manage) card.append(toggle('Enabled', current, enabled => {
+          if (enabled === current) return
           start({ type: 'set-bundle', name: bundle.name, enabled })
         }, 'bundle:' + bundle.name))
         grid.append(card)
@@ -571,7 +581,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
         tab.addEventListener('keydown', event => {
           const target = event.key === 'ArrowRight' ? (index + 1) % views.length : event.key === 'ArrowLeft' ? (index + views.length - 1) % views.length : event.key === 'Home' ? 0 : event.key === 'End' ? views.length - 1 : undefined
           if (target === undefined || pending) return
-          event.preventDefault(); section = views[target]![0]; render(); root.querySelector<HTMLButtonElement>('#plugin-tab-' + section)!.focus()
+          event.preventDefault(); section = views[target]![0]; message = ''; render(); root.querySelector<HTMLButtonElement>('#plugin-tab-' + section)!.focus()
         }); tabs.append(tab)
       }); content.append(tabs)
     } else if (section !== 'general') content.append(el('h2', '', sections.find(([id]) => id === section)?.[1] ?? 'Settings'))
@@ -630,13 +640,15 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
     if (value?.type === 'state') {
       const previous = state; state = value.state as SettingsPageState
       if (previous && previous.scope !== state.scope) {
-        fields.clear(); providerDrafts.clear(); advancedProviders.clear(); searchKey = ''; searchKeyRevision = undefined; searchKeyTarget = undefined; searchMode = undefined; searchSelectionRevision = undefined; allowed = undefined; pending = undefined; queue = []; selectedProvider = undefined; candidates = []; errors.clear(); message = ''
+        fields.clear(); providerDrafts.clear(); advancedProviders.clear(); searchKey = ''; searchKeyRevision = undefined; searchKeyTarget = undefined; searchMode = undefined; searchSelectionRevision = undefined; allowed = undefined; pending = undefined; pendingBundle = undefined; queue = []; selectedProvider = undefined; candidates = []; errors.clear(); message = ''
       }
       if (state.loading && previous?.scope === state.scope) { banner.textContent = state.reason || state.error || 'Refreshing settings…'; refresh.disabled = true; return }
       render(); return
     }
     if (value?.type !== 'result' || !pending || value.requestId !== pending.id || pending.scope !== state?.scope) return
     const request = pending; pending = undefined
+    toastEpoch += 1
+    if (request.type === 'set-bundle') pendingBundle = undefined
     if (request.type === 'discover-models') {
       if (value.ok && Array.isArray(value.models)) { candidates = value.models; selectedModels.clear(); modelSearch = '' }
     } else if (request.type === 'save-search') {

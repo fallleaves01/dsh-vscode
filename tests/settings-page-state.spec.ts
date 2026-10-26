@@ -191,4 +191,15 @@ describe('experimental settings and bundle projection', () => {
     const { description } = fixture()
     expect(settingsForms(description).some(form => ['translation', 'voice', 'market'].includes(form.section))).toBe(false)
   })
+  it('deduplicates bundle rows and bounds a very long string setting', () => {
+    const bundles = publicBundles([
+      { name: '@deepseek-ai/dsh-a', enabled: false, optional: true },
+      { name: '@deepseek-ai/dsh-a', enabled: true, optional: true },
+    ])
+    expect(bundles).toHaveLength(1)
+    expect(bundles[0]!.enabled).toBe(false)
+    const ns = cotTranslationNamespace()
+    expect(() => fieldMutations(ns, { targetLanguage: 'x'.repeat(1025) })).toThrow('under 1024')
+    expect(fieldMutations(ns, { targetLanguage: 'zh-CN' })).toEqual([{ op: 'set', path: ['targetLanguage'], value: 'zh-CN' }])
+  })
 })

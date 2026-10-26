@@ -321,4 +321,40 @@ describe('dedicated DSH settings surface', () => {
     h.click('Plugin market'); h.textarea('plugin-market:indexes', 'https://one.example/index.json\nhttps://two.example/index.json'); h.click('Save changes')
     expect(h.posts.at(-1)!.changes[0]).toMatchObject({ ns: 'plugin-market', values: { indexes: ['https://one.example/index.json', 'https://two.example/index.json'] } })
   })
+  function generalWithReset() {
+    const state = pageState()
+    state.forms = state.forms.map(form => form.section === 'general' ? { ...form, fields: form.fields.map(field => ({ ...field, overridden: true, value: false })) } : form)
+    return state
+  }
+  it('shows the same failure again when a retry produces it again', () => {
+    const h = harness(generalWithReset()); h.click('Reset')
+    const toast = () => document.querySelector<HTMLElement>('#settings-toast')!
+    h.result({ ok: false, error: 'Try again', results: [{ ns: 'session-log-deepseek', ok: false }] })
+    expect(toast().hidden).toBe(false)
+    document.querySelector<HTMLButtonElement>('#settings-toast-close')!.click()
+    expect(toast().hidden).toBe(true)
+    // A new attempt with the same outcome is new information, not a repeat.
+    h.click('Save changes')
+    h.result({ ok: false, error: 'Try again', results: [{ ns: 'session-log-deepseek', ok: false }] })
+    expect(toast().hidden).toBe(false)
+    expect(toast().textContent).toContain('Try again')
+  })
+  it('does not replay an already seen failure after switching sections', () => {
+    const h = harness(generalWithReset()); h.click('Reset')
+    const toast = () => document.querySelector<HTMLElement>('#settings-toast')!
+    h.result({ ok: false, error: 'Try again', results: [{ ns: 'session-log-deepseek', ok: false }] })
+    expect(toast().hidden).toBe(false)
+    h.click('Models'); expect(toast().hidden).toBe(true)
+    h.click('General'); expect(toast().hidden).toBe(true)
+  })
+  it('shows the requested bundle state while the change is pending', () => {
+    const h = harness(bundlePageState()); h.click('Built-in plugins')
+    const toggle = document.querySelector<HTMLInputElement>('[data-focus-key="bundle:@deepseek-ai/dsh-experimental-cot-translation-bundle"]')!
+    expect(toggle.checked).toBe(false); toggle.click()
+    const pending = document.querySelector<HTMLInputElement>('[data-focus-key="bundle:@deepseek-ai/dsh-experimental-cot-translation-bundle"]')!
+    expect(pending.checked).toBe(true)
+    expect(document.body.textContent).toContain('Applying…')
+    h.result({ ok: true, application: 'restart-required', restartRequired: true })
+    expect(document.body.textContent).toContain('Restart the DeepSeek Harness runtime')
+  })
 })

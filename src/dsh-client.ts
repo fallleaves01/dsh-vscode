@@ -411,8 +411,8 @@ export class DshClient {
    *
    * `pluginInventory/list` reports only mounted entries, so this read is the
    * only way the settings page can offer an experimental bundle before it is
-   * enabled. A runtime that does not serve the method (before DSH 0.2.1-rc.3)
-   * resolves `undefined`, and the caller keeps the read-only inventory.
+   * enabled. A runtime that does not serve the method resolves `undefined`, and
+   * the caller keeps the read-only inventory.
    */
   async listBundles(): Promise<DshBundleInfo[] | undefined> {
     try {
@@ -422,9 +422,16 @@ export class DshClient {
       return undefined
     }
   }
-  /** Select or deselect one bundle layer while retaining its installed files. */
+  /**
+   * Select or deselect one bundle layer while retaining its installed files.
+   *
+   * The host serializes profile mutations under a file lock it waits up to
+   * 120 s for, and a concurrent install can hold that lock; the client timeout
+   * must outlast the host's own wait, or a completed change would be reported
+   * as a failure. A late `plugin-manager/changed` still reconciles the UI.
+   */
   setBundleEnabled(name: string, enabled: boolean): Promise<DshBundleChange> {
-    return this.call<DshBundleChange>('pluginManager/setBundleEnabled', { name, enabled }, 30_000)
+    return this.call<DshBundleChange>('pluginManager/setBundleEnabled', { name, enabled }, 130_000)
   }
   /** Origin of the runtime this client is bound to; used for the sign-in callback. */
   get runtimeOrigin(): URL { return this.connection.baseUrl }
@@ -524,9 +531,9 @@ export class DshClient {
    *
    * The `permissions` session projection carries only the current value, so this
    * read is the only way the experimental `auto` preset becomes selectable.
-   * Runtimes that do not serve the method (before DSH 0.2.1-rc.3), a timeout, or
-   * an unparseable answer all resolve `undefined`: the caller keeps the presets
-   * DSH ships, and an optional capability read never affects the connection.
+   * Runtimes that do not serve the method, a timeout, or an unparseable answer
+   * all resolve `undefined`: the caller keeps the presets DSH ships, and an
+   * optional capability read never affects the connection.
    */
   async permissionCatalog(): Promise<PermissionCatalog | undefined> {
     try {

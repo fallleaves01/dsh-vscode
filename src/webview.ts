@@ -2316,16 +2316,33 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         failure,
       ]);
     }
+    /**
+     * The Team projection a tool card resolves member names against.
+     *
+     * The projection and the event stream travel independently, so a team
+     * member update can arrive after the tool message was drawn. Keying the
+     * rendered card on exactly this map re-renders those cards when it changes,
+     * instead of leaving the link missing until the next message arrives.
+     */
+    function teamLinkKey() {
+      const members = array(state && state.team && state.team.members);
+      return members.map(member => string(member && member.name) + '\\u0000' + string(member && member.id)).sort().join('\\u0001');
+    }
+    function hasTeamLinks(message) {
+      return [record(message.callView), record(message.resultView)]
+        .some(view => array(view && view.subagentLinks).length > 0);
+    }
     function messageNode(message) {
       const rendered = renderedMessages.get(message.id);
       const rowKey = messageRowKey(message);
       const rowChanged = rendered !== undefined && rendered.rowKey !== rowKey;
-      if (rendered && rendered.message === message && !rowChanged) return rendered.node;
+      const teamChanged = rendered !== undefined && rendered.teamKey !== undefined && rendered.teamKey !== teamLinkKey();
+      if (rendered && rendered.message === message && !rowChanged && !teamChanged) return rendered.node;
       if (rendered && rendered.message.deferredBodyRevision !== message.deferredBodyRevision) resetDeferredOutput(message.id);
       const appended = pendingMessageAppends.get(message.id);
       // Thinking that shows up after the node was built needs a fresh render.
       const thinkingAppeared = hasThinking(message) && rendered !== undefined && rendered.thinking === undefined;
-      if (rendered && !rowChanged && rendered.markdown && appended !== undefined && !thinkingAppeared && message.role === 'assistant' && message.images === rendered.message.images) {
+      if (rendered && !rowChanged && !teamChanged && rendered.markdown && appended !== undefined && !thinkingAppeared && message.role === 'assistant' && message.images === rendered.message.images) {
         pendingMessageAppends.delete(message.id);
         // Always run this: an empty delta with streaming=false is what flushes
         // the settled markdown and drops the streaming tail node.
@@ -2339,6 +2356,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       pendingMessageAppends.delete(message.id);
       const next = renderMessage(message);
       next.rowKey = rowKey;
+      if (hasTeamLinks(message)) next.teamKey = teamLinkKey();
       // reconcileMessages owns node placement. Replacing a connected node here
       // invalidates its cursor before insertBefore can finish reconciling the list.
       renderedMessages.set(message.id, next);

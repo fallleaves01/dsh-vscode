@@ -65,15 +65,21 @@ const AUTO_PRESET = 'auto'
 const AUTO_PRESET_LABEL = 'Auto review'
 /** Wording agreed for the experimental preset; it is not one of the shipped three. */
 const AUTO_PRESET_DESCRIPTION = 'Auto review: the current model reviews each tool call (experimental).'
+/** Render bounds for the runtime catalogue; DSH ships four options today. */
+const MAX_CATALOG_OPTIONS = 16
+const MAX_CATALOG_TEXT = 300
+const MAX_CATALOG_OPTION_VALUE = 64
 
 /**
  * Validate a `permissionPresets/catalog` answer.
  *
- * A missing list, no usable option, or a malformed entry must not leave a
- * half-parsed selector behind, so an unusable answer is rejected as a whole:
- * the caller falls back to the presets DSH ships instead of showing a menu that
- * silently lost values. `custom` is a derived current state, never a switch
- * target, which is why the runtime may list it but the selector must not.
+ * Invalid or duplicate options are dropped individually; only when no usable
+ * option remains is the whole answer rejected, so the caller falls back to the
+ * presets DSH ships instead of showing an empty menu. The catalogue is bounded
+ * before it reaches the DOM so a runtime cannot turn a long list or a long
+ * description into a multi-megabyte menu. `custom` is a derived current state,
+ * never a switch target, which is why the runtime may list it but the selector
+ * must not.
  */
 export function permissionCatalogOf(value: unknown): PermissionCatalog | undefined {
   if (typeof value !== 'object' || value === null) return undefined
@@ -82,6 +88,7 @@ export function permissionCatalogOf(value: unknown): PermissionCatalog | undefin
   const options: PermissionCatalogOption[] = []
   const seen = new Set<string>()
   for (const raw of catalog.options) {
+    if (options.length >= MAX_CATALOG_OPTIONS) break
     const option = catalogOptionOf(raw)
     if (option === undefined || seen.has(option.value)) continue
     seen.add(option.value)
@@ -95,10 +102,10 @@ export function permissionCatalogOf(value: unknown): PermissionCatalog | undefin
 function catalogOptionOf(value: unknown): PermissionCatalogOption | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const option = value as Record<string, unknown>
-  if (typeof option.value !== 'string' || option.value === '' || option.value === 'custom') return undefined
-  const name = typeof option.name === 'string' && option.name !== '' ? option.name : option.value
+  if (typeof option.value !== 'string' || option.value === '' || option.value === 'custom' || option.value.length > MAX_CATALOG_OPTION_VALUE) return undefined
+  const name = typeof option.name === 'string' && option.name !== '' ? option.name.slice(0, MAX_CATALOG_TEXT) : option.value
   const description = typeof option.description === 'string' && option.description !== ''
-    ? option.description
+    ? option.description.slice(0, MAX_CATALOG_TEXT)
     : undefined
   return { value: option.value, name, ...(description === undefined ? {} : { description }) }
 }

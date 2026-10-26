@@ -246,4 +246,12 @@ describe('experimental Auto review preset', () => {
     const typed = typedCommandPermissionPreset('  /permission\tauto  ')
     expect(typed !== undefined && requiresPermissionConfirmation(typed)).toBe(true)
   })
+  it('bounds a hostile preset catalogue before it reaches the menu', () => {
+    const options = Array.from({ length: 20 }, (_, index) => ({ value: `p${String(index)}`, name: 'n'.repeat(1000), description: 'd'.repeat(2000) }))
+    const catalog = permissionCatalogOf({ options })
+    expect(catalog?.options).toHaveLength(16)
+    expect(catalog!.options[0]!.name.length).toBe(300)
+    expect(catalog!.options[0]!.description!.length).toBe(300)
+    expect(permissionCatalogOf({ options: [{ value: 'v'.repeat(65), name: 'Long' }] })).toBeUndefined()
+  })
 })

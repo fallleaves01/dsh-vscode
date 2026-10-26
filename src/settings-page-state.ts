@@ -84,8 +84,10 @@ function localized(value: unknown, limit: number): string | undefined {
 /** Project `pluginManager/listBundles` without icons, local paths or raw errors. */
 export function publicBundles(value: unknown): BundleView[] {
   if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
   return value.filter(record).slice(0, 100).flatMap((row): BundleView[] => {
-    if (typeof row.name !== 'string' || row.name === '') return []
+    if (typeof row.name !== 'string' || row.name === '' || seen.has(row.name)) return []
+    seen.add(row.name)
     const availability = typeof row.availability === 'string' && BUNDLE_AVAILABILITY.has(row.availability) ? row.availability as BundleView['availability'] : undefined
     const readOnlyReason = typeof row.readOnlyReason === 'string' && BUNDLE_READ_ONLY.has(row.readOnlyReason) ? row.readOnlyReason as BundleView['readOnlyReason'] : undefined
     const meta = record(row.meta) ? row.meta : undefined
@@ -184,6 +186,9 @@ const forms: readonly SettingsFormSpec[] = [
   ] },
 ]
 
+/** Upper bound for one settings string value; the host schemas impose no length. */
+const MAX_SETTINGS_STRING = 1024
+
 export const SEARCH_PROFILES = ['web-search-deepseek', 'web-deepseek-api'] as const
 export function searchSettings(description: SettingsDescription, credentials: Record<string, CredentialState>): SearchSettingsView {
   const web = description.namespaces.find(ns => ns.ns === 'web')
@@ -243,7 +248,7 @@ export function settingsForms(description: SettingsDescription): SettingsFormVie
       const publicValue = field.key === 'baseURL' ? publicEndpoint(value) : value
       const publicInherited = field.key === 'baseURL' ? publicEndpoint(inherited) : inherited
       const project = (raw: unknown): unknown => {
-        if (field.type === 'string-list') return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string').slice(0, 64) : undefined
+        if (field.type === 'string-list') return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string').slice(0, 32) : undefined
         if (field.type === 'select') return typeof raw === 'string' ? raw : undefined
         return typeof raw === field.type ? raw : undefined
       }
@@ -302,6 +307,7 @@ export function fieldMutations(namespace: SettingsNamespace, values: unknown): S
       if (field.min !== undefined && value < field.min) throw new Error(`${field.label}: minimum ${field.min}.`)
       if (field.max !== undefined && value > field.max) throw new Error(`${field.label}: maximum ${field.max}.`)
     } else if (typeof value !== field.type) throw new Error(`${field.label}: invalid value.`)
+    if (typeof value === 'string' && value.length > MAX_SETTINGS_STRING) throw new Error(`${field.label}: keep the value under ${String(MAX_SETTINGS_STRING)} characters.`)
     if (key === 'baseURL') endpoint(value as string)
     return { op: 'set', path: [key], value }
   })

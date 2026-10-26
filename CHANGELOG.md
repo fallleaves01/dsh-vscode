@@ -9,6 +9,30 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-10-26
+
+### Fixed
+
+- Keep settings operation feedback honest across retries and navigation: a new
+  result with the same text is announced again, while returning to a section
+  whose error was already shown does not replay it. A bundle toggle now shows
+  the requested state (with an `Applying…` note) while the change is pending
+  instead of reverting to the old value.
+- Resolve Team tool-card links when the `agentTeam` projection arrives after the
+  message was rendered, by keying only the affected cards on the member map.
+- Bound runtime-provided data before it reaches the DOM: Team projections
+  (50 members, 200 tasks, 256-character ids, 300/1000-character text, 20-item
+  collections), the permission catalogue (16 options, 300-character copy,
+  64-character values), settings string values (1024 characters) and bundle
+  failure codes (64 printable characters). This prevents a hostile or runaway
+  runtime payload from creating an unbounded menu or task list.
+- Wait 130 s for `pluginManager/setBundleEnabled`, because the host serializes
+  profile mutations under a file lock it waits up to 120 s for; the previous
+  30 s client timeout could report a completed change as failed.
+- Describe the permission and bundle reads as capability probes rather than
+  claiming older runtimes lack them, and refresh the adaptation record's test
+  count and review log.
+
 ## [0.1.18] - 2026-10-26
 
 ### Fixed

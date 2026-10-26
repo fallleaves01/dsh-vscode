@@ -65,8 +65,8 @@
 | 指标 | 数值 |
 |---|---|
 | 测试文件 | 112（111 通过，1 失败） |
-| 测试用例 | 1520（1518 通过，1 失败，1 跳过） |
-| 耗时 | Duration 9.2–9.4 s（多次复跑） |
+| 测试用例 | 1529（1527 通过，1 失败，1 跳过） |
+| 耗时 | Duration 9–10 s（多次复跑） |
 
 唯一失败为既有沙箱限制：`tests/diff-review.spec.ts:787` 向 `$HOME/dsh-open-file-spec.tmp` 写入时返回 `EPERM`。该测试文件不在本轮改动清单内，失败与 rc.3 适配无关；Vitest 因此以退出码 1 结束。新增测试文件三个：`tests/agent-team-state.spec.ts`（10 项）、`tests/dsh-session-feed.spec.ts`（16 项）、`tests/extension-surface.spec.ts`（5 项）；另在 `tests/settings-page-state.spec.ts`、`tests/settings-panel.spec.ts`、`tests/settings-page.spec.ts`、`tests/dsh-session-feed.spec.ts`、`tests/collaboration-state.spec.ts`、`tests/dsh-client.spec.ts`、`tests/discovery-controller.spec.ts`、`tests/subagent-tools.spec.ts`、`tests/webview-policy.spec.ts`、`tests/webview-subagent-cards.spec.ts`、`tests/webview-task-features.spec.ts` 中扩充用例。
 
@@ -118,3 +118,21 @@
 3. **Team 面板的默认可见性**：启用 agent-team-profile 后，新建会话的 `agentTeam` 投影即含 Lead 成员，Tasks 面板会为每个会话显示 Team 小节（1 名成员）。这符合投影语义，但可能产生常驻噪声；是否只在成员数大于 1 或存在任务时显示，留待可用性评估。
 4. **模型依赖路径**：在拥有模型凭据的环境中补充 Auto review 拒绝/审批、队友创建与任务板写入、标题生成的端到端验证。
 5. **能力探测而非版本门控**：rc.2 与 rc.3 的实验性契约相同（契约比对记录为本地审计材料），本轮实现全部按能力探测降级：目录不存在→内置预设；投影不存在→不渲染 Team；bundle 管理 RPC 不存在→仅只读 inventory；设置 namespace 缺失→卡片隐藏。未新增版本号判断，rc.2 运行时行为保持原样。
+
+## 6. 发布后审查与修复（0.1.19）
+
+0.1.18 发布后，由四名独立审查员对 5911c16..9b05dd6 的改动做了分层审查：宿主/协议契约、Webview/UI、回归与发布一致性、对抗性边界。结论为「改动合理、无既有功能回归、无阻塞项」，并按发现修复如下：
+
+| 来源 | 问题 | 修复 |
+|---|---|---|
+| UI 审查 | 提示条去重键在关闭后未复位，同一失败第二次被静默 | 改为按「结果代次」记录已播报消息：新结果重新播报，切换分区不重播 |
+| UI 审查 | bundle 开关在请求挂起期间回显旧值，观感像未生效 | 挂起期显示请求的目标值并标注 Applying…，结果到达后以宿主状态为准 |
+| UI 审查 | `agentTeam` 投影晚于工具消息到达时，团队工具卡链接不补 | 工具卡记录团队成员映射签名，签名变化时仅重渲染受影响的卡片 |
+| 对抗审查 | 团队投影无数量与长度上限（2 万成员可产生数万 DOM 节点） | 成员 50、任务 200、id 256、文本 300/1000 字符、集合 20 项上限 |
+| 对抗审查 | 权限目录无上限（10 万选项、1 MB 描述） | 选项 16、名称/描述 300、选项值 64 上限 |
+| 对抗审查 | 设置字符串与 bundle 错误码无长度约束 | 设置字符串 1024 上限；错误码截断并剥离控制字符 |
+| 宿主审查 | `setBundleEnabled` 客户端 30 s 超时短于宿主 120 s 文件锁等待 | 超时改为 130 s，并注明结果未知时由 `plugin-manager/changed` 收敛 |
+| 宿主审查 | 注释称 rc.2 缺少 catalog/bundle RPC，与实测不符 | 改为能力探测表述，不绑定版本号 |
+| 回归审查 | 文档测试计数滞后于实际用例数 | 更新为 1529 例 |
+
+回归验证：全量 1529 例（1527 通过、1 既有沙箱 EPERM、1 平台跳过）；`tsc --noEmit` 0；`scripts/build.mjs` 0；新增审查回归测试 7 例。

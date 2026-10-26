@@ -345,8 +345,8 @@ describe('DSH 0.1.2 chat transport', () => {
 
   it('degrades to no catalogue when the runtime does not serve the read', async () => {
     const h = harness()
-    // A runtime without the method (before DSH 0.2.1-rc.3): the gateway rejects
-    // the endpoint. That is a value for this feature, not a connection failure.
+    // A runtime that does not serve the method rejects the endpoint. That is a
+    // capability result for this feature, not a connection failure.
     vi.mocked(h.connection.call).mockImplementationOnce(async () => {
       throw new DshConnectionError('gateway/invocation-unavailable', 'Unknown method permissionPresets/catalog.')
     })

@@ -271,4 +271,24 @@ describe('agent team projection view', () => {
     agentTeamOf({ agentTeam: projection })
     expect(JSON.stringify(projection)).toBe(snapshot)
   })
+  it('bounds a hostile projection before it reaches the DOM', () => {
+    const members = Array.from({ length: 80 }, (_, index) => ({ id: `member-${String(index)}`, name: `Member ${String(index)}`, role: 'teammate', phase: 'active' }))
+    const tasks = Array.from({ length: 260 }, (_, index) => ({
+      id: `task-${String(index + 1)}`, revision: 1, subject: 's'.repeat(2000), description: 'd'.repeat(5000),
+      status: 'pending', blockedBy: ['missing'], writeScopes: ['w'.repeat(1000)], ownerName: 'o'.repeat(2000),
+      ready: false, writeScopeWarnings: ['x'.repeat(2000)],
+    }))
+    const view = agentTeamOf({ agentTeam: { members, tasks } })
+    expect(view?.members).toHaveLength(50)
+    expect(view?.tasks).toHaveLength(200)
+    const first = view!.tasks[0]!
+    expect(first.subject.length).toBe(301)
+    expect(first.subject.endsWith('…')).toBe(true)
+    expect(first.description.length).toBe(1001)
+    expect(first.ownerName!.length).toBe(301)
+    expect(first.writeScopes).toHaveLength(1)
+    expect(first.writeScopes[0]!.length).toBe(301)
+    expect(first.writeScopeWarnings[0]!.length).toBe(301)
+    expect(first.blockedBy).toEqual(['missing'])
+  })
 })

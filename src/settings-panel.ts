@@ -23,7 +23,10 @@ function apiKey(value: unknown): string {
 
 /** Explain a profile bundle mutation the runtime refused, without forwarding raw diagnostics. */
 function bundleFailure(result: DshBundleChange): string {
-  const code = result.error?.code
+  const rawCode = result.error?.code
+  // The code is runtime text: bound its length and strip control characters
+  // before it becomes user-visible copy.
+  const code = typeof rawCode === 'string' && rawCode !== '' ? rawCode.replace(/[^\x20-\x7E]/gu, '').slice(0, 64) : undefined
   if (code === 'management-required') return 'This runtime is managed outside this extension. Change bundles from its own plugin manager.'
   if (code === 'incompatible-version') return 'This bundle is not compatible with the running DSH version.'
   if (result.application === 'overridden') return 'The change was saved, but a higher-priority profile layer overrides this bundle.'

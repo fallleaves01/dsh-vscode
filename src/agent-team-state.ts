@@ -97,6 +97,20 @@ export function agentTeamSummaryOf(view: AgentTeamView | undefined): string {
   return `${members} · ${view.completedCount}/${view.totalCount} tasks done`
 }
 
+/**
+ * Render limits for one Team projection.
+ *
+ * These are not protocol limits: the runtime may publish any number of members
+ * and tasks. They bound the DOM a single projection can create in a narrow
+ * sidebar, mirroring the bundle projection's own slice cap.
+ */
+const MAX_TEAM_MEMBERS = 50
+const MAX_TEAM_TASKS = 200
+const MAX_TEAM_ID = 256
+const MAX_TEAM_TEXT = 300
+const MAX_TEAM_DESCRIPTION = 1000
+const MAX_TEAM_ITEMS = 20
+
 const MEMBER_ROLE_ORDER: Readonly<Record<AgentTeamMemberRole, number>> = { lead: 0, teammate: 1 }
 
 const TASK_STATUS_ORDER: Readonly<Record<AgentTeamVisibleTaskStatus, number>> = {
@@ -110,6 +124,7 @@ function membersOf(value: unknown): AgentTeamMember[] {
   const members: AgentTeamMember[] = []
   const seen = new Set<string>()
   for (const entry of value) {
+    if (members.length >= MAX_TEAM_MEMBERS) break
     const member = memberOf(entry)
     if (member === undefined || seen.has(member.id)) continue
     seen.add(member.id)
@@ -125,9 +140,9 @@ function memberOf(value: unknown): AgentTeamMember | undefined {
   const id = textOf(row.id)
   const role = roleOf(row.role)
   const phase = phaseOf(row.phase)
-  if (id === undefined || role === undefined || phase === undefined || typeof row.name !== 'string') return undefined
+  if (id === undefined || id.length > MAX_TEAM_ID || role === undefined || phase === undefined || typeof row.name !== 'string') return undefined
   const error = textOf(row.error)
-  return { id, name: row.name, role, phase, ...(error === undefined ? {} : { error }) }
+  return { id, name: clampText(row.name, MAX_TEAM_TEXT), role, phase, ...(error === undefined ? {} : { error: clampText(error, MAX_TEAM_TEXT) }) }
 }
 
 /** A parsed task before readiness and blocking are derived from its siblings. */
@@ -149,6 +164,7 @@ function tasksOf(value: unknown): AgentTeamTask[] {
   const parsed: ParsedTask[] = []
   const seen = new Set<string>()
   for (const entry of value) {
+    if (parsed.length >= MAX_TEAM_TASKS) break
     const task = parsedTaskOf(entry)
     if (task === undefined || seen.has(task.id)) continue
     seen.add(task.id)
@@ -169,21 +185,21 @@ function parsedTaskOf(value: unknown): ParsedTask | undefined {
   const id = textOf(row.id)
   const revision = row.revision
   const status = taskStatusOf(row.status)
-  if (id === undefined || status === undefined || status === 'deleted') return undefined
+  if (id === undefined || id.length > MAX_TEAM_ID || status === undefined || status === 'deleted') return undefined
   if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) return undefined
   if (typeof row.subject !== 'string' || typeof row.description !== 'string') return undefined
   const ownerName = textOf(row.ownerName)
   return {
     id,
     revision,
-    subject: row.subject,
-    description: row.description,
+    subject: clampText(row.subject, MAX_TEAM_TEXT),
+    description: clampText(row.description, MAX_TEAM_DESCRIPTION),
     status,
-    blockedBy: stringsOf(row.blockedBy),
-    writeScopes: stringsOf(row.writeScopes),
-    ...(ownerName === undefined ? {} : { ownerName }),
+    blockedBy: stringsOf(row.blockedBy, MAX_TEAM_ID, MAX_TEAM_ITEMS),
+    writeScopes: stringsOf(row.writeScopes, MAX_TEAM_TEXT, MAX_TEAM_ITEMS),
+    ...(ownerName === undefined ? {} : { ownerName: clampText(ownerName, MAX_TEAM_TEXT) }),
     ready: typeof row.ready === 'boolean' ? row.ready : undefined,
-    writeScopeWarnings: stringsOf(row.writeScopeWarnings),
+    writeScopeWarnings: stringsOf(row.writeScopeWarnings, MAX_TEAM_TEXT, MAX_TEAM_ITEMS),
   }
 }
 
@@ -213,8 +229,25 @@ function textOf(value: unknown): string | undefined {
 }
 
 /** Normalize a wire collection to its string entries, tolerating a wrong shape. */
-function stringsOf(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []
+function stringsOf(value: unknown, itemLimit = MAX_TEAM_TEXT, countLimit = MAX_TEAM_ITEMS): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string').slice(0, countLimit).map(entry => clampText(entry, itemLimit))
+    : []
+}
+
+/**
+ * Clamp untrusted wire text before it reaches the DOM.
+ *
+ * The Team projection is durable runtime state, but its strings are still
+ * unbounded on the wire: a runaway subject or description must not create a
+ * multi-megabyte text node. Never split a surrogate pair.
+ */
+function clampText(value: string, limit: number): string {
+  if (value.length <= limit) return value
+  let end = limit
+  const code = value.charCodeAt(end - 1)
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1
+  return `${value.slice(0, end)}…`
 }
 
 function compareText(left: string, right: string): number {

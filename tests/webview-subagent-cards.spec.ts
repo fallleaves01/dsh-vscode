@@ -67,4 +67,15 @@ describe('subagent navigation directly in tool cards',()=>{
     expect(h.document.querySelector('.subagent-tool-card')).not.toBeNull()
     expect(h.posts.some(post=>post.type==='open-subagent')).toBe(false)
   })
+  it('resolves a Team card link when the projection arrives after the message', async () => {
+    const teamCard = { ...card, id: 'tool:team', resultView: { card: 'generic', subagentLinks: [{ id: '', memberName: 'Wren', label: 'Wren' }] }, callView: { card: 'generic' } }
+    const h = harness(); active.push(h)
+    h.sendState({ sessionId: 'parent', sessions, messages: [teamCard] }); await h.settle()
+    expect(h.document.querySelector('.subagent-tool-main')).toBeNull()
+    h.sendState({ sessionId: 'parent', sessions, messages: [teamCard], team: { members: [{ id: 'session-wren', name: 'Wren', role: 'teammate', phase: 'active' }], tasks: [], completedCount: 0, totalCount: 0 } })
+    await h.settle()
+    expect(h.document.querySelector('.subagent-tool-main')).not.toBeNull()
+    h.click('.subagent-tool-main')
+    expect(h.posts.at(-1)).toMatchObject({ type: 'open-subagent', sessionId: 'session-wren' })
+  })
 })
