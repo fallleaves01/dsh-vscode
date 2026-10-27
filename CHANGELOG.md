@@ -9,6 +9,45 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-27
+
+### Fixed
+
+- A conversation that streams reasoning could leave the sidebar unable to switch
+  conversations, with the view frozen on the old conversation or on
+  "Loading project conversation…". The cause was the state delivery path: every
+  state was posted to the Webview in one serial chain, and one `postMessage`
+  that never settled (a slow Remote-SSH Webview, a long reasoning render, a
+  stream of updates arriving faster than the Webview accepted them) blocked
+  every later state — including the full snapshot for the conversation the user
+  had just selected. A reproduction with the previous release showed a
+  conversation switch arriving 12 s late, or never.
+  - State delivery is now bounded: at most one delivery is in flight, pending
+    states collapse to the newest one, and a delivery that has not settled after
+    2 s is abandoned. Abandoning it invalidates the diff baseline, so the next
+    state is a full snapshot, and a generation guard stops a late settlement
+    from reviving the old baseline.
+  - If no newer state follows the abandonment, the Host retries one full
+    snapshot 1.5 s later (throttled to one retry per 10 s), and the Webview
+    watchdog also asks for a snapshot when it has received nothing for 5 s in a
+    live phase — including loading, stopping and cancel-requested, not only
+    running. The two paths cover each other: the switch still completes when
+    either side's message channel stalls.
+  - Three consecutive stalled deliveries show a reload-window warning and an
+    Output line, because a channel that repeatedly stalls cannot be recovered
+    from inside the view.
+- Selecting a conversation now acknowledges the click immediately: the header
+  says "Switching to …" while the snapshot is pending, and offers a retry after
+  10 s instead of silently staying on the old conversation.
+- Rendering failures are reported to the Output channel (rate-limited) and
+  request a state resynchronization instead of leaving the view partially
+  rendered and silent.
+- Loading and switching diagnostics are now visible in Output: one line per
+  conversation selection with the phase and running state, opening/opened
+  timings, slow state deliveries, and Webview-requested resynchronizations.
+  They contain conversation identifiers and timings only; credentials stay
+  redacted.
+
 ## [0.1.26] - 2026-10-26
 
 ### Fixed

@@ -65,7 +65,7 @@
 | 指标 | 数值 |
 |---|---|
 | 测试文件 | 118（117 通过，1 失败） |
-| 测试用例 | 1680（1678 通过，1 失败，1 跳过） |
+| 测试用例 | 1704（1702 通过，1 失败，1 跳过） |
 | 耗时 | Duration 9–10 s（多次复跑） |
 
 唯一失败为既有沙箱限制：`tests/diff-review.spec.ts:787` 向 `$HOME/dsh-open-file-spec.tmp` 写入时返回 `EPERM`。该测试文件不在本轮改动清单内，失败与 rc.3 适配无关；Vitest 因此以退出码 1 结束。新增测试文件三个：`tests/agent-team-state.spec.ts`（10 项）、`tests/dsh-session-feed.spec.ts`（16 项）、`tests/extension-surface.spec.ts`（5 项）；另在 `tests/settings-page-state.spec.ts`、`tests/settings-panel.spec.ts`、`tests/settings-page.spec.ts`、`tests/dsh-session-feed.spec.ts`、`tests/collaboration-state.spec.ts`、`tests/dsh-client.spec.ts`、`tests/discovery-controller.spec.ts`、`tests/subagent-tools.spec.ts`、`tests/webview-policy.spec.ts`、`tests/webview-subagent-cards.spec.ts`、`tests/webview-task-features.spec.ts` 中扩充用例。
@@ -264,3 +264,23 @@
 限制与已知行为（与上述主场景无关的另一种拓扑）：若两个窗口实际各启动了一个 runtime（共用 DSH profile 而非同一进程），非所有者窗口的 Stop 无法跨进程停止，会显示可读的占用提示——此时应关闭多余窗口或改用共享 runtime。held 状态的清除仍依赖成功写入或 “Check again”（宿主不广播锁释放）。宿主 rc.2 与 rc.3 的相关包逐文件一致，本修复不要求升级 runtime。
 
 验证：独立验证者用真实双客户端/双 runtime 探针确认宿主义语，并以 fake harness 完成宿主→Webview 全链路 E2E（192 例），9 个变异全部被捕获；全量 1680 例（1678 通过、1 既有 EPERM、1 平台跳过，118 个测试文件）；`tsc --noEmit` 0；`scripts/build.mjs` 0。
+
+## 14. 流式 thinking 时切换/停止失效的投递链修复（0.2.0）
+
+用户报告：某会话持续输出 thinking 时无法切换会话；历史症状在同一 runtime 多窗口时表现为 Stop/切换无效。团队用 `git archive` 取 0.1.26 基线复现：让一次 `webview.postMessage` 永不 settle，宿主已执行 `openSession`，但 Webview 3 秒后仍停在旧会话；把投递放慢到每次 100 ms 再叠加 150 次流式更新，切换状态延迟 **12 061 ms** 才到。同样实验在 0.2.0 候选上：冻结 ≤3 秒自愈，慢投递切换 **52 ms**。
+
+根因（H1）是宿主→Webview 状态投递链：0.1.26 用 `statePosts = statePosts.then(postStateUpdate)` 串行等待每次 `postMessage`，没有超时或背压上限。流式 reasoning 产生 16 ms 级更新，一旦某次投递变慢或卡住，积压按“单次耗时 / 16 ms”增长；用户点击切换后的 full snapshot 排在旧状态之后，resync 也挂在同一条链上，于是页面永久停在旧会话或 Loading，只能重开/重载。协议层与控制器层经探针证明均为毫秒级（同 runtime 双客户端 cancel 10 ms、controller 切换 4–5 ms），Webview 逻辑层压力测试也无法复现（1000 条 reasoning 更新单次渲染 0.118 ms），因此问题在投递与真实 IPC 的交互。
+
+修复：
+
+| 层 | 修复 |
+|---|---|
+| 宿主投递 | 单投递在飞 + 最新状态合并；2 秒有界等待，超时放弃并作废 diff 基线（下一条为 full snapshot）；投递代次守卫防止迟到 settle 复活旧基线；`drainState` 异常统一捕获 |
+| 宿主恢复 | 超时后若无新状态，1.5 秒后主动补发一次 full snapshot（10 秒节流，新状态到达即让位）；连续 3 次 stall 时给出一次 Reload Window 提示 |
+| Webview 看门狗 | 5 秒无状态（live + loading/stopping/cancelRequested 过渡阶段，启动首个状态另有 8 秒探测）即发 `resync`，8 秒节流；`resync` 携带 staleSessionId/phase；宿主绕过投递队列立即回全量 |
+| 交互 | 点击会话立即显示 “Switching to …”（aria-busy），10 秒未完成提示重试；渲染异常限流上报并触发 resync |
+| 诊断 | Output 增加 [ui] 选择/取消、[chat] 打开/计时/失败、慢投递、stall、resync 日志；只含会话 id、阶段与耗时，凭据仍由既有脱敏包装处理 |
+
+限制：真实 VS Code 传输层无法在本机复现（无 Playwright/Puppeteer、Chromium harness 受沙箱限制），修复以可控的永不 settle / 慢投递注入验证；若投递通道**持续**卡死，视图只能通过提示的 Reload Window 恢复。诊断版本每次切换约 5 行日志，正常流式更新不产生逐帧日志。
+
+验证：团队独立复核（S2/W1/W2 三组实现 + 变异矩阵 + 独立 E2E 冻结/慢投递/迟到 resolve/风暴合并）；全量 1704 例（1702 通过、1 既有 EPERM、1 平台跳过，118 文件）；`tsc --noEmit` 0；`scripts/build.mjs` 0。0.1.26 基线在同一实验下 12 061 ms 延迟，0.2.0 候选 52 ms。
