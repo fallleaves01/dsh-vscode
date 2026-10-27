@@ -969,6 +969,29 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let historyAnchor;
     let renderFrame;
     let pendingRenderState;
+    /** When the newest state message arrived; the watchdog compares the clock to it. */
+    let lastStateAt = Date.now();
+    let resyncSentAt = 0;
+    /** One-shot chain that watches transitional phases; armed only while they last. */
+    let resyncWatchTimer;
+    /** One-shot boot watchdog: the first state may itself be the delivery that stalls. */
+    let startupWatchTimer;
+    /** Last render error report, so a broken frame cannot flood the Host output. */
+    let lastRenderErrorAt = 0;
+    /**
+     * A conversation switch the user asked for, before the Host's state arrives.
+     *
+     * Only local presentation: the view keeps the old transcript and shows the
+     * intent in the header until the target state lands or the deadline passes.
+     */
+    let pendingSwitch;
+    let pendingSwitchTimer;
+    const RESYNC_STALE_MS = 5_000;
+    const RESYNC_MIN_INTERVAL_MS = 8_000;
+    const RESYNC_WATCH_STEP_MS = 1_000;
+    const STARTUP_RESYNC_MS = 8_000;
+    const RENDER_ERROR_REPORT_MS = 10_000;
+    const SWITCH_FEEDBACK_MS = 10_000;
     let renderedSessionId;
     let renderedStatusKey = '';
     let renderedHistoryKey = '';
@@ -1005,7 +1028,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const toolOutputChunkSize = 20000;
 
     const conversationScroller = dshConversationScroll.createConversationScroller(elements.scroll, elements.conversation, document.getElementById('jumpLatest'));
-    window.addEventListener('pagehide', () => { conversationScroller.dispose(); if (thinkingTicker !== undefined) { clearInterval(thinkingTicker); thinkingTicker = undefined; } if (liveStatusTicker !== undefined) { clearInterval(liveStatusTicker); liveStatusTicker = undefined; } }, { once: true });
+    window.addEventListener('pagehide', () => {
+      conversationScroller.dispose();
+      if (thinkingTicker !== undefined) { clearInterval(thinkingTicker); thinkingTicker = undefined; }
+      if (liveStatusTicker !== undefined) { clearInterval(liveStatusTicker); liveStatusTicker = undefined; }
+      if (resyncWatchTimer !== undefined) { clearTimeout(resyncWatchTimer); resyncWatchTimer = undefined; }
+      if (startupWatchTimer !== undefined) { clearTimeout(startupWatchTimer); startupWatchTimer = undefined; }
+      if (pendingSwitchTimer !== undefined) { clearTimeout(pendingSwitchTimer); pendingSwitchTimer = undefined; }
+      pendingSwitch = undefined;
+    }, { once: true });
+    syncResyncWatch();
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -1131,12 +1163,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         if (archived) { closeSessionActions(false); vscode.postMessage({ type: 'unarchive-session', sessionId: session.id }); return; }
         if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
         closeSessionMenu(false); homeOpen = false;
+        // The header confirms the intent immediately; the target's transcript
+        // still comes from the Host, never from a local guess.
+        beginPendingSwitch(session, state);
         if (state) renderNavigation(state);
         if (!state || session.id !== state.sessionId) vscode.postMessage({ type: 'select-session', sessionId: session.id });
         // A conversation that failed to open is retried by selecting it again;
         // in ready the same row only restores the view.
         else if (state.phase === 'error') vscode.postMessage({ type: 'select-session', sessionId: session.id });
-        else { if (state) render(state); elements.prompt.focus(); }
+        else { if (state) render(state, 'same-conversation row'); elements.prompt.focus(); }
       });
       row.append(main);
       if (!session.blank) {
@@ -1249,6 +1284,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.conversationHome.title = homeOpen ? 'Return to current conversation' : 'All conversations';
       elements.conversationHome.setAttribute('aria-label', elements.conversationHome.title);
       elements.sessionTriggerTitle.textContent = homeOpen ? 'Conversations' : string(array(current.sessions).find(item => item.id === current.sessionId)?.title, 'New conversation');
+      if (pendingSwitch !== undefined) {
+        // Local intent wins over the still-current conversation: the user's
+        // click must be visible even when the Host's state never lands.
+        const opening = 'Switching to “' + pendingSwitch.title + '”…';
+        elements.sessionTriggerTitle.textContent = pendingSwitch.stalled ? 'Still switching to “' + pendingSwitch.title + '”…' : opening;
+        elements.sessionTrigger.title = pendingSwitch.stalled
+          ? 'The conversation did not change. Open Conversations to choose one and retry.'
+          : 'Waiting for DSH to open the conversation';
+        elements.sessionTrigger.setAttribute('aria-busy', String(!pendingSwitch.stalled));
+        elements.sessionTrigger.setAttribute('aria-label', elements.sessionTrigger.title);
+      } else {
+        elements.sessionTrigger.removeAttribute('aria-busy');
+      }
       if (!homeOpen && lastHomeOpen && homeReading && homeReading.sessionId === current.sessionId) {
         const reading = homeReading;
         requestAnimationFrame(() => {
@@ -1880,10 +1928,104 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // scroller's own ResizeObserver on the content is what re-pins a reader.
       label.textContent = text;
     }
+    /**
+     * Recovery for a view that stopped receiving state.
+     *
+     * A Host post that never settles leaves the view frozen with no error
+     * anywhere. Two triggers ask for a full snapshot: a live turn (through the
+     * interval ticker that already runs) and a transitional phase (loading or a
+     * stopping request), which owns a one-shot chain only while it lasts. An
+     * idle view owns no timer.
+     */
+    function postResync(stale) {
+      resyncSentAt = Date.now();
+      const current = state;
+      vscode.postMessage({
+        type: 'resync',
+        staleMs: Math.max(0, Math.round(Number(stale) || 0)),
+        ...(current === undefined ? {} : { staleSessionId: current.sessionId, phase: current.phase }),
+      });
+    }
+    function maybeRequestResync() {
+      const stale = Date.now() - lastStateAt;
+      if (stale < RESYNC_STALE_MS || Date.now() - resyncSentAt < RESYNC_MIN_INTERVAL_MS) return;
+      postResync(stale);
+    }
+    function transitionalPhase() {
+      return state !== undefined
+        && (state.phase === 'loading' || state.stopping === true || state.cancelRequested === true);
+    }
+    function syncResyncWatch() {
+      // The first snapshot may itself be the stalled delivery, and then no live
+      // ticker exists to notice it: one bounded check covers that window.
+      if (startupWatchTimer !== undefined) { clearTimeout(startupWatchTimer); startupWatchTimer = undefined; }
+      if (state === undefined) {
+        startupWatchTimer = setTimeout(() => {
+          startupWatchTimer = undefined;
+          if (state === undefined) postResync(Date.now() - lastStateAt);
+          syncResyncWatch();
+        }, STARTUP_RESYNC_MS);
+        return;
+      }
+      if (resyncWatchTimer !== undefined) { clearTimeout(resyncWatchTimer); resyncWatchTimer = undefined; }
+      // A live turn already carries the interval ticker; a transitional phase is
+      // watched only until it settles, so no timer outlives it.
+      const liveTurn = state.phase === 'ready' && state.running === true;
+      if (liveTurn || !transitionalPhase()) return;
+      resyncWatchTimer = setTimeout(() => {
+        resyncWatchTimer = undefined;
+        maybeRequestResync();
+        syncResyncWatch();
+      }, RESYNC_WATCH_STEP_MS);
+    }
+    function clearPendingSwitch() {
+      if (pendingSwitchTimer !== undefined) { clearTimeout(pendingSwitchTimer); pendingSwitchTimer = undefined; }
+      pendingSwitch = undefined;
+    }
+    /**
+     * Show the switch the user just asked for, before the Host's state lands.
+     *
+     * The transcript and the conversation identity stay untouched: this is only
+     * the header's feedback, replaced by the real state when it arrives or by a
+     * retry hint after the deadline.
+     */
+    function beginPendingSwitch(session, current) {
+      if (current === undefined || session === undefined || typeof session.id !== 'string' || session.id === current.sessionId) return;
+      clearPendingSwitch();
+      pendingSwitch = { sessionId: session.id, title: string(session.title, 'New conversation'), fromSessionId: current.sessionId, stalled: false };
+      pendingSwitchTimer = setTimeout(() => {
+        pendingSwitchTimer = undefined;
+        if (pendingSwitch === undefined || pendingSwitch.stalled) return;
+        pendingSwitch.stalled = true;
+        if (state !== undefined) renderNavigation(state);
+      }, SWITCH_FEEDBACK_MS);
+    }
+    function settlePendingSwitch() {
+      if (pendingSwitch === undefined || state === undefined) return;
+      // Any state that names another conversation, or a failed open, ends the
+      // local intent: the Host has answered it one way or the other.
+      if (state.sessionId !== pendingSwitch.fromSessionId || state.phase === 'error') clearPendingSwitch();
+    }
+    /**
+     * A render that throws must not silently freeze the view.
+     *
+     * The error is reported at most once per window, and a full snapshot is
+     * requested so the next frame starts from a known state rather than from a
+     * patch computed against a base the user never saw.
+     */
+    function reportRenderFailure(error, context) {
+      const now = Date.now();
+      if (now - lastRenderErrorAt >= RENDER_ERROR_REPORT_MS) {
+        lastRenderErrorAt = now;
+        const detail = error instanceof Error ? error.message : String(error);
+        try { vscode.postMessage({ type: 'webview-error', message: 'render failed' + (context ? ' (' + context + ')' : '') + ': ' + detail }); } catch {}
+      }
+      if (now - resyncSentAt >= RESYNC_MIN_INTERVAL_MS) postResync(now - lastStateAt);
+    }
     function syncLiveStatusTicker() {
       const live = state !== undefined && state.phase === 'ready' && state.running === true;
       if (live && liveStatusTicker === undefined) {
-        liveStatusTicker = setInterval(() => { if (state !== undefined) syncLiveStatus(state); }, THINKING_TICK_MS);
+        liveStatusTicker = setInterval(() => { if (state !== undefined) syncLiveStatus(state); maybeRequestResync(); }, THINKING_TICK_MS);
       } else if (!live && liveStatusTicker !== undefined) {
         clearInterval(liveStatusTicker); liveStatusTicker = undefined;
       }
@@ -3976,7 +4118,18 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       } else syncLiveStatus(current);
       syncLiveStatusTicker();
     }
-    function render(current) {
+    /**
+     * Render one state, reporting instead of throwing.
+     *
+     * Every entry point (the scheduled frame and the direct redraws from user
+     * actions) goes through here, so one broken node cannot abort an event
+     * handler and leave the view half-updated with no record.
+     */
+    function render(current, context) {
+      try { renderNow(current); }
+      catch (error) { reportRenderFailure(error, context); }
+    }
+    function renderNow(current) {
       elements.runtimeIndicator.dataset.phase = current.phase;
       const connection = current.runtimeConnection;
       const shared = connection && connection.ownership === 'adopted';
@@ -4116,11 +4269,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     }
     function scheduleRender(current) {
       state = current; pendingRenderState = current;
+      // Watching and switch feedback react to the state itself, not to the next
+      // frame: a stalled delivery must be noticed even if no frame ever runs.
+      syncResyncWatch();
+      settlePendingSwitch();
       if (renderFrame !== undefined) return;
       renderFrame = requestAnimationFrame(() => {
         renderFrame = undefined;
         const pending = pendingRenderState; pendingRenderState = undefined;
-        if (pending) render(pending);
+        if (pending) render(pending, 'scheduled frame');
       });
     }
     function applyMessagesPatch(current, patch) {
@@ -4699,8 +4856,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         }
         if (state) render(state);
       }
-      if (event.data.type === 'state') { pendingMessageAppends.clear(); scheduleRender(event.data.state); }
-      if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
+      if (event.data.type === 'state') { pendingMessageAppends.clear(); lastStateAt = Date.now(); scheduleRender(event.data.state); }
+      if (event.data.type === 'state-update') { lastStateAt = Date.now(); applyStateUpdate(event.data.update); }
       // The Host answers one reasoning translation per request id.
       if (event.data.type === 'translate-reasoning-result') cotAcceptResult(event.data);
       if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && typeof event.data.messageId === 'string') {

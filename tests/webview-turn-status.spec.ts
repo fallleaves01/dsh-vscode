@@ -70,6 +70,27 @@ describe('the live turn status', () => {
     expect(status(h)).toBe('Stopping…')
   })
 
+  it('asks the Host for a full state when a live view stops receiving updates', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'Date'] })
+    const h = open()
+    const now = Date.now()
+    await show(h, { running: true, turnStartedAt: now, turnActivityAt: now })
+    const resync = () => h.posts.filter(post => post.type === 'resync')
+    expect(resync()).toHaveLength(0)
+    // Five seconds without a state message while the turn is live is the
+    // threshold: the view asks for the snapshot instead of freezing silently.
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect(resync()).toHaveLength(1)
+    // Requests are throttled, and a state message restarts the clock.
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(resync()).toHaveLength(1)
+    await show(h, { running: true, turnStartedAt: now, turnActivityAt: Date.now() })
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(resync()).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(resync()).toHaveLength(2)
+  })
+
   it('disappears and stops its timer when the turn ends', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'Date'] })
     const h = open()
@@ -134,6 +155,68 @@ describe('the live turn status', () => {
 
     await show(h, { phase: 'error', statusText: 'lost', running: true, turnStartedAt: now, turnActivityAt: now })
     expect(h.document.querySelector('.live-status')).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('the resynchronization watchdog covers transitions and boot', () => {
+  const fake = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'Date']
+  const resyncPosts = (h: Harness) => h.posts.filter(post => post.type === 'resync')
+
+  it('asks for a full state while a conversation is loading', async () => {
+    vi.useFakeTimers({ toFake: fake })
+    const h = open()
+    await show(h, { phase: 'loading', statusText: 'Loading project conversation…', running: false })
+    // Only the transition watchdog runs: the live turn ticker needs running.
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect(resyncPosts(h)).toHaveLength(1)
+    expect(resyncPosts(h)[0]).toMatchObject({ staleSessionId: 'session-a', phase: 'loading' })
+    expect(Number(resyncPosts(h)[0]!.staleMs)).toBeGreaterThanOrEqual(5_000)
+    // The 8 s throttle still applies while the phase persists.
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(resyncPosts(h)).toHaveLength(1)
+    // A ready state settles the transition, and an idle view owns no timer.
+    await show(h, { phase: 'ready', statusText: '' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(resyncPosts(h)).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('watches a stop acknowledgement even when running is not reported', async () => {
+    vi.useFakeTimers({ toFake: fake })
+    const h = open()
+    await show(h, { phase: 'ready', running: false, stopping: true, cancelRequested: true })
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect(resyncPosts(h)).toHaveLength(1)
+    expect(resyncPosts(h)[0]).toMatchObject({ staleSessionId: 'session-a', phase: 'ready' })
+    await show(h, { phase: 'ready', running: false, stopping: false, cancelRequested: false })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(resyncPosts(h)).toHaveLength(1)
+  })
+
+  it('covers the boot window before the first state arrives', async () => {
+    vi.useFakeTimers({ toFake: fake })
+    const h = open()
+    await vi.advanceTimersByTimeAsync(9_000)
+    expect(resyncPosts(h)).toHaveLength(1)
+    expect(Number(resyncPosts(h)[0]!.staleMs)).toBeGreaterThanOrEqual(8_000)
+    // No conversation has been named yet, so the snapshot request carries none.
+    expect(resyncPosts(h)[0]).not.toHaveProperty('phase')
+    await show(h, { phase: 'ready' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(resyncPosts(h)).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('stops watching when the view is torn down', async () => {
+    vi.useFakeTimers({ toFake: fake })
+    const h = open()
+    await show(h, { phase: 'loading', statusText: 'Loading project conversation…', running: false })
+    await vi.advanceTimersByTimeAsync(1_000)
+    h.dispose()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(h.posts.filter(post => post.type === 'resync')).toHaveLength(0)
     expect(vi.getTimerCount()).toBe(0)
   })
 })

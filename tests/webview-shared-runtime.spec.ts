@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { harness, type Harness, type Posted } from './webview-harness.js'
 
 /**
@@ -12,6 +12,7 @@ import { harness, type Harness, type Posted } from './webview-harness.js'
 const live: Harness[] = []
 afterEach(() => {
   live.splice(0).forEach(instance => instance.dispose())
+  vi.useRealTimers()
   document.body.replaceChildren()
 })
 function open(): Harness {
@@ -221,5 +222,76 @@ describe('Restart Runtime is limited to a runtime this window owns', () => {
     // the status block must still be rebuilt for the hidden action to disappear.
     await show(h, { phase: 'error', statusText: 'The runtime failed.', canReconnect: true, runtimeConnection: { ownership: 'adopted' } })
     expect(byText(h, 'Restart Runtime')).toBeUndefined()
+  })
+})
+
+describe('a failed render asks for a fresh state instead of freezing', () => {
+  it('reports one render failure and requests a full state', async () => {
+    const h = open()
+    await show(h, { phase: 'ready' })
+    const before = h.posts.length
+    const proto = Node.prototype as unknown as { insertBefore: (...args: unknown[]) => unknown }
+    const original = proto.insertBefore
+    let armed = true
+    proto.insertBefore = function (this: Node, ...args: unknown[]) {
+      if (armed) { armed = false; throw new Error('injected layout failure') }
+      return original.apply(this, args)
+    }
+    try {
+      // The new message makes the next render touch insertBefore, which throws
+      // before the view can be reconciled.
+      h.sendState({ sessionId: 'session-a', sessions: [parent, other], messages: [{ id: 'user:1', role: 'user', text: 'hello' }] })
+      await h.settle()
+    } finally {
+      proto.insertBefore = original
+    }
+    const posted = posts(h, before)
+    const reports = posted.filter(post => post.type === 'webview-error' && String(post.message).includes('render failed'))
+    expect(reports).toHaveLength(1)
+    const resync = posted.filter(post => post.type === 'resync')
+    expect(resync).toHaveLength(1)
+    expect(resync[0]).toMatchObject({ staleSessionId: 'session-a', phase: 'ready' })
+    // The next state renders from the fresh snapshot, and the report is throttled.
+    h.sendState({ sessionId: 'session-a', sessions: [parent, other], messages: [{ id: 'user:2', role: 'user', text: 'second' }] })
+    await h.settle()
+    expect(h.document.getElementById('messages')!.textContent).toContain('second')
+    expect(h.posts.filter(post => post.type === 'webview-error' && String(post.message).includes('render failed'))).toHaveLength(1)
+  })
+})
+
+describe('a conversation click is acknowledged before the Host state lands', () => {
+  const title = (h: Harness) => h.document.getElementById('sessionTriggerTitle')!.textContent
+
+  it('shows the intent in the header until the target state arrives', async () => {
+    const h = open()
+    await show(h, { phase: 'ready' })
+    h.click('#sessionTrigger')
+    const from = h.posts.length
+    h.click('#sessionList .session-row[data-session-id="session-b"] .session-main')
+    expect(posts(h, from)).toContainEqual({ type: 'select-session', sessionId: 'session-b' })
+    // The click is visible immediately, while the Host's state is still pending.
+    expect(title(h)).toBe('Switching to “Other conversation”…')
+    expect(h.document.getElementById('sessionTrigger')!.getAttribute('aria-busy')).toBe('true')
+    // The real state ends the local intent.
+    await show(h, { sessionId: 'session-b' })
+    expect(title(h)).toBe('Other conversation')
+    expect(h.document.getElementById('sessionTrigger')!.hasAttribute('aria-busy')).toBe(false)
+  })
+
+  it('asks for a retry when the switch does not land within the deadline', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'Date'] })
+    const h = open()
+    h.sendState({ sessionId: 'session-a', sessions: [parent, other] })
+    await vi.advanceTimersByTimeAsync(20)
+    h.click('#sessionTrigger')
+    h.click('#sessionList .session-row[data-session-id="session-b"] .session-main')
+    expect(title(h)).toBe('Switching to “Other conversation”…')
+    await vi.advanceTimersByTimeAsync(10_100)
+    expect(title(h)).toBe('Still switching to “Other conversation”…')
+    expect(h.document.getElementById('sessionTrigger')!.getAttribute('title')).toContain('did not change')
+    // A late state still settles the local intent.
+    h.sendState({ sessionId: 'session-b', sessions: [parent, other] })
+    await vi.advanceTimersByTimeAsync(20)
+    expect(title(h)).toBe('Other conversation')
   })
 })
