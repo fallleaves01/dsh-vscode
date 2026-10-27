@@ -8,7 +8,7 @@
  * tests/collaboration-state.spec.ts; this file exists so deleting the
  * `showWarningMessage` call from the host cannot leave the suite green.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DshFrame, SessionModels, SkillDescriptor } from '../src/dsh-client.js'
 
 const mocks = vi.hoisted(() => ({
@@ -548,6 +548,392 @@ describe('host surface wiring', () => {
       h.send({ type: 'select-session', sessionId: 'ghost' })
       await vi.waitFor(() => expect(messages(h).some(message => message.role === 'notice'
         && String(message.text).includes('not in the current project'))).toBe(true))
+    })
+  })
+
+  describe('state delivery stalls', () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason) }
+    beforeEach(() => {
+      unhandled.length = 0
+      process.on('unhandledRejection', onUnhandled)
+    })
+    afterEach(() => {
+      process.off('unhandledRejection', onUnhandled)
+    })
+
+    const postMock = (h: any): ReturnType<typeof vi.fn> => h.entry.panel.webview.postMessage
+    const fullStates = (h: any): Array<Record<string, any>> =>
+      h.posts().filter((packet: Record<string, any>) => packet.type === 'state')
+    /** Stall the first matching message; all other posts keep their real behaviour. */
+    const stallFirst = (h: any, type: string): { stalled: PromiseWithResolvers<boolean>; called: () => number } => {
+      const post = postMock(h)
+      const real = post.getMockImplementation()!
+      const stalled = Promise.withResolvers<boolean>()
+      let calls = 0
+      post.mockImplementation((message: Record<string, any>) =>
+        message.type === type && calls++ === 0 ? stalled.promise : real(message))
+      return { stalled, called: () => calls }
+    }
+
+    it('abandons a stalled update and posts the newest state as a full snapshot', async () => {
+      const h = await activated()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        mocks.output.length = 0
+        const { stalled, called } = stallFirst(h, 'state-update')
+        const before = fullStates(h).length
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        expect(called()).toBe(1)
+        // More state arrives while the first delivery hangs: only the newest is
+        // kept, so no storm of posts can queue behind the dead promise.
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: false }, 'host')
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        expect(fullStates(h)).toHaveLength(before)
+        await vi.advanceTimersByTimeAsync(2_100)
+        // The queue continued, and the post that follows a timeout is a full
+        // snapshot rather than a patch on a state the view may never have seen.
+        expect(mocks.output.some(line => line.includes('state delivery stalled'))).toBe(true)
+        const resent = fullStates(h).slice(before)
+        expect(resent).toHaveLength(1)
+        expect(resent[0]?.state).toMatchObject({ sessionId: 'a', running: true })
+        // The late resolution must not become the base of later patches.
+        stalled.resolve(false)
+        await vi.advanceTimersByTimeAsync(20)
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: false }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        expect(h.posts().at(-1)).toMatchObject({ type: 'state-update' })
+        expect(unhandled).toEqual([])
+      } finally { vi.useRealTimers() }
+    })
+
+    it('delivers the switched full state while an earlier post is stalled', async () => {
+      const h = await activated()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        mocks.output.length = 0
+        const { stalled } = stallFirst(h, 'state-update')
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        h.send({ type: 'select-session', sessionId: 'b' })
+        await vi.advanceTimersByTimeAsync(20)
+        // The switch is queued behind the stalled delivery for now.
+        expect(h.posts().some((packet: Record<string, any>) =>
+          packet.type === 'state' && packet.state?.sessionId === 'b')).toBe(false)
+        await vi.advanceTimersByTimeAsync(2_100)
+        // … but it arrives once the stalled delivery is abandoned, as a full
+        // state: the session change cannot ride on the old conversation.
+        const switched = h.posts().filter((packet: Record<string, any>) =>
+          packet.type === 'state' && packet.state?.sessionId === 'b')
+        expect(switched.length).toBeGreaterThanOrEqual(1)
+        expect(mocks.output.some(line => line.includes('state delivery stalled'))).toBe(true)
+        // A late resolve cannot restore the old conversation's postedState.
+        stalled.resolve(false)
+        await vi.advanceTimersByTimeAsync(20)
+        h.emit({ type: 'host/session-status', sessionId: 'b', running: true }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        expect(h.posts().at(-1)).toMatchObject({ type: 'state-update' })
+        expect(unhandled).toEqual([])
+      } finally { vi.useRealTimers() }
+    })
+
+    it('swallows a stalled delivery that rejects after its timeout', async () => {
+      const h = await activated()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        const { stalled } = stallFirst(h, 'state-update')
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        await vi.advanceTimersByTimeAsync(2_100)
+        stalled.reject(new Error('the Webview transport failed late'))
+        await vi.advanceTimersByTimeAsync(20)
+        expect(unhandled).toEqual([])
+      } finally { vi.useRealTimers() }
+    })
+
+    it('resends a full state when the Webview asks while a delivery is stalled', async () => {
+      const h = await activated()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        mocks.output.length = 0
+        const { called } = stallFirst(h, 'state-update')
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        expect(called()).toBe(1)
+        const before = fullStates(h).length
+        h.send({ type: 'resync', staleMs: 6_000 })
+        await vi.advanceTimersByTimeAsync(20)
+        // The recovery bypasses both the throttle and the stalled queue.
+        const resent = fullStates(h).slice(before)
+        expect(resent).toHaveLength(1)
+        expect(resent[0]?.state).toMatchObject({ sessionId: 'a', running: true })
+        expect(mocks.output.some(line => line.includes('resent the full view state'))).toBe(true)
+        await vi.advanceTimersByTimeAsync(2_100)
+        // The abandoned attempt timed out after the resynchronization owned the
+        // view; the log says so instead of claiming a fresh stall.
+        expect(mocks.output.some(line => line.includes('state delivery stalled') && line.includes('superseded'))).toBe(true)
+        expect(unhandled).toEqual([])
+      } finally { vi.useRealTimers() }
+    })
+
+    it('falls back to a full snapshot when a state post is rejected outright', async () => {
+      const h = await activated()
+      const post = postMock(h)
+      const real = post.getMockImplementation()!
+      let rejected = false
+      post.mockImplementation((message: Record<string, any>) => message.type === 'state-update' && !rejected
+        ? (rejected = true, Promise.reject(new Error('the Webview transport closed')))
+        : real(message))
+      const before = fullStates(h).length
+      mocks.output.length = 0
+      h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+      await vi.waitFor(() => expect(mocks.output.some(line => line.includes('Could not publish state'))).toBe(true))
+      // A rejected delivery is not a stall: the retry is simply a full snapshot.
+      h.emit({ type: 'host/session-status', sessionId: 'a', running: false }, 'host')
+      await vi.waitFor(() => expect(fullStates(h).length).toBeGreaterThan(before))
+      expect(mocks.output.some(line => line.includes('state delivery stalled'))).toBe(false)
+      expect(unhandled).toEqual([])
+    })
+
+    it('resends a full snapshot after a stall when nothing else is queued', async () => {
+      const h = await activated()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        mocks.output.length = 0
+        const { stalled } = stallFirst(h, 'state-update')
+        const before = fullStates(h).length
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        await vi.advanceTimersByTimeAsync(2_100)
+        const stallLine = mocks.output.find(line => line.includes('state delivery stalled'))
+        expect(stallLine).toBeDefined()
+        expect(stallLine).toContain('phase ready')
+        expect(stallLine).toContain('generation ')
+        expect(fullStates(h)).toHaveLength(before)
+        expect(mocks.output.some(line => line.includes('retrying the full view state'))).toBe(false)
+        // No newer state arrives: the Host itself resends the snapshot, because
+        // a Webview stuck in a transition runs no watchdog of its own.
+        await vi.advanceTimersByTimeAsync(1_600)
+        expect(mocks.output.some(line => line.includes('retrying the full view state'))).toBe(true)
+        const resent = fullStates(h).slice(before)
+        expect(resent).toHaveLength(1)
+        expect(resent[0]?.state).toMatchObject({ sessionId: 'a', running: true })
+        stalled.resolve(false)
+        await vi.advanceTimersByTimeAsync(20)
+        expect(unhandled).toEqual([])
+      } finally { vi.useRealTimers() }
+    })
+
+    it('lets a state arriving during the recovery delay take over', async () => {
+      const h = await activated()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        mocks.output.length = 0
+        const { stalled } = stallFirst(h, 'state-update')
+        const before = fullStates(h).length
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        await vi.advanceTimersByTimeAsync(2_100)
+        expect(mocks.output.some(line => line.includes('retrying the full view state'))).toBe(false)
+        // The normal drain wins this race, so the proactive resend must be
+        // cancelled rather than sending a second full snapshot.
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: false }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        expect(fullStates(h).slice(before)).toHaveLength(1)
+        await vi.advanceTimersByTimeAsync(1_600)
+        expect(mocks.output.some(line => line.includes('retrying the full view state'))).toBe(false)
+        expect(fullStates(h).slice(before)).toHaveLength(1)
+        stalled.resolve(false)
+        await vi.advanceTimersByTimeAsync(20)
+        expect(unhandled).toEqual([])
+      } finally { vi.useRealTimers() }
+    })
+
+    it('warns the user once when deliveries keep stalling', async () => {
+      const h = await activated()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        mocks.warning.mockClear()
+        mocks.output.length = 0
+        const post = postMock(h)
+        const real = post.getMockImplementation()!
+        // Every state delivery hangs, as on a dead transport.
+        post.mockImplementation((message: Record<string, any>) =>
+          message.type === 'state' || message.type === 'state-update' ? new Promise<boolean>(() => {}) : real(message))
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        await vi.advanceTimersByTimeAsync(2_100)
+        expect(mocks.warning).not.toHaveBeenCalled()
+        await vi.advanceTimersByTimeAsync(1_600) // proactive resend starts
+        await vi.advanceTimersByTimeAsync(2_100)
+        expect(mocks.warning).not.toHaveBeenCalled()
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: false }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        await vi.advanceTimersByTimeAsync(2_100)
+        expect(mocks.warning).toHaveBeenCalledTimes(1)
+        expect(String(mocks.warning.mock.calls[0]?.[0])).toContain('not receiving state updates')
+        // Further stalls inside the warning window stay quiet.
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        await vi.advanceTimersByTimeAsync(2_100)
+        expect(mocks.warning).toHaveBeenCalledTimes(1)
+        expect(unhandled).toEqual([])
+      } finally { vi.useRealTimers() }
+    })
+
+    it('catches an unexpected drain failure and repairs the snapshot base', async () => {
+      const h = await activated()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const push = mocks.output.push
+      try {
+        mocks.output.length = 0
+        const { stalled } = stallFirst(h, 'state-update')
+        const before = fullStates(h).length
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        // Force the stall logging itself to throw: the rejection has to be
+        // caught by the drain guard, not become an unhandled rejection.
+        let throwOnce = true
+        mocks.output.push = ((...items: string[]) => {
+          if (throwOnce) {
+            throwOnce = false
+            throw new Error('log channel failed')
+          }
+          return push.apply(mocks.output, items)
+        }) as typeof mocks.output.push
+        await vi.advanceTimersByTimeAsync(2_100)
+        expect(mocks.output.some(line => line.includes('state drain failed: log channel failed'))).toBe(true)
+        // The failed drain invalidated the posted base: the next delivery is a
+        // full snapshot rather than a patch.
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: false }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        expect(fullStates(h).slice(before)).toHaveLength(1)
+        stalled.resolve(false)
+        await vi.advanceTimersByTimeAsync(20)
+        expect(unhandled).toEqual([])
+      } finally {
+        mocks.output.push = push
+        vi.useRealTimers()
+      }
+    })
+  })
+
+  describe('diagnostic log safety', () => {
+    const loggedLine = (prefix: string): string | undefined =>
+      mocks.output.find(line => line.startsWith(prefix))
+
+    it('redacts and single-lines error text reported by the Webview', async () => {
+      const h = await activated()
+      mocks.output.length = 0
+      const canary = 'https://x/?token=CANARY\n[fake] Authorization: Bearer BEARERCANARY sk-CANARY1234567890 /Users/canary-user/file'
+      h.send({ type: 'webview-error', message: `boom ${canary}` })
+      await vi.waitFor(() => expect(loggedLine('[webview] boom')).toBeDefined())
+      // The renderer's own failure report uses the same channel.
+      h.send({ type: 'webview-error', message: `render failed: ${canary}` })
+      await vi.waitFor(() => expect(loggedLine('[webview] render failed:')).toBeDefined())
+      for (const line of [loggedLine('[webview] boom'), loggedLine('[webview] render failed:')]) {
+        expect(line).toBeDefined()
+        expect(line).toContain('[redacted]')
+        expect(line).not.toContain('CANARY')
+        expect(line).not.toContain('sk-CANARY1234567890')
+        // One line only: the forged prefix stayed inside it.
+        expect(line).toContain('[fake]')
+      }
+      expect(mocks.output.some(entry => entry.startsWith('[fake]'))).toBe(false)
+    })
+
+    it('bounds one diagnostic line and marks the truncation', async () => {
+      const h = await activated()
+      mocks.output.length = 0
+      h.send({ type: 'webview-error', message: 'x'.repeat(600) })
+      await vi.waitFor(() => expect(loggedLine('[webview] ')).toBeDefined())
+      const line = loggedLine('[webview] ')!
+      expect(line.length).toBeLessThanOrEqual(301)
+      expect(line.endsWith('…')).toBe(true)
+    })
+
+    it('replaces an unsafe Webview conversation id in the UI log', async () => {
+      const h = await activated()
+      mocks.output.length = 0
+      h.send({ type: 'select-session', sessionId: 'evil\n[fake] forged' })
+      await vi.waitFor(() => expect(loggedLine('[ui] select conversation ')).toBeDefined())
+      const line = loggedLine('[ui] select conversation ')!
+      expect(line).toContain('[ui] select conversation <invalid>')
+      expect(line).not.toContain('\n')
+      expect(mocks.output.some(entry => entry.startsWith('[fake]'))).toBe(false)
+    })
+
+    it('redacts a provider error quoted by a failed open', async () => {
+      const h = await activated()
+      mocks.output.length = 0
+      h.client.openSession.mockRejectedValueOnce(new Error(
+        'open failed https://x/?token=CANARY\n[fake] sk-CANARY1234567890'))
+      h.send({ type: 'select-session', sessionId: 'b' })
+      await vi.waitFor(() => expect(loggedLine('[chat] opening conversation b failed')).toBeDefined())
+      const line = loggedLine('[chat] opening conversation b failed')!
+      expect(line).not.toContain('CANARY')
+      expect(line).not.toContain('sk-CANARY1234567890')
+      expect(line).not.toContain('\n')
+      expect(mocks.output.some(entry => entry.startsWith('[fake]'))).toBe(false)
+    })
+
+    it('redacts a transport error that reaches the publish-failure log', async () => {
+      const h = await activated()
+      mocks.output.length = 0
+      const post = h.entry.panel.webview.postMessage as ReturnType<typeof vi.fn>
+      const real = post.getMockImplementation()!
+      post.mockImplementation((message: Record<string, any>) => message.type === 'state-update'
+        ? Promise.reject(new Error('publish failed https://x/?token=CANARY sk-CANARY1234567890'))
+        : real(message))
+      h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+      await vi.waitFor(() => expect(loggedLine('[webview] Could not publish state')).toBeDefined())
+      const line = loggedLine('[webview] Could not publish state')!
+      expect(line).not.toContain('CANARY')
+      expect(line).not.toContain('sk-CANARY1234567890')
+    })
+
+    it('redacts an error surfaced by a failed drain', async () => {
+      const h = await activated()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const push = mocks.output.push
+      try {
+        mocks.output.length = 0
+        const post = h.entry.panel.webview.postMessage as ReturnType<typeof vi.fn>
+        const real = post.getMockImplementation()!
+        post.mockImplementation((message: Record<string, any>) => message.type === 'state-update'
+          ? new Promise<boolean>(() => {})
+          : real(message))
+        h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+        await vi.advanceTimersByTimeAsync(20)
+        // Force the stall log to throw with a canary: the drain guard must still
+        // write a redacted line.
+        let throwOnce = true
+        mocks.output.push = ((...items: string[]) => {
+          if (throwOnce) {
+            throwOnce = false
+            throw new Error('log channel failed https://x/?token=CANARY sk-CANARY1234567890')
+          }
+          return push.apply(mocks.output, items)
+        }) as typeof mocks.output.push
+        await vi.advanceTimersByTimeAsync(2_100)
+        const line = loggedLine('[webview] state drain failed')
+        expect(line).toBeDefined()
+        expect(line).not.toContain('CANARY')
+        expect(line).not.toContain('sk-CANARY1234567890')
+      } finally {
+        mocks.output.push = push
+        vi.useRealTimers()
+      }
+    })
+
+    it('leaves ordinary diagnostic lines intact', async () => {
+      const h = await activated()
+      mocks.output.length = 0
+      h.send({ type: 'cancel' })
+      await vi.waitFor(() => expect(loggedLine('[cancel] requested for a')).toBeDefined())
+      expect(loggedLine('[cancel] requested for a')).toBe('[cancel] requested for a')
     })
   })
 })

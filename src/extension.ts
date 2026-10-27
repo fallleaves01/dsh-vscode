@@ -511,9 +511,9 @@ export class DshChatController implements vscode.Disposable {
 
   /**
    * Channel for diagnostics. DSH text can quote a request URL, an
-   * `Authorization` header or a `Cookie`, so every line is redacted where it is
-   * written — the same boundary rule the runtime output follows — instead of
-   * relying on each of the call sites to remember.
+   * `Authorization` header or a `Cookie`, so every line is redacted — and
+   * single-lined, so it cannot forge log lines — where it is written, instead
+   * of relying on each of the call sites to remember.
    */
   private readonly output: Pick<vscode.OutputChannel, 'appendLine'>
 
@@ -526,7 +526,7 @@ export class DshChatController implements vscode.Disposable {
     private _cwd: string,
     private readonly extensionVersion: string,
   ) {
-    this.output = { appendLine: line => { output.appendLine(redactDshSecrets(line)) } }
+    this.output = { appendLine: line => { output.appendLine(diagnosticText(line)) } }
     this._state = initialState(_cwd)
     this.unreadSessionIds = new Set(workspaceState.get<string[]>(DshChatController.unreadStorageKey, []))
   }
@@ -1109,6 +1109,19 @@ export class DshChatController implements vscode.Disposable {
   }
 
   async selectSession(sessionId: string): Promise<void> {
+    const began = Date.now()
+    const loggedId = safeLogId(sessionId)
+    this.output.appendLine(`[ui] switching to conversation ${loggedId} (from ${safeLogId(this._state.sessionId)}, phase=${this._state.phase})`)
+    try {
+      await this.selectSessionNow(sessionId)
+      this.output.appendLine(`[ui] conversation ${loggedId} selected in ${String(Date.now() - began)} ms (phase=${this._state.phase})`)
+    } catch (error) {
+      this.output.appendLine(`[ui] selecting conversation ${loggedId} failed in ${String(Date.now() - began)} ms: ${diagnosticText(dshErrorText(error))}`)
+      throw error
+    }
+  }
+
+  private async selectSessionNow(sessionId: string): Promise<void> {
     // Deliberately not gated on the ready phase. A conversation that will not
     // open leaves the sidebar loading or failed, and switching to another one is
     // the only way out of it; `loadSession` supersedes the load in flight and
@@ -2131,6 +2144,9 @@ export class DshChatController implements vscode.Disposable {
 
   private async loadSession(sessionId: string): Promise<void> {
     const client = this.requireClient()
+    const openedAt = Date.now()
+    const loggedId = safeLogId(sessionId)
+    this.output.appendLine(`[chat] opening conversation ${loggedId} (phase=${this._state.phase})`)
     const loadGeneration = ++this.sessionLoadGeneration
     const sessionChanged = sessionId !== this._state.sessionId
     // Keep the last durable snapshot while reopening the same conversation.
@@ -2180,6 +2196,7 @@ export class DshChatController implements vscode.Disposable {
       // sidebar disables send, the picker and the session list with no way back;
       // the error phase is the one that offers recovery.
       const message = redactDshSecrets(dshErrorText(error))
+      this.output.appendLine(`[chat] opening conversation ${loggedId} failed after ${String(Date.now() - openedAt)} ms: ${diagnosticText(message)}`)
       // A held conversation is readable but not writable from this window; the
       // banner says so, and the error phase below still offers the way out.
       if (isConversationHeld(error)) this.markConversationHeld(sessionId)
@@ -2268,6 +2285,7 @@ export class DshChatController implements vscode.Disposable {
     // Fire-and-forget like the other discoveries: the conversation is already
     // shown, and `loadModels` catches its own failures.
     void this.loadModels(sessionId)
+    this.output.appendLine(`[chat] conversation ${loggedId} opened in ${String(Date.now() - openedAt)} ms (${String(events.length)} event(s), running=${String(summary?.running === true)})`)
   }
 
   private async loadCommands(client: DshClient, sessionId: string): Promise<void> {
@@ -3055,6 +3073,72 @@ type DraftFile = PromptFile & { id: string; name: string; bytes: number }
  */
 const STOPPING_ACKNOWLEDGEMENT_MS = 6_000
 
+/** Bound on one diagnostic line: enough for an error, short enough for a log. */
+const DIAGNOSTIC_TEXT_LIMIT = 300
+
+/**
+ * One safe OutputChannel line: redacted, single-line and bounded.
+ *
+ * Webview messages, runtime failures and provider errors are untrusted text.
+ * The channel is a local log file, but a query token or an API key written
+ * there is still a leak, and a newline would let the text forge extra log
+ * lines. Both are removed here, at the channel boundary, rather than trusting
+ * every call site. Absolute paths and IPs are deliberately left as they are:
+ * they appear in local-only logs and are out of this change's scope.
+ */
+function diagnosticText(value: unknown): string {
+  const redacted = redactDshSecrets(typeof value === 'string' ? value : String(value))
+    // A bare provider key is not covered by the URL header/query rules.
+    .replace(/\bsk-[A-Za-z0-9_-]{10,}/g, '[redacted]')
+    // Likewise a `Bearer` token quoted without a preceding header name.
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [redacted]')
+  const oneLine = redacted.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return oneLine.length <= DIAGNOSTIC_TEXT_LIMIT ? oneLine : `${oneLine.slice(0, DIAGNOSTIC_TEXT_LIMIT)}…`
+}
+
+/**
+ * A Webview-supplied identifier that is safe to interpolate into a log line.
+ *
+ * Runtime conversation ids use `A-Za-z0-9._:-`; anything else (a newline, a
+ * forged log prefix) is replaced as a whole so it cannot reach the channel.
+ */
+function safeLogId(value: unknown): string {
+  return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,64}$/.test(value) ? value : '<invalid>'
+}
+
+/** First 12 characters of a conversation id; log lines never need the whole id. */
+function shortSessionId(sessionId: string): string {
+  const safe = safeLogId(sessionId)
+  return safe === '<invalid>' ? safe : safe.slice(0, 12)
+}
+
+/**
+ * Upper bound on one Host-to-Webview state delivery.
+ *
+ * `webview.postMessage` is a Thenable the Webview may never settle. Waiting on
+ * it forever serializes every later snapshot behind it, so a conversation
+ * switch and the Stop acknowledgement both become invisible. A delivery is
+ * abandoned after this long; the queue continues and the next post is a full
+ * snapshot.
+ */
+const STATE_DELIVERY_TIMEOUT_MS = 2_000
+
+/**
+ * How long the Host waits before resending a snapshot after abandoning a
+ * stalled delivery with no newer state queued.
+ *
+ * A Webview stuck in a transition has no watchdog of its own (its
+ * resynchronization timer only runs for a live turn), so without this both
+ * sides can wait forever on the one state that was dropped.
+ */
+const STATE_DELIVERY_RECOVERY_DELAY_MS = 1_500
+/** At most one proactive resend per this window: a dead channel must not loop. */
+const STATE_DELIVERY_RECOVERY_THROTTLE_MS = 10_000
+/** Consecutive abandoned deliveries before the user gets a visible warning. */
+const STATE_STALL_WARNING_THRESHOLD = 3
+/** The visible warning is shown at most once per this window. */
+const STATE_STALL_WARNING_INTERVAL_MS = 10 * 60_000
+
 /** How often the sidebar re-reads account state while a sign-in attempt is live. */
 const ACCOUNT_POLL_INTERVAL_MS = 1500
 /** Ceiling on polls per attempt (about ten minutes), so none can poll forever. */
@@ -3105,16 +3189,46 @@ class DshSurface implements vscode.Disposable {
   private pendingState: ChatViewState | undefined
   private postedState: ChatViewState | undefined
   private stateTimer: NodeJS.Timeout | undefined
-  private statePosts: Promise<void> = Promise.resolve()
+  /** True while the drained delivery loop owns the queue. */
+  private statePosting = false
+  /**
+   * Monotonic delivery id. Only the newest attempt may set `postedState`, so a
+   * delivery that settles after its timeout cannot resurrect an older view.
+   */
+  private stateDeliveryGeneration = 0
+  /** When the delivery currently in flight started; 0 when none is in flight. */
+  private statePostStartedAt = 0
+  /** Last time a slow delivery was reported, so a slow webview logs once. */
+  private statePostSlowLoggedAt = 0
+  /** One-shot proactive resend armed after a stall with nothing queued. */
+  private deliveryRecoveryTimer: NodeJS.Timeout | undefined
+  /** When the last proactive resend was attempted; throttles a dead channel. */
+  private lastDeliveryRecoveryAt = 0
+  /** Deliveries abandoned by the timeout in a row, for the visible warning. */
+  private stalledDeliveries = 0
+  /** When the user was last warned that the view stopped receiving state. */
+  private stallWarnedAt = 0
+
+  /** Wrapped below: every line this surface writes is Webview/transport text. */
+  private readonly output: Pick<vscode.OutputChannel, 'appendLine' | 'show'>
 
   constructor(
     private readonly webview: vscode.Webview,
     private readonly controller: DshChatController,
-    private readonly output: vscode.OutputChannel,
+    output: vscode.OutputChannel,
     private readonly editorContext: EditorContextBridge,
     extensionUri: vscode.Uri,
     version: string,
   ) {
+    // The surface logs Webview messages and transport failures verbatim; the
+    // wrapping keeps that untrusted text off a raw channel.
+    this.output = {
+      appendLine: line => { output.appendLine(diagnosticText(line)) },
+      show: (columnOrFocus?: vscode.ViewColumn | boolean, preserveFocus?: boolean) => {
+        if (typeof columnOrFocus === 'boolean') output.show(columnOrFocus)
+        else output.show(columnOrFocus, preserveFocus)
+      },
+    }
     this.settingsPanel = new SettingsPanelManager(controller, extensionUri, version)
     const mediaRoot = vscode.Uri.joinPath(extensionUri, 'media')
     const renderRoot = vscode.Uri.joinPath(extensionUri, 'dist', 'webview')
@@ -3152,44 +3266,221 @@ class DshSurface implements vscode.Disposable {
 
   dispose(): void {
     if (this.stateTimer !== undefined) clearTimeout(this.stateTimer)
+    if (this.deliveryRecoveryTimer !== undefined) clearTimeout(this.deliveryRecoveryTimer)
     for (const disposable of this.disposables) disposable.dispose()
   }
 
   private queueState(state: ChatViewState): void {
     this.pendingState = state
-    if (!this.ready || this.stateTimer !== undefined) return
+    // A new state takes over the recovery path: the normal drain will deliver
+    // it, so a scheduled proactive resend would only duplicate the snapshot.
+    if (this.deliveryRecoveryTimer !== undefined) {
+      clearTimeout(this.deliveryRecoveryTimer)
+      this.deliveryRecoveryTimer = undefined
+    }
+    // A delivery that has not settled for seconds is a view that stopped
+    // receiving state. Report it once per window; the delivery timeout below and
+    // the Webview's resynchronization watchdog are what recover the view. This
+    // runs even while a delivery is in flight, which is exactly the stall case.
+    if (this.ready && this.statePostStartedAt !== 0 && Date.now() - this.statePostStartedAt > STATE_DELIVERY_TIMEOUT_MS
+      && Date.now() - this.statePostSlowLoggedAt > 10_000) {
+      this.statePostSlowLoggedAt = Date.now()
+      this.output.appendLine(`[webview] state delivery has been pending for ${String(Date.now() - this.statePostStartedAt)} ms`)
+    }
+    if (!this.ready || this.stateTimer !== undefined || this.statePosting) return
     this.stateTimer = setTimeout(() => {
       this.stateTimer = undefined
-      const pending = this.pendingState
-      this.pendingState = undefined
-      if (pending === undefined) return
-      this.statePosts = this.statePosts
-        .then(() => this.postStateUpdate(pending))
-        .catch(error => {
-          this.output.appendLine(`[webview] Could not publish state: ${error instanceof Error ? error.message : String(error)}`)
-        })
+      this.requestDrain()
     }, 16)
   }
 
-  private async postFullState(state: ChatViewState): Promise<void> {
-    const delivered = await this.webview.postMessage({ type: 'state', state: stateForWebview(state) })
-    this.postedState = delivered ? state : undefined
+  /**
+   * Run the drain loop without letting an unexpected failure escape.
+   *
+   * A rejected promise here would only become an unhandled rejection. The queue
+   * instead marks the view stale, so the next state is posted as a full
+   * snapshot instead of a patch on an unknown base.
+   */
+  private requestDrain(): void {
+    void this.drainState().catch(error => {
+      this.postedState = undefined
+      this.output.appendLine(`[webview] state drain failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }
 
-  private async postStateUpdate(state: ChatViewState): Promise<void> {
-    const previous = this.postedState
+  /**
+   * Post the newest merged state, one bounded delivery at a time.
+   *
+   * Only the latest state is kept while a delivery is in flight, so a stream of
+   * updates cannot queue a storm of posts behind a stalled one.
+   */
+  private async drainState(): Promise<void> {
+    if (this.statePosting) return
+    this.statePosting = true
+    try {
+      while (this.pendingState !== undefined) {
+        const state = this.pendingState
+        this.pendingState = undefined
+        await this.postState(state)
+      }
+    } finally {
+      this.statePosting = false
+    }
+  }
+
+  /**
+   * Deliver one state snapshot, abandoning the wait after a timeout.
+   *
+   * The attempt keeps its own generation: a `postMessage` that settles after
+   * the timeout may not publish `postedState`, because a newer delivery (or a
+   * full resynchronization) already owns it. Returns whether the delivery
+   * actually settled before the timeout.
+   */
+  private async postState(state: ChatViewState, forceFull = false): Promise<boolean> {
+    const generation = ++this.stateDeliveryGeneration
+    let failed = false
+    const delivery = this.deliverState(state, generation, forceFull).then(
+      () => true,
+      error => {
+        failed = true
+        if (generation === this.stateDeliveryGeneration) {
+          this.output.appendLine(`[webview] Could not publish state: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        return false
+      },
+    )
+    let timer: NodeJS.Timeout | undefined
+    const stalled = new Promise<false>(resolve => {
+      timer = setTimeout(() => { resolve(false) }, STATE_DELIVERY_TIMEOUT_MS)
+    })
+    const finished = await Promise.race([delivery, stalled])
+    if (timer !== undefined) clearTimeout(timer)
+    if (finished) {
+      this.stalledDeliveries = 0
+      return true
+    }
+    // A newer delivery (or a resynchronization) already owns the view: this
+    // attempt is reported for diagnosis only and must not disturb the base.
+    const superseded = generation !== this.stateDeliveryGeneration
+    if (!superseded) {
+      // A view that never acknowledges a post may still show an older state, so
+      // patches can no longer be computed from `postedState`.
+      ++this.stateDeliveryGeneration
+      this.postedState = undefined
+      this.statePostStartedAt = 0
+    }
+    // The stalled Thenable may settle later; `delivery` already owns its
+    // rejection, and the generation guard discards its result.
+    void delivery
+    if (failed) return false
+    if (superseded) {
+      this.output.appendLine(`[webview] state delivery stalled after ${String(STATE_DELIVERY_TIMEOUT_MS)} ms (session ${shortSessionId(state.sessionId)}, phase ${state.phase}, generation ${String(generation)}); superseded by a newer delivery`)
+      return false
+    }
+    this.stalledDeliveries += 1
+    this.output.appendLine(`[webview] state delivery stalled after ${String(STATE_DELIVERY_TIMEOUT_MS)} ms (session ${shortSessionId(state.sessionId)}, phase ${state.phase}, generation ${String(generation)}); the next state is a full snapshot`)
+    this.warnAboutStalledDeliveries()
+    // Nothing queued means the abandoned post was the only state either side
+    // had, so the Host has to resend it itself.
+    if (this.pendingState === undefined && this.stateTimer === undefined) this.scheduleDeliveryRecovery()
+    return false
+  }
+
+  /**
+   * Resend the newest snapshot after a stall even when no new state arrives.
+   *
+   * This is the Host-side equivalent of the Webview's resynchronization
+   * watchdog, which does not run while a switch leaves the view in `loading`.
+   * One retry per stall, throttled, and always yielding to the normal drain.
+   */
+  private scheduleDeliveryRecovery(): void {
+    if (this.deliveryRecoveryTimer !== undefined) return
+    if (Date.now() - this.lastDeliveryRecoveryAt < STATE_DELIVERY_RECOVERY_THROTTLE_MS) return
+    this.deliveryRecoveryTimer = setTimeout(() => {
+      this.deliveryRecoveryTimer = undefined
+      // A queued state, a scheduled drain or an in-flight delivery is the
+      // normal recovery path; the proactive resend must not duplicate it.
+      if (!this.ready || this.pendingState !== undefined || this.stateTimer !== undefined || this.statePosting) return
+      this.lastDeliveryRecoveryAt = Date.now()
+      const state = this.controller.state
+      this.output.appendLine(`[webview] retrying the full view state after a stalled delivery (session ${shortSessionId(state.sessionId)}, phase ${state.phase})`)
+      this.pendingState = state
+      this.requestDrain()
+    }, STATE_DELIVERY_RECOVERY_DELAY_MS)
+  }
+
+  /**
+   * Tell the user when repeated stalls mean the view needs a reload.
+   *
+   * The Output channel already has the details; this is the one actionable
+   * line a user can see when the sidebar has stopped responding entirely.
+   */
+  private warnAboutStalledDeliveries(): void {
+    if (this.stalledDeliveries < STATE_STALL_WARNING_THRESHOLD) return
+    const now = Date.now()
+    if (this.stallWarnedAt !== 0 && now - this.stallWarnedAt < STATE_STALL_WARNING_INTERVAL_MS) return
+    this.stallWarnedAt = now
+    this.output.appendLine(`[webview] ${String(this.stalledDeliveries)} state deliveries stalled in a row; the Webview may need to be reloaded`)
+    void vscode.window.showWarningMessage(
+      'The sidebar is not receiving state updates from DeepSeek Harness. If the conversation stops responding, reload the window.',
+    )
+  }
+
+  private async deliverState(state: ChatViewState, generation: number, forceFull: boolean): Promise<void> {
+    const previous = forceFull ? undefined : this.postedState
+    // A conversation switch can never ride on a patch computed for the old
+    // conversation: the full snapshot also re-establishes the Webview's base.
     if (previous === undefined || previous.sessionId !== state.sessionId) {
-      await this.postFullState(state)
+      await this.postFullState(state, generation)
       return
     }
-    const update = stateUpdate(previous, state)
-    if (update !== undefined) {
-      const delivered = await this.webview.postMessage({ type: 'state-update', update: stateUpdateForWebview(update) })
-      if (!delivered) {
-        // A dropped patch would desync every later diff; resend the full state next time.
-        this.postedState = undefined
-        return
+    await this.postStateUpdate(state, previous, generation)
+  }
+
+  private async postFullState(state: ChatViewState, generation: number): Promise<void> {
+    const started = Date.now()
+    this.statePostStartedAt = started
+    try {
+      const delivered = await this.webview.postMessage({ type: 'state', state: stateForWebview(state) })
+      if (generation !== this.stateDeliveryGeneration) return
+      this.postedState = delivered ? state : undefined
+    } finally {
+      if (generation === this.stateDeliveryGeneration) {
+        this.statePostStartedAt = 0
+        const elapsed = Date.now() - started
+        if (elapsed > 1_500 && Date.now() - this.statePostSlowLoggedAt > 10_000) {
+          this.statePostSlowLoggedAt = Date.now()
+          this.output.appendLine(`[webview] full state delivery took ${String(elapsed)} ms`)
+        }
       }
+    }
+  }
+
+  private async postStateUpdate(state: ChatViewState, previous: ChatViewState, generation: number): Promise<void> {
+    const update = stateUpdate(previous, state)
+    let delivered = true
+    if (update !== undefined) {
+      const started = Date.now()
+      this.statePostStartedAt = started
+      try {
+        delivered = await this.webview.postMessage({ type: 'state-update', update: stateUpdateForWebview(update) })
+      } finally {
+        if (generation === this.stateDeliveryGeneration) {
+          this.statePostStartedAt = 0
+          const elapsed = Date.now() - started
+          if (elapsed > 1_500 && Date.now() - this.statePostSlowLoggedAt > 10_000) {
+            this.statePostSlowLoggedAt = Date.now()
+            this.output.appendLine(`[webview] state update delivery took ${String(elapsed)} ms`)
+          }
+        }
+      }
+    }
+    // A delivery that settles late (or a dropped patch) must not become the base
+    // of a later diff: every state after a stall is posted as a full snapshot.
+    if (generation !== this.stateDeliveryGeneration) return
+    if (!delivered) {
+      this.postedState = undefined
+      return
     }
     this.postedState = state
   }
@@ -3219,8 +3510,17 @@ class DshSurface implements vscode.Disposable {
       clearTimeout(this.stateTimer)
       this.stateTimer = undefined
     }
-    this.statePosts = this.statePosts.then(() => this.postFullState(snapshot))
-    await this.statePosts
+    // A view asking for a snapshot is by definition not receiving the queued
+    // ones: post outside the drain loop and force a full snapshot. The wait is
+    // still bounded, so a stalled recovery cannot hang the message handler.
+    const started = Date.now()
+    this.postedState = undefined
+    const delivered = await this.postState(snapshot, true).catch(error => {
+      this.output.appendLine(`[webview] could not resend the view state: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    })
+    if (delivered) this.output.appendLine(`[webview] resent the full view state in ${String(Date.now() - started)} ms`)
+    else this.output.appendLine('[webview] the full view state could not be delivered; the watchdog may ask again')
   }
 
   private async chooseImages(): Promise<void> {
@@ -3462,10 +3762,25 @@ class DshSurface implements vscode.Disposable {
   private acceptMessage(message: unknown): void {
     if (typeof message !== 'object' || message === null || !('type' in message)) return
     const value = message as Record<string, unknown>
+    // Diagnostics for user-initiated actions: these lines are the only record of
+    // a click that never changed the view, and they are cheap (one per click).
+    if (value.type === 'select-session' && typeof value.sessionId === 'string') {
+      this.output.appendLine(`[ui] select conversation ${safeLogId(value.sessionId)} (from ${safeLogId(this.controller.state.sessionId)}, phase=${this.controller.state.phase}, running=${String(this.controller.state.running === true)}${this.controller.state.stopping === true ? ', stopping' : ''})`)
+    } else if (value.type === 'cancel') {
+      this.output.appendLine(`[ui] cancel requested (session ${safeLogId(this.controller.state.sessionId)}, phase=${this.controller.state.phase}, running=${String(this.controller.state.running === true)}, stopping=${String(this.controller.state.stopping === true)})`)
+    } else if (value.type === 'retry-occupancy') {
+      this.output.appendLine(`[ui] retry held conversation (session ${safeLogId(this.controller.state.sessionId)})`)
+    } else if (value.type === 'new-session') {
+      this.output.appendLine(`[ui] new conversation (from ${safeLogId(this.controller.state.sessionId)})`)
+    }
     const run = async (): Promise<void> => {
       switch (value.type) {
         case 'webview-error':
-          this.output.appendLine(`[webview] ${typeof value.message === 'string' ? value.message : 'Unknown error'}`)
+          this.output.appendLine(`[webview] ${diagnosticText(typeof value.message === 'string' ? value.message : 'Unknown error')}`)
+          return
+        case 'resync':
+          this.output.appendLine(`[webview] requested a state resynchronization after ${typeof value.staleMs === 'number' ? String(value.staleMs) : '?'} ms without state`)
+          await this.resyncState()
           return
         case 'ready':
           this.ready = true
