@@ -1,6 +1,5 @@
 # DSH Sidebar 🐋
 
-> [!NOTE]
 > **This is a personal fork of [Lixxx1/dsh-vscode](https://github.com/Lixxx1/dsh-vscode)** (MIT License), maintained
 > independently and pinned to a newer DeepSeek Harness release than the upstream build.
 > Original work © Lixxx1. This fork is not affiliated with DeepSeek or with the upstream project.
@@ -9,14 +8,16 @@
 
 DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review. This source version is **0.2.0**.
 
+*This fork is maintained with DeepSeek Flash as the coding agent.*
+
 <p align="center">
-  <img src="media/demo.gif" alt="DeepSeek Harness working in the VS Code sidebar">
+  <img src="media/sidebar-0.2.0.png" alt="DSH Sidebar 0.2.0 in the VS Code sidebar: a fixed conversation, an Auto review rejection, a subagent and changed files" width="900">
 </p>
 
 ## ✨ What you can do
 
 - **Conversations and history.** Stream responses, inspect tool calls, answer approvals and questions, and load earlier messages through the official DSH runtime.
-- **Failed response recovery.** Keep received output when a request fails, show its error code and reason in chat and subagent details, and restore saved failed attempts when reopening history. Retries remain separate; output that could not be saved is marked as available only in the current view.
+- **Failed response recovery and retries.** Keep received output when a request fails, show its error code and a readable reason in chat and subagent details, and restore saved failed attempts when reopening history. Retried attempts collapse into one expandable row with retry delay and failure reason; a turn stopped by the output token limit shows DSH's cut-off notice. Retries remain separate; output that could not be saved is marked as available only in the current view.
 - **Conversation directory.** Use the directory for recent and archived conversation lists, search, rename, archive with Undo, and restore. New conversation opens the full chat composer with model, reasoning effort, agent composition, and permission controls. The top picker switches main conversations; subagents remain in the owning conversation's Tasks panel.
 - **Independent subagent details.** Click a subagent name in its tool card to enter the child conversation, or use the trailing arrow to open independent details. Inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer. External executions appear as informational rows without a local transcript.
 - **Background tasks and task services.** Inspect bounded process output, Goal status and round limits, Schedule reminders and delivery history, and Workflow phases and job logs when the runtime exposes these services. Search conversation message bodies when history search is enabled.
@@ -36,9 +37,9 @@ DSH Sidebar runs the official DeepSeek Harness CLI on your machine. Install it f
 npm install -g @deepseek-ai/dsh
 ```
 
-Install DSH on the extension host; for Remote SSH, install it on the remote host. You need VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`.
+Install DSH on the extension host; for Remote SSH, install it on the remote host. You need VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`. DeepSeek Harness `0.1.2-rc.1` or newer is required; history search and Schedule need `0.2.0-rc.2` or newer, and the experimental bundles are verified against `0.2.1-rc.3`.
 
-Download this fork's `.vsix` from [GitHub Releases](https://github.com/fallleaves01/dsh-vscode/releases) and run **Extensions: Install from VSIX...**. Its extension ID is `fallleaves01.dsh-sidebar`. Release assets can lag behind the source version; build from the repository when the desired version is not yet available.
+Download this fork's `.vsix` from [GitHub Releases](https://github.com/fallleaves01/dsh-vscode/releases) and run **Extensions: Install from VSIX...**. Its extension ID is `fallleaves01.dsh-sidebar`. The latest release is **0.2.0**. Release assets can lag behind the source version; build from the repository with `pnpm install --frozen-lockfile && pnpm run package` when the desired version is not yet available.
 
 ## 🚀 Get started
 
@@ -91,6 +92,28 @@ Disable autonomous debugging for shared mode. Upgrades from before 0.1.15 requir
 replacing the helper after active work finishes. Version 0.1.16 can reuse a compatible
 0.1.15 helper after the updated windows reload; this UI update requires no DSH restart.
 
+### Reliability and diagnostics
+
+State delivery from the runtime to the sidebar is bounded. At most one view
+state is in flight; newer states collapse into the newest, and a delivery that
+has not settled after 2 s is abandoned and replaced by a full snapshot. If no
+newer state follows, one full snapshot is retried 1.5 s later (at most once per
+10 s). The Webview also asks for a snapshot after 5 s without state in a live
+phase, including loading and stopping, and a startup probe covers a stalled
+first state. Three consecutive stalls show a reload-window warning; a channel
+that keeps stalling cannot be recovered from inside the view.
+
+Selecting a conversation acknowledges the click immediately with a
+"Switching to …" header and offers a retry after 10 s. A rendering failure is
+reported to Output and triggers a resynchronization.
+
+Diagnostics go to the local **DeepSeek Harness** Output channel only: a line
+per conversation selection with phase and running state, opening/opened timings,
+slow deliveries, stalls and resyncs. They contain conversation ids, phases and
+timings plus the runtime's error text on failure lines; credential-shaped text
+is redacted, but review the panel before sharing it. The extension has no
+telemetry. See [Privacy and verification](https://github.com/fallleaves01/dsh-vscode#privacy-and-verification).
+
 ### DSH settings
 
 The chat gear opens settings inside the conversation as a modal, with the official
@@ -116,13 +139,45 @@ SecretStorage key. It is not an encrypted vault or an isolation boundary against
 tools running as the same OS user. Stored key values are never read back into the
 page, and this repository and its VSIX exclude the credential file and backups.
 
+### DSH 0.2.1-rc.3 experimental features
+
+The sidebar is verified against DeepSeek Harness `0.2.1-rc.3`. Experimental
+bundles remain opt-in in the runtime profile; the sidebar does not enable them
+automatically, and each feature appears only when the runtime exposes its
+contract.
+
+- **Auto review permission preset.** When the runtime serves
+  `permissionPresets/catalog`, the Permission selector offers an `EXP`-marked
+  `auto` preset. Switching to it, from the menu or with `/permission auto`,
+  requires explicit confirmation: it runs without a sandbox, has the same model
+  review every tool call, can wrongly allow or deny actions, and uses extra
+  tokens. A tool call it refuses renders as "Rejected by Auto review" with the
+  reason when expanded.
+- **Agent Teams.** With the `agentTeam` Session projection, Tasks shows the
+  durable roster and shared task board; the board is read-only and owned by the
+  runtime. Member rows show their phase and Running/Inactive.
+- **Live conversation titles.** Titles refresh from the `title` projection
+  without reloading the conversation list.
+- **Experimental settings and bundle management.** Settings → Plugins →
+  Experimental bundles lists optional runtime bundles and, for a managed
+  runtime, switches them through `pluginManager/setBundleEnabled`. A running
+  task does not block the switch; the runtime answers `applied` or
+  `restart-required`. Reasoning translation is implemented in place through
+  `cotTranslation/limits` and `cotTranslation/translate`, with the translation
+  shown by default and a View original action; plugin market discovery/search/
+  install and speech capture/transcription are not implemented. Worktree
+  `workingDirectory` is not consumed yet, and the sidebar exposes no persistent
+  terminal panel. Enabling the session-search bundle with `enableHistorySearch`
+  can mount two `session-query-sqlite` rows; check the runtime profile. See the
+  [rc.3 adaptation record](https://github.com/fallleaves01/dsh-vscode/blob/main/docs/DSH-0.2.1-RC3-ADAPTATION.md).
+
 ### Autonomous debugging
 
 Enable **DeepSeek Harness: Autonomous Debugging** in VS Code Settings and add a debug configuration to `.vscode/launch.json`.
 
 DeepSeek can then start the debugger, set breakpoints, step through execution, inspect runtime values, fix the code, and verify the result directly from the sidebar.
 
-Core conversation and settings interfaces have also passed isolated checks against DeepSeek Harness `0.2.1-rc.2`; previous validation covers `0.2.0-rc.2`, `0.1.7-rc.1` and `0.1.7-rc.2`. Version 0.1.9 adds external tasks, Search / Fetch settings, custom reasoning mappings and user-message masks. Workdir/worktree integration still needs dedicated validation. Optional services depend on the runtime version and profile.
+Core conversation and settings interfaces have also passed isolated checks against DeepSeek Harness `0.2.1-rc.2`; previous validation covers `0.2.0-rc.2`, `0.1.7-rc.1` and `0.1.7-rc.2`. Recent releases added external tasks, Search / Fetch settings, custom reasoning mappings and user-message masks. Workdir/worktree integration still needs dedicated validation. Optional services depend on the runtime version and profile.
 
 ## Privacy
 
@@ -131,8 +186,16 @@ value can be revealed explicitly. This is a display control: it does not redact
 model requests, stored history, assistant/tool output, or an explicit Copy action.
 Unrecognized secrets may remain visible.
 
-
 API keys configured with the key button use VS Code SecretStorage. Remembered runtime launch URLs stay in owner-only local storage and are not synchronized. Adding file references gives DSH access to the selected context; prompts and context can be sent to the configured model service.
+
+The reliability diagnostics are written only to the local Output channel and
+are not uploaded by this extension. The DSH settings page also offers its own
+**Upload session logs with official model API requests** option, a separate DSH
+privacy control that this extension never enables. Failure lines can include
+runtime error text such as an absolute path; review the panel before sharing it.
+The extension collects no telemetry. Credential redaction covers the forms the
+official DSH rules recognize; it does not guarantee that arbitrary content
+cannot appear in a runtime error message.
 
 ## 💬 Feedback
 
@@ -140,3 +203,10 @@ Issues for this fork: [GitHub Issues](https://github.com/fallleaves01/dsh-vscode
 For the original project, see [Lixxx1/dsh-vscode](https://github.com/Lixxx1/dsh-vscode).
 
 [GitHub](https://github.com/fallleaves01/dsh-vscode)
+
+## License
+
+[MIT](https://github.com/fallleaves01/dsh-vscode/blob/main/LICENSE). The DeepSeek
+mark in `media/deepseek.svg` and the animated tail in `media/deepseek-tail.png`
+come from [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
+(MIT), adapted to the VS Code theme colours.

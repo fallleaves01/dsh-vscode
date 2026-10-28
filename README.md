@@ -9,9 +9,11 @@
 
 DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review.
 
+*This fork is maintained with DeepSeek Flash as the coding agent.*
+
 The current source version is **0.2.0**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
-**English** | [简体中文](README.zh.md) | [日本語](README.ja.md)
+**English** | [简体中文](README.zh.md)
 
 [GitHub](https://github.com/fallleaves01/dsh-vscode)
 
@@ -20,13 +22,13 @@ The current source version is **0.2.0**. See [CHANGELOG.md](CHANGELOG.md) for ve
 ![Status](https://img.shields.io/badge/status-alpha-7da1de?style=flat-square)
 
 <p align="center">
-  <img src="media/demo.gif" alt="DeepSeek Harness in the VS Code sidebar">
+  <img src="media/sidebar-0.2.0.png" alt="DSH Sidebar 0.2.0 in the VS Code sidebar: a fixed conversation, an Auto review rejection, a subagent and changed files" width="900">
 </p>
 
 ## ✨ Features
 
 - **Conversations and history.** Stream responses, inspect tool calls, answer approvals and questions, and load earlier messages through the official DSH runtime.
-- **Failed response recovery.** Keep received output when a request fails, show its error code and reason in chat and subagent details, and restore saved failed attempts when reopening history. Retries remain separate; output that could not be saved is marked as available only in the current view.
+- **Failed response recovery and retries.** Keep received output when a request fails, show its error code and a readable reason in chat and subagent details, and restore saved failed attempts when reopening history. Retried attempts collapse into one expandable row ("Retrying model request (1/3) · 1s", "Retried model request", "Model request retry cancelled") with retry delay and failure reason; a turn stopped by the output token limit shows DSH's cut-off notice. Retries remain separate; output that could not be saved is marked as available only in the current view.
 - **Conversation directory.** Use the directory for recent and archived conversation lists, search, rename, archive with Undo, and restore. New conversation opens the full chat composer with model, reasoning effort, agent composition, and permission controls. The top picker switches main conversations; subagents remain in the owning conversation's Tasks panel.
 - **Independent subagent details.** Click a subagent name in its tool card to enter the child conversation, or use the trailing arrow to open independent details. Inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer. External executions appear as informational rows without a local transcript.
 - **Background tasks and task services.** Inspect bounded process output, Goal status and round limits, Schedule reminders and delivery history, and Workflow phases and job logs when the runtime exposes these services. Search conversation message bodies when history search is enabled.
@@ -36,7 +38,34 @@ The current source version is **0.2.0**. See [CHANGELOG.md](CHANGELOG.md) for ve
 - **DeepSeek authentication.** Configure an API key or use browser account sign-in, inspect account state and balance, and sign out. Remote sign-in uses VS Code port forwarding.
 - **Runtime plugins and configuration.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks. Open the settings gear for Models, Shell, Agent loop, Subagents, Web search and General settings. Add providers, edit model catalogs and manage write-only credentials through DSH.
 - **Runtime recovery.** Reuse a managed runtime across VS Code windows, reconnect, diagnose conversation ownership, and end a verified leftover managed runtime. Saved external runtimes are attach-only.
-- **Native debugging and keyboard access.** Enable autonomous debugging for `.vscode/launch.json`, including breakpoints, stepping, stack frames, and variables. `Cmd/Ctrl+Alt+D` opens chat, `Cmd/Ctrl+Alt+L` adds the selection, and `Cmd/Ctrl+Alt+F` requests a file fix. Chat and task details support dark, light, and high-contrast themes.
+- **Native debugging and keyboard access.** Enable autonomous debugging for `.vscode/launch.json`, including breakpoints, stepping, stack frames, and variables. `Cmd/Ctrl+Alt+D` opens chat, `Cmd/Ctrl+Alt+E` opens it in an editor tab, `Cmd/Ctrl+Alt+L` adds the selection, and `Cmd/Ctrl+Alt+F` requests a file fix. Chat and task details support dark, light, and high-contrast themes.
+
+## 🧭 Reliability and diagnostics
+
+State delivery from the runtime to the sidebar is bounded. At most one view
+state is in flight; newer states collapse into the newest one, and a delivery
+that has not settled after 2 s is abandoned, followed by a full snapshot. If no
+newer state follows, the Host retries one full snapshot 1.5 s later, throttled
+to one retry per 10 s. The Webview also asks for a snapshot after 5 s without
+state in a live phase — opening, running, stopping or cancel requested — and a
+startup probe covers the case where the first state itself stalls. The two
+paths cover each other, so either side's stalled channel can recover the view.
+Three consecutive stalled deliveries show a reload-window warning, because a
+channel that keeps stalling cannot be recovered from inside the view; run
+**Developer: Reload Window** if the view stays frozen after that warning.
+
+Selecting a conversation acknowledges the click immediately with a
+"Switching to …" header while the snapshot is pending, and shows a retry hint
+after 10 s. A rendering failure is reported to Output and triggers a
+resynchronization instead of leaving a partially rendered view.
+
+These diagnostics are written to the local **DeepSeek Harness** Output channel
+(**Show Output**): one line per conversation selection with phase and running
+state, opening/opened timings, slow deliveries, stalls and resynchronization
+requests. They contain conversation identifiers, phases and timings; failure
+lines also include the runtime's error text. Credentials are redacted by the
+existing DSH error wrapper, but review the panel before sharing it. The
+extension itself has no telemetry. See [Privacy and verification](#privacy-and-verification).
 
 ## 📦 Install
 
@@ -46,7 +75,7 @@ Install the official DeepSeek Harness CLI:
 npm install -g @deepseek-ai/dsh
 ```
 
-Install DSH on the host where the extension runs. For Remote SSH, this is the remote host.
+Install DSH on the host where the extension runs. For Remote SSH, this is the remote host. DeepSeek Harness `0.1.2-rc.1` or newer is required. History search and Schedule need `0.2.0-rc.2` or newer; the experimental bundles are verified against `0.2.1-rc.3`.
 
 ### Published release
 
@@ -70,6 +99,20 @@ Run **Extensions: Install from VSIX...** and select the generated `dsh-vscode.vs
 Requires VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`.
 
 Installing community runtime plugins also requires `pnpm` on your PATH.
+
+For a full local check run `pnpm run check`; `./build.sh` writes
+`artifacts/dsh-sidebar-<version>.vsix`. Other settings include
+`reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
+`startupTimeout` and `searchBaseUrl`.
+
+### Upgrading to 0.2.0
+
+0.2.0 is a client-side reliability release for Stop and conversation
+switching. Reload the VS Code window after updating; a shared managed runtime
+does not need to be restarted for this fix. It requires no DSH upgrade: the
+sidebar probes capabilities at runtime, so `0.2.1-rc.2` and `0.2.1-rc.3`
+runtimes both work, and experimental bundles appear only when the runtime
+serves their contracts.
 
 ## 🚀 Use
 
@@ -200,15 +243,17 @@ page, and this repository and its VSIX exclude the credential file and backups.
 The sidebar is verified against the official DeepSeek Harness `0.2.1-rc.3` runtime. Experimental bundles remain opt-in in the runtime profile; the sidebar does not enable them, and each feature appears only when the runtime exposes its contract. A runtime without the feature keeps the previous behavior.
 
 - **Auto review permission preset.** The Permission selector reads `permissionPresets/catalog`, so the experimental `auto` preset appears when the auto-review integration is mounted. It is marked `EXP` and switching to it, from the selector or by typing `/permission auto`, requires an explicit acknowledgement: it runs without a sandbox, asks the same model to review every tool call, can wrongly allow or deny actions, and uses additional tokens. A runtime that does not serve the catalogue keeps the shipped three presets.
+ A tool call refused by Auto review renders as "Rejected by Auto review" in the collapsed row and "Tool was not executed. Reason: …" when expanded; a missing reason falls back to "Auto review did not authorize this action".
 - **Agent Teams.** When the `agentTeam` Session projection is present, the Tasks panel shows the durable team roster with lifecycle phase and Lead/Teammate role, and the shared task board with status, readiness, blocked-by ids, owner, and write scopes. Member rows open the member conversation, and Team tool cards link to a member once its name resolves against the projection. The task board is read-only: task state is owned by the runtime and written through the Team tools.
+ Member rows show the lifecycle phase and, derived from the session list, Running, Inactive, Failed or Provisioning; the projection's `phase` alone only records that the member record exists.
 - **Live conversation titles.** The conversation-following title provider updates the existing `title` projection and `session/title` event. The sidebar already refreshes the title bar and conversation list from that projection, so titles change without reloading the list.
-- **Experimental settings and bundle management.** The Settings page lists the runtime's optional bundles under Plugins → Experimental bundles, with their enable state, version and description; when this extension owns the runtime, a switch enables or disables one through `pluginManager/setBundleEnabled`. The switch is refused only for an attached external runtime: a running task does not block it, because the runtime owns that decision and answers with `applied` or `restart-required`, which the page reports instead of pretending the change already applies. When the runtime serves the corresponding settings namespaces, the same page renders Reasoning translation (`cot-translation`: provider, target language), Voice input (`speech-to-text`: provider, language) and Plugin market (`plugin-market`: index URLs); a bundle that is not mounted hides its card. With the translation bundle mounted, expanded reasoning is translated in place through `cotTranslation/limits` and `cotTranslation/translate`, showing the translation by default with a View original toggle and a Retry action when the selected service cannot answer. Expanded reasoning is sent to that service, so it may contain private code or conversation details.
+- **Experimental settings and bundle management.** The Settings page lists the runtime's optional bundles under Plugins → Experimental bundles, with their enable state, version and description; when this extension owns the runtime, a switch enables or disables one through `pluginManager/setBundleEnabled`. A running task does not block the switch: the runtime owns that decision and answers with `applied` or `restart-required`, which the page reports instead of pretending the change already applies. The switch is refused for an attached external runtime and when the runtime does not allow settings writes; the page asks for confirmation before the change. When the runtime serves the corresponding settings namespaces, the same page renders Reasoning translation (`cot-translation`: provider, target language), Voice input (`speech-to-text`: provider, language) and Plugin market (`plugin-market`: index URLs); a bundle that is not mounted hides its card. With the translation bundle mounted, expanded reasoning is translated in place through `cotTranslation/limits` and `cotTranslation/translate`, showing the translation by default with a View original toggle and a Retry action when the selected service cannot answer. Expanded reasoning is sent to that service, so it may contain private code or conversation details.
 
 Current state of the remaining experimental bundles (full package matrix and evidence in [the rc.3 adaptation record](docs/DSH-0.2.1-RC3-ADAPTATION.md)):
 
 - **Session search** adds model tools such as `session_search`; they use the generic tool card, while sidebar message search continues to use the standard `session/search` RPC. Do not enable both this bundle and the `enableHistorySearch` task service without checking the runtime profile: the deployment can mount two `session-query-sqlite` rows.
-- **Reasoning translation, plugin market, and voice input** expose their configuration cards as described above, but the feature UI is not implemented: no in-conversation translation or original/translated toggle (`cotTranslation/*`), no market discovery/search/install (`pluginMarket/*`), and no speech capture or transcription (`speech/*`, whose stream methods require the existing stream carrier). These bundles remain opt-in and Web-first; an installed but disabled bundle changes nothing in the sidebar.
-- **Persistent terminal, Ralph loops, and the badge skill** need no dedicated sidebar work: their tools and skills use the generic tool card or the existing `skills/list` view.
+- **Plugin market and voice input** expose their configuration cards as described above, but the rest of the feature UI is not implemented: no market discovery, search or install (`pluginMarket/*`), and no speech capture or transcription (`speech/*`, whose stream methods require the existing stream carrier). Reasoning translation is implemented (see above). These bundles remain opt-in and Web-first; an installed but disabled bundle changes nothing in the sidebar.
+- **Persistent terminal, Ralph loops, and the badge skill** need no dedicated sidebar work: their tools and skills use the generic tool card or the existing `skills/list` view. The sidebar does not expose a persistent terminal panel.
 - **Git worktrees:** `create_worktree` runs as a generic tool, but the effective `workingDirectory` Session projection is not consumed yet. File-path resolution and change review still use the project root, so the sidebar does not follow a conversation that changes its working directory.
 - **Agent Team profile and Inspector profile** are profile-only bundles. Agent Teams is supported through the projection and tools above; the Inspector profile is a Web DevTools surface with no Gateway RPC and is not implemented for VS Code.
 
@@ -218,7 +263,7 @@ Enable **DeepSeek Harness: Autonomous Debugging** in VS Code Settings and add a 
 
 DeepSeek can then start the debugger, set breakpoints, step through execution, inspect runtime values, fix the code, and verify the result directly from the sidebar.
 
-Core conversation and settings interfaces have also passed isolated checks against DeepSeek Harness `0.2.1-rc.2`; previous validation covers `0.2.0-rc.2`, `0.1.7-rc.1` and `0.1.7-rc.2`. Experimental-bundle behavior has since been verified against an isolated `0.2.1-rc.3` runtime; see [the rc.3 adaptation record](docs/DSH-0.2.1-RC3-ADAPTATION.md). Version 0.1.9 adds external task rows, Search / Fetch settings, custom reasoning mappings and user-message masks; see [the compatibility review](docs/GAP-ANALYSIS.md). Workdir/worktree integration still needs dedicated validation. Optional services depend on the installed runtime version and profile.
+Core conversation and settings interfaces have also passed isolated checks against DeepSeek Harness `0.2.1-rc.2`; previous validation covers `0.2.0-rc.2`, `0.1.7-rc.1` and `0.1.7-rc.2`. Experimental-bundle behavior has since been verified against an isolated `0.2.1-rc.3` runtime; see [the rc.3 adaptation record](docs/DSH-0.2.1-RC3-ADAPTATION.md). Recent releases added external task rows, Search / Fetch settings, custom reasoning mappings and user-message masks; see [the compatibility review](docs/GAP-ANALYSIS.md). Workdir/worktree integration still needs dedicated validation. Optional services depend on the installed runtime version and profile.
 
 ## Privacy and verification
 
@@ -227,10 +272,22 @@ value can be revealed explicitly. This is a display control: it does not redact
 model requests, stored history, assistant/tool output, or an explicit Copy action.
 Unrecognized secrets may remain visible.
 
+The reliability diagnostics described above are written only to the local
+Output channel and are not uploaded by this extension. The DSH settings page
+also offers its own **Upload session logs with official model API requests**
+option; that is a separate DSH privacy control, never enabled by this
+extension. Treat the Output panel as diagnostic data: failure lines can include
+the runtime's error text (for example an absolute path), so review it before
+including it in an issue, screenshot, or shared log.
+
+The extension collects no telemetry. Credential redaction covers the forms
+recognized by the official DSH rules (API keys, bearer tokens, URL userinfo or
+query secrets, cookie and authorization fields); it is not a guarantee that
+arbitrary content cannot appear in a runtime error message.
 
 API keys configured with the key button use VS Code SecretStorage. Remembered runtime launch URLs are stored locally with owner-only permissions and are not synchronized. File references are explicit; adding a file gives DSH access to that context, and prompts and selected context can be sent to the configured model service.
 
-The [0.1.5 review](docs/RELEASE-REVIEW-2026-10-15.md) records bug fixes, privacy checks, test coverage, and verification limits. The development-only `braces` dependency retains a version-based security alert; its local depth-limit patch covers the reported recursion failure and is excluded from the VSIX with the dependency.
+The [rc.3 adaptation record](docs/DSH-0.2.1-RC3-ADAPTATION.md) and the earlier [release review](docs/RELEASE-REVIEW-2026-10-15.md) record implementation evidence, privacy checks, test coverage and verification limits. The development-only `braces` dependency retains a version-based security alert; its local depth-limit patch covers the reported recursion failure and the dependency is excluded from the VSIX.
 
 💬 Found a rough edge or have an idea for what should come next? [Open an issue](https://github.com/fallleaves01/dsh-vscode/issues).
 

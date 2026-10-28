@@ -9,6 +9,16 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+### Changed
+
+- README refresh for 0.2.0: a new screenshot, a reliability and diagnostics
+  section (bounded state delivery, Stop and switch recovery, local diagnostics),
+  upgrade/version requirements, retry and Auto review details, the corrected
+  reasoning-translation status, and the current DSH version floor. The Japanese
+  README was removed and the remaining READMEs are English and Simplified
+  Chinese.
+
+
 ## [0.2.0] - 2026-10-27
 
 ### Fixed
@@ -45,8 +55,10 @@ VSIX — see the README for installing one.
 - Loading and switching diagnostics are now visible in Output: one line per
   conversation selection with the phase and running state, opening/opened
   timings, slow state deliveries, and Webview-requested resynchronizations.
-  They contain conversation identifiers and timings only; credentials stay
-  redacted.
+  They contain conversation identifiers, phases and timings; failure lines
+  also include the runtime's error text. Credential-shaped text is redacted,
+  and every line is single-lined and bounded, but arbitrary error text can
+  still quote a path or host — review the panel before sharing it.
 
 ## [0.1.26] - 2026-10-26
 

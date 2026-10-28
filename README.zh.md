@@ -8,9 +8,11 @@
 
 DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目会话、独立子代理详情、显式文件引用和原生差异审阅。
 
+*本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
+
 当前源码版本为 **0.2.0**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
-[English](README.md) | **简体中文** | [日本語](README.ja.md)
+[English](README.md) | **简体中文**
 
 [GitHub](https://github.com/fallleaves01/dsh-vscode)
 
@@ -19,14 +21,14 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 ![Status](https://img.shields.io/badge/status-alpha-7da1de?style=flat-square)
 
 <p align="center">
-  <img src="media/demo.gif" alt="VS Code 侧边栏中的 DeepSeek Harness">
+  <img src="media/sidebar-0.2.0.png" alt="DSH Sidebar 0.2.0 在 VS Code 侧边栏中：修复后的会话、Auto review 拒绝、子代理与变更文件" width="900">
 </p>
 
 ## ✨ 功能
 
 - **会话与历史。** 通过官方 DSH runtime 接收流式回复、检查工具调用、处理审批与问题，并加载较早的消息。
-- **失败回复恢复。** 请求失败时保留已接收内容，在聊天页和子代理详情页显示错误码与原因；重新打开历史时恢复已保存的失败尝试。重试分别保留；未能保存的输出明确标注仅在当前视图中可用。
-- **完整会话目录。** 目录用于浏览和搜索最近或已归档会话，执行重命名、归档、撤销归档和恢复。点击新建会话进入完整对话页，可选择模型、思考强度、代理组合与权限。顶部列表用于切换主会话；子代理保留在所属会话的 Tasks 面板。
+- **失败回复恢复与重试。** 请求失败时保留已接收内容，在聊天页和子代理详情页显示错误码与可读原因；重新打开历史时恢复已保存的失败尝试。重试尝试折叠为一行（“Retrying model request (1/3) · 1s”“Retried model request”“Model request retry cancelled”），可展开查看重试延迟与失败原因；因输出 token 上限被截断的一轮会显示 DSH 的截断提示。重试分别保留；未能保存的输出明确标注仅在当前视图中可用。
+- **完整会话目录。** 目录用于浏览和搜索最近或已归档会话，执行重命名、归档、撤销归档和恢复。点击新建会话进入完整对话页，可选择模型、推理强度、代理组合与权限。顶部列表用于切换主会话；子代理保留在所属会话的 Tasks 面板。
 - **独立子代理详情。** 点击工具调用卡片中的子代理名称进入子会话，或点击右侧箭头在主会话旁打开独立详情，查看实时状态、完整记录、工具输出、耗时和 token 用量。支持审批、回答问题和停止；父代理允许继续时可发送 Queue 或 Steer 消息，单次执行的子代理输入区为只读。外部执行按官方方式显示为信息行，没有本地会话记录。
 - **后台任务与任务服务。** 查看有长度限制的进程输出、Goal 状态与轮次上限、Schedule 提醒与投递历史，以及 Workflow 阶段和任务日志。功能取决于 runtime 提供的服务；启用历史搜索后可搜索消息正文。
 - **显式文件上下文。** 点击 `+` 搜索并添加文件或目录，用 `×` 逐项移除；也可输入 `@` 引用或执行 **Add Selection to Chat**。当前编辑文件和选区是可选建议。支持拖入资源和粘贴图片附件。
@@ -35,7 +37,15 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 - **DeepSeek 认证。** 配置 API key 或使用浏览器登录，查看账户状态与余额并退出。远程登录通过 VS Code 端口转发完成。
 - **runtime 插件与配置。** 查找和管理 Tools、Skills、MCP、Memory 与 Agent Hooks。聊天工具栏齿轮打开对话内设置弹窗，包含模型提供商、Shell、Agent 循环、子代理、网页搜索和通用设置。支持模型目录编辑及只写凭据管理。
 - **runtime 恢复。** 多个 VS Code 窗口复用受管 runtime，支持重连、会话占用诊断，以及停止已验证身份的遗留受管进程。已保存的外部 runtime 仅用于连接。
-- **原生调试与键盘操作。** 可对 `.vscode/launch.json` 启用自主调试，管理断点、单步执行、调用栈和变量。`Cmd/Ctrl+Alt+D` 打开会话，`Cmd/Ctrl+Alt+L` 添加选区，`Cmd/Ctrl+Alt+F` 请求修复文件。会话与任务详情支持深色、浅色和高对比度主题。
+- **原生调试与键盘操作。** 可对 `.vscode/launch.json` 启用自主调试，管理断点、单步执行、调用栈和变量。`Cmd/Ctrl+Alt+D` 打开会话，`Cmd/Ctrl+Alt+E` 在编辑器标签页打开，`Cmd/Ctrl+Alt+L` 添加选区，`Cmd/Ctrl+Alt+F` 请求修复文件。会话与任务详情支持深色、浅色和高对比度主题。
+
+## 🧭 可靠性与诊断
+
+Runtime 到侧边栏的状态投递是有界的：同一时刻最多一个视图状态在途，较新的状态会合并为最新一个；2 秒内未完成投递则放弃，并由下一条 full snapshot 接替。若其后没有新状态，宿主机在 1.5 秒后补发一次 full snapshot，并限制为每 10 秒一次。Webview 在 live 阶段（打开、运行、停止中或已请求取消）连续 5 秒未收到状态时也会请求 resync；启动阶段另有 8 秒探测，覆盖“首个状态本身卡住”的情况。两条路径互为兜底，任意一侧通道卡住都能恢复视图。连续 3 次投递 stall 会提示 Reload Window，因为持续卡住的通道无法从视图内部恢复；若提示后仍然冻结，请运行 **Developer: Reload Window**。
+
+选择会话后会立即显示 “Switching to …” 标题并在快照到达前保持 aria-busy；10 秒未完成会显示重试提示。渲染失败会上报到 Output 并触发 resync，而不是留下部分渲染的视图。
+
+这些诊断写入本地 **DeepSeek Harness** Output 通道（**Show Output**）：每次会话选择一行，包含阶段与运行状态、打开/已打开耗时、慢投递、stall 与 resync 请求。内容包含会话标识、阶段与耗时；失败行还会包含 runtime 的错误文本。凭据由既有 DSH 错误包装脱敏，但分享前仍请检查该面板。扩展本身不包含遥测。参见[隐私与验证](#隐私与验证)。
 
 ## 📦 安装
 
@@ -45,7 +55,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 npm install -g @deepseek-ai/dsh
 ```
 
-DSH 应安装在扩展实际运行的主机上；使用 Remote SSH 时，应安装在远程主机上。
+DSH 应安装在扩展实际运行的主机上；使用 Remote SSH 时，应安装在远程主机上。需要 DeepSeek Harness `0.1.2-rc.1` 或更新版本；历史搜索与 Schedule 需要 `0.2.0-rc.2` 或更新版本，实验性 bundle 已在 `0.2.1-rc.3` 上验证。
 
 ### 发布版
 
@@ -69,6 +79,15 @@ pnpm run package
 需要 VS Code 1.100 或更新版本，以及 Node.js `^22.19.0` 或 `>=24.0.0`。
 
 安装社区 runtime 插件还需要确保 `pnpm` 已加入 PATH。
+
+完整的本地检查使用 `pnpm run check`；`./build.sh` 会生成
+`artifacts/dsh-sidebar-<version>.vsix`。其他设置包括
+`reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
+`startupTimeout` 与 `searchBaseUrl`。
+
+### 升级到 0.2.0
+
+0.2.0 是面向 Stop 与会话切换的客户端可靠性版本。更新后重新加载 VS Code 窗口即可；共享的受管 runtime 不需要为此重启。它不要求升级 DSH：侧边栏在运行时探测能力，`0.2.1-rc.2` 与 `0.2.1-rc.3` 均可工作，实验性 bundle 仅在 runtime 提供对应契约时出现。
 
 ## 🚀 使用
 
@@ -166,15 +185,17 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 本扩展已针对官方 DeepSeek Harness `0.2.1-rc.3` 运行时完成验证。实验性 bundle 仍需在运行时 profile 中按需启用；插件不会代为启用，只在运行时暴露相应契约时显示对应界面。运行时缺少该能力时，界面保持原有行为。
 
 - **Auto review 权限预设。** 权限选择器读取 `permissionPresets/catalog`；auto-review 集成挂载后，选择器出现实验性 `auto` 预设并标注 `EXP`。无论从菜单选择还是键入 `/permission auto`，切换前都要求显式确认：该预设不使用沙箱，由同一模型逐次复审每个工具调用，可能误放行或误拒绝操作，并额外消耗 token。运行时不提供该目录时，继续使用内置三档预设。
+被 Auto review 拒绝的工具调用在折叠行显示 “Rejected by Auto review”，展开后显示 “Tool was not executed. Reason: …”；缺少原因时回退为 “Auto review did not authorize this action”。
 - **Agent Teams。** 存在 `agentTeam` Session 投影时，Tasks 面板显示持久团队名册（生命周期阶段、Lead/Teammate 角色）与共享任务板（状态、就绪、blocked-by、owner、write scopes）。成员行可打开对应会话；Team 工具卡在成员名与投影匹配后链接到该成员。任务板为只读：任务状态由运行时持有，通过 Team 工具写入。
+成员行显示生命周期阶段，并根据会话列表显示 Running、Inactive、Failed 或 Provisioning；投影中的 `phase` 本身只记录成员记录存在。
 - **会话标题实时刷新。** 随对话更新标题的提供者沿用既有 `title` 投影与 `session/title` 事件；侧边栏本就从该投影刷新标题栏与会话列表，因此标题无需重新加载列表即可更新。
-- **实验性设置与 bundle 管理。** 设置页在 Plugins → Experimental bundles 下列出运行时的可选 bundle（启用状态、版本、描述）；当运行时由本扩展管理时，可通过 `pluginManager/setBundleEnabled` 启停。仅在附加到外部运行时才拒绝：运行中的对话或任务不再阻止修改，因为该决定由运行时作出，它返回 `applied` 或 `restart-required`，页面如实呈现而不是假装已经生效。运行时提供相应设置 namespace 时，同一页面还呈现 Reasoning translation（`cot-translation`：提供方、目标语言）、Voice input（`speech-to-text`：提供方、语言）与 Plugin market（`plugin-market`：索引 URL 列表）；未挂载的 bundle 会隐藏对应卡片。挂载翻译 bundle 后，展开的思考内容会经 `cotTranslation/limits` 与 `cotTranslation/translate` 就地翻译，默认显示译文，可切换到原文；所选服务不可用时显示 Retry。展开的思考内容会发送给该翻译服务，可能包含私有代码或对话细节。
+- **实验性设置与 bundle 管理。** 设置页在 Plugins → Experimental bundles 下列出运行时的可选 bundle（启用状态、版本、描述）；当运行时由本扩展管理时，可通过 `pluginManager/setBundleEnabled` 启停。运行中的任务不会阻止修改：该决定由运行时作出，它返回 `applied` 或 `restart-required`，页面如实呈现而不是假装已经生效。切换在以下情况会被拒绝：附加到外部运行时，或 runtime 不允许写入设置；页面会在变更前要求确认。运行时提供相应设置 namespace 时，同一页面还呈现 Reasoning translation（`cot-translation`：提供方、目标语言）、Voice input（`speech-to-text`：提供方、语言）与 Plugin market（`plugin-market`：索引 URL 列表）；未挂载的 bundle 会隐藏对应卡片。挂载翻译 bundle 后，展开的思考内容会经 `cotTranslation/limits` 与 `cotTranslation/translate` 就地翻译，默认显示译文，可切换到原文；所选服务不可用时显示 Retry。展开的思考内容会发送给该翻译服务，可能包含私有代码或对话细节。
 
 其余实验性 bundle 的现状（完整 13 包矩阵与证据见 [rc.3 适配记录](docs/DSH-0.2.1-RC3-ADAPTATION.md)）：
 
 - **会话搜索**新增 `session_search` 等模型工具，使用通用工具卡；侧栏正文搜索仍使用标准 `session/search` RPC。不要同时启用该 bundle 与 `enableHistorySearch` 任务服务而不核对 profile：部署中可能出现两个 `session-query-sqlite` 实例。
-- **思考翻译、插件市场与语音输入** 已提供上述配置卡片，但功能界面未实现：无会话内翻译与原文/译文切换（`cotTranslation/*`）、无市场发现/搜索/安装（`pluginMarket/*`）、无语音采集与转写（`speech/*` 的流式方法需要复用现有流通道）。这些 bundle 保持按需启用且以 Web 端为先；已安装但停用时不改变侧边栏行为。
-- **持久终端、Ralph 循环与徽章技能**无需侧边栏专属实现：其工具与技能由通用工具卡或既有 `skills/list` 视图呈现。
+- **插件市场与语音输入** 已提供上述配置卡片，但功能界面尚未实现：无市场发现/搜索/安装（`pluginMarket/*`），无语音采集与转写（`speech/*` 的流式方法需要复用现有流通道）。思考翻译已在上一节说明且已实现，不再属于未实现项。这些 bundle 保持按需启用且以 Web 端为先；已安装但停用时不改变侧边栏行为。
+- **持久终端、Ralph 循环与徽章技能**无需侧边栏专属实现：其工具与技能由通用工具卡或既有 `skills/list` 视图呈现。侧边栏不提供持久终端面板。
 - **Git 工作树：** `create_worktree` 以通用工具卡运行，但生效的 `workingDirectory` Session 投影尚未被消费。文件路径解析与变更审阅仍以项目根为基准，因此侧边栏不会跟随切换了工作目录的会话。
 - **Agent Team profile 与 Inspector profile** 是纯 profile bundle。Agent Teams 由上述投影与工具支持；Inspector profile 是仅 Web 的 DevTools 界面，不提供 Gateway RPC，VS Code 侧未实现。
 
@@ -184,7 +205,7 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 
 之后，DeepSeek 就能直接从侧边栏启动调试器、设置断点、单步执行、检查运行时变量、修复代码并验证结果。
 
-核心会话与设置接口已通过 DeepSeek Harness `0.2.1-rc.2` 的隔离检查；此前已验证 `0.2.0-rc.2`、`0.1.7-rc.1` 与 `0.1.7-rc.2`。实验性 bundle 行为随后在隔离的 `0.2.1-rc.3` 运行时上完成验证，详见 [rc.3 适配记录](docs/DSH-0.2.1-RC3-ADAPTATION.md)。0.1.9 已补齐外部任务、Search / Fetch 设置、自定义推理映射与用户消息脱敏，详见[适配记录](docs/GAP-ANALYSIS.md)。工作目录及 Worktree 集成仍需专项验证。可选服务取决于实际安装的 runtime 版本和 profile。
+核心会话与设置接口已通过 DeepSeek Harness `0.2.1-rc.2` 的隔离检查；此前已验证 `0.2.0-rc.2`、`0.1.7-rc.1` 与 `0.1.7-rc.2`。实验性 bundle 行为随后在隔离的 `0.2.1-rc.3` 运行时上完成验证，详见 [rc.3 适配记录](docs/DSH-0.2.1-RC3-ADAPTATION.md)。近期版本已补齐外部任务、Search / Fetch 设置、自定义推理映射与用户消息脱敏，详见[适配记录](docs/GAP-ANALYSIS.md)。工作目录及 Worktree 集成仍需专项验证。可选服务取决于实际安装的 runtime 版本和 profile。
 
 ## 隐私与验证
 
@@ -192,12 +213,20 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 不会改写模型请求、存储的历史、助手或工具输出，以及显式复制消息的内容。未被规则识别的
 敏感信息仍可能显示。
 
+上文所述的可靠性诊断只写入本地 Output 通道，扩展不会上传它们。DSH 设置页另有自己的 **Upload session logs with official model API requests** 选项；这是独立的 DSH 隐私控制，本扩展从不主动启用。请把 Output 面板视为诊断数据：失败行可能包含 runtime 的错误文本（例如绝对路径），在将其放入 issue、截图或共享日志前请先审阅。
+
+本扩展不收集遥测。凭据脱敏覆盖官方 DSH 规则识别的形式（API key、bearer token、URL userinfo 或查询参数中的 secret、cookie 与 authorization 字段）；它不保证任意内容都不会出现在 runtime 错误文本中。
+
 通过钥匙按钮配置的 API key 使用 VS Code SecretStorage 保存。已记住的 runtime 启动 URL 保存在仅所有者可访问的本地文件中，不参与同步。文件引用由用户显式添加；添加文件会让 DSH 获得相应上下文，提示词与所选上下文可能发送到配置的模型服务。
 
-[0.1.5 复核记录](docs/RELEASE-REVIEW-2026-10-15.md) 列出了缺陷修复、隐私检查、测试覆盖与验证限制。开发阶段使用的 `braces` 依赖仍有基于版本的安全告警；本地深度限制补丁覆盖已报告的递归失败，补丁与该依赖均不进入 VSIX。
+[rc.3 适配记录](docs/DSH-0.2.1-RC3-ADAPTATION.md) 与较早的[复核记录](docs/RELEASE-REVIEW-2026-10-15.md) 列出实现证据、隐私检查、测试覆盖与验证限制。开发阶段使用的 `braces` 依赖仍有基于版本的安全告警；本地深度限制补丁覆盖已报告的递归失败，该依赖不进入 VSIX。
 
 缺陷报告与功能建议请提交至 [GitHub Issues](https://github.com/fallleaves01/dsh-vscode/issues)。
 
 ## License
 
 [MIT](LICENSE)
+
+DeepSeek 标识（`media/deepseek.svg`）与动态尾迹（`media/deepseek-tail.png`）来自
+[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
+（MIT），已适配 VS Code 主题色。

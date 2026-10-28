@@ -13,8 +13,7 @@ coverage/**
 node_modules/**
 website/**
 media/*.mp4
-media/demo.gif
-media/sidebar-preview.jpg
+media/sidebar-0.2.0.png
 *.vsix
 .gitignore
 README.md

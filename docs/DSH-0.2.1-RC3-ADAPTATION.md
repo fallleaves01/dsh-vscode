@@ -1,6 +1,6 @@
 # DSH 0.2.1-rc.3 实验性功能适配记录
 
-- 适配对象：基于 `5911c16` 的工作树改动，DSH Sidebar `0.1.16` 源码。
+- 适配对象：基于 `5911c16` 的工作树改动，DSH Sidebar `0.1.16` 源码。（本记录成文于 0.1.16；0.2.0 的 Stop/切换可靠性修复与诊断硬化见 §14。）
 - 运行时基线：官方 DeepSeek Harness `0.2.1-rc.3` 本地安装副本；Node.js `v26.12.0`，macOS arm64，TypeScript `6.0.3`，Vitest `4.1.11`。
 - 隔离环境：独立 `DSH_HOME`；`web` profile 启用 `dsh-base`、`dsh-web-app` 及 4 个实验 bundle（session-titles、agent-team-profile、auto-review、session-search）。
 - 范围与证据：13 个指定实验性根包的契约分析与扩展触点映射记录在本地审计材料中，未纳入版本库。本记录只读取 DSH 安装目录与隔离运行时，不访问用户默认 `DSH_HOME`、不连接外部服务器、不执行 Git 写操作。
@@ -209,11 +209,11 @@
 
 | 类别 | 包 | 说明 |
 |---|---|---|
-| 完整/无需 UI | agent-team、agent-team-profile、session-titles、session-search、terminal（工具）、badge-skill、ralph、inspector | 侧栏已消费可见投影/工具；inspector 为 Web-only CDP，不适用于 VS Code；session-search 无专属 UI（Web 同为工具调用），仅保留双 SQLite 配置风险 |
+| 完整/无需 UI | agent-team、agent-team-profile、session-titles、terminal（工具）、badge-skill、ralph、inspector | 侧栏已消费可见投影/工具；inspector 为 Web-only CDP，不适用于 VS Code |
 | 本轮补齐 | cot-translation | 会话内 Thinking 翻译（见下） |
-| 部分 | plugin-market、voice-input、tool-worktree、auto-review | market：仅 indexes 设置，缺 Discover/搜索/安装（RPC 齐备）；voice-input：仅设置，缺麦克风采集/设备准备/流式转写；tool-worktree：未消费 `workingDirectory` 投影（文件/审阅路径仍以项目根为基准）；auto-review：缺 “Rejected by Auto review” 专用呈现（按通用工具错误显示） |
+| 部分 | plugin-market、voice-input、tool-worktree、session-search | market：仅 indexes 设置，缺 Discover/搜索/安装（RPC 齐备）；voice-input：仅设置，缺麦克风采集/设备准备/流式转写；tool-worktree：未消费 `workingDirectory` 投影（文件/审阅路径仍以项目根为基准）；session-search：模型工具已由通用工具卡呈现，未接专用卡片，且与 `enableHistorySearch` 任务服务并存时有双 SQLite 风险。auto-review 已在 0.1.25 补齐 “Rejected by Auto review” 专用呈现，见 §12。 |
 
-后续优先级建议：1) plugin-market 完整闭环；2) tool-worktree `workingDirectory` 整合；3) auto-review 呈现打磨；voice-input 属最大单项新功能，建议单独立项评估。持久终端面板属基础 `terminal/*` RPC，不在这批实验包内。
+后续优先级建议：1) plugin-market 完整闭环；2) tool-worktree `workingDirectory` 整合；3) voice-input 属最大单项新功能，建议单独立项评估。auto-review 呈现已在 0.1.25 完成。持久终端面板属基础 `terminal/*` RPC，不在这批实验包内。
 
 ### 11.1 Thinking 翻译实现（cot-translation）
 
@@ -279,7 +279,7 @@
 | 宿主恢复 | 超时后若无新状态，1.5 秒后主动补发一次 full snapshot（10 秒节流，新状态到达即让位）；连续 3 次 stall 时给出一次 Reload Window 提示 |
 | Webview 看门狗 | 5 秒无状态（live + loading/stopping/cancelRequested 过渡阶段，启动首个状态另有 8 秒探测）即发 `resync`，8 秒节流；`resync` 携带 staleSessionId/phase；宿主绕过投递队列立即回全量 |
 | 交互 | 点击会话立即显示 “Switching to …”（aria-busy），10 秒未完成提示重试；渲染异常限流上报并触发 resync |
-| 诊断 | Output 增加 [ui] 选择/取消、[chat] 打开/计时/失败、慢投递、stall、resync 日志；只含会话 id、阶段与耗时，凭据仍由既有脱敏包装处理 |
+| 诊断 | Output 增加 [ui] 选择/取消、[chat] 打开/计时/失败、慢投递、stall、resync 日志；字段为会话 id、阶段、耗时，失败行还含 runtime 错误文本；所有行经 `redactDshSecrets` + 单行化 + 300 字符截断 + Webview id 白名单处理，任意错误文本仍可能含绝对路径/私网主机（仅本地 Output，无 telemetry） |
 
 限制：真实 VS Code 传输层无法在本机复现（无 Playwright/Puppeteer、Chromium harness 受沙箱限制），修复以可控的永不 settle / 慢投递注入验证；若投递通道**持续**卡死，视图只能通过提示的 Reload Window 恢复。诊断版本每次切换约 5 行日志，正常流式更新不产生逐帧日志。
 
