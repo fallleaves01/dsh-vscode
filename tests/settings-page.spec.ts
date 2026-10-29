@@ -302,23 +302,41 @@ describe('dedicated DSH settings surface', () => {
     h.result({ ok: true, application: 'restart-required', restartRequired: true })
     expect(document.body.textContent).toContain('Restart the DeepSeek Harness runtime')
   })
-  it('offers no switch for bundles the Host does not list by default or has not installed', () => {
+  it('keeps switches for bundles the Host does not list by default', () => {
     const state = bundlePageState()
     state.bundles = [...state.bundles,
+      { name: '@deepseek-ai/dsh-ralph-bundle', official: true, availability: 'installation', version: '0.2.2-alpha.2', title: 'Ralph loop', enabled: false, installed: true, optional: true, removable: false, listedByDefault: false, updatable: false },
+      { name: '@deepseek-ai/dsh-experimental-liveshare-bundle', official: true, availability: 'installation', version: '0.2.2-alpha.2', title: 'Live share', enabled: false, installed: true, optional: true, removable: false, listedByDefault: false, updatable: false },
+      { name: '@deepseek-ai/dsh-bundle-session-search', official: true, availability: 'installation', version: '0.2.2-alpha.2', title: 'Session search', enabled: false, installed: true, optional: true, removable: false, listedByDefault: false, updatable: false },
       { name: '@deepseek-ai/dsh-cua-bundle', official: true, availability: 'installation', version: '0.2.2-alpha.2', title: 'Computer use', enabled: false, installed: true, optional: true, removable: false, listedByDefault: false, updatable: false, errorCode: 'unsupported-platform' },
       { name: '@deepseek-ai/dsh-subagent-codex', official: true, availability: 'missing', version: '0.2.2-alpha.2', title: 'Codex subagent', enabled: false, installed: false, optional: true, removable: false, updatable: false },
       { name: '@deepseek-ai/dsh-hidden-enabled', official: true, availability: 'installation', title: 'Hidden but on', enabled: true, installed: true, optional: true, removable: false, listedByDefault: false, updatable: false },
     ]
     const h = harness(state); h.click('Built-in plugins')
-    // A hidden-by-default or not-installed bundle has nothing to switch here.
-    expect(document.querySelector('[data-focus-key="bundle:@deepseek-ai/dsh-cua-bundle"]')).toBeNull()
+    // setBundleEnabled accepts hidden-from-DSH bundles; this page is their switch.
+    for (const name of ['ralph-bundle', 'experimental-liveshare-bundle', 'bundle-session-search', 'cua-bundle']) {
+      const toggle = document.querySelector<HTMLInputElement>(`[data-focus-key="bundle:@deepseek-ai/dsh-${name}"]`)
+      expect(toggle, name).not.toBeNull()
+    }
+    // Only an on-demand bundle that is not installed has no switch.
     expect(document.querySelector('[data-focus-key="bundle:@deepseek-ai/dsh-subagent-codex"]')).toBeNull()
     expect(document.body.textContent).toContain('Not listed by default')
-    expect(document.body.textContent).toContain('Not installed')
     // A hidden bundle that is already on keeps its switch so it can be turned off.
-    expect(document.querySelector('[data-focus-key="bundle:@deepseek-ai/dsh-hidden-enabled"]')).not.toBeNull()
-    // A platform failure is the actionable reason: it outranks hidden/not listed.
-    expect(document.body.textContent).toContain("does not support the runtime's operating system")
+    expect(document.querySelector<HTMLInputElement>('[data-focus-key="bundle:@deepseek-ai/dsh-hidden-enabled"]')!.checked).toBe(true)
+    // The platform limitation stays visible; its failure is reported by the change result.
+    expect(document.body.textContent).toContain('Unsupported on this platform')
+    // No dead-end pointer to the DSH plugin manager for a bundle this page can switch.
+    expect(document.body.textContent).not.toContain('Enable it from the DSH plugin manager')
+  })
+  it('does not advertise an unreachable update path or a stale verified version', () => {
+    const state = bundlePageState()
+    state.bundles = [...state.bundles,
+      { name: '@deepseek-ai/dsh-updatable-bundle', official: true, availability: 'installation', version: '0.2.2-alpha.2', title: 'Update-capable', enabled: false, installed: true, optional: true, removable: false, listedByDefault: true, updatable: true },
+    ]
+    const h = harness(state); h.click('Built-in plugins')
+    expect(document.body.textContent).toContain('Optional runtime capabilities shipped with DSH')
+    expect(document.body.textContent).not.toContain('0.2.1-rc.3')
+    expect(document.body.textContent).not.toContain('Updatable')
   })
   it('hides bundle toggles on an attach-only runtime and explains why', () => {
     const state = bundlePageState(); state.writable = false; state.reason = 'This external runtime is attach-only. Its settings are available for inspection.'

@@ -531,7 +531,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
     const bundles = (state?.bundles ?? []).filter(bundle => bundle.optional)
     if (bundles.length) {
       content.append(el('h3', 'inventory-heading', 'Experimental bundles'))
-      content.append(el('p', 'hint', 'Optional capabilities shipped with DSH 0.2.1-rc.3. Enabling one changes the shared web profile; a runtime restart may be required.'))
+      content.append(el('p', 'hint', 'Optional runtime capabilities shipped with DSH. Enabling one changes the shared web profile; a runtime restart may be required.'))
       const manage = state?.writable === true
       if (!manage) content.append(el('p', 'notice', state?.reason || 'This runtime is read-only. Change its optional bundles from the client that manages this profile.'))
       const fieldset = el('fieldset'); fieldset.disabled = locked() || !manage
@@ -543,11 +543,9 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
         const current = applying ? pendingBundle!.enabled : bundle.enabled
         // An on-demand bundle that is not installed has nothing to switch: the
         // toggle would only produce a Host failure. A bundle the Host does not
-        // list by default is likewise managed from the DSH plugin manager; its
-        // switch is offered only when it is already enabled (so it can be turned
-        // off here).
+        // list by default is still switchable here: `setBundleEnabled` accepts
+        // those bundles, and this page is their only switch in VS Code.
         const onDemandMissing = bundle.availability === 'missing'
-        const hiddenByDefault = bundle.listedByDefault === false && bundle.enabled !== true
         const unsupported = bundle.errorCode === 'unsupported-platform'
         card.append(el('div', 'inventory-name', label),
           el('span', 'hint bundle-status', [
@@ -556,16 +554,12 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
             bundle.installed ? 'Installed' : onDemandMissing ? 'Not installed' : 'Provided by this installation',
             bundle.listedByDefault === false ? 'Not listed by default' : '',
             unsupported ? 'Unsupported on this platform' : '',
-            bundle.updatable ? 'Updatable' : '',
           ].filter(Boolean).join(' · ')))
         if (bundle.description) card.append(el('span', 'hint bundle-description', bundle.description))
-        if (manage && !onDemandMissing && !hiddenByDefault) card.append(toggle('Enabled', current, enabled => {
+        if (manage && !onDemandMissing) card.append(toggle('Enabled', current, enabled => {
           if (enabled === current) return
           start({ type: 'set-bundle', name: bundle.name, enabled })
         }, 'bundle:' + bundle.name))
-        else if (manage && unsupported) card.append(el('span', 'hint', 'This bundle does not support the runtime\'s operating system.'))
-        else if (manage && onDemandMissing) card.append(el('span', 'hint', 'Not installed. Install it from the DSH plugin manager to enable it here.'))
-        else if (manage && hiddenByDefault) card.append(el('span', 'hint', 'Not listed by default. Enable it from the DSH plugin manager.'))
         grid.append(card)
       }
       fieldset.append(grid); content.append(fieldset)

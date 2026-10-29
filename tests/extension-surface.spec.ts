@@ -9,6 +9,7 @@
  * `showWarningMessage` call from the host cannot leave the suite green.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { env } from 'vscode'
 import type { DshFrame, SessionModels, SkillDescriptor } from '../src/dsh-client.js'
 
 const mocks = vi.hoisted(() => ({
@@ -490,6 +491,40 @@ describe('host surface wiring', () => {
         toolName: 'bash',
         reason: 'Auto review denied this call: it deletes build output',
       }))
+    })
+
+    it('uses the display reason for the editor language', async () => {
+      const h = await activated()
+      env.language = 'zh-cn'
+      try {
+        h.emit(request({
+          reason: 'Auto review denied tool "bash"',
+          displayReason: {
+            en: 'Auto review denied this call: it deletes build output',
+            zh: 'Auto review 拒绝了此调用：它会删除构建产物',
+            ja: 'Auto review はこの呼び出しを拒否しました。',
+          },
+        }), 'mux')
+        await vi.waitFor(() => expect(h.mergedState().approval?.reason).toBe('Auto review 拒绝了此调用：它会删除构建产物'))
+      } finally { env.language = 'en' }
+    })
+
+    it('falls back to the English display reason for an unknown language', async () => {
+      const h = await activated()
+      env.language = 'xx-YY'
+      try {
+        h.emit(request({ reason: 'audited', displayReason: { en: 'English reason', ja: '日本語' } }), 'mux')
+        await vi.waitFor(() => expect(h.mergedState().approval?.reason).toBe('English reason'))
+      } finally { env.language = 'en' }
+    })
+
+    it('falls back to the English display reason when the language key is missing', async () => {
+      const h = await activated()
+      env.language = 'pt-br'
+      try {
+        h.emit(request({ reason: 'audited', displayReason: { en: 'English reason' } }), 'mux')
+        await vi.waitFor(() => expect(h.mergedState().approval?.reason).toBe('English reason'))
+      } finally { env.language = 'en' }
     })
 
     it('falls back to the runtime reason when no display reason exists', async () => {

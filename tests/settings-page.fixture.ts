@@ -109,9 +109,9 @@ export function experimentalPageState(): SettingsPageState {
 /** Raw `pluginManager/listBundles` rows, including facts the projection must drop. */
 export function bundleFixture(): Record<string, unknown>[] {
   return [
-    { name: '@deepseek-ai/dsh-base', official: false, availability: 'profile', version: '0.2.1-rc.3', enabled: true, installed: true, optional: false, removable: false, icon: 'data:image/svg+xml;base64,hidden-marker', source: '/srv/hidden-marker/profile', error: { code: 'operation-error', diagnostic: 'hidden-marker' } },
-    { name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', official: true, availability: 'installation', version: '0.2.1-rc.3', description: 'Machine translation of reasoning', enabled: false, installed: false, optional: true, removable: false, meta: { title: { en: 'Machine translation of reasoning', zh: '推理机翻' }, description: { en: 'Translate expanded reasoning.' }, icon: 'data:image/svg+xml;base64,hidden-marker' }, overrides: ['include:hidden-marker'], rows: [{ rowId: 'cot-translation', moduleName: '@deepseek-ai/dsh-experimental-client-ui-cot-translation' }] },
-    { name: '@deepseek-ai/dsh-experimental-voice-input-bundle', official: true, availability: 'installation', version: '0.2.1-rc.3', enabled: true, installed: false, optional: true, removable: false, meta: { title: 'Voice input' } },
+    { name: '@deepseek-ai/dsh-base', official: false, availability: 'profile', version: '0.2.2-alpha.2', enabled: true, installed: true, optional: false, removable: false, icon: 'data:image/svg+xml;base64,hidden-marker', source: '/srv/hidden-marker/profile', error: { code: 'operation-error', diagnostic: 'hidden-marker' } },
+    { name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', official: true, availability: 'installation', version: '0.2.2-alpha.2', description: 'Machine translation of reasoning', enabled: false, installed: false, optional: true, removable: false, meta: { title: { en: 'Machine translation of reasoning', zh: '推理机翻' }, description: { en: 'Translate expanded reasoning.' }, icon: 'data:image/svg+xml;base64,hidden-marker' }, overrides: ['include:hidden-marker'], rows: [{ rowId: 'cot-translation', moduleName: '@deepseek-ai/dsh-experimental-client-ui-cot-translation' }] },
+    { name: '@deepseek-ai/dsh-experimental-voice-input-bundle', official: true, availability: 'installation', version: '0.2.2-alpha.2', enabled: true, installed: false, optional: true, removable: false, meta: { title: 'Voice input' } },
   ]
 }
 export function bundlePageState(): SettingsPageState {

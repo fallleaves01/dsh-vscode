@@ -2844,10 +2844,7 @@ export class DshChatController implements vscode.Disposable {
       if (typeof payload.approvalId !== 'string' || typeof payload.toolName !== 'string') return
       // Auto review's ask path carries a localized display reason; DSH's own
       // approval panel prefers it over the audited English `reason`.
-      const display = payload.displayReason
-      const displayText = wireRecord(display) && typeof display.en === 'string' && display.en.trim() !== ''
-        ? display.en
-        : undefined
+      const displayText = approvalDisplayReason(payload.displayReason)
       const reason = displayText ?? (typeof payload.reason === 'string' ? payload.reason : undefined)
       this.publish({
         approval: {
@@ -3417,6 +3414,21 @@ const DIAGNOSTIC_TEXT_LIMIT = 300
  * every call site. Absolute paths and IPs are deliberately left as they are:
  * they appear in local-only logs and are out of this change's scope.
  */
+const APPROVAL_LOCALES = new Set(['en', 'zh', 'ja', 'es', 'fr', 'de', 'ru', 'pt'])
+
+/** Pick the display reason for the editor's language, falling back to English. */
+function approvalDisplayReason(display: unknown): string | undefined {
+  if (!wireRecord(display)) return undefined
+  const requested = typeof vscode.env.language === 'string' ? vscode.env.language.toLowerCase() : ''
+  const primary = requested.split('-')[0] ?? ''
+  const locale = APPROVAL_LOCALES.has(primary) ? primary : 'en'
+  const text = (key: string): string | undefined => {
+    const value = display[key]
+    return typeof value === 'string' && value.trim() !== '' ? value : undefined
+  }
+  return text(locale) ?? text('en')
+}
+
 function diagnosticText(value: unknown): string {
   const redacted = redactDshSecrets(typeof value === 'string' ? value : String(value))
     // A bare provider key is not covered by the URL header/query rules.
