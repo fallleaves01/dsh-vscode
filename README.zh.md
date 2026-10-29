@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-alpha.2**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -88,9 +88,9 @@ pnpm run package
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
 
-### 升级到 0.2.2
+### 升级到 0.2.2-alpha.2
 
-0.2.2 适配 DeepSeek Harness `0.2.2-alpha.2` 并降低启动与会话切换延迟。0.2.1 补齐 DSH 的会话操作并修复分叉边界；0.2.0 是面向 Stop 与会话切换的客户端可靠性版本。更新后重新加载 VS Code 窗口即可；共享的受管 runtime 不需要为此重启。它不要求升级 DSH：侧边栏在运行时探测能力，`0.2.1-rc.2`、`0.2.1-rc.3` 与 `0.2.2-alpha.2` 均可工作，实验性 bundle 仅在 runtime 提供对应契约时出现。
+0.2.2-alpha.2 跟随 DeepSeek Harness `0.2.2-alpha.2`，完成适配并降低启动与会话切换延迟。0.2.1 补齐 DSH 的会话操作并修复分叉边界；0.2.0 是面向 Stop 与会话切换的客户端可靠性版本。更新后重新加载 VS Code 窗口即可；共享的受管 runtime 不需要为此重启。它不要求升级 DSH：侧边栏在运行时探测能力，`0.2.1-rc.2`、`0.2.1-rc.3` 与 `0.2.2-alpha.2` 均可工作，实验性 bundle 仅在 runtime 提供对应契约时出现。
 
 ## 🚀 使用
 
@@ -185,7 +185,22 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 
 ### DSH 0.2.2-alpha.2 实验性功能
 
-本扩展已针对官方 DeepSeek Harness `0.2.2-alpha.2` 运行时完成验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。实验性 bundle 仍需在运行时 profile 中按需启用；插件不会代为启用，只在运行时暴露相应契约时显示对应界面。运行时缺少该能力时，界面保持原有行为。alpha 版本新增以 Web 端为先的可选 bundle（Live Share、Forge、Computer Use 与个性化推荐）；它们会出现在插件清单中并显示平台/安装状态，但本侧边栏未实现其 Web 面板。
+本扩展已针对官方 DeepSeek Harness `0.2.2-alpha.2` 运行时完成验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。实验性 bundle 仍需在运行时 profile 中按需启用；插件不会自动代为启用（runtime 允许写入时，插件页可显式切换），只在运行时暴露相应契约时显示对应界面。运行时缺少该能力时，界面保持原有行为。alpha 版本新增以 Web 端为先的可选 bundle（Live Share、Forge、Computer Use 与个性化推荐）；它们会出现在插件清单中并显示平台/安装状态，但本侧边栏未实现其 Web 面板。
+
+以下 alpha.2 能力属于 Web 端，本侧边栏未实现：Live Share、Forge、Computer
+Use 与个性化推荐面板；Statistics 标签页；creation、文件拖拽与插件推荐卡片。
+其工具使用通用工具卡；action card 提议（`propose_action`）同样以通用工具卡
+显示，不提供卡片按钮。插件详情文档、版本列表、bundle 升级
+（`pluginManager/readBundleDetail`、`listVersions`、`updateBundle`）与市场条目
+详情（`pluginMarket/readEntryDetail`）未实现，请使用 DSH Web 插件页。未安装的
+on-demand bundle 不在此页列出，请先从 DSH 插件管理器安装。引用消息按 Markdown blockquote 显示；Web 的
+选中文本引用控件不在侧边栏输入区提供。Auto review 审批原因跟随编辑器语言；
+Auto review 的失败（`AUTO_REVIEW_FAILED`）按普通工具失败呈现。Web 外观设置
+（`ui-theme`、`ui-settings`、`ui-conversation`、`ui-chat`（含 `foldedReplies`）与
+`locale`）以及 Web 的默认模型/默认权限设置不适用于 VS Code；模型 badge 不显示；
+缺少 `bytes` 的旧 PNG/JPEG 引用在 alpha.2 无法读取。Computer Use 还需要 macOS
+与 runtime 自带的 CUA native 二进制；缺失时 bundle 开关会报告平台/操作失败，
+而不是显示为已启用。
 
 - **Auto review 权限预设。** 权限选择器读取 `permissionPresets/catalog`；auto-review 集成挂载后，选择器出现实验性 `auto` 预设并标注 `EXP`。无论从菜单选择还是键入 `/permission auto`，切换前都要求显式确认：该预设不使用沙箱，由同一模型逐次复审每个工具调用，可能误放行或误拒绝操作，并额外消耗 token。运行时不提供该目录时，继续使用内置三档预设。
 被 Auto review 拒绝的工具调用在折叠行显示 “Rejected by Auto review”，展开后显示 “Tool was not executed. Reason: …”；缺少原因时回退为 “Auto review did not authorize this action”。
@@ -198,7 +213,7 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 
 - **会话搜索**新增 `session_search` 等模型工具，使用通用工具卡；侧栏正文搜索仍使用标准 `session/search` RPC。不要同时启用该 bundle 与 `enableHistorySearch` 任务服务而不核对 profile：部署中可能出现两个 `session-query-sqlite` 实例。
 - **插件市场与语音输入** 已提供上述配置卡片，但功能界面尚未实现：无市场发现/搜索/安装（`pluginMarket/*`），无语音采集与转写（`speech/*` 的流式方法需要复用现有流通道）。思考翻译已在上一节说明且已实现，不再属于未实现项。这些 bundle 保持按需启用且以 Web 端为先；已安装但停用时不改变侧边栏行为。
-- **持久终端、Ralph 循环与徽章技能**无需侧边栏专属实现：其工具与技能由通用工具卡或既有 `skills/list` 视图呈现。侧边栏不提供持久终端面板。
+- **持久终端、Ralph 循环与徽章技能**无需侧边栏专属实现：其工具与技能由通用工具卡或既有 `skills/list` 视图呈现。侧边栏不提供持久终端面板。PTC 嵌套的 `tool/ptc-dispatch` 明细不单独渲染；父工具卡显示结果。
 - **Git 工作树：** `create_worktree` 以通用工具卡运行，但生效的 `workingDirectory` Session 投影尚未被消费。文件路径解析与变更审阅仍以项目根为基准，因此侧边栏不会跟随切换了工作目录的会话。
 - **Agent Team profile 与 Inspector profile** 是纯 profile bundle。Agent Teams 由上述投影与工具支持；Inspector profile 是仅 Web 的 DevTools 界面，不提供 Gateway RPC，VS Code 侧未实现。
 

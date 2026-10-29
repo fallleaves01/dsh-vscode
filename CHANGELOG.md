@@ -9,7 +9,7 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
-## [0.2.2] - 2026-10-30
+## [0.2.2-alpha.2] - 2026-10-30
 
 ### Added
 
@@ -18,10 +18,11 @@ VSIX — see the README for installing one.
   request, model-refresh and plugin-update events, and the expanded bundle
   catalog. `0.2.1-rc.2` and `0.2.1-rc.3` remain supported through the same
   superset request path.
-- The Plugins page understands the alpha.2 bundle fields (`listedByDefault`,
-  `updatable`, `failedAt`) and explains platform-support failures. An on-demand
-  bundle that is not installed, or a hidden bundle that is disabled, no longer
-  offers a toggle that cannot work.
+- The Plugins page projects the alpha.2 bundle state (`listedByDefault`,
+  `updatable`, availability) and explains platform-support failures. An
+  on-demand bundle that is not installed is not listed here; hidden-from-default
+  optional bundles keep a switch because `setBundleEnabled` accepts them. Bundle
+  details, version lists and updates are not implemented.
 
 ### Changed
 
@@ -43,6 +44,12 @@ VSIX — see the README for installing one.
 
 ### Fixed
 
+- Optional bundles that the Host hides from its default list (Ralph, Live Share,
+  session search, Computer Use) can be enabled from the Plugins page again; only
+  an on-demand bundle that is not installed has no switch.
+- Removed the unreachable "Updatable" label and the stale `0.2.1-rc.3`
+  bundle-section wording. Auto review approval reasons now follow the editor
+  language and fall back to English.
 - Pre-release CLI versions such as `0.2.2-alpha.2` and `-beta` now receive
   `--no-open`, so a managed runtime no longer opens an extra browser window.
 - Images in an alpha.2 runtime now load: the request sends both the legacy id and

@@ -1,6 +1,6 @@
 # DSH 0.2.2-alpha.2 适配记录
 
-- 适配对象：DSH Sidebar `0.2.2` 源码。
+- 适配对象：DSH Sidebar `0.2.2-alpha.2` 源码。
 - 运行时基线：官方 DeepSeek Harness `0.2.2-alpha.2` 全局安装副本（`/opt/homebrew/lib/node_modules/@deepseek-ai/dsh`）。
 - 对照基线：`0.2.1-rc.3`（`/tmp/dsh-rc3`）与 `0.2.1-rc.2` 生成契约；`0.2.0-rc.2`、`0.1.7-rc.1/rc.2` 为更早的验证记录。
 - 隔离环境：独立 `HOME`、`DSH_HOME`、`DSH_AGENTS_HOME`，`--host 127.0.0.1 --port 0 --no-open`；不访问用户默认 DSH home，不连接外部服务。
@@ -16,7 +16,7 @@
 | `session/attachment` 请求由 `{sessionId, attachmentId}` 改为 `{sessionId, attachment: ImageAttachmentRef}` | 同一请求同时携带 `attachmentId` 与完整 `attachment`（含 `bytes`、尺寸、原始尺寸） | 旧宿主读取 `attachmentId` 并剥离嵌套字段 |
 | `session/fork` 子会话不再写 `parentSession` meta | 侧栏本来就只用 `origin === 'subagent'` 判定子代理血缘；fork 子会话继续作为独立会话 | rc.3 历史 fork 即使带 `parentSession` 也不会被嵌套 |
 | 新增 `llm/models-updated`、`plugin-manager/update-state` 转发事件 | 映射为既有的 `host/models-changed` / `host/plugins-changed` 失效通知；不转发 payload | 旧宿主不发送这些事件 |
-| BundleInfo/ChangeResult 新字段（`listedByDefault`、`updatable`、`failedAt`、`unsupported-platform`） | 类型与插件页投影新增字段；on-demand 未安装或默认隐藏且未启用的 bundle 不显示开关；平台不支持显示固定说明 | 旧字段缺省时按原有行为显示 |
+| BundleInfo/ChangeResult 新字段（`listedByDefault`、`updatable`、`failedAt`、`unsupported-platform`） | 类型与插件页投影新增字段；`listedByDefault:false` 的 bundle 仍可切换（`setBundleEnabled` 接受）；仅 on-demand 未安装 bundle 无开关；页面不显示 `Updatable` 文案（`updatable` 仅投影保留），`failedAt` 仅类型保留；平台不支持在状态行提示 | 旧字段缺省时按原有行为显示 |
 | 新增 optional bundle（liveshare、forge、CUA、personalized recommendations） | 只作为运行时 bundle 行出现；侧栏不实现其 Web 面板；未知投影/事件安全忽略 | 无影响 |
 | CLI 预发布版本 | `--no-open` 版本解析接受 `alpha`/`beta`/build metadata；`0.1.0` 的 `rc.8` 阈值保持 | 旧版本解析行为不变 |
 | alpha CLI 要求 Node.js `>= 24.9.0` | 文档说明；扩展宿主自身的 Node 版本要求不变 | 不适用 |
@@ -38,6 +38,7 @@
 - 附件：alpha.2 对完整引用（含 `bytes`）成功读取真实 PNG；无 bytes 的旧引用返回 `gateway/input-invalid`，侧栏按单图 "Image unavailable." 处理并记录脱敏诊断，不崩溃。
 - Bundle：alpha.2 24 个（16 optional、2 个 on-demand missing），rc.3 20 个；开关可见性/说明与字段投影通过。
 - 性能：隔离基准显示启动主要由 DSH 进程 URL 就绪（1.3–1.5 s）支配；本次扩展侧优化覆盖版本缓存、去除重复 contract probe、事件流与首屏列表并发、延迟 sweep/job 扫描、幂等视图复用、切换 RPC 收敛、隐藏会话目录不渲染与无关状态补丁不重绘。A/B 详见提交记录与构建说明。
+- 修复复验：`listedByDefault:false` 的 hidden bundle 开关恢复（仅 on-demand 未安装项无开关）、过期 `0.2.1-rc.3` 文案更正、不可达 `Updatable` 标签移除、Auto review `displayReason` 按编辑器语言选择；定向 settings/extension-surface 测试与全量回归通过。
 
 ## 4. 限制与残余
 
@@ -47,6 +48,11 @@
 - 新 Web-first optional bundle（liveshare、forge、CUA、personalized recommendations）没有 VS Code 侧栏面板；它们只会出现在插件清单中。
 - fork 子会话不再携带 `parentSession`，标题是它与源会话的主要可见区分；侧栏不额外重命名。
 - 浏览器滚动锚定/`content-visibility` 未在真实 Chromium 中验证；当前采用低风险的渲染跳过方案。
+- Web 面板未实现：Live Share、Forge、Computer Use、personalized recommendations、Statistics、creation/file-drag/plugin recommendations。
+- action card 提议仅以通用工具卡显示，无卡片按钮；引用消息按 Markdown blockquote 显示，无选中引用控件。
+- 未实现插件详情/版本/升级（`readBundleDetail`/`listVersions`/`updateBundle`）与市场条目详情（`readEntryDetail`）；on-demand 未安装 bundle 无开关。
+- Web 外观/默认设置不适用：`ui-*`、`locale`、`ui-chat`（含 `foldedReplies`）、`agent-default-model`、`permission.defaultPreset`；模型 badge 不显示。
+- `AUTO_REVIEW_FAILED` 按普通工具失败呈现；缺少 `bytes` 的旧图片引用无法读取；PTC 嵌套 `tool/ptc-dispatch` 明细不单独显示。
 - 跨窗口 feedback 缓存的失效、schedule 缓存的会话集合过滤、延迟 markRead 的失败回滚等列为后续 Low 项。
 
 ## 5. 兼容性

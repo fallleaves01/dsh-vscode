@@ -6,7 +6,7 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review. This source version is **0.2.2**.
+DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review. This source version is **0.2.2-alpha.2**.
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
@@ -150,12 +150,32 @@ page, and this repository and its VSIX exclude the credential file and backups.
 
 The sidebar is verified against DeepSeek Harness `0.2.2-alpha.2`; `0.2.1-rc.2`
 and `0.2.1-rc.3` remain supported. Experimental bundles remain opt-in in the
-runtime profile; the sidebar does not enable them automatically, and each
-feature appears only when the runtime exposes its contract. The alpha release
+runtime profile; the sidebar does not enable them automatically (the Plugins page can switch
+them when the runtime allows writes), and each feature appears only when the
+runtime exposes its contract. The alpha release
 adds Web-first optional bundles (Live Share, Forge, Computer Use and
 personalized recommendations); they appear in the Plugins list with their
 platform and installation state, but this sidebar does not implement their Web
 panels.
+
+The following alpha.2 surfaces are Web-only and are not implemented in this
+sidebar: Live Share, Forge, Computer Use and personalized-recommendation panels;
+the Statistics tab; creation, file-drag and plugin-recommendation cards. Their
+tools use the generic tool card. Action-card proposals (`propose_action`) render
+as generic tool cards without the card buttons. Plugin detail documents, version
+lists and bundle updates (`pluginManager/readBundleDetail`, `listVersions`,
+`updateBundle`) and market entry details (`pluginMarket/readEntryDetail`) are
+not implemented; use the DSH Web plugin manager. An on-demand bundle that is not
+installed is not listed here; install it from the DSH plugin manager. Quoted messages render as Markdown blockquotes;
+the Web selection-quote control is not in the sidebar composer. Auto review
+approval reasons follow the editor language; an Auto review *failure*
+(`AUTO_REVIEW_FAILED`) renders as an ordinary tool failure. Web appearance
+settings (`ui-*`, `locale`, including `foldedReplies`) and Web
+default-model/default-permission settings do not apply to VS Code. Model badges
+are not shown, and PNG/JPEG references without a stored byte length cannot be
+read on alpha.2. PTC nested `tool/ptc-dispatch` rows are not rendered
+separately; the parent tool card shows the result. Computer Use also needs macOS and the runtime's native CUA
+binary; without it the bundle switch reports a platform/operation failure.
 
 - **Auto review permission preset.** When the runtime serves
   `permissionPresets/catalog`, the Permission selector offers an `EXP`-marked
