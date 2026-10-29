@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.0**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.1**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -21,7 +21,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 ![Status](https://img.shields.io/badge/status-alpha-7da1de?style=flat-square)
 
 <p align="center">
-  <img src="media/sidebar-0.2.0.png" alt="DSH Sidebar 0.2.0 在 VS Code 侧边栏中：修复后的会话、Auto review 拒绝、子代理与变更文件" width="900">
+  <img src="media/sidebar-0.2.0.png" alt="DSH Sidebar 在 VS Code 侧边栏中：修复后的会话、Auto review 拒绝、子代理与变更文件" width="900">
 </p>
 
 ## ✨ 功能
@@ -29,6 +29,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 - **会话与历史。** 通过官方 DSH runtime 接收流式回复、检查工具调用、处理审批与问题，并加载较早的消息。
 - **失败回复恢复与重试。** 请求失败时保留已接收内容，在聊天页和子代理详情页显示错误码与可读原因；重新打开历史时恢复已保存的失败尝试。重试尝试折叠为一行（“Retrying model request (1/3) · 1s”“Retried model request”“Model request retry cancelled”），可展开查看重试延迟与失败原因；因输出 token 上限被截断的一轮会显示 DSH 的截断提示。重试分别保留；未能保存的输出明确标注仅在当前视图中可用。
 - **完整会话目录。** 目录用于浏览和搜索最近或已归档会话，执行重命名、归档、撤销归档和恢复。点击新建会话进入完整对话页，可选择模型、推理强度、代理组合与权限。顶部列表用于切换主会话；子代理保留在所属会话的 Tasks 面板。
+- **会话操作。** 可在会话菜单中置顶/取消置顶、重命名、分叉、归档/恢复和复制会话 ID。分叉已完成轮次时使用该轮自身的边界，后续停止或失败内容不会被复制。
 - **独立子代理详情。** 点击工具调用卡片中的子代理名称进入子会话，或点击右侧箭头在主会话旁打开独立详情，查看实时状态、完整记录、工具输出、耗时和 token 用量。支持审批、回答问题和停止；父代理允许继续时可发送 Queue 或 Steer 消息，单次执行的子代理输入区为只读。外部执行按官方方式显示为信息行，没有本地会话记录。
 - **后台任务与任务服务。** 查看有长度限制的进程输出、Goal 状态与轮次上限、Schedule 提醒与投递历史，以及 Workflow 阶段和任务日志。功能取决于 runtime 提供的服务；启用历史搜索后可搜索消息正文。
 - **显式文件上下文。** 点击 `+` 搜索并添加文件或目录，用 `×` 逐项移除；也可输入 `@` 引用或执行 **Add Selection to Chat**。当前编辑文件和选区是可选建议。支持拖入资源和粘贴图片附件。
@@ -85,9 +86,9 @@ pnpm run package
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
 
-### 升级到 0.2.0
+### 升级到 0.2.1
 
-0.2.0 是面向 Stop 与会话切换的客户端可靠性版本。更新后重新加载 VS Code 窗口即可；共享的受管 runtime 不需要为此重启。它不要求升级 DSH：侧边栏在运行时探测能力，`0.2.1-rc.2` 与 `0.2.1-rc.3` 均可工作，实验性 bundle 仅在 runtime 提供对应契约时出现。
+0.2.1 补齐 DSH 的会话操作并修复分叉边界；0.2.0 是面向 Stop 与会话切换的客户端可靠性版本。更新后重新加载 VS Code 窗口即可；共享的受管 runtime 不需要为此重启。它不要求升级 DSH：侧边栏在运行时探测能力，`0.2.1-rc.2` 与 `0.2.1-rc.3` 均可工作，实验性 bundle 仅在 runtime 提供对应契约时出现。
 
 ## 🚀 使用
 

@@ -11,7 +11,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
-The current source version is **0.2.0**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.2.1**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md)
 
@@ -22,7 +22,7 @@ The current source version is **0.2.0**. See [CHANGELOG.md](CHANGELOG.md) for ve
 ![Status](https://img.shields.io/badge/status-alpha-7da1de?style=flat-square)
 
 <p align="center">
-  <img src="media/sidebar-0.2.0.png" alt="DSH Sidebar 0.2.0 in the VS Code sidebar: a fixed conversation, an Auto review rejection, a subagent and changed files" width="900">
+  <img src="media/sidebar-0.2.0.png" alt="DSH Sidebar in the VS Code sidebar: a fixed conversation, an Auto review rejection, a subagent and changed files" width="900">
 </p>
 
 ## ✨ Features
@@ -30,6 +30,7 @@ The current source version is **0.2.0**. See [CHANGELOG.md](CHANGELOG.md) for ve
 - **Conversations and history.** Stream responses, inspect tool calls, answer approvals and questions, and load earlier messages through the official DSH runtime.
 - **Failed response recovery and retries.** Keep received output when a request fails, show its error code and a readable reason in chat and subagent details, and restore saved failed attempts when reopening history. Retried attempts collapse into one expandable row ("Retrying model request (1/3) · 1s", "Retried model request", "Model request retry cancelled") with retry delay and failure reason; a turn stopped by the output token limit shows DSH's cut-off notice. Retries remain separate; output that could not be saved is marked as available only in the current view.
 - **Conversation directory.** Use the directory for recent and archived conversation lists, search, rename, archive with Undo, and restore. New conversation opens the full chat composer with model, reasoning effort, agent composition, and permission controls. The top picker switches main conversations; subagents remain in the owning conversation's Tasks panel.
+- **Conversation actions.** Pin or unpin, rename, fork, archive or restore, and copy the session ID from the conversation menu. Branching a completed turn forks at that turn's own boundary, so later stopped or failed work is not copied.
 - **Independent subagent details.** Click a subagent name in its tool card to enter the child conversation, or use the trailing arrow to open independent details. Inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer. External executions appear as informational rows without a local transcript.
 - **Background tasks and task services.** Inspect bounded process output, Goal status and round limits, Schedule reminders and delivery history, and Workflow phases and job logs when the runtime exposes these services. Search conversation message bodies when history search is enabled.
 - **Explicit file context.** Use `+` to search and add files or folders, remove each reference with `×`, or use typed `@` references and **Add Selection to Chat**. The current editor and selected lines are optional suggestions. Drop resources or paste images to attach them.
@@ -105,14 +106,14 @@ For a full local check run `pnpm run check`; `./build.sh` writes
 `reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
 `startupTimeout` and `searchBaseUrl`.
 
-### Upgrading to 0.2.0
+### Upgrading to 0.2.1
 
-0.2.0 is a client-side reliability release for Stop and conversation
-switching. Reload the VS Code window after updating; a shared managed runtime
-does not need to be restarted for this fix. It requires no DSH upgrade: the
-sidebar probes capabilities at runtime, so `0.2.1-rc.2` and `0.2.1-rc.3`
-runtimes both work, and experimental bundles appear only when the runtime
-serves their contracts.
+0.2.1 adds DSH's conversation actions and fixes the fork boundary; 0.2.0 was
+the client-side reliability release for Stop and conversation switching.
+Reload the VS Code window after updating; a shared managed runtime does not
+need to be restarted. It requires no DSH upgrade: the sidebar probes
+capabilities at runtime, so `0.2.1-rc.2` and `0.2.1-rc.3` runtimes both work,
+and experimental bundles appear only when the runtime serves their contracts.
 
 ## 🚀 Use
 

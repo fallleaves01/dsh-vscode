@@ -9,6 +9,17 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-29
+
+### Added
+
+- The conversation menu now offers DSH's five actions: Pin/Unpin, Rename, Fork,
+  Archive/Restore and Copy Session ID. Pinned conversations front the
+  conversation list; pin actions are hidden when the runtime does not report
+  pinned sessions.
+- The conversation list shows a Pinned group and keeps the Host's pin order,
+  while archived views remain ordered by the last update.
+
 ### Changed
 
 - README refresh for 0.2.0: a new screenshot, a reliability and diagnostics
@@ -17,6 +28,15 @@ VSIX — see the README for installing one.
   reasoning-translation status, and the current DSH version floor. The Japanese
   README was removed and the remaining READMEs are English and Simplified
   Chinese.
+
+### Fixed
+
+- Branching from a completed turn now forks at that turn's `turn/end` boundary
+  instead of the latest completed prefix. A branch from an earlier turn no
+  longer inherits a later stopped or failed turn; failed, aborted and
+  interrupted turns expose a disabled branch action. The menu Fork action uses
+  the newest successful turn boundary and refuses when no successful turn
+  exists, instead of creating a child seeded with failure output.
 
 
 ## [0.2.0] - 2026-10-27
