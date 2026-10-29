@@ -110,6 +110,10 @@ export class DshSessionFeed {
   private clientId: string | undefined
   private follow: Follow | undefined
   private archived: string[] = []
+  /** Pinned conversation ids, most recently pinned first, as `workspace/follow` reports them. */
+  private pinned: string[] = []
+  /** Whether this runtime's workspace frame carries a pinned-session list at all. */
+  private pinnedAvailable = false
   private readonly projections = new Map<string, Map<string, Projection>>()
   private readonly projectionFloors = new Map<string, number>()
   private readonly queues = new Map<string, unknown[]>()
@@ -170,7 +174,34 @@ export class DshSessionFeed {
             throw new Error('Invalid workspace baseline.')
           }
           this.archived = value.archivedSessionIds
-          if (frame.type !== 'baseline') this.host({ type: 'host/archived-sessions-changed', archivedSessionIds: this.archived })
+          // Pinned ids share the workspace baseline; an older runtime simply
+          // omits them and the sidebar shows no pin state. Capability is
+          // claimed only by a frame that actually carries the list.
+          const carriesPinned = 'pinnedSessionIds' in value
+          if (carriesPinned) {
+            if (!Array.isArray(value.pinnedSessionIds) || !value.pinnedSessionIds.every(id => typeof id === 'string')) {
+              throw new Error('Invalid workspace baseline.')
+            }
+            this.pinned = value.pinnedSessionIds
+            this.pinnedAvailable = true
+          }
+          if (frame.type !== 'baseline') {
+            this.host({ type: 'host/archived-sessions-changed', archivedSessionIds: this.archived })
+            // Neither an archived-only frame nor a replace frame without the
+            // field says anything about pinning; publishing either would invent
+            // a capability the runtime does not serve.
+            if (frame.type === 'replace' && carriesPinned) {
+              this.host({ type: 'host/pinned-sessions-changed', pinnedSessionIds: this.pinned })
+            }
+          }
+        } else if (frame.type === 'pinned') {
+          // The incremental frame carries the whole ordered id list.
+          if (!wireRecord(value) || !Array.isArray(value.pinnedSessionIds) || !value.pinnedSessionIds.every(id => typeof id === 'string')) {
+            throw new Error('Invalid pinned sessions.')
+          }
+          this.pinned = value.pinnedSessionIds
+          this.pinnedAvailable = true
+          this.host({ type: 'host/pinned-sessions-changed', pinnedSessionIds: this.pinned })
         }
         return frame.type === 'baseline'
       }),
@@ -178,9 +209,9 @@ export class DshSessionFeed {
     return this.startup
   }
 
-  async listWorkspaces(): Promise<{ archivedSessionIds: string[] }> {
+  async listWorkspaces(): Promise<{ archivedSessionIds: string[]; pinnedSessionIds: string[]; pinningAvailable: boolean }> {
     await this.start()
-    return { archivedSessionIds: [...this.archived] }
+    return { archivedSessionIds: [...this.archived], pinnedSessionIds: [...this.pinned], pinningAvailable: this.pinnedAvailable }
   }
 
   /** Register before dispatch: a task can ask for approval before its RPC returns. */

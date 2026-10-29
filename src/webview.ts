@@ -184,6 +184,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .session-actions { position: absolute; z-index: 50; width: 170px; max-width: calc(100% - 16px); padding: 4px; display: grid; gap: 2px; border: 1px solid var(--dsh-border); border-radius: 8px; background: var(--vscode-menu-background, var(--dsh-surface)); box-shadow: 0 6px 20px var(--vscode-widget-shadow); font-size: 12px; line-height: 18px; }
     .session-action { width: 100%; min-height: 28px; padding: 5px 8px; border: 0; border-radius: 4px; color: var(--vscode-foreground); background: transparent; text-align: left; font-size: 12px; }
     .session-action:hover { background: var(--dsh-hover); }
+    .session-action:disabled { opacity: .5; }
+    .session-notice { position: absolute; z-index: 51; top: 8px; left: 50%; transform: translateX(-50%); padding: 4px 10px; border-radius: 6px; border: 1px solid var(--dsh-border); background: var(--vscode-menu-background, var(--dsh-surface)); color: var(--vscode-foreground); font-size: 11px; box-shadow: 0 4px 14px var(--vscode-widget-shadow); }
+    .session-notice.hidden { display: none; }
     .icon-button { width: 28px; height: 28px; min-width: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--vscode-icon-foreground); }
     .icon-button:hover { background: var(--vscode-toolbar-hoverBackground); }
     #openSettings { width: 36px; min-width: 36px; height: 36px; border-radius: 12px; }
@@ -851,6 +854,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       </div>
     </footer>
     <div id="sessionActions" class="session-actions hidden" role="menu" aria-label="Conversation actions"></div>
+    <div id="sessionNotice" class="session-notice hidden" role="status" aria-live="polite"></div>
   </div>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.script.toString(true))}"></script>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.scroll.toString(true))}"></script>
@@ -873,7 +877,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
       conversationStatus: document.getElementById('conversationStatus'), conversationHistory: document.getElementById('conversationHistory'), messages: document.getElementById('messages'), conversationTail: document.getElementById('conversationTail'),
       openSettings: document.getElementById('openSettings'), conversationHome: document.getElementById('conversationHome'), conversationHomeView: document.getElementById('conversationHomeView'), conversationPane: document.getElementById('conversationPane'), composerFooter: document.getElementById('composerFooter'),
-      conversationCreationError: document.getElementById('conversationCreationError'), homeError: document.getElementById('homeError'), homeRuntime: document.getElementById('homeRuntime'), homeSessionSearch: document.getElementById('homeSessionSearch'), homeSessionList: document.getElementById('homeSessionList'), homeListTitle: document.getElementById('homeListTitle'), homeArchiveToggle: document.getElementById('homeArchiveToggle'), viewAllSessions: document.getElementById('viewAllSessions'), sessionTotal: document.getElementById('sessionTotal'), sessionActions: document.getElementById('sessionActions'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionAttentionCount: document.getElementById('sessionAttentionCount'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
+      conversationCreationError: document.getElementById('conversationCreationError'), homeError: document.getElementById('homeError'), homeRuntime: document.getElementById('homeRuntime'), homeSessionSearch: document.getElementById('homeSessionSearch'), homeSessionList: document.getElementById('homeSessionList'), homeListTitle: document.getElementById('homeListTitle'), homeArchiveToggle: document.getElementById('homeArchiveToggle'), viewAllSessions: document.getElementById('viewAllSessions'), sessionTotal: document.getElementById('sessionTotal'), sessionActions: document.getElementById('sessionActions'), sessionNotice: document.getElementById('sessionNotice'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionAttentionCount: document.getElementById('sessionAttentionCount'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       modelControl: document.getElementById('modelControl'), modelTrigger: document.getElementById('modelTrigger'),
@@ -936,6 +940,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let accountOpen = false;
     let sessionMenuOpen = false;
     let sessionAction;
+    let sessionNoticeTimer;
     let homeOpen = false;
     let homeArchived = false;
     let pendingConversationCreation;
@@ -1093,6 +1098,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       document.querySelectorAll('.session-more[aria-expanded="true"]').forEach(button => button.setAttribute('aria-expanded', 'false'));
       if (focus && previous && previous.anchor.isConnected) previous.anchor.focus();
     }
+    /** Transient confirmation for a local-only action (copying an id). */
+    function showSessionNotice(text) {
+      if (!elements.sessionNotice) return;
+      elements.sessionNotice.textContent = text;
+      elements.sessionNotice.classList.remove('hidden');
+      if (sessionNoticeTimer !== undefined) clearTimeout(sessionNoticeTimer);
+      sessionNoticeTimer = setTimeout(() => {
+        elements.sessionNotice.classList.add('hidden');
+        sessionNoticeTimer = undefined;
+      }, 1600);
+    }
     function positionSessionActions() {
       if (!sessionAction) return;
       const app = document.getElementById('app').getBoundingClientRect(), anchor = sessionAction.anchor.getBoundingClientRect();
@@ -1107,16 +1123,39 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       sessionAction = { kind: 'conversation', id: session.id, anchor, archived, listId: anchor.closest('[role="list"]').id };
       anchor.setAttribute('aria-expanded', 'true');
       elements.sessionActions.replaceChildren();
-      const append = (label, type) => {
+      const append = (label, type, options) => {
         const button = node('button', 'session-action', label); button.type = 'button'; button.setAttribute('role', 'menuitem');
-        button.disabled = !state || state.phase !== 'ready';
+        button.disabled = !state || state.phase !== 'ready' || Boolean(options && options.disabled);
+        if (options && options.title) button.title = options.title;
         button.addEventListener('click', () => {
+          if (button.disabled) return;
           closeSessionActions(false); closeSessionMenu(false);
           vscode.postMessage({ type, sessionId: session.id });
+          if (type === 'copy-session-id') showSessionNotice('Session ID copied');
         }); elements.sessionActions.append(button);
       };
+      // DSH's own order: Pin/Unpin, Rename, Fork, Archive/Restore, Copy Session ID.
+      if (!archived && state && state.pinningAvailable === true) {
+        const pinned = Array.isArray(state.pinnedSessionIds) && state.pinnedSessionIds.includes(session.id);
+        append(pinned ? 'Unpin' : 'Pin', pinned ? 'unpin-session' : 'pin-session');
+      }
       append('Rename', 'rename-session');
-      append(archived ? 'Restore' : 'Archive', archived ? 'unarchive-session' : 'archive-session');
+      // The fork RPC is addressed to the open conversation; for any other row
+      // the click would be answered by nothing, so say what to do instead.
+      const forkHere = state !== undefined && session.id === state.sessionId && !archived;
+      append('Fork', 'fork-conversation', forkHere ? undefined : {
+        disabled: true, title: 'Open this conversation to fork it',
+      });
+      if (archived) append('Restore', 'unarchive-session');
+      else {
+        // The Host refuses to archive a conversation with running work; say so
+        // on the item rather than surfacing the RPC error after the click.
+        const running = Boolean(state && (state.running === true || session.running === true));
+        append('Archive', 'archive-session', running
+          ? { disabled: true, title: 'Stop the running task before archiving' }
+          : undefined);
+      }
+      append('Copy Session ID', 'copy-session-id');
       elements.sessionActions.setAttribute('aria-label', 'Actions for ' + string(session.title));
       elements.sessionActions.classList.remove('hidden'); positionSessionActions();
       if (focus) elements.sessionActions.querySelector('button:not(:disabled)')?.focus();
@@ -1196,13 +1235,30 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const query = input.value.trim().toLocaleLowerCase(), activity = conversationActivity(current);
       const recent = array(current.sessions).filter(mainConversation), archived = array(current.archivedSessions).filter(mainConversation);
       const source = archivedOnly ? archived : recent;
+      // The Host already orders sessions with pinned conversations first; this
+      // view must not re-sort that away by update time. The pin order is the
+      // Host's own list, so every consumer (quick switcher and home) agrees.
+      const pinnedOrder = new Map(array(current.pinnedSessionIds).flatMap((id, index) => typeof id === 'string' ? [[id, index]] : []));
+      const pinIndexOf = session => archivedOnly ? undefined : pinnedOrder.get(session.id);
+      const byPinnedThenUpdated = (left, right) => {
+        const leftPin = pinIndexOf(left), rightPin = pinIndexOf(right);
+        if (leftPin !== undefined || rightPin !== undefined) {
+          if (leftPin === undefined) return 1;
+          if (rightPin === undefined) return -1;
+          return leftPin - rightPin;
+        }
+        return (Number(right.updatedAt) || 0) - (Number(left.updatedAt) || 0);
+      };
       const matching = source.filter(session => !query || string(session.title).toLocaleLowerCase().includes(query))
-        .sort((left, right) => (Number(right.updatedAt) || 0) - (Number(left.updatedAt) || 0))
+        .sort(byPinnedThenUpdated)
         .slice(0, list === elements.sessionList && !query ? 12 : source.length);
       list.replaceChildren();
       let group;
       for (const session of matching) {
-        const next = query ? 'Title matches' : sessionTimeGroup(session.updatedAt);
+        // Without a search, pinned conversations get their own leading group;
+        // a search keeps DSH's single "Title matches" heading.
+        const next = query ? 'Title matches'
+          : pinIndexOf(session) === undefined ? sessionTimeGroup(session.updatedAt) : 'Pinned';
         if (next !== group) { list.append(node('div', 'session-group', next)); group = next; }
         list.append(sessionRow(session, current, activity, archivedOnly, undefined, selectedRootId));
       }
@@ -1215,6 +1271,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const ready = string(search.query).trim().toLocaleLowerCase() === query && !search.loading;
         const hits = ready ? array(search.items).filter(hit => catalog.has(hit.sessionId) && !rendered.has(hit.sessionId) && (rendered.add(hit.sessionId), true)) : [];
         if (hits.length) {
+          // A search list is a second view of the same conversations, so it
+          // follows the same pinned-first order rather than the runtime's hit
+          // order.
+          hits.sort((left, right) => byPinnedThenUpdated(catalog.get(left.sessionId) || {}, catalog.get(right.sessionId) || {}));
           list.append(node('div', 'session-group', 'Message matches'));
           for (const hit of hits) list.append(sessionRow(catalog.get(hit.sessionId), current, activity, archivedIds.has(hit.sessionId), hit.snippet, selectedRootId));
         }
@@ -2466,10 +2526,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const button = node('button', 'message-action message-icon message-branch');
       button.type = 'button';
       button.append(icon(BRANCH_SHAPES, false));
+      // The Host sends the turn/end seq for each reply's own turn: a message seq
+      // would cut mid-turn, where the runtime appends synthetic closers.
+      const atSeq = meta && typeof meta.forkAtSeq === 'number' && Number.isFinite(meta.forkAtSeq)
+        ? meta.forkAtSeq
+        : undefined;
+      if (atSeq === undefined || meta.forkable !== true) {
+        button.disabled = true;
+        button.setAttribute('aria-disabled', 'true');
+        button.title = 'Available only on the last message of a completed turn';
+        button.setAttribute('aria-label', button.title);
+        return button;
+      }
       button.title = 'Branch into a new conversation';
       button.setAttribute('aria-label', button.title);
       button.addEventListener('click', () => vscode.postMessage({
-        type: 'fork-conversation', sessionId: state && state.sessionId, atSeq: meta.seq,
+        type: 'fork-conversation', sessionId: state && state.sessionId, atSeq,
       }));
       return button;
     }
@@ -2820,6 +2892,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         feedback === undefined ? null : [feedback.rating, feedback.version],
         meta.turnUsage === undefined ? null : meta.turnUsage,
         typeof meta.turnDurationMs === 'number' ? meta.turnDurationMs : null,
+        typeof meta.forkAtSeq === 'number' ? meta.forkAtSeq : null,
+        meta.forkable === true,
         typeof meta.seq === 'number' ? meta.seq : null,
         typeof meta.time === 'number' ? meta.time : null,
         failure,
@@ -4152,7 +4226,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
         elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
       }
-      if (renderedChrome.sessions !== current.sessions || renderedChrome.archivedSessions !== current.archivedSessions || renderedChrome.historySearch !== current.historySearch || renderedChrome.sessionId !== current.sessionId || renderedChrome.phase !== current.phase || renderedChrome.cwd !== current.cwd || renderedChrome.creatingConversation !== Boolean(pendingConversationCreation)) renderSessionCenter(current);
+      if (renderedChrome.sessions !== current.sessions || renderedChrome.archivedSessions !== current.archivedSessions || renderedChrome.pinnedSessionIds !== current.pinnedSessionIds || renderedChrome.historySearch !== current.historySearch || renderedChrome.sessionId !== current.sessionId || renderedChrome.phase !== current.phase || renderedChrome.cwd !== current.cwd || renderedChrome.creatingConversation !== Boolean(pendingConversationCreation)) renderSessionCenter(current);
       if (renderedChrome.models !== current.models) {
         elements.models.replaceChildren();
         // Group by provider, the way DSH's own picker does: two providers can
@@ -4256,7 +4330,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         agentPreset: current.agentPreset, permissions: current.permissions, plan: current.plan, running: current.running,
         account: current.account, accountNotice: current.accountNotice, accountFailed: current.accountFailed,
         parentSessionId: current.parentSessionId, subagentOwnerTitle: subagentOwnerTitle(current),
-        goal: current.goal, schedules: current.schedules, workflows: current.workflows, projectJobs: current.projectJobs, jobsStatus: current.jobsStatus, historySearch: current.historySearch, archivedSessions: current.archivedSessions, childReadOnlyReason: current.childReadOnlyReason,
+        goal: current.goal, schedules: current.schedules, workflows: current.workflows, projectJobs: current.projectJobs, jobsStatus: current.jobsStatus, historySearch: current.historySearch, archivedSessions: current.archivedSessions, pinnedSessionIds: current.pinnedSessionIds, childReadOnlyReason: current.childReadOnlyReason,
         phase: current.phase, usage: current.usage, jobs: current.jobs, todos: current.todos, team: current.team, commands: current.commands, skills: current.skills,
         translation: current.translation,
       };

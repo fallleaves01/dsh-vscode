@@ -296,3 +296,81 @@ describe('ConversationProjector', () => {
     expect(projector.messages()).toEqual([])
   })
 })
+
+describe('turn boundaries for forking', () => {
+  const started = (turn: number, seq: number): DshEvent => ({ type: 'turn/start', seq, time: seq, data: { turn } })
+  const reply = (turn: number, seq: number, text = 'answer'): DshEvent => ({
+    type: 'assistant/message', seq, time: seq,
+    data: { turn, step: 1, message: { content: [{ type: 'text', text }] } },
+  })
+  const end = (turn: number, seq: number, kind: string): DshEvent => ({
+    type: 'turn/end', seq, time: seq, data: { turn, reason: kind === 'error' ? { kind, error: { message: 'failed' } } : { kind } },
+  })
+  const footersOf = (projector: ConversationProjector) =>
+    turnFooters(projector.messages(), projector.messageMeta(), projector.turnStartTimes(), projector.turnEndFacts())
+
+  it('records each closed turn’s boundary and clears it on reset', () => {
+    const projector = new ConversationProjector()
+    projector.reset([started(1, 1), reply(1, 2), end(1, 3, 'completed')])
+    expect(projector.turnEndFacts().get(1)).toEqual({ seq: 3, time: 3, reasonKind: 'completed' })
+    projector.reset([])
+    expect(projector.turnEndFacts().size).toBe(0)
+  })
+
+  it('forks a completed turn at its turn/end seq, not the reply event seq', () => {
+    const projector = new ConversationProjector()
+    projector.reset([started(1, 1), reply(1, 2), end(1, 5, 'completed')])
+    const footer = footersOf(projector).get('assistant:1:1')
+    expect(footer).toMatchObject({ turnEnd: true, forkAtSeq: 5, forkable: true })
+    expect(footer?.forkAtSeq).not.toBe(projector.messageMeta().get('assistant:1:1')?.seq)
+  })
+
+  it('allows a max-tokens turn even though its limit notice trails the reply', () => {
+    const projector = new ConversationProjector()
+    projector.reset([started(1, 1), reply(1, 2), end(1, 4, 'max-tokens')])
+    expect(footersOf(projector).get('assistant:1:1')).toMatchObject({ forkAtSeq: 4, forkable: true })
+  })
+
+  it.each(['error', 'aborted', 'interrupted', 'forked'])('keeps a %s turn forkable=false but keeps its boundary', (kind) => {
+    const projector = new ConversationProjector()
+    projector.reset([started(1, 1), reply(1, 2), end(1, 4, kind)])
+    // The closing reply may have become the failure message; the footer still
+    // names the turn's boundary so the disabled button can explain itself.
+    const footers = [...footersOf(projector).values()]
+    expect(footers).toHaveLength(1)
+    expect(footers[0]).toMatchObject({ forkAtSeq: 4, forkable: false })
+  })
+
+  it('refuses a turn that scheduled a retry even when it ends completed', () => {
+    const projector = new ConversationProjector()
+    projector.reset([
+      started(1, 1), reply(1, 2),
+      { type: 'llm/retry', seq: 3, time: 3, data: { retryId: 'r1', turn: 1, step: 1, retry: 1, maxRetries: 3, mode: 'normal', delayMs: 10, failure: { message: 'lost' } } },
+      end(1, 5, 'completed'),
+    ])
+    expect(footersOf(projector).get('assistant:1:1')?.forkable).toBe(false)
+  })
+
+  it('refuses a footer without a loaded turn/end', () => {
+    const projector = new ConversationProjector()
+    projector.reset([started(1, 1), reply(1, 2)])
+    const footer = footersOf(projector).get('assistant:1:1')
+    expect(footer?.turnEnd).toBe(true)
+    expect(footer?.forkAtSeq).toBeUndefined()
+    expect(footer?.forkable).toBe(false)
+  })
+
+  it('keeps an earlier completed turn forkable when a later turn failed', () => {
+    const projector = new ConversationProjector()
+    projector.reset([
+      started(1, 1), reply(1, 2), end(1, 3, 'completed'),
+      started(2, 4), reply(2, 5), end(2, 6, 'error'),
+    ])
+    const footers = footersOf(projector)
+    expect(footers.get('assistant:1:1')).toMatchObject({ forkAtSeq: 3, forkable: true })
+    // A turn-end error may surface as a synthetic failing reply rather than the
+    // step's own assistant message; its boundary is still refused.
+    const failing = [...footers.values()].filter(footer => footer.forkAtSeq === 6)
+    expect(failing).toEqual([expect.objectContaining({ forkable: false })])
+  })
+})

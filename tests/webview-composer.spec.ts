@@ -828,7 +828,7 @@ describe('the row under a completed turn', () => {
     h.sendState({
       sessionId: 'session-a', phase: 'ready',
       messages: [{ id: 'm1', role: 'assistant', text: 'the answer' }],
-      messageMeta: [{ id: 'm1', seq: 42, time: Date.now(), turnEnd: true }],
+      messageMeta: [{ id: 'm1', seq: 42, time: Date.now(), turnEnd: true, forkAtSeq: 207, forkable: true }],
       messageFeedback: [{ messageId: 'm1', rating: 'positive', version: 3 }],
     })
     await h.settle()
@@ -847,8 +847,31 @@ describe('the row under a completed turn', () => {
 
     h.posts.length = 0
     h.document.querySelector('.message-branch')!.dispatchEvent(new Event('click', { bubbles: true }))
-    // The branch forks at this turn's own event, which is where it closes.
-    expect(h.posts[0]).toMatchObject({ type: 'fork-conversation', sessionId: 'session-a', atSeq: 42 })
+    // The branch forks at its turn's `turn/end`, never at the message event seq.
+    expect(h.posts[0]).toMatchObject({ type: 'fork-conversation', sessionId: 'session-a', atSeq: 207 })
+  })
+
+  it('disables the branch button unless the Host marks the turn forkable', async () => {
+    const h = open()
+    h.sendState(state([{ id: 'm1', time: todayAt(14, 39), turnEnd: true, seq: 42, forkAtSeq: 207, forkable: false }]))
+    await h.settle()
+    const button = h.document.querySelector<HTMLButtonElement>('.message-branch')!
+    expect(button.disabled).toBe(true)
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    expect(button.title).toBe('Available only on the last message of a completed turn')
+    h.posts.length = 0
+    button.dispatchEvent(new Event('click', { bubbles: true }))
+    // A disabled button never sends a fork with a guessed boundary.
+    expect(h.posts).toEqual([])
+  })
+
+  it('disables the branch button when the loaded window has no turn end', async () => {
+    const h = open()
+    h.sendState(state([{ id: 'm1', time: todayAt(14, 39), turnEnd: true }]))
+    await h.settle()
+    const button = h.document.querySelector<HTMLButtonElement>('.message-branch')!
+    expect(button.disabled).toBe(true)
+    expect(button.getAttribute('aria-disabled')).toBe('true')
   })
 
   it('gives the user’s own message a clock and a copy, and nothing else', async () => {

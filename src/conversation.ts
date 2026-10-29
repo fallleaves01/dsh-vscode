@@ -17,9 +17,31 @@ export interface MessageMeta {
   usage?: TokenUsage
 }
 
+/**
+ * One closed turn's boundary, as `session/fork` consumes it.
+ *
+ * The boundary is the `turn/end` event's own seq: an assistant-message seq falls
+ * mid-turn, where the runtime appends synthetic `forked` closers.
+ */
+export interface TurnEndFact {
+  seq: number
+  time: number
+  /** `turn/end.reason.kind`; only `completed` and `max-tokens` are successful. */
+  reasonKind: string
+}
+
 /** The row DSH shows once per completed turn, anchored to that turn's closing reply. */
 export interface TurnFooter {
   turnEnd: true
+  /**
+   * The `turn/end` seq this turn can be forked at.
+   *
+   * Set for every closed turn, including failed ones: a disabled branch button
+   * still explains why it is unavailable.
+   */
+  forkAtSeq?: number
+  /** Whether DSH would offer its branch button on this turn's closing reply. */
+  forkable?: boolean
   turnUsage?: TurnTokenUsage
   /**
    * Wall time the turn took, in milliseconds, from the `turn/start` event that
@@ -50,11 +72,20 @@ export function turnFooters(
   messages: readonly ConversationMessage[],
   meta: ReadonlyMap<string, MessageMeta>,
   turnStarts: ReadonlyMap<number, number>,
+  turnEnds?: ReadonlyMap<number, TurnEndFact>,
 ): Map<string, TurnFooter> {
   const turns = new Map<number, ConversationMessage[]>()
+  // Every message carrying this turn's number, not only its replies: a retry
+  // row after the closing reply means DSH would not offer its branch button.
+  // Tool events carry no turn number, so this check cannot see them.
+  const members = new Map<number, ConversationMessage[]>()
   for (const message of messages) {
     const turn = meta.get(message.id)?.turn
-    if (turn === undefined || message.role !== 'assistant') continue
+    if (turn === undefined) continue
+    const all = members.get(turn)
+    if (all === undefined) members.set(turn, [message])
+    else all.push(message)
+    if (message.role !== 'assistant') continue
     const group = turns.get(turn)
     if (group === undefined) turns.set(turn, [message])
     else group.push(message)
@@ -64,6 +95,14 @@ export function turnFooters(
     if (group.some(message => message.streaming === true)) continue
     const closing = group[group.length - 1]
     if (closing === undefined) continue
+    const end = turnEnds?.get(turn)
+    // The limit notice trails a max-tokens closing reply by design, so it does
+    // not make the turn "have later content"; retries and failures do.
+    const content = (members.get(turn) ?? group).filter(message => message.role !== 'limit')
+    const success = end !== undefined && (end.reasonKind === 'completed' || end.reasonKind === 'max-tokens')
+    const clean = content.every(message => message.streaming !== true && message.failed !== true
+      && message.role !== 'retry')
+      && content[content.length - 1]?.id === closing.id
     const usages = group.map(message => meta.get(message.id)?.usage)
     // No routes: attributing a turn to a provider needs the model that served
     // each call, which the projection does not carry. Naming the message id here
@@ -77,6 +116,8 @@ export function turnFooters(
       : closedAt - startedAt
     footers.set(closing.id, {
       turnEnd: true,
+      ...(end === undefined ? {} : { forkAtSeq: end.seq }),
+      forkable: success && clean,
       ...(turnUsage === undefined ? {} : { turnUsage }),
       ...(turnDurationMs === undefined || turnDurationMs <= 0 ? {} : { turnDurationMs }),
     })
@@ -429,6 +470,8 @@ export class ConversationProjector {
   private readonly pendingRetryFailures = new Map<string, { seq: number; failure: ConversationFailure }>()
   /** Retry-row message ids per turn, in first-seen order, for boundary cancellation. */
   private readonly turnRetries = new Map<number, string[]>()
+  /** How each closed turn ended, keyed by turn number; fork boundaries read this. */
+  private readonly turnEnds = new Map<number, TurnEndFact>()
   private readonly hiddenCommandIds = new Set<string>()
   private liveAttempt: (AssistantAttempt & { message?: ConversationMessage }) | undefined
 
@@ -443,6 +486,7 @@ export class ConversationProjector {
     this.turnFailures.clear()
     this.pendingRetryFailures.clear()
     this.turnRetries.clear()
+    this.turnEnds.clear()
     this.hiddenCommandIds.clear()
     for (const entry of entries) {
       if ('event' in entry) this.apply(entry.event, entry.view)
@@ -577,6 +621,13 @@ export class ConversationProjector {
 
     if (event.type === 'turn/end' && typeof data.turn === 'number') {
       const reason = record(data.reason)
+      // The fork boundary is this event's seq, so it is recorded for every
+      // closing reason, not only the successful ones.
+      this.turnEnds.set(data.turn, {
+        seq: event.seq,
+        time: event.time,
+        reasonKind: typeof reason?.kind === 'string' ? reason.kind : '',
+      })
       // A scheduled retry whose owning turn closes never ran: show it cancelled.
       this.closeRetries(data.turn)
       if (reason?.kind === 'max-tokens') {
@@ -799,6 +850,11 @@ export class ConversationProjector {
   /** When each held turn opened, in epoch ms, keyed by turn number. */
   turnStartTimes(): Map<number, number> {
     return new Map(this.turnStarts)
+  }
+
+  /** How each held turn ended, keyed by turn number. */
+  turnEndFacts(): Map<number, TurnEndFact> {
+    return new Map(this.turnEnds)
   }
 
   messages(): ConversationMessage[] {

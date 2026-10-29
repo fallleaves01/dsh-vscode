@@ -205,6 +205,7 @@ export function sessionItems(
   selectedId: string | undefined,
   unreadSessionIds: ReadonlySet<string>,
   attention: ReadonlyMap<string, SessionAttention> = new Map(),
+  pinnedSessionIds: readonly string[] = [],
 ): SessionItem[] {
   const forest = partition(summaries)
   const { children, parentOf, identity } = forest
@@ -225,10 +226,23 @@ export function sessionItems(
     keep.add(cursor)
   }
 
+  // Pinned conversations front the list in the Host's own order; every other
+  // root keeps the newest-first order. Ids for other workspaces or sessions the
+  // loaded list does not contain simply never match a root.
+  const pinnedOrder = new Map(pinnedSessionIds.map((id, index) => [id, index]))
   const visibleRoots = forest.roots
     .filter(summary => !archivedSessionIds.has(summary.sessionId))
     .filter(summary => earns(summary) || keep.has(summary.sessionId))
-    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .sort((left, right) => {
+      const leftPin = pinnedOrder.get(left.sessionId)
+      const rightPin = pinnedOrder.get(right.sessionId)
+      if (leftPin !== undefined || rightPin !== undefined) {
+        if (leftPin === undefined) return 1
+        if (rightPin === undefined) return -1
+        return leftPin - rightPin
+      }
+      return right.updatedAt - left.updatedAt
+    })
 
   const items: SessionItem[] = []
   const emit = (

@@ -323,3 +323,58 @@ describe('follow snapshot wait', () => {
     expect(FOLLOW_SNAPSHOT_TIMEOUT_MS).toBe(8_000)
   })
 })
+
+describe('workspace pinned sessions', () => {
+  const pinnedFrame = (ids: string[]) => ({ channel: 'host', rpcId: '', payload: { type: 'host/pinned-sessions-changed', pinnedSessionIds: ids } })
+
+  it('reads the pinned list from the workspace baseline and reports it as available', async () => {
+    const h = harness()
+    // The harness baseline omits pins; a replace frame is the incremental
+    // carrier for a runtime that does serve them.
+    await h.feed.start()
+    h.push('workspace/follow', { type: 'replace', value: { archivedSessionIds: [], pinnedSessionIds: ['b', 'a'] } })
+    await expect(h.feed.listWorkspaces()).resolves.toEqual({ archivedSessionIds: [], pinnedSessionIds: ['b', 'a'], pinningAvailable: true })
+    expect(h.frames).toContainEqual(pinnedFrame(['b', 'a']))
+    expect(h.frames).toContainEqual({ channel: 'host', rpcId: '', payload: { type: 'host/archived-sessions-changed', archivedSessionIds: [] } })
+  })
+
+  it('applies a pinned increment frame and emits it to the host', async () => {
+    const h = harness()
+    await h.feed.start()
+    h.push('workspace/follow', { type: 'pinned', pinnedSessionIds: ['c'] })
+    await expect(h.feed.listWorkspaces()).resolves.toMatchObject({ pinnedSessionIds: ['c'], pinningAvailable: true })
+    expect(h.frames).toContainEqual(pinnedFrame(['c']))
+    expect(h.errors).toEqual([])
+  })
+
+  it('reports pinning as unavailable when the runtime omits the list', async () => {
+    const h = harness()
+    await h.feed.start()
+    await expect(h.feed.listWorkspaces()).resolves.toEqual({ archivedSessionIds: [], pinnedSessionIds: [], pinningAvailable: false })
+    expect(h.frames.some(frame => frame.payload.type === 'host/pinned-sessions-changed')).toBe(false)
+  })
+
+  it('does not claim pinning for a replace frame that omits the list', async () => {
+    const h = harness()
+    await h.feed.start()
+    h.push('workspace/follow', { type: 'replace', value: { archivedSessionIds: [] } })
+    expect(h.frames.some(frame => frame.payload.type === 'host/pinned-sessions-changed')).toBe(false)
+    await expect(h.feed.listWorkspaces()).resolves.toEqual({ archivedSessionIds: [], pinnedSessionIds: [], pinningAvailable: false })
+  })
+
+  it('rejects a malformed pinned list instead of guessing', async () => {
+    const h = harness()
+    await h.feed.start()
+    h.push('workspace/follow', { type: 'baseline', value: { archivedSessionIds: [], pinnedSessionIds: [1] } })
+    expect(h.errors).toEqual([expect.objectContaining({ message: expect.stringContaining('invalid event stream frame') })])
+    expect(h.terminate).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a malformed pinned increment frame', async () => {
+    const h = harness()
+    await h.feed.start()
+    h.push('workspace/follow', { type: 'pinned', pinnedSessionIds: 'a' })
+    expect(h.errors).toEqual([expect.objectContaining({ message: expect.stringContaining('invalid event stream frame') })])
+    expect(h.terminate).toHaveBeenCalledTimes(1)
+  })
+})

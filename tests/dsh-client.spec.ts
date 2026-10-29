@@ -80,12 +80,12 @@ describe('DSH 0.1.2 chat transport', () => {
       ? { type, value: { items: [], archivedSessionIds: ids } }
       : { type, archivedSessionIds: ids })
     update(['newly-archived'])
-    expect(await h.client.listWorkspaces()).toEqual({ archivedSessionIds: ['newly-archived'] })
+    expect(await h.client.listWorkspaces()).toMatchObject({ archivedSessionIds: ['newly-archived'] })
     expect(h.frames).toContainEqual(expect.objectContaining({ channel: 'host', payload: {
       type: 'host/archived-sessions-changed', archivedSessionIds: ['newly-archived'],
     } }))
     update([])
-    expect(await h.client.listWorkspaces()).toEqual({ archivedSessionIds: [] })
+    expect(await h.client.listWorkspaces()).toMatchObject({ archivedSessionIds: [] })
     expect(h.errors).toEqual([])
   })
 
@@ -411,7 +411,7 @@ describe('DSH 0.1.2 chat transport', () => {
     expect(h.connection.openStreamSocket).toHaveBeenCalledTimes(1)
     expect(h.outgoing.map(f => f.endpoint)).toEqual(['$events', 'session/control', 'workspace/follow'])
     expect(h.outgoing.every(f => JSON.stringify(f.payload) === '{"args":{}}')).toBe(true)
-    expect(await h.client.listWorkspaces()).toEqual({ archivedSessionIds: ['archived'] })
+    expect(await h.client.listWorkspaces()).toMatchObject({ archivedSessionIds: ['archived'] })
     await h.client.prompt('s', 'Change direction', [], 'steer')
     await h.client.updateQueue('s', 'item', { kind: 'steer' })
     await h.client.cancel('s')
@@ -1158,5 +1158,38 @@ describe('cot translation capability', () => {
     const h = harness()
     vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError('cotTranslation/failed', 'Translation failed'))
     await expect(h.client.cotTranslationTranslate({ text: 'Hello.', targetLanguage: 'de' })).rejects.toThrow('Translation failed')
+  })
+})
+
+describe('workspace pins', () => {
+  it('pins and unpins through the workspace RPCs with the request wrapper', async () => {
+    const h = harness()
+    h.results['workspace/pinSession'] = { pinnedSessionIds: ['s'] }
+    h.results['workspace/unpinSession'] = { pinnedSessionIds: [] }
+    await expect(h.client.pinSession('s')).resolves.toEqual({ pinnedSessionIds: ['s'] })
+    expect(h.requests.at(-1)).toEqual({ endpoint: 'workspace/pinSession', args: { request: { sessionId: 's' } } })
+    await expect(h.client.unpinSession('s')).resolves.toEqual({ pinnedSessionIds: [] })
+    expect(h.requests.at(-1)).toEqual({ endpoint: 'workspace/unpinSession', args: { request: { sessionId: 's' } } })
+  })
+
+  it('reads the pinned list from workspace/follow and reports availability', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    // The harness baseline predates pinning: no list means no capability.
+    await expect(h.client.listWorkspaces()).resolves.toMatchObject({ pinnedSessionIds: [], pinningAvailable: false })
+    h.push('workspace/follow', { type: 'replace', value: { items: [], archivedSessionIds: [], pinnedSessionIds: ['b', 'a'] } })
+    await expect(h.client.listWorkspaces()).resolves.toEqual({ archivedSessionIds: [], pinnedSessionIds: ['b', 'a'], pinningAvailable: true })
+    h.push('workspace/follow', { type: 'pinned', pinnedSessionIds: ['c'] })
+    await expect(h.client.listWorkspaces()).resolves.toMatchObject({ pinnedSessionIds: ['c'], pinningAvailable: true })
+  })
+
+  it('exposes a pinned-session change as a host frame', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    h.push('workspace/follow', { type: 'pinned', pinnedSessionIds: ['b'] })
+    expect(h.frames).toContainEqual({
+      channel: 'host', rpcId: '',
+      payload: { type: 'host/pinned-sessions-changed', pinnedSessionIds: ['b'] },
+    })
   })
 })

@@ -151,7 +151,7 @@ function testClient() {
     startStreams: vi.fn(async () => {}), dispose: vi.fn(), handledSessionIds: [] as string[], respond: vi.fn(async () => ({ accepted: true })),
     monitorJobs: vi.fn(), goal: vi.fn(async () => null), schedules: vi.fn(async () => []), searchHistory: vi.fn(async () => ({ items: [], hasMore: false })),
     scheduleHistory: vi.fn(), changeGoal: vi.fn(), pendingRequests: vi.fn(() => []),
-    listWorkspaces: vi.fn(async () => ({ archivedSessionIds: [] })),
+    listWorkspaces: vi.fn(async () => ({ archivedSessionIds: [], pinnedSessionIds: [], pinningAvailable: false })),
     sessionProjections: vi.fn(async (): Promise<any> => ({kind:'sequenced',asOfSeq:1,values:{}})),
     adoptSessionProjections: vi.fn((_id:string,_seq:number,values:Record<string,unknown>)=>values),
     listSessions: vi.fn(async () => ({ items: ['a', 'b'].map(sessionId => ({ sessionId, cwd: '/workspace', updatedAt: 1,
@@ -175,6 +175,8 @@ function testClient() {
     cotTranslationTranslate: vi.fn(async (request: { text: string }) => `translated:${request.text}`),
     archiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
     unarchiveSession: vi.fn(async () => ({ archivedSessionIds: [] })),
+    pinSession: vi.fn(async () => ({ pinnedSessionIds: [] })),
+    unpinSession: vi.fn(async () => ({ pinnedSessionIds: [] })),
     killJob: vi.fn(async () => ({ outcome: 'requested' as const })),
     cancel: vi.fn(async () => ({ accepted: true as const })),
     interruptSubagent: vi.fn(async () => ({ accepted: true as const })),
@@ -934,6 +936,90 @@ describe('host surface wiring', () => {
       h.send({ type: 'cancel' })
       await vi.waitFor(() => expect(loggedLine('[cancel] requested for a')).toBeDefined())
       expect(loggedLine('[cancel] requested for a')).toBe('[cancel] requested for a')
+    })
+  })
+
+  describe('conversation menu host handlers', () => {
+    const messages = (h: { posts: () => Array<Record<string, any>> }): Array<Record<string, any>> => {
+      const all: Array<Record<string, any>> = []
+      for (const packet of h.posts()) {
+        if (packet.type === 'state') all.push(...(packet.state?.messages ?? []))
+        else if (packet.type === 'state-update') {
+          all.push(...(packet.update?.messages?.reset ?? []), ...(packet.update?.messages?.upserts ?? []))
+        }
+      }
+      return all
+    }
+
+    it('pins and unpins through the runtime and publishes the new order', async () => {
+      const h = await activated()
+      h.client.pinSession.mockResolvedValueOnce({ pinnedSessionIds: ['a'] })
+      h.send({ type: 'pin-session', sessionId: 'a' })
+      await vi.waitFor(() => expect(h.client.pinSession).toHaveBeenCalledWith('a'))
+      await vi.waitFor(() => expect(h.mergedState().pinnedSessionIds).toEqual(['a']))
+      expect(h.mergedState().pinningAvailable).toBe(true)
+
+      h.client.unpinSession.mockResolvedValueOnce({ pinnedSessionIds: [] })
+      h.send({ type: 'unpin-session', sessionId: 'a' })
+      await vi.waitFor(() => expect(h.client.unpinSession).toHaveBeenCalledWith('a'))
+      await vi.waitFor(() => expect(h.mergedState().pinnedSessionIds).toEqual([]))
+    })
+
+    it('applies a pinned-sessions host change without re-listing', async () => {
+      const h = await activated()
+      h.emit({ type: 'host/pinned-sessions-changed', pinnedSessionIds: ['b', 'a'] }, 'host')
+      await vi.waitFor(() => expect(h.mergedState().pinnedSessionIds).toEqual(['b', 'a']))
+      expect(h.mergedState().pinningAvailable).toBe(true)
+    })
+
+    it('copies the conversation id to the clipboard', async () => {
+      const h = await activated()
+      const clipboard = (await import('vscode')).env.clipboard.writeText as ReturnType<typeof vi.fn>
+      clipboard.mockClear()
+      h.send({ type: 'copy-session-id', sessionId: 'a' })
+      await vi.waitFor(() => expect(clipboard).toHaveBeenCalledWith('a'))
+    })
+
+    it('forks at an explicit numeric boundary from the branch button', async () => {
+      const h = await activated()
+      h.client.forkSession.mockClear()
+      h.send({ type: 'fork-conversation', sessionId: 'a', atSeq: 42 })
+      await vi.waitFor(() => expect(h.client.forkSession).toHaveBeenCalledWith('a', 42))
+    })
+
+    it('refuses a bare menu fork when no turn has completed', async () => {
+      const h = await activated()
+      h.client.forkSession.mockClear()
+      h.send({ type: 'fork-conversation', sessionId: 'a' })
+      await vi.waitFor(() => expect(messages(h).some(message => message.role === 'notice'
+        && String(message.text).includes('no completed turn to branch from'))).toBe(true))
+      expect(h.client.forkSession).not.toHaveBeenCalled()
+    })
+
+    it('reports a failed pin instead of dropping the click', async () => {
+      const h = await activated()
+      h.client.pinSession.mockRejectedValueOnce(new Error('pinning is unavailable on this runtime'))
+      h.send({ type: 'pin-session', sessionId: 'a' })
+      await vi.waitFor(() => expect(messages(h).some(message => message.role === 'notice'
+        && String(message.text).includes('pinning is unavailable'))).toBe(true))
+    })
+
+    it('reports a failed clipboard write', async () => {
+      const h = await activated()
+      const clipboard = (await import('vscode')).env.clipboard.writeText as ReturnType<typeof vi.fn>
+      clipboard.mockRejectedValueOnce(new Error('clipboard is unavailable'))
+      h.send({ type: 'copy-session-id', sessionId: 'a' })
+      await vi.waitFor(() => expect(messages(h).some(message => message.role === 'notice'
+        && String(message.text).includes('clipboard is unavailable'))).toBe(true))
+    })
+
+    it('treats a non-finite boundary as a bare menu fork', async () => {
+      const h = await activated()
+      h.client.forkSession.mockClear()
+      h.send({ type: 'fork-conversation', sessionId: 'a', atSeq: 'not-a-number' })
+      await vi.waitFor(() => expect(messages(h).some(message => message.role === 'notice'
+        && String(message.text).includes('no completed turn to branch from'))).toBe(true))
+      expect(h.client.forkSession).not.toHaveBeenCalled()
     })
   })
 })

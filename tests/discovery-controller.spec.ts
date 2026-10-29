@@ -2363,3 +2363,84 @@ describe('Agent Teams projection on conversation load', () => {
     expect(h.controller.state.team).toBeNull()
   })
 })
+
+describe('fork boundaries beyond DSH menu parity', () => {
+  const sessionEvent = (event: Record<string, unknown>) =>
+    ({ type: 'session/event', sessionId: 'a', event })
+  const reply = (turn: number, seq: number) => sessionEvent({
+    type: 'assistant/message', seq, time: seq,
+    data: { turn, step: 1, message: { content: [{ type: 'text', text: 'answer' }] } },
+  })
+  const end = (turn: number, seq: number, kind: string) => sessionEvent({
+    type: 'turn/end', seq, time: seq, data: { turn, reason: { kind } },
+  })
+
+  it('forks a bare request explicitly at the newest completed turn/end', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    h.emit(reply(1, 2), 'mux')
+    h.emit(end(1, 5, 'completed'), 'mux')
+    h.client.forkSession.mockClear()
+    await h.controller.forkConversation('a')
+    // DSH's menu would omit atSeq and let the Host include a later failed turn;
+    // this sidebar pins the boundary to the turn it can see.
+    expect(h.client.forkSession).toHaveBeenCalledWith('a', 5)
+  })
+
+  it('falls back to the last successful turn when the newest turn failed', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    h.emit(reply(1, 2), 'mux')
+    h.emit(end(1, 5, 'completed'), 'mux')
+    h.emit(reply(2, 7), 'mux')
+    h.emit(end(2, 9, 'error'), 'mux')
+    h.client.forkSession.mockClear()
+    await h.controller.forkConversation('a')
+    // Forking without a boundary would seed the child with the failed turn.
+    expect(h.client.forkSession).toHaveBeenCalledWith('a', 5)
+  })
+
+  it('refuses a bare fork when no turn ever completed', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    h.emit(reply(1, 2), 'mux')
+    h.emit(end(1, 4, 'aborted'), 'mux')
+    h.client.forkSession.mockClear()
+    await h.controller.forkConversation('a')
+    expect(h.client.forkSession).not.toHaveBeenCalled()
+    const notice = h.controller.state.messages.find(message => message.role === 'notice')
+    expect(notice?.text).toContain('no completed turn to branch from')
+  })
+
+  it('fronts a pinned conversation in the published session list', async () => {
+    const h = await harness()
+    // Both default conversations are blank; only the open one earns a row until
+    // the other is doing something.
+    h.emit({ type: 'host/session-status', sessionId: 'b', running: true }, 'host')
+    h.emit({ type: 'host/pinned-sessions-changed', pinnedSessionIds: ['b'] }, 'host')
+    await vi.waitFor(() => expect(h.controller.state.sessions.map(item => item.id)).toEqual(['b', 'a']))
+    h.emit({ type: 'host/pinned-sessions-changed', pinnedSessionIds: [] }, 'host')
+    await vi.waitFor(() => expect(h.controller.state.sessions.map(item => item.id)).toEqual(['a', 'b']))
+  })
+
+  it('publishes the fork boundary and forkable flag through messageMeta', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    h.emit(reply(1, 2), 'mux')
+    h.emit(end(1, 5, 'completed'), 'mux')
+    await vi.waitFor(() => expect(h.controller.state.messageMeta).toContainEqual(expect.objectContaining({
+      id: 'assistant:1:1', turnEnd: true, forkAtSeq: 5, forkable: true,
+    })))
+  })
+
+  it('marks a failed turn’s boundary as not forkable', async () => {
+    const h = await harness()
+    await h.controller.selectSession('a')
+    h.emit(reply(1, 2), 'mux')
+    h.emit({ type: 'session/event', sessionId: 'a', event: { type: 'turn/end', seq: 6, time: 6,
+      data: { turn: 1, reason: { kind: 'interrupted' } } } }, 'mux')
+    await vi.waitFor(() => expect(h.controller.state.messageMeta).toContainEqual(expect.objectContaining({
+      id: 'assistant:1:1', forkAtSeq: 6, forkable: false,
+    })))
+  })
+})

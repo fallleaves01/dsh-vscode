@@ -146,6 +146,10 @@ interface MessageMetaItem {
   time: number
   /** Set on the message that carries its turn's action row. */
   turnEnd?: true
+  /** The `turn/end` seq a branch from this reply may fork at. */
+  forkAtSeq?: number
+  /** Whether DSH would offer its branch button on this turn's closing reply. */
+  forkable?: boolean
   turnUsage?: TurnTokenUsage
   /** Wall time the completed turn took, in milliseconds; absent when unknown. */
   turnDurationMs?: number
@@ -200,6 +204,14 @@ export interface ChatViewState extends TaskFeatureState {
   sessions: SessionItem[]
   subagentCatalogs: Record<string, SubagentCatalogRead>
   archivedSessions: SessionItem[]
+  /** Pinned conversation ids, most recently pinned first. */
+  pinnedSessionIds: string[]
+  /**
+   * Whether this runtime serves the pinned-session list. An older workspace
+   * frame omits it, and the Webview hides Pin/Unpin rather than pretending the
+   * conversation is unpinned.
+   */
+  pinningAvailable: boolean
   /**
    * Owning conversation when the active session is itself a subagent, else
    * `null`. Never `undefined`: the Webview transport is JSON, which drops
@@ -389,6 +401,8 @@ function initialState(cwd: string): ChatViewState {
     sessions: [],
     subagentCatalogs: {},
     archivedSessions: [],
+    pinnedSessionIds: [],
+    pinningAvailable: false,
     parentSessionId: null,
     todos: [],
     team: null,
@@ -472,6 +486,10 @@ export class DshChatController implements vscode.Disposable {
   private drainingCommands = false
   private historyEntries: HistoryEntry[] = []
   private archivedSessionIds = new Set<string>()
+  /** Pinned conversation ids, in workspace order: most recently pinned first. */
+  private pinnedSessionIds = new Set<string>()
+  /** Whether the runtime reports pinned sessions at all. */
+  private pinningAvailable = false
   /**
    * Process-level permission preset catalogue.
    *
@@ -782,6 +800,8 @@ export class DshChatController implements vscode.Disposable {
       messages: [],
       sessions: [],
       archivedSessions: [],
+      pinnedSessionIds: [],
+      pinningAvailable: false,
       sessionId: '',
       running: false,
       stopping: false,
@@ -1208,6 +1228,36 @@ export class DshChatController implements vscode.Disposable {
     if (this.client !== client) return
     this.archivedSessionIds = new Set(result.archivedSessionIds)
     this.publish(this.sessionItemPatch())
+  }
+
+  /** Pin a conversation to the top of the list; the Host returns the new order. */
+  async pinSession(sessionId: string): Promise<void> {
+    this.requireReady()
+    const client = this.requireClient()
+    const result = await client.pinSession(sessionId)
+    if (this.client !== client) return
+    this.applyPinnedSessionIds(result.pinnedSessionIds)
+  }
+
+  /** Remove a conversation from the pinned group. */
+  async unpinSession(sessionId: string): Promise<void> {
+    this.requireReady()
+    const client = this.requireClient()
+    const result = await client.unpinSession(sessionId)
+    if (this.client !== client) return
+    this.applyPinnedSessionIds(result.pinnedSessionIds)
+  }
+
+  private applyPinnedSessionIds(value: unknown): void {
+    const pinned = Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : []
+    this.pinnedSessionIds = new Set(pinned)
+    this.pinningAvailable = true
+    this.publishSessionItems()
+  }
+
+  /** Copy a conversation id to the clipboard; the Webview confirms the action. */
+  async copySessionId(sessionId: string): Promise<void> {
+    await vscode.env.clipboard.writeText(sessionId)
   }
 
   /**
@@ -2091,18 +2141,26 @@ export class DshChatController implements vscode.Disposable {
       const result = await client.listWorkspaces()
       if (this.client !== client || listGeneration !== this.sessionListGeneration) return
       this.archivedSessionIds = new Set(Array.isArray(result.archivedSessionIds) ? result.archivedSessionIds : [])
+      this.pinnedSessionIds = new Set(Array.isArray(result.pinnedSessionIds) ? result.pinnedSessionIds : [])
+      this.pinningAvailable = result.pinningAvailable === true
     } catch (error) {
       if (this.client !== client || listGeneration !== this.sessionListGeneration) return
       this.output.appendLine(`[sessions] Archive state is unavailable in this DSH version: ${error instanceof Error ? error.message : String(error)}`)
       this.archivedSessionIds.clear()
+      this.pinnedSessionIds.clear()
+      this.pinningAvailable = false
     }
   }
 
-  private sessionItemPatch(selectedId: string | undefined = this._state.sessionId): Pick<ChatViewState, 'sessions' | 'archivedSessions' | 'parentSessionId'> {
+  private sessionItemPatch(selectedId: string | undefined = this._state.sessionId): Pick<ChatViewState, 'sessions' | 'archivedSessions' | 'pinnedSessionIds' | 'pinningAvailable' | 'parentSessionId'> {
     const parentSessionId = selectedId === undefined ? undefined : parentIdOf(this.summaries, selectedId)
     return {
-      sessions: sessionItems(this.summaries, this.archivedSessionIds, selectedId, this.unreadSessionIds, this.sessionAttention),
+      sessions: sessionItems(this.summaries, this.archivedSessionIds, selectedId, this.unreadSessionIds, this.sessionAttention,
+        [...this.pinnedSessionIds]),
       archivedSessions: archivedSessionItems(this.summaries, this.archivedSessionIds, this.unreadSessionIds, this.sessionAttention),
+      // The Host is the authority on pins; the Webview only reads this list.
+      pinnedSessionIds: [...this.pinnedSessionIds],
+      pinningAvailable: this.pinningAvailable,
       // Always present, and `null` rather than `undefined`, so the JSON
       // transport carries the change and clears a stale owner.
       parentSessionId: parentSessionId ?? null,
@@ -2761,6 +2819,16 @@ export class DshChatController implements vscode.Disposable {
       return
     }
 
+    if (frame.channel === 'host' && type === 'host/pinned-sessions-changed') {
+      const pinned = Array.isArray(payload.pinnedSessionIds)
+        ? payload.pinnedSessionIds.filter((value): value is string => typeof value === 'string')
+        : []
+      this.pinnedSessionIds = new Set(pinned)
+      this.pinningAvailable = true
+      this.publishSessionItems()
+      return
+    }
+
     if (frame.channel === 'host' && type === 'host/archived-sessions-changed') {
       const archived = Array.isArray(payload.archivedSessionIds)
         ? payload.archivedSessionIds.filter((value): value is string => typeof value === 'string')
@@ -2858,17 +2926,66 @@ export class DshChatController implements vscode.Disposable {
     this.publish({ messageFeedback: [...this.feedback.values()] })
   }
 
+  /** The latest closed turn's boundary facts, when the loaded window has one. */
+  private latestTurnEnd(): { turn: number; seq: number; reasonKind: string } | undefined {
+    const facts = this.projector.turnEndFacts()
+    let latest: { turn: number; seq: number; reasonKind: string } | undefined
+    for (const [turn, fact] of facts) {
+      if (latest === undefined || turn > latest.turn) latest = { turn, seq: fact.seq, reasonKind: fact.reasonKind }
+    }
+    return latest
+  }
+
+  /** The newest successfully completed turn's `turn/end` seq, if any. */
+  private lastSuccessfulTurnSeq(): number | undefined {
+    const facts = this.projector.turnEndFacts()
+    let best: { turn: number; seq: number } | undefined
+    for (const [turn, fact] of facts) {
+      if (fact.reasonKind !== 'completed' && fact.reasonKind !== 'max-tokens') continue
+      if (best === undefined || turn > best.turn) best = { turn, seq: fact.seq }
+    }
+    return best?.seq
+  }
+
+  /**
+   * The boundary a bare fork request should use.
+   *
+   * Deliberately stricter than DSH's menu: an omitted `atSeq` there means "last
+   * completed-turn prefix", which includes a stopped or failed final turn. The
+   * sidebar forks explicitly at the newest branchable turn's `turn/end`, falling
+   * back to the last successful turn when the newest one did not complete. No
+   * successful turn means the request is refused instead of creating a child
+   * seeded with failure output.
+   */
+  private forkBoundaryOf(explicitAtSeq: number | undefined): { seq: number | undefined; refused: boolean } {
+    if (explicitAtSeq !== undefined) return { seq: explicitAtSeq, refused: false }
+    const latest = this.latestTurnEnd()
+    if (latest === undefined) return { seq: undefined, refused: true }
+    if (latest.reasonKind === 'completed' || latest.reasonKind === 'max-tokens') return { seq: latest.seq, refused: false }
+    const successful = this.lastSuccessfulTurnSeq()
+    return successful === undefined ? { seq: undefined, refused: true } : { seq: successful, refused: false }
+  }
+
   /**
    * Copy the open conversation up to a point into a new one and open it.
    *
    * The child is a conversation of its own, so the list is reloaded before it is
-   * selected; otherwise the selection would be refused as unknown.
+   * selected; otherwise the selection would be refused as unknown. `atSeq` is
+   * the inclusive `turn/end` seq of the turn the child may inherit; it is
+   * omitted only when the caller leaves it out and the runtime's own
+   * "last completed turn" boundary is safe (see `forkBoundaryOf`).
    */
   async forkConversation(sessionId: string, atSeq?: number): Promise<void> {
     const client = this.client
     if (client === undefined || sessionId !== this._state.sessionId) return
     try {
-      const child = await client.forkSession(sessionId, typeof atSeq === 'number' ? atSeq : undefined)
+      const explicit = typeof atSeq === 'number' && Number.isFinite(atSeq) ? atSeq : undefined
+      const boundary = this.forkBoundaryOf(explicit)
+      if (boundary.refused) {
+        this.report(new Error('This conversation has no completed turn to branch from. Finish a turn, then try again.'))
+        return
+      }
+      const child = await client.forkSession(sessionId, boundary.seq)
       if (this.client !== client) return
       await this.loadSessions()
       if (this.client !== client) return
@@ -2907,7 +3024,7 @@ export class DshChatController implements vscode.Disposable {
 
   private messageMetaPatch(): Pick<ChatViewState, 'messageMeta'> {
     const meta = this.projector.messageMeta()
-    const footers = turnFooters(this.projector.messages(), meta, this.projector.turnStartTimes())
+    const footers = turnFooters(this.projector.messages(), meta, this.projector.turnStartTimes(), this.projector.turnEndFacts())
     const messageMeta: MessageMetaItem[] = []
     for (const [id, value] of meta) {
       messageMeta.push({ id, time: value.time, ...(footers.get(id) ?? {}) })
@@ -3880,6 +3997,28 @@ class DshSurface implements vscode.Disposable {
           await this.controller.changeGoal(value.sessionId, action, ref, request)
           return
         }
+        case 'pin-session':
+        case 'unpin-session': {
+          if (typeof value.sessionId === 'string') {
+            const sessionId = value.sessionId
+            try {
+              if (value.type === 'pin-session') await this.controller.pinSession(sessionId)
+              else await this.controller.unpinSession(sessionId)
+            } catch (error) {
+              this.controller.report(error, sessionId)
+            }
+          }
+          return
+        }
+        case 'copy-session-id':
+          if (typeof value.sessionId === 'string') {
+            try {
+              await this.controller.copySessionId(value.sessionId)
+            } catch (error) {
+              this.controller.report(error, value.sessionId)
+            }
+          }
+          return
         case 'rename-session':
           if (typeof value.sessionId === 'string') {
             const session = [...this.controller.state.sessions, ...this.controller.state.archivedSessions].find(item => item.id === value.sessionId)
@@ -4172,7 +4311,10 @@ class DshSurface implements vscode.Disposable {
           return
         case 'fork-conversation':
           if (typeof value.sessionId === 'string') {
-            void this.controller.forkConversation(value.sessionId, typeof value.atSeq === 'number' ? value.atSeq : undefined)
+            // The branch button sends its turn's `turn/end` seq; anything that
+            // is not a finite number is treated as a bare menu fork.
+            const atSeq = typeof value.atSeq === 'number' && Number.isFinite(value.atSeq) ? value.atSeq : undefined
+            void this.controller.forkConversation(value.sessionId, atSeq)
           }
           return
         case 'remove-context':

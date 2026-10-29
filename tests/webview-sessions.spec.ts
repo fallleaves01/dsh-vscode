@@ -54,6 +54,111 @@ describe('main conversation directory and quick switcher', () => {
     h.click('#homeSessionList .session-more'); action(h, 'Rename'); expect(h.posts.at(-1)).toEqual({ type: 'rename-session', sessionId: 'archived' })
     h.click('#homeSessionList .session-more'); action(h, 'Restore'); expect(h.posts.at(-1)).toEqual({ type: 'unarchive-session', sessionId: 'archived' })
   })
+  it('offers DSH’s five conversation actions in order and pins from the menu', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent], pinnedSessionIds: ['other'], pinningAvailable: true })
+    h.click('#sessionTrigger')
+    h.click('#sessionList .session-more')
+    const labels = [...h.document.querySelectorAll('#sessionActions .session-action')].map(button => button.textContent)
+    expect(labels).toEqual(['Pin', 'Rename', 'Fork', 'Archive', 'Copy Session ID'])
+    action(h, 'Pin')
+    expect(h.posts.at(-1)).toEqual({ type: 'pin-session', sessionId: 'parent' })
+    // A pinned conversation offers Unpin instead.
+    h.sendState({ sessionId: 'parent', sessions: [parent], pinnedSessionIds: ['parent'], pinningAvailable: true })
+    h.click('#sessionList .session-more')
+    action(h, 'Unpin')
+    expect(h.posts.at(-1)).toEqual({ type: 'unpin-session', sessionId: 'parent' })
+  })
+
+  it('hides Pin on archived rows and restores them from the menu', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent], archivedSessions: [{ id: 'archived', title: 'Completed work' }], pinnedSessionIds: ['archived'], pinningAvailable: true })
+    h.click('#conversationHome')
+    h.click('#homeArchiveToggle')
+    h.click('#homeSessionList .session-more')
+    const labels = [...h.document.querySelectorAll('#sessionActions .session-action')].map(button => button.textContent)
+    expect(labels).toEqual(['Rename', 'Fork', 'Restore', 'Copy Session ID'])
+    action(h, 'Restore')
+    expect(h.posts.at(-1)).toEqual({ type: 'unarchive-session', sessionId: 'archived' })
+  })
+
+  it('disables Archive while the conversation is running instead of failing the RPC', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent], running: true })
+    h.click('#sessionTrigger')
+    h.click('#sessionList .session-more')
+    const archive = [...h.document.querySelectorAll<HTMLButtonElement>('#sessionActions button')].find(button => button.textContent === 'Archive')!
+    expect(archive.disabled).toBe(true)
+    expect(archive.title).toBe('Stop the running task before archiving')
+  })
+
+  it('copies the session id and confirms the action', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent] })
+    h.click('#sessionTrigger')
+    h.click('#sessionList .session-more')
+    h.posts.length = 0
+    action(h, 'Copy Session ID')
+    expect(h.posts.at(-1)).toEqual({ type: 'copy-session-id', sessionId: 'parent' })
+    const notice = h.document.getElementById('sessionNotice')!
+    expect(notice.textContent).toBe('Session ID copied')
+    expect(notice.classList.contains('hidden')).toBe(false)
+  })
+
+  it('forks from the menu without an explicit boundary', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent] })
+    h.click('#sessionTrigger')
+    h.click('#sessionList .session-more')
+    h.posts.length = 0
+    action(h, 'Fork')
+    expect(h.posts.at(-1)).toEqual({ type: 'fork-conversation', sessionId: 'parent' })
+  })
+
+  it('disables Fork on rows that are not the open conversation', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent, { id: 'other', title: 'Other work', updatedAt: 1 }] })
+    h.click('#sessionTrigger')
+    h.click('#sessionList .session-row[data-session-id="other"] .session-more')
+    const fork = [...h.document.querySelectorAll<HTMLButtonElement>('#sessionActions button')].find(button => button.textContent === 'Fork')!
+    expect(fork.disabled).toBe(true)
+    expect(fork.title).toBe('Open this conversation to fork it')
+    h.posts.length = 0
+    fork.click()
+    // The Host forks only the open conversation; a click here must stay local.
+    expect(h.posts).toEqual([])
+    // The current conversation's row keeps the working item.
+    h.click('#sessionList .session-row[data-session-id="parent"] .session-more')
+    const current = [...h.document.querySelectorAll<HTMLButtonElement>('#sessionActions button')].find(button => button.textContent === 'Fork')!
+    expect(current.disabled).toBe(false)
+    current.click()
+    expect(h.posts.at(-1)).toEqual({ type: 'fork-conversation', sessionId: 'parent' })
+  })
+
+  it('disables Fork on archived rows', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent], archivedSessions: [{ id: 'archived', title: 'Completed work' }] })
+    h.click('#conversationHome')
+    h.click('#homeArchiveToggle')
+    h.click('#homeSessionList .session-more')
+    const fork = [...h.document.querySelectorAll<HTMLButtonElement>('#sessionActions button')].find(button => button.textContent === 'Fork')!
+    expect(fork.disabled).toBe(true)
+    expect(fork.title).toBe('Open this conversation to fork it')
+    h.posts.length = 0
+    fork.click()
+    expect(h.posts).toEqual([])
+  })
+
+  it('hides Pin when the runtime does not report pinned sessions', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent] })
+    h.click('#sessionTrigger')
+    h.click('#sessionList .session-more')
+    const labels = [...h.document.querySelectorAll('#sessionActions .session-action')].map(button => button.textContent)
+    expect(labels).not.toContain('Pin')
+    expect(labels[0]).toBe('Rename')
+  })
+
   it('filters archived body hits as well as archived title rows', () => {
     const h = open(); h.sendState({ sessions: [parent], archivedSessions: [{ id: 'archived', title: 'Completed work' }, { ...child, id: 'archived-child' }], historySearch: { query: 'needle', loading: false, items: [{ sessionId: 'archived-child', snippet: 'needle' }, { sessionId: 'archived', snippet: 'needle' }, { sessionId: 'parent', snippet: 'needle' }] } })
     h.click('#conversationHome'); h.click('#homeArchiveToggle'); input(h, 'homeSessionSearch', 'needle')
@@ -70,7 +175,11 @@ describe('main conversation directory and quick switcher', () => {
     expect(h.document.activeElement!.closest('.session-row')!.getAttribute('data-session-id')).toBe('parent')
     key(h.document.activeElement!, 'ArrowDown'); expect(h.document.activeElement!.closest('.session-row')!.getAttribute('data-session-id')).toBe('second')
     key(h.document.activeElement!, 'ArrowRight'); expect(h.document.activeElement!.textContent).toBe('Rename')
+    // DSH's menu order: Rename, Fork, Archive, Copy Session ID. Pin is hidden
+    // (no reported capability) and Fork is skipped because this row is not the
+    // open conversation.
     key(h.document.activeElement!, 'ArrowDown'); expect(h.document.activeElement!.textContent).toBe('Archive')
+    key(h.document.activeElement!, 'ArrowDown'); expect(h.document.activeElement!.textContent).toBe('Copy Session ID')
     key(h.document.activeElement!, 'Escape'); expect(h.document.activeElement!.classList.contains('session-more')).toBe(true)
     expect(h.document.getElementById('sessionMenu')!.classList.contains('hidden')).toBe(false)
     key(search, 'Escape'); expect(h.document.getElementById('sessionMenu')!.classList.contains('hidden')).toBe(true)
@@ -132,5 +241,110 @@ describe('conversation directory navigation and existing drafts', () => {
     h.send({ type: 'ide-context', state: { sessionId: 'parent', pinned: [{ id: 'pin', kind: 'file', path: 'src/runtime.ts' }] } })
     expect(h.document.getElementById('conversationHomeView')!.classList.contains('hidden')).toBe(true)
     expect(h.document.querySelector('.context-name')!.textContent).toContain('runtime.ts')
+  })
+})
+
+describe('session list renders only when its inputs change', () => {
+  it('keeps the list DOM when sessions and pin ids keep their identities', async () => {
+    const h = open()
+    const sessions = [{ id: 'alpha', title: 'Alpha work', updatedAt: 1 }]
+    const archivedSessions: unknown[] = []
+    const pinnedSessionIds: string[] = []
+    h.sendState({ sessionId: 'alpha', sessions, archivedSessions, pinnedSessionIds })
+    await h.settle()
+    const list = h.document.getElementById('sessionList')!
+    const row = list.querySelector('.session-row')!
+    expect(row).not.toBeNull()
+    // A new state object with the same array references: nothing the list
+    // depends on changed, so its nodes must survive the render.
+    h.sendState({ sessionId: 'alpha', sessions, archivedSessions, pinnedSessionIds })
+    await h.settle()
+    expect(list.querySelector('.session-row')).toBe(row)
+    // A changed pin reference IS a reason to re-render.
+    h.sendState({ sessionId: 'alpha', sessions, archivedSessions, pinnedSessionIds: ['alpha'] })
+    await h.settle()
+    expect(list.querySelector('.session-row')).not.toBe(row)
+  })
+})
+
+describe('pinned conversations front both session lists', () => {
+  const today = (): number => { const at = new Date(); at.setHours(12, 0, 0, 0); return at.getTime() }
+  const daysAgo = (days: number): number => today() - days * 86_400_000
+  const alpha = { id: 'alpha', title: 'Alpha work', updatedAt: today() }
+  const beta = { id: 'beta', title: 'Beta work', updatedAt: daysAgo(2) }
+  const groups = (h: Harness, selector: string): string[] =>
+    [...h.document.querySelectorAll<HTMLElement>(selector + ' .session-group')].map(node => node.textContent || '')
+
+  it('keeps the Host pin order even when update time disagrees', async () => {
+    const h = open()
+    // The Host sends the pinned conversation first; the Webview's old re-sort
+    // by updatedAt moved it back behind the newer one.
+    h.sendState({ sessionId: 'alpha', sessions: [beta, alpha], pinnedSessionIds: ['beta'] })
+    await h.settle()
+    expect(ids(h)).toEqual(['beta', 'alpha'])
+    expect(groups(h, '#sessionList')).toEqual(['Pinned', 'Today'])
+    // The full directory renders the same order and grouping.
+    h.click('#conversationHome')
+    expect(ids(h, '#homeSessionList')).toEqual(['beta', 'alpha'])
+    expect(groups(h, '#homeSessionList')).toEqual(['Pinned', 'Today'])
+  })
+
+  it('re-orders when the pin state changes, even with the same session array', async () => {
+    const h = open()
+    const sessions = [beta, alpha]
+    h.sendState({ sessionId: 'alpha', sessions, pinnedSessionIds: ['beta'] })
+    await h.settle()
+    expect(ids(h)).toEqual(['beta', 'alpha'])
+    h.sendState({ sessionId: 'alpha', sessions, pinnedSessionIds: [] })
+    await h.settle()
+    // Array identity is unchanged, so only the pin state can explain this.
+    expect(ids(h)).toEqual(['alpha', 'beta'])
+    expect(groups(h, '#sessionList')).not.toContain('Pinned')
+  })
+
+  it('leaves the updatedAt order alone on a runtime without pins', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'alpha', sessions: [beta, alpha] })
+    await h.settle()
+    expect(ids(h)).toEqual(['alpha', 'beta'])
+    expect(groups(h, '#sessionList')).not.toContain('Pinned')
+  })
+
+  it('ignores unknown pinned ids and does not apply pins to the archive view', async () => {
+    const h = open()
+    h.sendState({
+      sessionId: 'alpha', sessions: [beta, alpha], archivedSessions: [beta, alpha],
+      pinnedSessionIds: ['ghost', 'beta'],
+    })
+    await h.settle()
+    expect(ids(h)).toEqual(['beta', 'alpha'])
+    h.click('#conversationHome')
+    h.click('#homeArchiveToggle')
+    // Archived rows are newest-first and keep no pinned group.
+    expect(ids(h, '#homeSessionList')).toEqual(['alpha', 'beta'])
+    expect(groups(h, '#homeSessionList')).not.toContain('Pinned')
+  })
+
+  it('orders message-history hits with the pinned conversation first', () => {
+    const h = open()
+    h.sendState({
+      sessionId: 'alpha', sessions: [beta, alpha], pinnedSessionIds: ['beta'],
+      historySearch: { query: 'needle', loading: false,
+        items: [{ sessionId: 'alpha', snippet: 'needle one' }, { sessionId: 'beta', snippet: 'needle two' }] },
+    })
+    h.click('#sessionTrigger')
+    input(h, 'sessionSearch', 'needle')
+    // The message-hit list is another view of the same conversations.
+    expect(ids(h)).toEqual(['beta', 'alpha'])
+    expect(groups(h, '#sessionList')).toEqual(['Message matches'])
+  })
+
+  it('keeps the single Title matches heading while searching, still pinned first', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'alpha', sessions: [beta, alpha], pinnedSessionIds: ['beta'] })
+    h.click('#sessionTrigger')
+    input(h, 'sessionSearch', 'a')
+    expect(ids(h)).toEqual(['beta', 'alpha'])
+    expect(groups(h, '#sessionList')).toEqual(['Title matches'])
   })
 })

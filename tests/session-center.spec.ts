@@ -299,3 +299,38 @@ describe('subagent activity metadata', () => {
     expect(items[1]?.activity).toEqual({ status: 'idle' })
   })
 })
+
+describe('pinned conversations front the list', () => {
+  const ids = (items: ReturnType<typeof sessionItems>) => items.map(item => item.id)
+  const summaries = () => [
+    summary({ sessionId: 'oldest', updatedAt: 10 }),
+    summary({ sessionId: 'middle', updatedAt: 20 }),
+    summary({ sessionId: 'newest', updatedAt: 30 }),
+  ]
+
+  it('keeps the newest-first order when nothing is pinned', () => {
+    expect(ids(sessionItems(summaries(), new Set(), undefined, new Set()))).toEqual(['newest', 'middle', 'oldest'])
+  })
+
+  it('fronts pinned roots in the Host order, then the rest by update time', () => {
+    expect(ids(sessionItems(summaries(), new Set(), undefined, new Set(), new Map(), ['oldest'])))
+      .toEqual(['oldest', 'newest', 'middle'])
+    expect(ids(sessionItems(summaries(), new Set(), undefined, new Set(), new Map(), ['middle', 'oldest'])))
+      .toEqual(['middle', 'oldest', 'newest'])
+  })
+
+  it('ignores ids from other workspaces or unknown sessions', () => {
+    expect(ids(sessionItems(summaries(), new Set(), undefined, new Set(), new Map(), ['elsewhere', 'newest', 'ghost'])))
+      .toEqual(['newest', 'middle', 'oldest'])
+  })
+
+  it('moves a pinned root but never re-parents its subagents', () => {
+    const items = sessionItems([
+      summary({ sessionId: 'parent', updatedAt: 10 }),
+      summary({ sessionId: 'child', parentSessionId: 'parent', origin: 'subagent', updatedAt: 5 }),
+      summary({ sessionId: 'other', updatedAt: 20 }),
+    ], new Set(), 'parent', new Set(), new Map(), ['parent'])
+    // Pinned first, and the child still follows its owning conversation.
+    expect(ids(items)).toEqual(['parent', 'child', 'other'])
+  })
+})

@@ -355,7 +355,7 @@ export class DshClient {
     const result = await this.api.listSessions()
     return { items: this.feed.summaries(result.items, revision) }
   }
-  listWorkspaces(): Promise<{ archivedSessionIds: string[] }> { return this.feed.listWorkspaces() }
+  listWorkspaces(): Promise<{ archivedSessionIds: string[]; pinnedSessionIds: string[]; pinningAvailable: boolean }> { return this.feed.listWorkspaces() }
   /** Read cold catalog metadata without opening an Agent or fetching history. */
   sessionProjections(sessionId: string): Promise<SessionProjectionRead> { return this.feed.readProjections(sessionId, this.lifetime.signal) }
   adoptSessionProjections(sessionId: string, seq: number, values: Record<string, unknown>): Record<string, unknown> {
@@ -368,6 +368,14 @@ export class DshClient {
   /** DSH answers with the same `WorkspaceArchiveValue` shape as archiving does. */
   unarchiveSession(sessionId: string): Promise<{ archivedSessionIds: string[] }> {
     return this.call('workspace/unarchiveSession', { request: { sessionId } })
+  }
+  /** Pin a conversation; the answer is the whole ordered pin list. */
+  pinSession(sessionId: string): Promise<{ pinnedSessionIds: string[] }> {
+    return this.call('workspace/pinSession', { request: { sessionId } })
+  }
+  /** Unpin a conversation; the answer is the whole ordered pin list. */
+  unpinSession(sessionId: string): Promise<{ pinnedSessionIds: string[] }> {
+    return this.call('workspace/unpinSession', { request: { sessionId } })
   }
   /** Requests one background job stop; the `job/list` stream converges the row. */
   killJob(sessionId: string, jobId: string): Promise<{ outcome: 'requested' | 'already-finished' }> {
