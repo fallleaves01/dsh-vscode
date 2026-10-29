@@ -281,14 +281,14 @@ describe('DSH 0.1.2 chat transport', () => {
     const h = harness()
     await h.client.startStreams()
     for (const [event, args] of [
-      ['commands/change', []], ['llm/adapters-updated', []], ['credentials/reference-updated', ['SECRET_REFERENCE']],
+      ['commands/change', []], ['llm/adapters-updated', []], ['llm/models-updated', []], ['credentials/reference-updated', ['SECRET_REFERENCE']],
       ['settings/document-updated', ['llm-deepseek', 3]], ['agent-preset/selected', ['s', 'minimal']],
       // 0.1.7-rc.2 account emissions: runtime-wide, so they carry no session id.
       ['deepseek-account/signed-out', []], ['deepseek-account/session-expired', []],
       ['deepseek-account/model-sign-in-required', []], ['credentials/record-updated', []],
     ]) h.push('$events', { type: 'emit', event, args })
     expect(h.frames.map(f => f.payload)).toEqual([
-      { type: 'host/commands-changed' }, { type: 'host/models-changed' }, { type: 'host/credentials-changed' },
+      { type: 'host/commands-changed' }, { type: 'host/models-changed' }, { type: 'host/models-changed' }, { type: 'host/credentials-changed' },
       { type: 'host/settings-changed', ns: 'llm-deepseek', revision: 3 },
       { type: 'host/session-composition-changed', sessionId: 's' },
       { type: 'host/account-changed' }, { type: 'host/account-changed' },
@@ -426,7 +426,7 @@ describe('DSH 0.1.2 chat transport', () => {
     const h = harness()
     await h.client.renameSession('s', 'Renamed')
     await h.client.archiveSession('s')
-    await h.client.attachment('s', 'image')
+    await h.client.attachment('s', { attachmentId: 'image', mediaType: 'image/png', bytes: 8, width: 1, height: 1 })
     await h.client.pluginInventory()
     await h.client.settings()
     await h.client.mutateSettings('ns', [{ op: 'set', path: ['x'], value: 1 }], 3)
@@ -437,7 +437,7 @@ describe('DSH 0.1.2 chat transport', () => {
     expect(h.requests).toEqual([
       { endpoint: 'session/rename', args: { request: { sessionId: 's', title: 'Renamed' } } },
       { endpoint: 'workspace/archiveSession', args: { request: { sessionId: 's' } } },
-      { endpoint: 'session/attachment', args: { request: { sessionId: 's', attachmentId: 'image' } } },
+      { endpoint: 'session/attachment', args: { request: { sessionId: 's', attachmentId: 'image', attachment: { attachmentId: 'image', mediaType: 'image/png', bytes: 8, width: 1, height: 1 } } } },
       { endpoint: 'pluginInventory/list', args: {} }, { endpoint: 'settings/describe', args: {} },
       { endpoint: 'settings/mutate', args: { ns: 'ns', ops: [{ op: 'set', path: ['x'], value: 1 }], expectedRevision: 3 } },
       { endpoint: 'skills/list', args: { request: { sessionId: 's' } } },
@@ -482,6 +482,9 @@ describe('DSH 0.1.2 chat transport', () => {
     await h.client.startStreams()
     const pending = h.client.openSession('s')
     expect(h.outgoing.at(-1).payload.args.request.assistantStream).toBe(true)
+    // alpha2 only promotes a cold session when the follow request activates it;
+    // rc.2/rc.3 strip the unknown field and promoted automatically.
+    expect(h.outgoing.at(-1).payload.args.request.activate).toBe(true)
     h.push('session/follow', { ...snapshot(), records: [], assistantStream: { revision: 2, activeAttempt: {
       attemptId: 'a', turn: 1, step: 1, startedAfterSeq: 5, nextIndex: 1,
       stream: [{ type: 'text-chunks', time0: 10, index: 0, dt: [], texts: ['Hello'] }],
@@ -1170,6 +1173,20 @@ describe('workspace pins', () => {
     expect(h.requests.at(-1)).toEqual({ endpoint: 'workspace/pinSession', args: { request: { sessionId: 's' } } })
     await expect(h.client.unpinSession('s')).resolves.toEqual({ pinnedSessionIds: [] })
     expect(h.requests.at(-1)).toEqual({ endpoint: 'workspace/unpinSession', args: { request: { sessionId: 's' } } })
+  })
+
+  it('sends the legacy shape only when the reference has no byte length', async () => {
+    const h = harness()
+    await h.client.attachment('s', { attachmentId: 'old', mediaType: 'image/webp', width: 2, height: 3 })
+    const request = h.requests.at(-1)!
+    expect(request.endpoint).toBe('session/attachment')
+    expect(request.args).toEqual({
+      request: {
+        sessionId: 's',
+        attachmentId: 'old',
+        attachment: { attachmentId: 'old', mediaType: 'image/webp', width: 2, height: 3 },
+      },
+    })
   })
 
   it('reads the pinned list from workspace/follow and reports availability', async () => {

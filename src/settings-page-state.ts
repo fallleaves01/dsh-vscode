@@ -67,11 +67,20 @@ export interface BundleView {
   installed: boolean
   optional: boolean
   removable: boolean
+  /** alpha2: undefined on older runtimes, where every bundle is listed. */
+  listedByDefault?: boolean
+  /** alpha2: whether the bundle can be updated; false on older runtimes. */
+  updatable: boolean
+  /** A whitelisted failure code from the bundle row; diagnostics are never projected. */
+  errorCode?: string
   readOnlyReason?: 'management-required' | 'unaddressable'
 }
 
 const BUNDLE_AVAILABILITY = new Set(['profile', 'installation', 'missing'])
 const BUNDLE_READ_ONLY = new Set(['management-required', 'unaddressable'])
+// Only these codes are safe to show as a classified failure; the raw error text
+// can quote paths and is deliberately dropped.
+const BUNDLE_ERROR_CODES = new Set(['management-required', 'unaddressable', 'unsupported-platform', 'incompatible-version', 'operation-error'])
 function localized(value: unknown, limit: number): string | undefined {
   if (typeof value === 'string') return value.slice(0, limit) || undefined
   if (!record(value)) return undefined
@@ -90,6 +99,9 @@ export function publicBundles(value: unknown): BundleView[] {
     seen.add(row.name)
     const availability = typeof row.availability === 'string' && BUNDLE_AVAILABILITY.has(row.availability) ? row.availability as BundleView['availability'] : undefined
     const readOnlyReason = typeof row.readOnlyReason === 'string' && BUNDLE_READ_ONLY.has(row.readOnlyReason) ? row.readOnlyReason as BundleView['readOnlyReason'] : undefined
+    const rowError = record(row.error) ? row.error : undefined
+    const errorCode = typeof rowError?.code === 'string' && BUNDLE_ERROR_CODES.has(rowError.code) ? rowError.code : undefined
+    const listedByDefault = typeof row.listedByDefault === 'boolean' ? row.listedByDefault : undefined
     const meta = record(row.meta) ? row.meta : undefined
     const title = localized(meta?.title, 300)
     const description = localized(meta?.description, 1200) ?? (typeof row.description === 'string' ? row.description.slice(0, 1200) || undefined : undefined)
@@ -104,6 +116,9 @@ export function publicBundles(value: unknown): BundleView[] {
       installed: row.installed === true,
       optional: row.optional === true,
       removable: row.removable === true,
+      ...(listedByDefault === undefined ? {} : { listedByDefault }),
+      updatable: row.updatable === true,
+      ...(errorCode === undefined ? {} : { errorCode }),
       ...(readOnlyReason === undefined ? {} : { readOnlyReason }),
     }]
   })

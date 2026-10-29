@@ -1002,6 +1002,20 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let renderedHistoryKey = '';
     let renderedTail = {};
     let renderedChrome = {};
+    /**
+     * The directory rows are only visible while the directory view is open.
+     * While it is closed they are not rebuilt; the flag makes the next open
+     * render them once against the newest state.
+     */
+    let homeListDirty = true;
+    /** Inputs the last conversation render consumed, compared by reference. */
+    let renderedConversationInputs;
+    /**
+     * Per-list inputs of the last directory render. Sessions are immutable state
+     * values, so comparing the item references is enough to know that rebuilding
+     * the rows would produce identical DOM.
+     */
+    const directoryRenderInputs = new WeakMap();
     const sessionDrafts = new Map();
     const pendingDraftSends = new Map();
     let draftSendRequestId = 0;
@@ -1235,6 +1249,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const query = input.value.trim().toLocaleLowerCase(), activity = conversationActivity(current);
       const recent = array(current.sessions).filter(mainConversation), archived = array(current.archivedSessions).filter(mainConversation);
       const source = archivedOnly ? archived : recent;
+      // A rebuild is only needed when something a row draws changed. Session
+      // values are immutable state objects, so their references (including
+      // children, whose activity is folded into the root row) decide that;
+      // everything else the rows read is compared here too. This keeps a status
+      // patch from recreating every row, and preserves focus and DOM identity.
+      const inputs = [archivedOnly, query, selectedRootId, current.pinnedSessionIds, current.historySearch,
+        ...array(current.sessions), ...array(current.archivedSessions)];
+      const previousInputs = directoryRenderInputs.get(list);
+      if (previousInputs !== undefined && previousInputs.length === inputs.length
+        && inputs.every((value, index) => value === previousInputs[index])) return;
+      directoryRenderInputs.set(list, inputs);
       // The Host already orders sessions with pinned conversations first; this
       // view must not re-sort that away by update time. The pin order is the
       // Host's own list, so every consumer (quick switcher and home) agrees.
@@ -1302,7 +1327,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.sessionTotal.textContent = String(sessions.filter(mainConversation).length);
       const previousAction = sessionAction;
       renderSessionDirectory(elements.sessionList, elements.sessionSearch, current, false);
-      renderSessionDirectory(elements.homeSessionList, elements.homeSessionSearch, current, homeArchived);
+      if (homeOpen) {
+        // The full directory is only visible while it is open. Rendering its
+        // rows in the background would rebuild a hidden list on every session
+        // update; the dirty flag makes the first open after such an update
+        // rebuild it once against the newest state.
+        if (homeListDirty) directoryRenderInputs.delete(elements.homeSessionList);
+        renderSessionDirectory(elements.homeSessionList, elements.homeSessionSearch, current, homeArchived);
+        homeListDirty = false;
+      } else homeListDirty = true;
       elements.homeListTitle.textContent = homeArchived ? 'Archived conversations' : 'Recent conversations';
       elements.homeArchiveToggle.textContent = homeArchived ? 'Back to recent' : 'Archived (' + array(current.archivedSessions).filter(mainConversation).length + ')';
       elements.homeArchiveToggle.setAttribute('aria-pressed', String(homeArchived));
@@ -2347,9 +2380,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     // Indexed once per published batch: a conversation with a thousand messages
     // would otherwise scan the whole table for every message on every render,
     // and renders happen on every streamed chunk.
+    /** Stable empty list so a runtime without meta does not rebuild the index per message. */
+    const emptyStateList = [];
     let metaIndex = { source: null, byId: new Map() };
     function messageMetaFor(id) {
-      const list = (state && state.messageMeta) || [];
+      const list = (state && state.messageMeta) || emptyStateList;
       if (metaIndex.source !== list) {
         const byId = new Map();
         for (const entry of list) if (entry && typeof entry.id === 'string') byId.set(entry.id, entry);
@@ -2431,10 +2466,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       vscode.postMessage({ type: 'copy-text', text });
       confirm();
     }
+    let feedbackIndex = { source: null, byId: new Map() };
     function feedbackFor(messageId) {
-      const list = (state && state.messageFeedback) || [];
-      for (const entry of list) if (entry && entry.messageId === messageId) return entry;
-      return undefined;
+      const list = (state && state.messageFeedback) || emptyStateList;
+      if (feedbackIndex.source !== list) {
+        const byId = new Map();
+        for (const entry of list) if (entry && typeof entry.messageId === 'string') byId.set(entry.messageId, entry);
+        feedbackIndex = { source: list, byId };
+      }
+      return feedbackIndex.byId.get(messageId);
     }
     /**
      * The marks DSH's own action row draws, from the icon set its client
@@ -2868,26 +2908,38 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return { message, node: item, ...(markdown ? { markdown } : {}), ...(thinking ? { thinking } : {}) };
     }
     /**
+     * Stable part of a tool row's reuse key: a late denial reason must repaint.
+     *
+     * The incremental patch normally upserts a new message object, which already
+     * forces the repaint; this key matters when a caller mutates the nested
+     * denial in place and the row identity stays the same.
+     */
+    function denialKeyOf(message) {
+      const denial = autoReviewDenialOf(message);
+      return denial === undefined ? null : autoReviewReasonText(denial.reason);
+    }
+    /** The key of a row that draws no action content; no JSON is needed for it. */
+    const plainRowKey = 'plain';
+    /**
      * What the action row under one message draws.
      *
-     * A rating and a turn's metadata are patched without touching the message
-     * array, so object identity alone cannot see that the row changed: a recorded
-     * rating stayed an outline, and a settled turn's usage pill or duration never
-     * appeared. Keying the row on exactly these values is cheap — a few fields and
-     * one small string per message per frame — and leaves the append fast path for
-     * everything else.
+     * The key covers the values the row reads outside the message object (meta,
+     * feedback, denial). Its parts are passed in because messageNode already
+     * looks them up: caching the computed key per rendered entry means a long
+     * transcript pays only reference comparisons for unchanged messages.
      */
-    function messageRowKey(message) {
+    function messageRowKey(message, meta, feedback, denialKey) {
       // The retry row is replaced as a value and the limit row is fixed: each
       // needs its own key, or an update to the same message would be swallowed.
       if (message.role === 'retry') return JSON.stringify(['retry', message.retry]);
       if (message.role === 'limit') return JSON.stringify(['limit']);
-      const autoReview = autoReviewKey(message);
-      const meta = messageMetaFor(message.id);
+      const autoReview = denialKey === null ? null : [true, denialKey];
       const failure = message.role === 'assistant' && message.failed === true ? [message.failed, message.detail, message.failureCode] : [];
-      if (meta === undefined) return JSON.stringify([failure, autoReview]);
-      if (message.role === 'assistant' ? meta.turnEnd !== true : message.role !== 'user') return JSON.stringify([failure, autoReview]);
-      const feedback = feedbackFor(message.id);
+      // Most rows draw neither a failure nor an auto-review note: one constant
+      // key saves serializing the same two empty values for every message.
+      if (meta === undefined || (message.role === 'assistant' ? meta.turnEnd !== true : message.role !== 'user')) {
+        return failure.length === 0 && autoReview === null ? plainRowKey : JSON.stringify([failure, autoReview]);
+      }
       return JSON.stringify([
         feedback === undefined ? null : [feedback.rating, feedback.version],
         meta.turnUsage === undefined ? null : meta.turnUsage,
@@ -2899,17 +2951,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         failure,
         autoReview,
       ]);
-    }
-    /**
-     * Stable part of a tool row's reuse key: a late denial reason must repaint.
-     *
-     * The incremental patch normally upserts a new message object, which already
-     * forces the repaint; this key matters when a caller mutates the nested
-     * denial in place and the row identity stays the same.
-     */
-    function autoReviewKey(message) {
-      const denial = autoReviewDenialOf(message);
-      return denial === undefined ? null : [true, autoReviewReasonText(denial.reason)];
     }
     /**
      * The Team projection a tool card resolves member names against.
@@ -2929,7 +2970,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     }
     function messageNode(message) {
       const rendered = renderedMessages.get(message.id);
-      const rowKey = messageRowKey(message);
+      const meta = messageMetaFor(message.id);
+      const feedback = feedbackFor(message.id);
+      const denialKey = denialKeyOf(message);
+      // While the message object and the row's external inputs keep their
+      // identities, the key cannot change: reuse it instead of serializing the
+      // same fields for every message on every streamed chunk.
+      const keyInputsUnchanged = rendered !== undefined && rendered.message === message
+        && rendered.rowMeta === meta && rendered.rowFeedback === feedback && rendered.rowDenial === denialKey;
+      const rowKey = keyInputsUnchanged ? rendered.rowKey : messageRowKey(message, meta, feedback, denialKey);
       const rowChanged = rendered !== undefined && rendered.rowKey !== rowKey;
       const teamChanged = rendered !== undefined && rendered.teamKey !== undefined && rendered.teamKey !== teamLinkKey();
       if (rendered && rendered.message === message && !rowChanged && !teamChanged) return rendered.node;
@@ -2943,14 +2992,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         // the settled markdown and drops the streaming tail node.
         appendMarkdownStream(rendered.markdown, appended, message.streaming === true);
         if (rendered.thinking !== undefined) syncThinking(rendered.thinking, message);
-        rendered.message = message;
+        rendered.message = message; rendered.rowMeta = meta; rendered.rowFeedback = feedback; rendered.rowDenial = denialKey;
         syncThinkingTicker();
         return rendered.node;
       }
       if (rendered) deferredOutputViews.delete(message.id);
       pendingMessageAppends.delete(message.id);
       const next = renderMessage(message);
-      next.rowKey = rowKey;
+      next.rowKey = rowKey; next.rowMeta = meta; next.rowFeedback = feedback; next.rowDenial = denialKey;
       if (hasTeamLinks(message)) next.teamKey = teamLinkKey();
       // reconcileMessages owns node placement. Replacing a connected node here
       // invalidates its cursor before insertBefore can finish reconciling the list.
@@ -4274,7 +4323,24 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         || renderedChrome.subagentOwnerTitle !== subagentOwnerTitle(current) || renderedChrome.sessions !== current.sessions || renderedChrome.childReadOnlyReason !== current.childReadOnlyReason) renderSubagentBar(current);
       renderRoutableNotice(current);
       renderHeldNotice(current);
-      renderConversation(current);
+      // The transcript is the most expensive subtree. Most patches (account,
+      // usage, settings, jobs) cannot change it, so compare the references it
+      // reads and skip the reconcile entirely when none changed. The runtime
+      // ownership participates because the status slot shows its recovery actions.
+      const conversationInputs = [
+        current.sessionId, current.phase, current.statusText, current.setup, current.canReconnect,
+        connection && connection.ownership,
+        current.hasMoreHistory, current.loadingHistory,
+        current.messages, current.messageMeta, current.messageFeedback, current.team, current.translation,
+        current.queue, current.changedFiles, current.approval, current.question,
+        current.running, current.stopping, current.cancelRequested,
+      ];
+      const previousInputs = renderedConversationInputs;
+      if (previousInputs === undefined || previousInputs.length !== conversationInputs.length
+        || conversationInputs.some((value, index) => value !== previousInputs[index])) {
+        renderedConversationInputs = conversationInputs;
+        renderConversation(current);
+      }
       // The translator capability can arrive after the transcript was rendered:
       // an expanded body gains (or loses) its toolbar without a message reload.
       if (renderedChrome.translation !== current.translation) cotApplyCapability();

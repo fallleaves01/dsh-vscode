@@ -29,6 +29,7 @@ function bundleFailure(result: DshBundleChange): string {
   const code = typeof rawCode === 'string' && rawCode !== '' ? rawCode.replace(/[^\x20-\x7E]/gu, '').slice(0, 64) : undefined
   if (code === 'management-required') return 'This runtime is managed outside this extension. Change bundles from its own plugin manager.'
   if (code === 'incompatible-version') return 'This bundle is not compatible with the running DSH version.'
+  if (code === 'unsupported-platform') return 'This bundle does not support the runtime\'s operating system.'
   if (result.application === 'overridden') return 'The change was saved, but a higher-priority profile layer overrides this bundle.'
   if (result.application === 'cancelled') return 'The bundle change was cancelled.'
   if (code !== undefined) return `The runtime refused the bundle change (${code}).`

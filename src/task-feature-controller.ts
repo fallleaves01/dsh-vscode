@@ -14,20 +14,29 @@ export class TaskFeatureController {
   private epoch = 0
   private goalRead = 0
   private scheduleRead = 0
+  /** The connection whose reminder catalog was already read. */
+  private schedulesClient: DshClient | undefined
   private historyRead = 0
   private searchRead = 0
   constructor(private readonly publish: (patch: Partial<TaskFeatureState>) => void, private readonly sessions: () => readonly SessionSummary[]) {}
   private update(patch: Partial<TaskFeatureState>): void { this.state = { ...this.state, ...patch }; this.publish(patch) }
   bind(client: DshClient | undefined): void {
     this.client = client; this.sessionId = ''; this.epoch++; this.searchRead++; this.historyRead++
+    this.schedulesClient = undefined
     this.update({ goal: emptyGoalState(), schedules: emptyScheduleState(), historySearch: emptySearchState() })
   }
   select(sessionId: string, projections: Record<string, unknown>): void {
     this.sessionId = sessionId; this.epoch++; this.historyRead++
     const { history: _history, ...schedules } = this.state.schedules
-    this.update({ goal: { ...emptyGoalState(), value: goalOf(projections.goal), loading: true },
-      schedules })
-    void this.refreshGoal(); void this.refreshSchedules()
+    // The follow snapshot already carries the current goal projection, so only a
+    // conversation without one needs the extra read.
+    const seededGoal = projections.goal
+    const hasGoal = seededGoal !== undefined && seededGoal !== null
+    // A runtime that reported the projection serves the goal endpoints: the
+    // seeded state must be actionable, not merely readable.
+    this.update({ goal: { ...emptyGoalState(), available: hasGoal, value: goalOf(seededGoal), loading: !hasGoal }, schedules })
+    if (!hasGoal) void this.refreshGoal()
+    void this.refreshSchedules()
   }
   async refreshGoal(): Promise<void> {
     const client = this.client; const sessionId = this.sessionId; const epoch = this.epoch; const revision = ++this.goalRead
@@ -43,15 +52,19 @@ export class TaskFeatureController {
         error: `Goal controls are unavailable: ${errorText(error)}` } })
     }
   }
-  async refreshSchedules(): Promise<void> {
+  async refreshSchedules(force = false): Promise<void> {
     const client = this.client; const revision = ++this.scheduleRead
     if (!client) return
+    // Reminders are a runtime-wide catalog: switching conversations reuses it
+    // until a host event invalidates it.
+    if (!force && this.schedulesClient === client && this.state.schedules.available && !this.state.schedules.error) return
     this.update({ schedules: { ...this.state.schedules, loading: true } })
     try {
       const items = await client.schedules()
       if (client !== this.client || revision !== this.scheduleRead) return
       const ids = new Set(this.sessions().map(item => item.sessionId))
       const { error: _error, ...previous } = this.state.schedules
+      this.schedulesClient = client
       this.update({ schedules: { ...previous, available: true, loading: false, items: items.filter(item => ids.has(item.sessionId)) } })
     } catch (error) {
       if (client !== this.client || revision !== this.scheduleRead) return
@@ -67,7 +80,7 @@ export class TaskFeatureController {
     void this.refreshGoal()
   }
   frame(frame: DshFrame): void {
-    if (frame.payload.type === 'host/schedules-changed') void this.refreshSchedules()
+    if (frame.payload.type === 'host/schedules-changed') void this.refreshSchedules(true)
     if (frame.payload.type === 'host/goal-activation-changed' && (!wireRecord(frame.payload.value) || frame.payload.value.sessionId === this.sessionId)) void this.refreshGoal()
   }
   async changeGoal(sessionId: string, action: GoalAction, ref?: { id: string; revision: number }, request?: { objective?: string; maxGoalRounds?: number }): Promise<void> {

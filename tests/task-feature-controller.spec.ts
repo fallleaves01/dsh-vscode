@@ -19,12 +19,20 @@ describe('task reads and edits across runtime/selection changes', () => {
     await flush(); read.resolve({ ...goal, objective: 'Old read' }); await flush()
     expect(controller.state.goal.value?.objective).toBe('Fix tasks')
   })
-  it('keeps projection evidence when the Goal endpoint is unavailable', async () => {
+  it('seeds the goal from the opening projection without a read', async () => {
+    const { client, controller } = harness()
+    controller.select('s', { goal }); await flush()
+    expect(client.goal).not.toHaveBeenCalled()
+    expect(controller.state.goal.value).toEqual(goal)
+    expect(controller.state.goal.loading).toBe(false)
+    // Buttons are enabled from `available`: a seeded goal is actionable.
+    expect(controller.state.goal.available).toBe(true)
+  })
+  it('reads the goal when the projection has none and keeps the failure visible', async () => {
     const { client, controller } = harness()
     client.goal.mockRejectedValueOnce(new Error('endpoint not found'))
-    controller.select('s', { goal }); await flush()
+    controller.select('s', {}); await flush()
     expect(controller.state.goal.available).toBe(false)
-    expect(controller.state.goal.value).toEqual(goal)
     expect(controller.state.goal.error).toContain('endpoint not found')
   })
   it('requires current Goal identity/revision and serializes edits', async () => {

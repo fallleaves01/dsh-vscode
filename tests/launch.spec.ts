@@ -37,6 +37,22 @@ describe('DSH launch resolution', () => {
     expect(webArgsForDshVersion(args, 'v0.1.0-rc.7')).toEqual(args)
   })
 
+  it('suppresses the browser handoff for every pre-release kind on later base versions', () => {
+    const args = ['web', '--host', '127.0.0.1', '--port', '0']
+    // 0.2.2-alpha.2 / beta are real published builds; the old rc-only parser
+    // missed them and launched an extra browser.
+    expect(webArgsForDshVersion(args, '0.2.2-alpha.2')).toEqual([...args, '--no-open'])
+    expect(webArgsForDshVersion(args, '0.2.2-beta.1')).toEqual([...args, '--no-open'])
+    expect(webArgsForDshVersion(args, 'v0.2.2-alpha.2+build.7')).toEqual([...args, '--no-open'])
+    expect(webArgsForDshVersion(args, '0.2.2')).toEqual([...args, '--no-open'])
+    expect(webArgsForDshVersion(args, '0.2.1-rc.8')).toEqual([...args, '--no-open'])
+    // A 0.1.0 pre-release before rc.8 predates the flag, at any prefix spelling.
+    expect(webArgsForDshVersion(args, '0.1.0-alpha.1')).toEqual(args)
+    expect(webArgsForDshVersion(args, '0.1.0-beta.2')).toEqual(args)
+    expect(webArgsForDshVersion(args, '0.0.9')).toEqual(args)
+    expect(webArgsForDshVersion(args, undefined)).toEqual(args)
+  })
+
   it('keeps suppressing the browser handoff on the 0.1.1 release candidates and later', () => {
     const args = ['web', '--host', '127.0.0.1', '--port', '0']
     expect(webArgsForDshVersion(args, '0.1.1-rc.1')).toEqual([...args, '--no-open'])

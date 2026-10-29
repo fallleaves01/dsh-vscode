@@ -331,6 +331,15 @@ describe('experimental bundle management', () => {
     expect(reply).toMatchObject({ ok: true, application: 'restart-required', restartRequired: true })
     expect(reply.message).toBeUndefined()
   })
+  it('explains an unsupported-platform bundle failure', async () => {
+    const data = fixture() as any; data.bundles = bundleFixture()
+    const h = await harness('managed', data)
+    mocks.warning.mockResolvedValueOnce('Enable')
+    h.client.setBundleEnabled.mockResolvedValueOnce({ changed: false, application: 'failed', error: { code: 'unsupported-platform' } })
+    const reply = await h.result(h.send({ type: 'set-bundle', name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', enabled: true }))
+    expect(reply).toMatchObject({ ok: false, application: 'failed', code: 'unsupported-platform' })
+    expect(reply.error).toContain("does not support the runtime's operating system")
+  })
   it('does not change bundles on an attach-only runtime', async () => {
     const data = fixture() as any; data.bundles = bundleFixture()
     const h = await harness('external', data)

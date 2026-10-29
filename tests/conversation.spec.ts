@@ -214,6 +214,7 @@ describe('ConversationProjector', () => {
             width: 20,
             height: 10,
             name: 'chart.png',
+            originalDimensions: { width: 40, height: 20 },
           },
         }],
       },
@@ -250,8 +251,10 @@ describe('ConversationProjector', () => {
         images: [{
           attachmentId: 'assistant-image',
           mediaType: 'image/png',
+          bytes: 100,
           width: 20,
           height: 10,
+          originalDimensions: { width: 40, height: 20 },
           name: 'chart.png',
         }],
       }),
@@ -260,6 +263,7 @@ describe('ConversationProjector', () => {
         images: [{
           attachmentId: 'tool-image',
           mediaType: 'image/webp',
+          bytes: 200,
           width: 40,
           height: 30,
         }],

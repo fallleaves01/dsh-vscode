@@ -220,6 +220,10 @@ export interface ConversationImage {
   mediaType: ImageMediaType
   width: number
   height: number
+  /** Stored byte length, when the event's attachment reference carried it. */
+  bytes?: number
+  /** Size before any runtime-side downscaling, when the event carried it. */
+  originalDimensions?: { width: number; height: number }
   name?: string
   data?: string
   error?: string
@@ -286,11 +290,22 @@ function imageContent(value: unknown): ConversationImage[] {
         && mediaType !== undefined
         && typeof attachment.width === 'number'
         && typeof attachment.height === 'number') {
+        const bytes = typeof attachment.bytes === 'number' && Number.isFinite(attachment.bytes) && attachment.bytes >= 0
+          ? attachment.bytes
+          : undefined
+        const dimensions = record(attachment.originalDimensions)
+        const originalDimensions = dimensions !== undefined
+          && typeof dimensions.width === 'number' && Number.isFinite(dimensions.width)
+          && typeof dimensions.height === 'number' && Number.isFinite(dimensions.height)
+          ? { width: dimensions.width, height: dimensions.height }
+          : undefined
         found.set(attachment.attachmentId, {
           attachmentId: attachment.attachmentId,
           mediaType,
           width: attachment.width,
           height: attachment.height,
+          ...(bytes === undefined ? {} : { bytes }),
+          ...(originalDimensions === undefined ? {} : { originalDimensions }),
           ...(typeof attachment.name === 'string' ? { name: attachment.name } : {}),
         })
       }

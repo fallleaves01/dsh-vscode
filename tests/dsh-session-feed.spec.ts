@@ -79,6 +79,10 @@ describe('$events top-level frame tolerance', () => {
     // A known envelope with a new event name must keep its existing tolerance.
     h.push('$events', { type: 'emit', event: 'future/event-name', args: [7] })
     h.push('$events', { type: 'emit', event: 'llm/adapters-updated', args: [] })
+    // alpha2's provider model-list refresh and plugin update progress.
+    h.push('$events', { type: 'emit', event: 'llm/models-updated', args: [] })
+    h.push('$events', { type: 'emit', event: 'plugin-manager/update-state', args: [{ requestId: 'r1', phase: 'checking' }] })
+    h.push('$events', { type: 'emit', event: 'plugin-manager/operation', args: [] })
 
     expect(h.errors).toEqual([])
     expect(h.terminate).not.toHaveBeenCalled()
@@ -88,6 +92,10 @@ describe('$events top-level frame tolerance', () => {
       '$events: ignored unknown frame type "later/frame-type"',
     ])
     expect(h.frames).toContainEqual({ channel: 'host', rpcId: '', payload: { type: 'host/models-changed' } })
+    expect(h.frames).toContainEqual({ channel: 'host', rpcId: '', payload: { type: 'host/plugins-changed' } })
+    expect(h.frames.some(frame => frame.payload.type === 'host/models-changed')).toBe(true)
+    // The still-unknown event stays safely ignored.
+    expect(h.errors).toEqual([])
   })
 
   it('labels a missing or non-string type without echoing wire text', async () => {
@@ -240,6 +248,19 @@ function newestFollowStream(h: ReturnType<typeof harness>): string {
 }
 
 describe('follow snapshot wait', () => {
+  it('asks the runtime to activate the cold session, as alpha2 requires', async () => {
+    const h = harness()
+    await h.feed.start()
+    const pending = h.feed.open('a')
+    const opened = h.outgoing.filter(message => message.type === 'open' && message.endpoint === 'session/follow').at(-1)!
+    // A superset field: rc.2/rc.3 strip it and promote automatically, alpha2
+    // reads it, and omitting it would leave alpha2 on passive observation.
+    expect(opened.payload).toMatchObject({ args: { request: { activate: true, maxMessages: 100, assistantStream: true } } })
+    // Settle the opener so disposal cannot surface it as an unhandled rejection.
+    h.push('session/follow', snapshot('a', 1))
+    await pending
+  })
+
   it('rejects with actionable text after the snapshot deadline and can open again', async () => {
     vi.useFakeTimers()
     const h = harness()

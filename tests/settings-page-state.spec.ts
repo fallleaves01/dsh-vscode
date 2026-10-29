@@ -146,8 +146,8 @@ describe('experimental settings and bundle projection', () => {
       { name: 12, enabled: true },
     ])
     expect(projected).toEqual([
-      { name: '@deepseek-ai/dsh-base', official: false, availability: 'profile', version: '0.2.1-rc.3', description: 'Base', enabled: true, installed: true, optional: false, removable: false },
-      { name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', official: true, availability: 'installation', version: '0.2.1-rc.3', title: 'Machine translation', description: 'Translate reasoning.', enabled: false, installed: false, optional: true, removable: false },
+      { name: '@deepseek-ai/dsh-base', official: false, availability: 'profile', version: '0.2.1-rc.3', description: 'Base', enabled: true, installed: true, optional: false, removable: false, updatable: false, errorCode: 'operation-error' },
+      { name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', official: true, availability: 'installation', version: '0.2.1-rc.3', title: 'Machine translation', description: 'Translate reasoning.', enabled: false, installed: false, optional: true, removable: false, updatable: false },
     ])
     expect(JSON.stringify(projected)).not.toContain('hidden-marker')
     expect(JSON.stringify(projected)).not.toContain('data:image')
@@ -190,6 +190,19 @@ describe('experimental settings and bundle projection', () => {
   it('hides the experimental sections when their bundles are not enabled', () => {
     const { description } = fixture()
     expect(settingsForms(description).some(form => ['translation', 'voice', 'market'].includes(form.section))).toBe(false)
+  })
+  it('keeps the alpha2 visibility fields while dropping diagnostics and paths', () => {
+    const projected = publicBundles([
+      { name: '@deepseek-ai/dsh-cua-bundle', official: true, availability: 'installation', version: '0.2.2-alpha.2', enabled: false, installed: true, optional: true, removable: false, listedByDefault: false, updatable: false, error: { code: 'unsupported-platform', diagnostic: '/Users/hidden-marker/native' }, icon: 'data:image/svg+xml;base64,hidden-marker', source: '/srv/hidden-marker' },
+      { name: '@deepseek-ai/dsh-registry-bundle', official: false, availability: 'profile', enabled: true, installed: true, optional: true, removable: true, listedByDefault: true, updatable: true },
+      { name: '@deepseek-ai/dsh-invented-error', enabled: false, installed: true, optional: true, error: { code: 'invented-code', diagnostic: 'hidden-marker' } },
+    ])
+    expect(projected[0]).toMatchObject({ listedByDefault: false, updatable: false, errorCode: 'unsupported-platform' })
+    expect(projected[1]).toMatchObject({ listedByDefault: true, updatable: true })
+    expect(projected[1]!.errorCode).toBeUndefined()
+    expect(projected[2]!.errorCode).toBeUndefined()
+    // Only the whitelisted classification survives; raw diagnostics and paths do not.
+    expect(JSON.stringify(projected)).not.toContain('hidden-marker')
   })
   it('deduplicates bundle rows and bounds a very long string setting', () => {
     const bundles = publicBundles([

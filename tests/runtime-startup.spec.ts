@@ -31,7 +31,7 @@ vi.mock('vscode', () => ({
 vi.mock('../src/launch.ts', async importOriginal => ({
   ...await importOriginal<typeof import('../src/launch.ts')>(),
   findSourceRoot: () => undefined,
-  resolveLaunch: (_root: string, _executable: string, args: string[]) => ({ command: 'dsh', args, env: {} }),
+  resolveLaunch: (_root: string, _executable: string, args: string[]) => ({ command: process.execPath, args, env: {} }),
 }))
 
 vi.mock('node:child_process', async () => {
@@ -64,7 +64,7 @@ vi.mock('../src/process-tree.ts', () => ({
   }),
 }))
 
-import { DshRuntime, describeLaunchFailure } from '../src/runtime.ts'
+import { DshRuntime, clearDshVersionCacheForTests, describeLaunchFailure } from '../src/runtime.ts'
 import { terminateProcessTree } from '../src/process-tree.js'
 import type { RuntimeLaunchContributor } from '../src/runtime-launch.js'
 
@@ -90,6 +90,7 @@ function rpcResponse(init?: RequestInit): Response {
 }
 
 beforeEach(() => {
+  clearDshVersionCacheForTests()
   state.children = []
   state.version = '0.1.2-rc.1'
   state.timeout = 60_000
@@ -137,7 +138,8 @@ describe('authenticated runtime startup', () => {
     await expect(instance.start()).rejects.toThrow('requires its launch URL')
     expect(instance.state).toMatchObject({ kind: 'failed', reason: 'runtime-auth' })
     expect(spawn).not.toHaveBeenCalled()
-    expect(readSecret).not.toHaveBeenCalled()
+    // The credential read runs in parallel with the version/endpoint work now.
+    expect(readSecret).toHaveBeenCalledTimes(1)
   })
 
   it('never adopts an unauthenticated listener on the shared loopback port', async () => {
@@ -163,6 +165,57 @@ describe('authenticated runtime startup', () => {
     state.children[0]!.stdout.emit('data', `dsh web: ${external.launchUrl.href}\n`)
     await pending
     expect(instance.state).toMatchObject({ kind: 'ready', ownership: 'managed' })
+  })
+
+  it('skips the contract probe for a versioned managed runtime and verifies on the first stream read', async () => {
+    const { instance, logs } = runtime()
+    const pending = instance.start(undefined, { kind: 'managed' })
+    await vi.waitFor(() => expect(state.children).toHaveLength(1))
+    state.children[0]!.stdout.emit('data', `dsh web: ${external.launchUrl.href}\n`)
+    await pending
+    expect(instance.state).toMatchObject({ kind: 'ready', ownership: 'managed' })
+    // Only the auth request: the duplicate session/list probe is gone.
+    expect(vi.mocked(fetch).mock.calls.map(call => new URL(String(call[0])).pathname)).toEqual(['/'])
+    expect(logs.join('\n')).toContain('contract verified on the first stream read')
+  })
+
+  it('keeps the contract probe when the CLI does not report a version', async () => {
+    state.version = 'source'
+    const { instance, logs } = runtime()
+    const pending = instance.start(undefined, { kind: 'managed' })
+    await vi.waitFor(() => expect(state.children).toHaveLength(1))
+    state.children[0]!.stdout.emit('data', `dsh web: ${external.launchUrl.href}\n`)
+    await pending
+    expect(vi.mocked(fetch).mock.calls.map(call => new URL(String(call[0])).pathname)).toEqual(['/', '/api/session/list'])
+    expect(logs.join('\n')).not.toContain('contract verified on the first stream read')
+  })
+
+  it('does not cache a version that failed the support check, so an upgrade is retried', async () => {
+    state.version = '0.1.1-rc.2'
+    const { instance } = runtime()
+    await expect(instance.start(undefined, { kind: 'managed' })).rejects.toThrow('requires DeepSeek Harness')
+    expect(state.children).toHaveLength(0)
+    // The runtime was upgraded in place; the failed version must not be served again.
+    state.version = '0.1.2-rc.1'
+    const pending = instance.start(undefined, { kind: 'managed' })
+    await vi.waitFor(() => expect(state.children).toHaveLength(1))
+    state.children[0]!.stdout.emit('data', `dsh web: ${external.launchUrl.href}\n`)
+    await pending
+    expect(instance.state).toMatchObject({ kind: 'ready', ownership: 'managed' })
+  })
+
+  it('reads the CLI version once for repeated starts of the same executable', async () => {
+    const { instance } = runtime()
+    for (let run = 0; run < 2; run += 1) {
+      state.children = []
+      const pending = instance.start(undefined, { kind: 'managed' })
+      await vi.waitFor(() => expect(state.children).toHaveLength(1))
+      state.children.at(-1)!.stdout.emit('data', `dsh web: ${external.launchUrl.href}\n`)
+      await pending
+      await instance.stop()
+    }
+    const versionSpawns = vi.mocked(spawn).mock.calls.filter(call => (call[1] as string[]).includes('--version'))
+    expect(versionSpawns).toHaveLength(1)
   })
 
   it('connects without a CLI, API key or launch patch, and never owns the external process', async () => {

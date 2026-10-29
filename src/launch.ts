@@ -292,18 +292,46 @@ function resolveWindowsDsh(
   return windowsShellFallback(fallback, configuredArgs, host.env)
 }
 
+interface ParsedDshVersion {
+  major: number
+  minor: number
+  patch: number
+  /** The semver pre-release segment, e.g. `rc.8`, `alpha.2`; undefined for a release. */
+  prerelease: string | undefined
+}
+
+/**
+ * Parse the semver part of a version string, as `dsh --version` reports it.
+ *
+ * Tolerates a `dsh ` prefix, a leading `v`, and semver build metadata. A string
+ * that is not a version number is undefined rather than a guess.
+ */
+function parseDshVersion(version: string): ParsedDshVersion | undefined {
+  const match = /(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?(?=\s|$)/.exec(version)
+  if (match === null) return undefined
+  const major = Number(match[1]), minor = Number(match[2]), patch = Number(match[3])
+  if (!Number.isSafeInteger(major) || !Number.isSafeInteger(minor) || !Number.isSafeInteger(patch)) return undefined
+  return { major, minor, patch, prerelease: match[4] }
+}
+
+/**
+ * Whether this CLI version supports `dsh web --no-open`.
+ *
+ * The flag arrived in 0.1.0-rc.8 and exists in every later release, including
+ * `-alpha`/`-beta` pre-releases such as 0.2.2-alpha.2. A pre-release of 0.1.0
+ * itself that is not rc.8 or later predates the flag, and a 0.0.x runtime is
+ * older than any version this flag was documented for.
+ */
 function supportsNoOpen(version: string): boolean {
-  // Tolerate a 'v' prefix and semver build metadata (e.g. 'v0.1.0-rc.8+abc').
-  const match = /(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?(?=[+\s]|$)/.exec(version)
-  if (match === null) return false
-  const major = Number(match[1])
-  const minor = Number(match[2])
-  const patch = Number(match[3])
-  const rc = match[4] === undefined ? undefined : Number(match[4])
-  if (major !== 0) return major > 0
-  if (minor !== 1) return minor > 1
-  if (patch !== 0) return patch > 0
-  return rc === undefined || rc >= 8
+  const parsed = parseDshVersion(version)
+  if (parsed === undefined) return false
+  if (parsed.major > 0) return true
+  if (parsed.major !== 0 || parsed.minor > 1) return parsed.minor > 1
+  if (parsed.minor !== 1) return false
+  if (parsed.patch > 0) return true
+  if (parsed.prerelease === undefined) return true
+  const rc = /^rc\.(\d+)$/.exec(parsed.prerelease)
+  return rc !== null && Number(rc[1]) >= 8
 }
 
 /** Keep the extension-owned Web Host from opening a second, unused UI on rc.8+. */

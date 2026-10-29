@@ -51,6 +51,10 @@ export interface DshBundleInfo {
   installed?: boolean
   optional?: boolean
   removable?: boolean
+  /** alpha2: whether the Host lists this bundle by default; undefined on older runtimes. */
+  listedByDefault?: boolean
+  /** alpha2: whether `pluginManager/updateBundle` accepts this bundle; undefined means unknown. */
+  updatable?: boolean
   readOnlyReason?: 'management-required' | 'unaddressable'
   meta?: { title?: unknown; description?: unknown }
   error?: { code?: string }
@@ -64,6 +68,8 @@ export interface DshBundleChange {
   stage?: string
   target?: string
   enabled?: boolean
+  /** alpha2: which stage failed, for a failed change. */
+  failedAt?: 'registry' | 'spec-host'
   error?: { code?: string }
 }
 
@@ -172,6 +178,22 @@ export interface ImageAttachment {
   width: number
   height: number
   name?: string
+}
+
+/**
+ * The reference `session/attachment` accepts.
+ *
+ * rc.2/rc.3 require only the id; alpha2 validates the full reference (media
+ * type, byte length and dimensions). The client sends both in one request.
+ */
+export interface ImageAttachmentRef {
+  attachmentId: string
+  mediaType: ImageMediaType
+  bytes?: number
+  width: number
+  height: number
+  name?: string
+  originalDimensions?: { width: number; height: number }
 }
 
 /**
@@ -405,8 +427,31 @@ export class DshClient {
     }
   }
 
-  attachment(sessionId: string, attachmentId: string): Promise<{ attachment: ImageAttachment; data: string }> {
-    return this.call('session/attachment', { request: { sessionId, attachmentId } })
+  /**
+   * Read one stored image.
+   *
+   * The request is a superset for two generations of the RPC: rc.2/rc.3 require
+   * `attachmentId` and strip the nested reference; alpha2 requires the complete
+   * `attachment` ref and ignores the legacy id. A reference that predates the
+   * stored byte length is still sent in the legacy shape, where the runtime may
+   * refuse it.
+   */
+  attachment(sessionId: string, image: ImageAttachmentRef): Promise<{ attachment: ImageAttachment; data: string }> {
+    return this.call('session/attachment', {
+      request: {
+        sessionId,
+        attachmentId: image.attachmentId,
+        attachment: {
+          attachmentId: image.attachmentId,
+          mediaType: image.mediaType,
+          ...(image.bytes === undefined ? {} : { bytes: image.bytes }),
+          width: image.width,
+          height: image.height,
+          ...(image.name === undefined ? {} : { name: image.name }),
+          ...(image.originalDimensions === undefined ? {} : { originalDimensions: image.originalDimensions }),
+        },
+      },
+    })
   }
   /**
    * Stage one arbitrary file for the next prompt. Mirrors the browser client's

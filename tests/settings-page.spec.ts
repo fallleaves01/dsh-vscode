@@ -302,6 +302,24 @@ describe('dedicated DSH settings surface', () => {
     h.result({ ok: true, application: 'restart-required', restartRequired: true })
     expect(document.body.textContent).toContain('Restart the DeepSeek Harness runtime')
   })
+  it('offers no switch for bundles the Host does not list by default or has not installed', () => {
+    const state = bundlePageState()
+    state.bundles = [...state.bundles,
+      { name: '@deepseek-ai/dsh-cua-bundle', official: true, availability: 'installation', version: '0.2.2-alpha.2', title: 'Computer use', enabled: false, installed: true, optional: true, removable: false, listedByDefault: false, updatable: false, errorCode: 'unsupported-platform' },
+      { name: '@deepseek-ai/dsh-subagent-codex', official: true, availability: 'missing', version: '0.2.2-alpha.2', title: 'Codex subagent', enabled: false, installed: false, optional: true, removable: false, updatable: false },
+      { name: '@deepseek-ai/dsh-hidden-enabled', official: true, availability: 'installation', title: 'Hidden but on', enabled: true, installed: true, optional: true, removable: false, listedByDefault: false, updatable: false },
+    ]
+    const h = harness(state); h.click('Built-in plugins')
+    // A hidden-by-default or not-installed bundle has nothing to switch here.
+    expect(document.querySelector('[data-focus-key="bundle:@deepseek-ai/dsh-cua-bundle"]')).toBeNull()
+    expect(document.querySelector('[data-focus-key="bundle:@deepseek-ai/dsh-subagent-codex"]')).toBeNull()
+    expect(document.body.textContent).toContain('Not listed by default')
+    expect(document.body.textContent).toContain('Not installed')
+    // A hidden bundle that is already on keeps its switch so it can be turned off.
+    expect(document.querySelector('[data-focus-key="bundle:@deepseek-ai/dsh-hidden-enabled"]')).not.toBeNull()
+    // A platform failure is the actionable reason: it outranks hidden/not listed.
+    expect(document.body.textContent).toContain("does not support the runtime's operating system")
+  })
   it('hides bundle toggles on an attach-only runtime and explains why', () => {
     const state = bundlePageState(); state.writable = false; state.reason = 'This external runtime is attach-only. Its settings are available for inspection.'
     const h = harness(state); h.click('Built-in plugins')

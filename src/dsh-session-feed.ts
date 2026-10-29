@@ -331,7 +331,11 @@ export class DshSessionFeed {
         this.closeFollow(new Error(FOLLOW_SNAPSHOT_TIMEOUT_MESSAGE))
       }, FOLLOW_SNAPSHOT_TIMEOUT_MS)
       state.reject = error => { clearTimeout(timer); reject(error) }
-      state.cancel = this.streams.open('session/follow', { request: { address, maxMessages: 100, assistantStream: true } }, raw => {
+      // `activate` is a superset field: rc.2/rc.3 decode requests non-strictly and
+      // strip it (they promoted the session automatically anyway), while alpha2
+      // only activates a cold session when it is present. DSH's own Web client
+      // always sends it.
+      state.cancel = this.streams.open('session/follow', { request: { address, maxMessages: 100, assistantStream: true, activate: true } }, raw => {
         if (this.follow !== state) return
         if (!wireRecord(raw)) throw new Error('Invalid session frame.')
         if (!opened) {
@@ -655,7 +659,10 @@ export class DshSessionFeed {
       this.host({ type: 'host/account-changed' })
     } else if (frame.event === 'commands/change' && frame.args.length === 0) {
       this.host({ type: 'host/commands-changed' })
-    } else if (frame.event === 'llm/adapters-updated' && frame.args.length === 0) {
+    } else if ((frame.event === 'llm/adapters-updated' && frame.args.length === 0)
+      || frame.event === 'llm/models-updated') {
+      // alpha2 forwards provider model-list refreshes under its own event; the
+      // sidebar's model picker already re-reads on host/models-changed.
       this.host({ type: 'host/models-changed' })
     } else if (frame.event === 'credentials/reference-updated' && typeof id === 'string') {
       // A credential reference is only an invalidation hint; never expose it to the Webview.
@@ -666,9 +673,10 @@ export class DshSessionFeed {
     } else if (frame.event === 'agent-preset/selected' && typeof id === 'string' && typeof value === 'string') {
       // Selection itself comes from the sequenced projection, not this unsequenced hint.
       this.host({ type: 'host/session-composition-changed', sessionId: id })
-    } else if (frame.event === 'plugin-manager/changed') {
+    } else if (frame.event === 'plugin-manager/changed' || frame.event === 'plugin-manager/update-state') {
       // The settings surface re-reads bundle and inventory state; the payload
-      // only classifies the operation and never carries display facts.
+      // only classifies the operation and never carries display facts. The
+      // update-state steps are forwarded as the same invalidation.
       this.host({ type: 'host/plugins-changed' })
     } else if (frame.event === 'permission-presets/catalog-changed') {
       // The experimental `auto` preset can appear or disappear with a bundle.

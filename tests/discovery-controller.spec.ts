@@ -1433,6 +1433,19 @@ describe('sidebar attachments after reconnect', () => {
   } }
   const opening = { events: [{ event }], hasMore: false, projections: {}, isCurrent: () => true, activate() {} }
 
+  it('requests a pre-alpha2 image reference and logs why it may fail', async () => {
+    const h = await harness()
+    // Old events recorded no byte length; the request stays a superset without it.
+    const legacy = { type: 'assistant/message', seq: 1, time: 10, data: { turn: 1, step: 1,
+      message: { content: [{ type: 'image', attachment: { attachmentId: 'legacy-picture', mediaType: 'image/png', width: 1, height: 1 } }] } } }
+    h.client.attachment.mockResolvedValue({ attachment: { attachmentId: 'legacy-picture', mediaType: 'image/png', bytes: 8, width: 1, height: 1 }, data: 'aW1hZ2U=' })
+    h.emit({ type: 'session/event', sessionId: 'a', event: legacy }, 'mux')
+    await vi.waitFor(() => expect(h.client.attachment).toHaveBeenCalled())
+    expect(h.client.attachment).toHaveBeenCalledWith('a', expect.not.objectContaining({ bytes: expect.anything() }))
+    const logged = h.output.appendLine.mock.calls.map(call => String(call[0])).join('\n')
+    expect(logged).toContain('[attachment] reference legacy-picture has no byte length')
+  })
+
   it('retries an image request cancelled by disconnecting', async () => {
     const h = await harness()
     const pending = Promise.withResolvers<any>()
@@ -1443,7 +1456,10 @@ describe('sidebar attachments after reconnect', () => {
     next.client.attachment.mockResolvedValue({ attachment, data: 'aW1hZ2U=' })
     next.client.openSession.mockResolvedValue(opening as any)
     await h.controller.reconnect()
-    expect(next.client.attachment).toHaveBeenCalledExactlyOnceWith('a', 'picture')
+    // The full projected reference reaches the client now: alpha2 validates it.
+    expect(next.client.attachment).toHaveBeenCalledExactlyOnceWith('a', {
+      attachmentId: 'picture', mediaType: 'image/png', bytes: 8, width: 1, height: 1,
+    })
     await vi.waitFor(() => expect(h.controller.state.messages[0]?.images?.[0]?.data).toBe('aW1hZ2U='))
     expect(h.controller.state.messages[0]?.images?.[0]?.error).toBeUndefined()
   })
@@ -2442,5 +2458,141 @@ describe('fork boundaries beyond DSH menu parity', () => {
     await vi.waitFor(() => expect(h.controller.state.messageMeta).toContainEqual(expect.objectContaining({
       id: 'assistant:1:1', forkAtSeq: 6, forkable: false,
     })))
+  })
+})
+
+describe('startup and switch efficiency', () => {
+  it('reuses a ready connection for a new surface instead of restarting', async () => {
+    const h = await harness()
+    const starts = h.runtime.start.mock.calls.length
+    await h.controller.ensureStarted()
+    expect(h.runtime.start.mock.calls.length).toBe(starts)
+    expect(h.controller.state.phase).toBe('ready')
+  })
+
+  it('reuses the runtime from an error or loading phase instead of restarting it', async () => {
+    const h = await harness()
+    const starts = h.runtime.start.mock.calls.length
+    h.controller.publish({ phase: 'error', statusText: 'Conversation failed to open.' })
+    await h.controller.ensureStarted()
+    expect(h.runtime.start.mock.calls.length).toBe(starts)
+    expect(h.controller.state.phase).toBe('error')
+    h.controller.publish({ phase: 'loading', statusText: 'Loading project conversation…' })
+    await h.controller.ensureStarted()
+    expect(h.runtime.start.mock.calls.length).toBe(starts)
+  })
+
+  it('does not leave the abandoned session list as an unhandled rejection', async () => {
+    const h = await harness(undefined, false)
+    const next = h.next()
+    next.client.startStreams.mockRejectedValue(new Error('streams down'))
+    next.client.listSessions.mockRejectedValue(new Error('list down'))
+    // The stream failure wins the race and the list failure must stay observed
+    // rather than surfacing as an unhandled rejection that vitest reports. Start
+    // itself publishes the error phase rather than rejecting.
+    await h.controller.start()
+    expect(h.controller.state.phase).toBe('error')
+    expect(h.controller.state.statusText).toContain('streams down')
+  })
+
+  it('restarts after a superseded in-flight start instead of joining it', async () => {
+    const h = await harness(undefined, false)
+    const pending = Promise.withResolvers<void>()
+    h.runtime.start.mockImplementationOnce(() => pending.promise)
+    const first = h.controller.start()
+    await vi.waitFor(() => expect(h.runtime.start).toHaveBeenCalledTimes(1))
+    const restarting = h.controller.restart()
+    await vi.waitFor(() => expect(h.runtime.stop).toHaveBeenCalled())
+    pending.resolve()
+    await first.catch(() => undefined)
+    await restarting
+    expect(h.runtime.start.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('retries account and translation reads after an ordinary failure', async () => {
+    const h = await harness(undefined, false)
+    h.client.accountState.mockRejectedValueOnce(new Error('temporary account failure'))
+    // The start probe and the first session-ready retry both fail; the switch
+    // after that must probe again instead of caching the failure.
+    h.client.cotTranslationLimits.mockRejectedValueOnce(new Error('temporary translation failure'))
+      .mockRejectedValueOnce(new Error('temporary translation failure'))
+    await h.controller.start()
+    await vi.waitFor(() => expect(h.controller.state.phase).toBe('ready'))
+    const accountReads = h.client.accountState.mock.calls.length
+    const translationReads = h.client.cotTranslationLimits.mock.calls.length
+    await h.controller.selectSession('b')
+    await vi.waitFor(() => expect(h.client.accountState.mock.calls.length).toBeGreaterThan(accountReads))
+    expect(h.client.cotTranslationLimits.mock.calls.length).toBeGreaterThan(translationReads)
+  })
+
+  it('shares one in-flight start between concurrent callers', async () => {
+    const h = await harness(undefined, false)
+    const pending = Promise.withResolvers<void>()
+    h.runtime.start.mockImplementationOnce(() => pending.promise)
+    const first = h.controller.start()
+    const second = h.controller.start()
+    await vi.waitFor(() => expect(h.runtime.start).toHaveBeenCalledTimes(1))
+    pending.resolve()
+    await Promise.all([first, second])
+    expect(h.runtime.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not re-read runtime-wide account and translation facts on every switch', async () => {
+    const h = await harness()
+    await vi.waitFor(() => expect(h.client.cotTranslationLimits).toHaveBeenCalled())
+    const accountReads = h.client.accountState.mock.calls.length
+    const translationReads = h.client.cotTranslationLimits.mock.calls.length
+    await h.controller.selectSession('b')
+    await vi.waitFor(() => expect(h.controller.state.sessionId).toBe('b'))
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+    expect(h.client.accountState.mock.calls.length).toBe(accountReads)
+    expect(h.client.cotTranslationLimits.mock.calls.length).toBe(translationReads)
+  })
+
+  it('reuses the reminder catalog read for a conversation switch', async () => {
+    const h = await harness()
+    await vi.waitFor(() => expect(h.client.schedules).toHaveBeenCalled())
+    const reads = h.client.schedules.mock.calls.length
+    await h.controller.selectSession('b')
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+    expect(h.client.schedules.mock.calls.length).toBe(reads)
+  })
+
+  it('caches confirmed ratings per conversation until the runtime changes them', async () => {
+    const h = await harness()
+    h.client.messageFeedback.mockResolvedValue({ ok: true, value: { items: [
+      { messageId: 'm1', rating: 'positive', version: 7, createdAt: 1, updatedAt: 1 },
+    ] } })
+    await h.controller.selectSession('b')
+    await vi.waitFor(() => expect(h.controller.state.messageFeedback).toHaveLength(1))
+    const reads = h.client.messageFeedback.mock.calls.length
+    await h.controller.selectSession('a')
+    await vi.waitFor(() => expect(h.controller.state.sessionId).toBe('a'))
+    await h.controller.selectSession('b')
+    await vi.waitFor(() => expect(h.controller.state.messageFeedback).toHaveLength(1))
+    // Only the first open of `b` and the open of `a` read; returning to `b` is cached.
+    expect(h.client.messageFeedback.mock.calls.length).toBe(reads + 1)
+  })
+
+  it('rejects an image whose measured metadata disagrees with the projection', async () => {
+    const h = await harness()
+    const event = { type: 'assistant/message', seq: 1, time: 10, data: { turn: 1, step: 1, message: { content: [{
+      type: 'image', attachment: { attachmentId: 'picture', mediaType: 'image/png', bytes: 8, width: 1, height: 1 },
+    }] } } }
+    h.client.attachment.mockResolvedValue({ attachment: { attachmentId: 'picture', mediaType: 'image/png', bytes: 8, width: 2, height: 1 }, data: 'aW1hZ2U=' })
+    h.emit({ type: 'session/event', sessionId: 'a', event }, 'mux')
+    await vi.waitFor(() => expect(h.controller.state.messages[0]?.images?.[0]?.error).toBe('Image unavailable.'))
+    const logged = h.output.appendLine.mock.calls.map(call => String(call[0])).join('\n')
+    expect(logged).toContain('mismatched image metadata')
+    expect(logged).not.toContain('aW1hZ2U=')
+  })
+
+  it('monitors only the selected and running conversations on the first screen', async () => {
+    const h = await harness()
+    // A session-list change is what triggers the job scan.
+    h.emit({ type: 'session/projection', sessionId: 'a', key: 'title', value: 'Titled' }, 'mux')
+    await vi.waitFor(() => expect(h.client.monitorJobs).toHaveBeenCalled())
+    const first = h.client.monitorJobs.mock.calls[0]![0] as string[]
+    expect(first).toEqual([h.controller.state.sessionId])
   })
 })

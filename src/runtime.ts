@@ -1,5 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { statSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import * as vscode from 'vscode'
 import { DEEPSEEK_API_KEY_SECRET } from './credentials.js'
 import { resolveDshHome } from './plugin-profile.js'
@@ -104,7 +106,50 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** Version output cached per executable identity, so a restart of the same
+ * CLI does not pay for the `dsh --version` process again. */
+const versionCache = new Map<string, string>()
+
+/** Test seam: the cache is process-wide and the CLI identity is fixed in tests. */
+export function clearDshVersionCacheForTests(): void {
+  versionCache.clear()
+}
+
+function versionCacheKey(launch: LaunchCommand): string | undefined {
+  try {
+    const commandMtime = statSync(launch.command).mtimeMs
+    // A wrapper can stay byte-identical while the entry it forwards to is
+    // upgraded in place, so the mtime of every absolute file argument joins the
+    // identity. An unstatable argument cannot prove freshness; it is ignored.
+    const args = launch.args.map(arg => {
+      if (!isAbsolute(arg)) return arg
+      try { return `${arg}@${statSync(arg).mtimeMs}` } catch { return arg }
+    })
+    return `${launch.command}\u0000${args.join('\u0000')}\u0000${commandMtime}`
+  } catch {
+    // A shell fallback or a source-checkout launcher has no stable file to stat.
+    return undefined
+  }
+}
+
+/** Cache a version only after it was proven acceptable by the caller. */
+function rememberDshVersion(launch: LaunchCommand, version: string | undefined): void {
+  const key = versionCacheKey(launch)
+  if (key !== undefined && version !== undefined) versionCache.set(key, version)
+}
+
+/** A failed start must not keep serving the version that failed. */
+function forgetDshVersion(launch: LaunchCommand): void {
+  const key = versionCacheKey(launch)
+  if (key !== undefined) versionCache.delete(key)
+}
+
 function readDshVersion(launch: LaunchCommand, cwd: string): Promise<string | undefined> {
+  const cacheKey = versionCacheKey(launch)
+  if (cacheKey !== undefined) {
+    const cached = versionCache.get(cacheKey)
+    if (cached !== undefined) return Promise.resolve(cached)
+  }
   return new Promise(resolve => {
     let settled = false
     let output = ''
@@ -113,6 +158,7 @@ function readDshVersion(launch: LaunchCommand, cwd: string): Promise<string | un
       if (settled) return
       settled = true
       if (timer !== undefined) clearTimeout(timer)
+      // Caching belongs to the caller's supported-version check, not to the read.
       resolve(version)
     }
     let child: ChildProcessWithoutNullStreams
@@ -163,6 +209,8 @@ export class DshRuntime implements vscode.Disposable {
   private stopRevision = 0
   private stopping = false
   private launchPreparation: RuntimeLaunchPreparation | undefined
+  /** The CLI version read for this start, when it looked like a real version. */
+  private knownVersion: string | undefined
   private launchPreparationRelease: Promise<void> | undefined
   private _state: RuntimeState = { kind: 'stopped' }
   /** This extension host's identity in the broker's lease ledger. */
@@ -316,26 +364,50 @@ export class DshRuntime implements vscode.Disposable {
       if (this.broker !== undefined && this.adoptOwnRuntimes && launchPreparation !== undefined && launchPreparation.sharing !== 'compatible') {
         throw new Error('This launch uses a window-bound runtime bridge, which cannot be shared safely. Disable autonomous debugging to share DSH, or disable deepseekHarness.reuseAcrossWindows for an intentionally separate runtime.')
       }
-      if (this.broker === undefined && launchPreparation === undefined && target?.kind !== 'managed'
-        && shouldProbeExistingDsh(reuseExistingRuntime, configuredExecutable, hasCustomArguments)
-        && findSourceRoot(this.context.extensionUri.fsPath) === undefined) {
-        await this.checkConventionalEndpoint()
-        if (this.pending !== pending) return pending.promise
-      }
+      // The version probe and the credential read are independent of each
+      // other, and of the conventional-port probe when that probe runs. Start
+      // them before whichever work comes first and await in the original order.
+      // The swallowed rejections only prevent an unhandled rejection if the
+      // start is cancelled before the await.
       const versionLaunch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, ['--version'], {
         cwd: workspace.fsPath,
       })
+      const checksConventionalPort = this.broker === undefined && launchPreparation === undefined && target?.kind !== 'managed'
+        && shouldProbeExistingDsh(reuseExistingRuntime, configuredExecutable, hasCustomArguments)
+        && findSourceRoot(this.context.extensionUri.fsPath) === undefined
+      // A failed existing-runtime handshake must not pay for an extra process;
+      // with no port probe to hide behind, the version read starts immediately.
+      const versionRead = checksConventionalPort
+        ? undefined
+        : readDshVersion(versionLaunch, workspace.fsPath)
+      versionRead?.catch(() => undefined)
+      const secretRead = this.context.secrets.get(DEEPSEEK_API_KEY_SECRET)
+      Promise.resolve(secretRead).catch(() => undefined)
+      if (checksConventionalPort) {
+        await this.checkConventionalEndpoint()
+        if (this.pending !== pending) return pending.promise
+      }
+      const resolvedVersion = versionRead ?? readDshVersion(versionLaunch, workspace.fsPath)
+      resolvedVersion.catch(() => undefined)
       this.publish({ kind: 'starting', detail: 'Checking the installed DSH version…' })
-      version = await readDshVersion(versionLaunch, workspace.fsPath)
+      version = await resolvedVersion
       if (this.pending !== pending) return pending.promise
-      assertSupportedDshVersion(version)
+      try {
+        assertSupportedDshVersion(version)
+      } catch (error) {
+        forgetDshVersion(versionLaunch)
+        throw error
+      }
+      rememberDshVersion(versionLaunch, version)
+      // 'source' and other free-form version lines are not a contract proof.
+      this.knownVersion = /(?:^|\s|v)\d+\.\d+\.\d+/.test(version ?? '') ? version : undefined
       const versionedArgs = webArgsForDshVersion(configuredArgs, version)
       const args = applyRuntimeLaunchPreparation(versionedArgs, version, launchPreparation)
       launch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, args, {
         cwd: workspace.fsPath,
       })
       this.publish({ kind: 'starting', detail: 'Loading DSH credentials…' })
-      storedApiKey = await this.context.secrets.get(DEEPSEEK_API_KEY_SECRET)
+      storedApiKey = await secretRead
       if (this.pending !== pending) return pending.promise
     } catch (error) {
       this.failStart(error instanceof Error ? error : new Error(String(error)), pending)
@@ -721,10 +793,18 @@ export class DshRuntime implements vscode.Disposable {
     this.publish({ kind: 'starting', detail: 'Authenticating with DeepSeek Harness…' })
     void (async () => {
       await connection.authenticate(launchUrl)
-      const probe = await probeDshServer(connection, 10_000)
-      if (probe.kind !== 'ready') {
-        throw new Error(probe.kind === 'unsupported' ? DSH_UPGRADE_MESSAGE
-          : `Could not verify the authenticated DSH Remote service (${probe.kind}). Reconnect the runtime.`)
+      if (this.knownVersion === undefined) {
+        const probe = await probeDshServer(connection, 10_000)
+        if (probe.kind !== 'ready') {
+          throw new Error(probe.kind === 'unsupported' ? DSH_UPGRADE_MESSAGE
+            : `Could not verify the authenticated DSH Remote service (${probe.kind}). Reconnect the runtime.`)
+        }
+      } else {
+        // A runtime this window started from a version that passed the contract
+        // minimum is verified by the first stream read, which repeats the same
+        // call the probe would make. This removes a duplicate session/list on
+        // the startup path; an unknown/source version keeps the probe.
+        this.output.appendLine('[runtime] DSH version known; contract verified on the first stream read')
       }
       if (this.pending !== pending) {
         connection.dispose()

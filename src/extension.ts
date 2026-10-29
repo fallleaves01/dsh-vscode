@@ -481,6 +481,8 @@ export class DshChatController implements vscode.Disposable {
   private readonly declinedRuntimeUrls = new Set<string>()
   /** Ratings the runtime confirmed for the open conversation, by message id. */
   private readonly feedback = new Map<string, MessageFeedbackItem>()
+  /** Confirmed ratings per conversation, so switching back is not another RPC. */
+  private readonly feedbackBySession = new Map<string, Map<string, MessageFeedbackItem>>()
   /** Slash commands held until a conversation is idle, in submission order. */
   private readonly queuedCommands = new Map<string, { id: string; text: string; images: readonly PromptImage[] }[]>()
   private drainingCommands = false
@@ -500,6 +502,21 @@ export class DshChatController implements vscode.Disposable {
   private permissionCatalog: PermissionCatalog | undefined
   /** Monotonic cot-translation probe id: only the newest answer may publish. */
   private translationRevision = 0
+  /** The connection whose cot-translation capability was already probed. */
+  private translationClient: DshClient | undefined
+  /** One in-flight capability probe, so start and session-ready do not race. */
+  private translationProbe: { client: DshClient; promise: Promise<void> } | undefined
+  /** The connection whose account state was already read. */
+  private accountClient: DshClient | undefined
+  /** First-ready hooks run once, after the connection work that built the UI. */
+  private firstReady = false
+  private readonly firstReadyHooks: Array<() => void> = []
+  /** In-flight runtime start shared by concurrent callers. */
+  private startTask: Promise<void> | undefined
+  /** The stream baseline a concurrent first session read must wait for before ready. */
+  private streamsGate: Promise<void> | undefined
+  /** Whether the first-screen background job scan was already broadened. */
+  private jobsScanExpanded = false
   private readonly unreadSessionIds: Set<string>
   private readonly sessionAttention = new Map<string, SessionAttention>()
   private readonly reconnectSessions = new Set<string>()
@@ -741,6 +758,12 @@ export class DshChatController implements vscode.Disposable {
   publish(patch: Partial<ChatViewState>): void {
     this._state = { ...this._state, ...patch }
     this.changes.fire(this._state)
+    if (!this.firstReady && this._state.phase === 'ready') {
+      this.firstReady = true
+      // Idle deferral: the hooks may take a lock or spawn a process, which must
+      // not compete with the first conversation render or its RPCs.
+      for (const hook of this.firstReadyHooks.splice(0)) setTimeout(hook, 1_500)
+    }
   }
 
   observeRuntime(state: RuntimeState): void {
@@ -772,6 +795,63 @@ export class DshChatController implements vscode.Disposable {
 
   async start(target?: RuntimeTarget): Promise<void> {
     if (this.disposed) return
+    // A second start while one is in flight joins it instead of racing it: two
+    // view resolutions and an explicit Reconnect would otherwise restart the
+    // whole runtime chain, which is what made opening the sidebar feel slow.
+    if (this.startTask === undefined) {
+      this.startTask = this.startNow(target).finally(() => { this.startTask = undefined })
+    }
+    return this.startTask
+  }
+
+  /**
+   * Start only when there is no live connection to reuse.
+   *
+   * A newly resolved view or an Open in Editor call is not a reason to tear
+   * down a healthy runtime: the new surface asks for a snapshot itself. The
+   * explicit commands (Reconnect, Restart) and the error phase still call
+   * `start()`, and an in-flight start is joined rather than duplicated.
+   */
+  async ensureStarted(target?: RuntimeTarget): Promise<void> {
+    if (this.disposed) return
+    if (this.startTask !== undefined) return this.startTask
+    if (target !== undefined) return this.start(target)
+    // Phase is irrelevant here: a ready runtime with a live client is healthy
+    // even while a conversation is loading or a previous load left an error on
+    // screen. Restarting it for a new view would kill the live runtime; the new
+    // surface receives the current state (including that error) instead.
+    if (this.runtime.state.kind === 'ready' && this.client !== undefined) {
+      this.output.appendLine('[chat] reusing the active DSH connection for a new surface')
+      // Re-fire the state so a surface that just loaded scripts receives it.
+      this.publish({})
+      return
+    }
+    return this.start()
+  }
+
+  /**
+   * Run one callback after the first ready state.
+   *
+   * Used for work that must not delay the first paint (stale runtime-record
+   * sweeping); the delayed call keeps the startup chain free of lock contention.
+   */
+  afterFirstReady(callback: () => void, fallbackMs = 15_000): void {
+    if (this.firstReady) { setTimeout(callback, 0); return }
+    const run = (): void => {
+      const index = this.firstReadyHooks.indexOf(run)
+      if (index === -1) return
+      this.firstReadyHooks.splice(index, 1)
+      clearTimeout(timer)
+      callback()
+    }
+    this.firstReadyHooks.push(run)
+    // A runtime that never becomes ready must still get the cleanup once.
+    const timer = setTimeout(run, fallbackMs)
+    timer.unref?.()
+  }
+
+  private async startNow(target?: RuntimeTarget): Promise<void> {
+    this.streamsGate = undefined
     // Starting again — a restart, or the view being re-created — must not move
     // the user to a different conversation. The id is captured before the reset
     // below clears it, because clearing it is what made the reload fall through
@@ -839,19 +919,32 @@ export class DshChatController implements vscode.Disposable {
       this.observeRuntime(this.runtime.state)
       const client = this.connectClient(connection)
       this.publish({ canReconnect: true, statusText: 'Connected to DSH. Opening event streams…' })
-      await client.startStreams()
-      if (generation !== this.generation || this.client !== client) return
+      // The stream baselines and the first conversation list are independent
+      // reads: start both, so the list RTT overlaps the baseline subscription
+      // instead of following it. `loadSessions` awaits the same baseline through
+      // `refreshArchivedSessions`, and every await is guarded by generation.
+      const streamsReady = client.startStreams()
+      this.streamsGate = streamsReady
       // Optional capabilities: never part of the connect handshake, so a
       // runtime that does not serve them still opens the conversation.
       void this.loadPermissionCatalog(client)
       void this.loadTranslation(client)
+      const sessionsReady = this.loadSessions(previousSessionId === '' ? undefined : previousSessionId)
+      // When the stream baseline fails first, the list promise is abandoned by
+      // the catch below; attach a handler now so it cannot reject unhandled. The
+      // success path still awaits it and surfaces its own failure.
+      sessionsReady.catch(() => undefined)
+      await streamsReady
+      if (generation !== this.generation || this.client !== client) return
       this.output.appendLine(`[chat] event streams ready after ${Date.now() - connectingAt} ms; loading saved conversations`)
       this.publish({ statusText: 'Connected to DSH. Loading saved conversations…' })
-      await this.loadSessions(previousSessionId === '' ? undefined : previousSessionId)
+      this.streamsGate = undefined
+      await sessionsReady
       if (generation === this.generation && this._state.phase === 'ready') {
         this.output.appendLine(`[chat] conversation ready after ${Date.now() - connectingAt} ms`)
       }
     } catch (error) {
+      this.streamsGate = undefined
       if (generation !== this.generation) return
       const message = redactDshSecrets(error instanceof Error ? error.message : String(error))
       this.output.appendLine(`[chat] ${message}`)
@@ -896,6 +989,14 @@ export class DshChatController implements vscode.Disposable {
       throw error
     }
     if (revision !== this.runtimeSwitchRevision) return false
+    // A start that was still in flight when the user hit Restart is now
+    // superseded: wait for it to settle so it cannot be joined (and silently
+    // replace the requested start/target) by the fresh start call below.
+    const superseded = this.startTask
+    if (superseded !== undefined) {
+      try { await superseded } catch { /* superseded by this restart */ }
+      if (this.disposed || revision !== this.runtimeSwitchRevision) return false
+    }
     const startGeneration = this.generation + 1
     await this.start(target)
     return !this.disposed && this._state.phase === 'ready'
@@ -1166,10 +1267,13 @@ export class DshChatController implements vscode.Disposable {
         throw new Error('This conversation is not in the current project on this runtime. Switch project or reopen it from its window.')
       }
     }
-    this.markRead(sessionId)
+    this.markRead(sessionId, true)
     // The refresh selects the preferred conversation itself, so a successful
     // refresh has already opened the target.
-    if (refreshed && this._state.sessionId === sessionId && this._state.phase === 'ready') return
+    if (refreshed && this._state.sessionId === sessionId && this._state.phase === 'ready') {
+      this.publishSessionItems()
+      return
+    }
     await this.loadSession(sessionId)
   }
 
@@ -1872,12 +1976,15 @@ export class DshChatController implements vscode.Disposable {
    * fifth baseline stream alongside `$events`, `session/control`,
    * `workspace/follow` and `session/follow`.
    */
-  async refreshAccount(): Promise<void> {
+  async refreshAccount(force = true): Promise<void> {
     const client = this.client
     if (client === undefined) {
       this.publish(this.accountPatch(unavailableAccountState()))
       return
     }
+    // Account facts are runtime-wide: switching conversations must not re-read
+    // them. Events and sign-in polling pass force=true to bypass this.
+    if (!force && this.accountClient === client) return
     try {
       const view = await client.accountState()
       if (this.client !== client) return
@@ -1895,6 +2002,7 @@ export class DshChatController implements vscode.Disposable {
         details = { profile, balance }
       }
       const account = accountStateOf(view, details)
+      this.accountClient = client
       this.publish(this.accountPatch(account))
       this.scheduleAccountPoll(account)
       await this.openAuthorizeUrl(account)
@@ -1908,6 +2016,9 @@ export class DshChatController implements vscode.Disposable {
       this.output.appendLine(missing
         ? '[account] not available on this runtime'
         : `[account] unexpected failure (${failure.code ?? 'no code'}): ${failure.message}`)
+      // Only a runtime without the account service is cached as "read": an
+      // ordinary failure must be retried by the next switch or explicit call.
+      if (missing) this.accountClient = client
       this.publish(this.accountPatch(unavailableAccountState()))
       this.stopAccountPoll()
     }
@@ -2015,7 +2126,7 @@ export class DshChatController implements vscode.Disposable {
     this.accountPollCount += 1
     this.accountPoll = setTimeout(() => {
       this.accountPoll = undefined
-      void this.refreshAccount()
+      void this.refreshAccount(true)
     }, ACCOUNT_POLL_INTERVAL_MS)
   }
 
@@ -2041,7 +2152,11 @@ export class DshChatController implements vscode.Disposable {
     this.permissionCatalog = undefined
     // Same for cot-translation: a capability probe answers for one connection.
     ++this.translationRevision
+    this.translationClient = undefined
     this.publish({ translation: null })
+    this.accountClient = undefined
+    this.feedbackBySession.clear()
+    this.jobsScanExpanded = false
     // A stop acknowledgement is a fact about a connection that is going away.
     this.clearStoppingAcknowledgement()
     this.publish({ subagentCatalogs: {} })
@@ -2170,7 +2285,31 @@ export class DshChatController implements vscode.Disposable {
   private publishSessionItems(): void {
     this.publish(this.sessionItemPatch())
     this.publish({ childReadOnlyReason: this.childReadOnlyReason(this._state.sessionId), projectJobs: this.projectJobs(), jobsStatus: [...this.jobErrors.values()].join('\n') || null })
-    this.client?.monitorJobs(this.summaries.map(summary => summary.sessionId))
+    this.monitorJobsForList()
+  }
+
+  /**
+   * Monitor the conversations the first screen can show immediately.
+   *
+   * Opening a job subscription per saved conversation delayed the first paint
+   * on large session lists. The selected and running conversations are read
+   * first; an idle pass then broadens the scan without blocking anything.
+   */
+  private monitorJobsForList(): void {
+    const client = this.client
+    if (client === undefined) return
+    const first = this.jobsScanExpanded
+      ? this.summaries.map(summary => summary.sessionId)
+      : this.summaries
+        .filter(summary => summary.running || summary.sessionId === this._state.sessionId)
+        .map(summary => summary.sessionId)
+    client.monitorJobs(first)
+    if (this.jobsScanExpanded) return
+    this.jobsScanExpanded = true
+    setTimeout(() => {
+      if (this.client !== client) return
+      client.monitorJobs(this.summaries.map(summary => summary.sessionId))
+    }, 1_500)
   }
 
   private projectJobs(): ChatViewState['projectJobs'] {
@@ -2181,10 +2320,12 @@ export class DshChatController implements vscode.Disposable {
     return [...jobs.values()]
   }
 
-  private markRead(sessionId: string): void {
+  private markRead(sessionId: string, deferPublish = false): void {
     if (!this.unreadSessionIds.delete(sessionId)) return
     this.persistUnreadSessions()
-    this.publishSessionItems()
+    // The ready publication that follows a successful open carries the same
+    // list, so publishing here would rebuild it twice on every switch.
+    if (!deferPublish) this.publishSessionItems()
   }
 
   private markUnread(sessionId: string): void {
@@ -2219,7 +2360,10 @@ export class DshChatController implements vscode.Disposable {
     this.queueRawText.clear()
     this.publish({
       phase: 'loading',
-      statusText: 'Loading project conversation…',
+      // While the first connection is still opening its event streams, that
+      // connection status is the useful message; a session load racing it must
+      // not replace it with the generic loading line.
+      statusText: this.streamsGate === undefined ? 'Loading project conversation…' : this._state.statusText,
       sessionId,
       ...(sessionChanged ? { messages: [], changedFiles: [] } : {}),
       // Loading is a boundary: the previous conversation's turn is not this
@@ -2285,6 +2429,12 @@ export class DshChatController implements vscode.Disposable {
       summary.projections = { values: opening.projections }
       if (typeof opening.projections.agentPreset === 'string') summary.agentPreset = opening.projections.agentPreset
     }
+    // The list read may finish before the stream subscription; an opened
+    // conversation is ready only when both are done. Guards re-check after the
+    // wait, because a newer load can supersede this one meanwhile.
+    const gate = this.streamsGate
+    if (gate !== undefined) await gate
+    if (this.client !== client || loadGeneration !== this.sessionLoadGeneration || !opening.isCurrent()) return
     this.publish({
       phase: 'ready',
       statusText: '',
@@ -2304,7 +2454,10 @@ export class DshChatController implements vscode.Disposable {
       team: agentTeamOf(summary?.projections?.values) ?? null,
       imageLimits: imageLimitsOf(summary?.projections?.values?.imageLimits),
       permissions: permissionPresetsFromCatalog(summary?.projections?.values?.permissions, this.permissionCatalog),
-      messageFeedback: [],
+      messageFeedback: (() => {
+        const cached = this.feedbackBySession.get(sessionId)
+        return cached === undefined ? [] : [...cached.values()]
+      })(),
       plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       queue: [],
@@ -2332,8 +2485,9 @@ export class DshChatController implements vscode.Disposable {
     this.publish({ childReadOnlyReason: this.childReadOnlyReason(sessionId), workflows: workflowsOf(this.historyEntries.map(entry => entry.event)) })
     this.hydrateImages(client, sessionId)
     // Account state is per-runtime, not per-conversation, so the first ready
-    // conversation is what makes the account control appear at all.
-    void this.refreshAccount()
+    // conversation is what makes the account control appear at all. Explicit
+    // callers (events, sign-in polling, the UI) force a fresh read.
+    void this.refreshAccount(false)
     void this.loadCommands(client, sessionId)
     void this.loadSkills(client, sessionId)
     void this.loadAgentPresets(client, sessionId)
@@ -2429,11 +2583,23 @@ export class DshChatController implements vscode.Disposable {
    * The probe is intentionally quiet: a runtime without the experimental bundle
    * simply leaves `translation` null.
    */
-  private async loadTranslation(client: DshClient): Promise<void> {
+  private async loadTranslation(client: DshClient, force = false): Promise<void> {
+    if (!force && this.translationClient === client) return
+    if (!force && this.translationProbe?.client === client) return this.translationProbe.promise
+    const probe = this.probeTranslation(client)
+    this.translationProbe = { client, promise: probe }
+    try { await probe } finally {
+      if (this.translationProbe?.promise === probe) this.translationProbe = undefined
+    }
+  }
+
+  private async probeTranslation(client: DshClient): Promise<void> {
     const revision = ++this.translationRevision
     let limits: DshTranslationLimits | undefined
+    let answered = false
     try {
       limits = await client.cotTranslationLimits()
+      answered = true
     } catch (error) {
       // Optional capability discovery: a client or runtime that cannot serve
       // the read must leave the original reasoning text in place, never fail a
@@ -2443,6 +2609,9 @@ export class DshChatController implements vscode.Disposable {
     }
     // A late answer from a replaced connection must not resurrect a capability.
     if (this.client !== client || revision !== this.translationRevision) return
+    // Resolved (with or without a capability) is worth caching; a thrown read is
+    // not, so the next switch can retry a transient failure.
+    if (answered) this.translationClient = client
     this.publish({ translation: this.translationStateOf(limits) })
   }
 
@@ -2573,7 +2742,7 @@ export class DshChatController implements vscode.Disposable {
         this.settingsChanges.fire()
         // Provider preferences, routed providers and the experimental bundle can
         // all change the cot-translation capability without a reconnect.
-        if (this.client !== undefined) void this.loadTranslation(this.client)
+        if (this.client !== undefined) void this.loadTranslation(this.client, true)
       }
       if (type === 'host/permission-catalog-changed' && this.client !== undefined) void this.loadPermissionCatalog(this.client)
       if (this.client !== undefined && this._state.phase === 'ready' && this._state.sessionId !== '') {
@@ -2604,12 +2773,23 @@ export class DshChatController implements vscode.Disposable {
           }
           this.publish({ agentPreset: lockAgentPresetState(this._state.agentPreset) })
         }
-        this.historyEntries = mergeHistoryEntries(this.historyEntries, [{ event: dshEvent, view: payload.view }])
+        // Live events arrive in append order: an O(1) push replaces the full
+        // Map+sort merge. A replay or a late page still goes through the merge.
+        const previous = this.historyEntries.at(-1)
+        if (previous === undefined || dshEvent.seq > previous.event.seq) {
+          this.historyEntries.push({ event: dshEvent, view: payload.view })
+        } else {
+          this.historyEntries = mergeHistoryEntries(this.historyEntries, [{ event: dshEvent, view: payload.view }])
+        }
         if (dshEvent.type.startsWith('tool-workflow/')) this.publish({ workflows: workflowsOf(this.historyEntries.map(entry => entry.event)) })
-        const conflict = this.dirtyConflict(dshEvent, payload.view)
+        // Only events that can carry a tool call, a file mutation or a turn
+        // boundary need the dirty-file and review scans.
+        const reviewCandidate = dshEvent.type.startsWith('tool/')
+          || dshEvent.type === 'assistant/message' || dshEvent.type === 'turn/end'
+        const conflict = reviewCandidate ? this.dirtyConflict(dshEvent, payload.view) : undefined
         if (conflict !== undefined) void this.cancelForDirtyConflict(conflict)
         this.projector.apply(dshEvent, payload.view)
-        const changed = this.diffReviews.accept(sessionId, this.cwd, dshEvent, payload.view)
+        const changed = reviewCandidate ? this.diffReviews.accept(sessionId, this.cwd, dshEvent, payload.view) : false
         if (conflict !== undefined) {
           const label = conflict.paths.length === 1
             ? `\`${conflict.paths[0] ?? 'file'}\``
@@ -2624,7 +2804,11 @@ export class DshChatController implements vscode.Disposable {
           messages: this.projectedMessages(), ...this.messageMetaPatch(), ...this.noteTurnActivity(),
           ...(changed ? { changedFiles: this.diffReviews.changedFiles(sessionId) } : {}),
         })
-        this.hydrateImages(this.requireClient(), sessionId)
+        // Only these event kinds can add an image reference; other events have
+        // nothing to hydrate and would rescan the whole transcript.
+        if (dshEvent.type === 'user/message' || dshEvent.type === 'assistant/message' || dshEvent.type === 'tool/result') {
+          this.hydrateImages(this.requireClient(), sessionId)
+        }
       }
       return
     }
@@ -2722,9 +2906,12 @@ export class DshChatController implements vscode.Disposable {
       if (summary !== undefined && typeof payload.key === 'string') {
         summary.projections = { values: { ...summary.projections?.values, [payload.key]: payload.value } }
       }
+      // Only keys the list actually renders: title, subagent presence and
+      // subagent timing. tokenUsage belongs to the open conversation's meter
+      // and must not rebuild every session row.
       if ((typeof payload.value === 'string' && payload.key === 'title')
         || payload.key === 'subagentCatalog' || payload.key === 'subagent'
-        || payload.key === 'subagentTiming' || payload.key === 'tokenUsage') {
+        || payload.key === 'subagentTiming') {
         this.publishSessionItems()
       }
       if (payload.key === 'todos' && sessionId === this._state.sessionId) {
@@ -2843,7 +3030,7 @@ export class DshChatController implements vscode.Disposable {
     if (frame.channel === 'host' && type === 'host/account-changed') {
       // `deepseek-account/signed-out` and `session-expired` reach us as host
       // events; without this the sidebar would keep claiming a stale sign-in.
-      void this.refreshAccount()
+      void this.refreshAccount(true)
       return
     }
 
@@ -2923,6 +3110,8 @@ export class DshChatController implements vscode.Disposable {
       }
       this.report(new DshConnectionError(outcome.error.code, outcome.error.message ?? outcome.error.code), sessionId)
     }
+    if (this.feedback.size === 0) this.feedbackBySession.delete(sessionId)
+    else this.feedbackBySession.set(sessionId, new Map(this.feedback))
     this.publish({ messageFeedback: [...this.feedback.values()] })
   }
 
@@ -3001,6 +3190,13 @@ export class DshChatController implements vscode.Disposable {
 
   /** Adopt the ratings the runtime holds for a conversation. */
   private async loadFeedback(client: DshClient, sessionId: string): Promise<void> {
+    const cached = this.feedbackBySession.get(sessionId)
+    if (cached !== undefined) {
+      this.feedback.clear()
+      for (const [messageId, item] of cached) this.feedback.set(messageId, item)
+      if (sessionId === this._state.sessionId) this.publish({ messageFeedback: [...this.feedback.values()] })
+      return
+    }
     let outcome: Awaited<ReturnType<DshClient['messageFeedback']>>
     try {
       outcome = await client.messageFeedback(sessionId)
@@ -3019,6 +3215,10 @@ export class DshChatController implements vscode.Disposable {
     if (!outcome.ok) return
     this.feedback.clear()
     for (const item of outcome.value.items) this.feedback.set(item.messageId, item)
+    // An empty answer is cheap to re-read and is the state another window can
+    // change without an event; cache only the non-empty case.
+    if (this.feedback.size === 0) this.feedbackBySession.delete(sessionId)
+    else this.feedbackBySession.set(sessionId, new Map(this.feedback))
     this.publish({ messageFeedback: [...this.feedback.values()] })
   }
 
@@ -3050,10 +3250,24 @@ export class DshChatController implements vscode.Disposable {
     for (const image of images) {
       const key = `${sessionId}\u0000${image.attachmentId}`
       if (this.attachmentResults.has(key) || this.attachmentLoads.has(key)) continue
-      const load = client.attachment(sessionId, image.attachmentId)
+      // The whole projected reference goes to the client: alpha2 validates the
+      // media type, byte length and dimensions, while rc.2/rc.3 read only the id.
+      if (image.bytes === undefined) {
+        this.output.appendLine(`[attachment] reference ${diagnosticText(image.attachmentId)} has no byte length; the runtime may refuse the read`)
+      }
+      const load = client.attachment(sessionId, image)
         .then((result) => {
           if (this.client !== client || this.attachmentLoads.get(key) !== load) return
-          if (result.attachment.attachmentId !== image.attachmentId || result.attachment.mediaType !== image.mediaType) {
+          const attachment = result.attachment
+          // The runtime answers with the stored reference; when both sides carry
+          // a measurement they must agree, or the metadata shown would describe
+          // a different image than the bytes.
+          const mismatch = attachment.attachmentId !== image.attachmentId
+            || attachment.mediaType !== image.mediaType
+            || (image.bytes !== undefined && attachment.bytes !== image.bytes)
+            || (attachment.width !== undefined && attachment.width !== image.width)
+            || (attachment.height !== undefined && attachment.height !== image.height)
+          if (mismatch) {
             throw new Error('DeepSeek Harness returned mismatched image metadata.')
           }
           this.attachmentResults.set(key, { data: result.data })
@@ -4540,7 +4754,7 @@ class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
       if (this.surface === surface) this.surface = undefined
     })
     const autoStart = vscode.workspace.getConfiguration('deepseekHarness').get<boolean>('autoStart', true)
-    if (autoStart) void this.controller.start()
+    if (autoStart) void this.controller.ensureStarted()
   }
 
   dispose(): void {
@@ -4635,17 +4849,23 @@ export function activate(context: vscode.ExtensionContext): void {
       ...(process.platform === 'linux' && vscode.env.remoteName === 'ssh-remote'
         ? { serverOwner: () => findVsCodeServer(nodeProcessProbe()) } : {}) })
     : undefined
-  void (async () => {
-    if (broker === undefined) return []
-    const lock = await broker.acquireTransition()
-    try { return await broker.sweep() } finally { lock.release() }
-  })().then(removed => {
-    // Only records whose process is provably gone are removed; nothing is ever
-    // terminated here, so a leftover runtime that is still alive keeps running.
-    for (const file of removed) output.appendLine(`[runtime] discarded a stale runtime record: ${file}`)
-  }).catch(error => {
-    output.appendLine(`[runtime] could not sweep stale runtime records: ${error instanceof Error ? error.message : String(error)}`)
-  })
+  // Stale-record sweeping needs the transition lock, which the first start also
+  // takes; running it after the first ready keeps the lock out of the startup
+  // chain without skipping the cleanup. Activation without a ready runtime runs
+  // it once, immediately, so the records are never left unexamined.
+  const sweep = (): void => {
+    void (async () => {
+      if (broker === undefined) return []
+      const lock = await broker.acquireTransition()
+      try { return await broker.sweep() } finally { lock.release() }
+    })().then(removed => {
+      // Only records whose process is provably gone are removed; nothing is ever
+      // terminated here, so a leftover runtime that is still alive keeps running.
+      for (const file of removed) output.appendLine(`[runtime] discarded a stale runtime record: ${file}`)
+    }).catch(error => {
+      output.appendLine(`[runtime] could not sweep stale runtime records: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
   const reuseAcrossWindows = vscode.workspace.getConfiguration('deepseekHarness').get<boolean>('reuseAcrossWindows', true)
   // The broker is always handed over: `reuseAcrossWindows` gates only attaching to a
   // runtime *this extension* started, while a runtime the user asked us to remember
@@ -4661,6 +4881,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const diffReviews = new DiffReviewManager()
   const controller = new DshChatController(runtime, output, new DirtyFileGuard(), diffReviews, context.workspaceState, cwd,
     String(context.extension.packageJSON.version ?? ''))
+  controller.afterFirstReady(sweep)
   const settingsPanel = new SettingsPanelManager(controller, context.extensionUri, String(context.extension.packageJSON.version ?? ''))
   context.subscriptions.push(settingsPanel)
   const pluginManager = new DshPluginManager(context, controller, output, () => settingsPanel.open())
@@ -4717,7 +4938,7 @@ export function activate(context: vscode.ExtensionContext): void {
       entry.surface.dispose()
       panels.delete(entry)
     })
-    await controller.start()
+    await controller.ensureStarted()
   }))
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.signIn', async () => {

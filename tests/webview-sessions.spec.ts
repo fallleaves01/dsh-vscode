@@ -19,7 +19,10 @@ function action(h: Harness, label: string) { [...h.document.querySelectorAll<HTM
 describe('main conversation directory and quick switcher', () => {
   it('excludes children and orphan subagents from both lists while retaining the Tasks panel', async () => {
     const h = open(); h.sendState({ sessionId: 'parent', sessions: [parent, child, { ...child, id: 'orphan', parentId: undefined }] }); await h.settle()
-    h.click('#sessionTrigger'); expect(ids(h)).toEqual(['parent']); expect(ids(h, '#homeSessionList')).toEqual(['parent'])
+    h.click('#sessionTrigger'); expect(ids(h)).toEqual(['parent'])
+    // The full directory is built only while it is open (R1), so open it before
+    // checking that the same filtering applies there.
+    h.click('#conversationHome'); expect(ids(h, '#homeSessionList')).toEqual(['parent'])
     expect(h.document.querySelectorAll('.session-expander')).toHaveLength(0)
     expect(h.document.querySelector('.task-child[data-session-id="kid"]')).not.toBeNull()
     h.click('.task-child[data-session-id="kid"]'); expect(h.posts.at(-1)).toEqual({ type: 'select-session', sessionId: 'kid' })

@@ -87,7 +87,7 @@ describe('existing DSH runtime probe', () => {
     expect(() => assertSupportedDshVersion(version)).toThrow('0.1.2-rc.1')
   })
 
-  it.each(['0.1.2-rc.1', 'dsh 0.1.2-rc.2', 'v0.1.2', '0.1.2+build.1', '0.1.3', '0.2.0', '1.0.0', undefined, 'source'])('allows %s to reach the protocol check', version => {
+  it.each(['0.1.2-rc.1', 'dsh 0.1.2-rc.2', 'v0.1.2', '0.1.2+build.1', '0.1.3', '0.2.0', '0.2.2-alpha.2', 'v0.2.2-alpha.2+build.1', '1.0.0', undefined, 'source'])('allows %s to reach the protocol check', version => {
     expect(() => assertSupportedDshVersion(version)).not.toThrow()
   })
 })

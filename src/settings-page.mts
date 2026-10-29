@@ -541,13 +541,31 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
         const label = bundle.title ?? bundle.name.replace(/^@deepseek-ai\/dsh-/, '')
         const applying = pendingBundle?.name === bundle.name
         const current = applying ? pendingBundle!.enabled : bundle.enabled
+        // An on-demand bundle that is not installed has nothing to switch: the
+        // toggle would only produce a Host failure. A bundle the Host does not
+        // list by default is likewise managed from the DSH plugin manager; its
+        // switch is offered only when it is already enabled (so it can be turned
+        // off here).
+        const onDemandMissing = bundle.availability === 'missing'
+        const hiddenByDefault = bundle.listedByDefault === false && bundle.enabled !== true
+        const unsupported = bundle.errorCode === 'unsupported-platform'
         card.append(el('div', 'inventory-name', label),
-          el('span', 'hint bundle-status', [applying ? 'Applying…' : current ? 'Enabled' : 'Disabled', bundle.version ? 'v' + bundle.version : '', bundle.installed ? 'Installed' : 'Provided by this installation'].filter(Boolean).join(' · ')))
+          el('span', 'hint bundle-status', [
+            applying ? 'Applying…' : current ? 'Enabled' : 'Disabled',
+            bundle.version ? 'v' + bundle.version : '',
+            bundle.installed ? 'Installed' : onDemandMissing ? 'Not installed' : 'Provided by this installation',
+            bundle.listedByDefault === false ? 'Not listed by default' : '',
+            unsupported ? 'Unsupported on this platform' : '',
+            bundle.updatable ? 'Updatable' : '',
+          ].filter(Boolean).join(' · ')))
         if (bundle.description) card.append(el('span', 'hint bundle-description', bundle.description))
-        if (manage) card.append(toggle('Enabled', current, enabled => {
+        if (manage && !onDemandMissing && !hiddenByDefault) card.append(toggle('Enabled', current, enabled => {
           if (enabled === current) return
           start({ type: 'set-bundle', name: bundle.name, enabled })
         }, 'bundle:' + bundle.name))
+        else if (manage && unsupported) card.append(el('span', 'hint', 'This bundle does not support the runtime\'s operating system.'))
+        else if (manage && onDemandMissing) card.append(el('span', 'hint', 'Not installed. Install it from the DSH plugin manager to enable it here.'))
+        else if (manage && hiddenByDefault) card.append(el('span', 'hint', 'Not listed by default. Enable it from the DSH plugin manager.'))
         grid.append(card)
       }
       fieldset.append(grid); content.append(fieldset)
