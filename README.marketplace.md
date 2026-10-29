@@ -6,7 +6,7 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review. This source version is **0.2.1**.
+DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, and native change review. This source version is **0.2.2**.
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
@@ -38,7 +38,7 @@ DSH Sidebar runs the official DeepSeek Harness CLI on your machine. Install it f
 npm install -g @deepseek-ai/dsh
 ```
 
-Install DSH on the extension host; for Remote SSH, install it on the remote host. You need VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`. DeepSeek Harness `0.1.2-rc.1` or newer is required; history search and Schedule need `0.2.0-rc.2` or newer, and the experimental bundles are verified against `0.2.1-rc.3`.
+Install DSH on the extension host; for Remote SSH, install it on the remote host. You need VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`. DeepSeek Harness `0.1.2-rc.1` or newer is required; history search and Schedule need `0.2.0-rc.2` or newer, and the experimental bundles are verified against `0.2.2-alpha.2` (`0.2.1-rc.2` and `0.2.1-rc.3` remain supported). The alpha CLI requires Node.js 24.9 or newer.
 
 Download this fork's `.vsix` from [GitHub Releases](https://github.com/fallleaves01/dsh-vscode/releases) and run **Extensions: Install from VSIX...**. Its extension ID is `fallleaves01.dsh-sidebar`. The latest release is **0.2.0**. Release assets can lag behind the source version; build from the repository with `pnpm install --frozen-lockfile && pnpm run package` when the desired version is not yet available.
 
@@ -115,6 +115,12 @@ timings plus the runtime's error text on failure lines; credential-shaped text
 is redacted, but review the panel before sharing it. The extension has no
 telemetry. See [Privacy and verification](https://github.com/fallleaves01/dsh-vscode#privacy-and-verification).
 
+Startup and switching are also bounded: the CLI version is cached, the event
+streams and first conversation list start together, a re-resolved view reuses
+the active connection, and switches reuse runtime-wide facts and per-
+conversation ratings. A hidden conversation directory is not rendered, and an
+unrelated state patch does not repaint the transcript.
+
 ### DSH settings
 
 The chat gear opens settings inside the conversation as a modal, with the official
@@ -140,12 +146,16 @@ SecretStorage key. It is not an encrypted vault or an isolation boundary against
 tools running as the same OS user. Stored key values are never read back into the
 page, and this repository and its VSIX exclude the credential file and backups.
 
-### DSH 0.2.1-rc.3 experimental features
+### DSH 0.2.2-alpha.2 experimental features
 
-The sidebar is verified against DeepSeek Harness `0.2.1-rc.3`. Experimental
-bundles remain opt-in in the runtime profile; the sidebar does not enable them
-automatically, and each feature appears only when the runtime exposes its
-contract.
+The sidebar is verified against DeepSeek Harness `0.2.2-alpha.2`; `0.2.1-rc.2`
+and `0.2.1-rc.3` remain supported. Experimental bundles remain opt-in in the
+runtime profile; the sidebar does not enable them automatically, and each
+feature appears only when the runtime exposes its contract. The alpha release
+adds Web-first optional bundles (Live Share, Forge, Computer Use and
+personalized recommendations); they appear in the Plugins list with their
+platform and installation state, but this sidebar does not implement their Web
+panels.
 
 - **Auto review permission preset.** When the runtime serves
   `permissionPresets/catalog`, the Permission selector offers an `EXP`-marked
@@ -170,7 +180,7 @@ contract.
   `workingDirectory` is not consumed yet, and the sidebar exposes no persistent
   terminal panel. Enabling the session-search bundle with `enableHistorySearch`
   can mount two `session-query-sqlite` rows; check the runtime profile. See the
-  [rc.3 adaptation record](https://github.com/fallleaves01/dsh-vscode/blob/main/docs/DSH-0.2.1-RC3-ADAPTATION.md).
+  [alpha.2 adaptation record](https://github.com/fallleaves01/dsh-vscode/blob/main/docs/DSH-0.2.2-ALPHA2-ADAPTATION.md).
 
 ### Autonomous debugging
 

@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.1**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -48,6 +48,8 @@ Runtime 到侧边栏的状态投递是有界的：同一时刻最多一个视图
 
 这些诊断写入本地 **DeepSeek Harness** Output 通道（**Show Output**）：每次会话选择一行，包含阶段与运行状态、打开/已打开耗时、慢投递、stall 与 resync 请求。内容包含会话标识、阶段与耗时；失败行还会包含 runtime 的错误文本。凭据由既有 DSH 错误包装脱敏，但分享前仍请检查该面板。扩展本身不包含遥测。参见[隐私与验证](#隐私与验证)。
 
+启动与切换也是有界的：CLI 版本按可执行文件缓存，事件流基线与首次会话列表并行启动，重新解析视图或在编辑器打开时复用当前连接。切换时复用 runtime 级账户、翻译与 Schedule 事实以及按会话缓存的评分，而不是重新读取；隐藏的会话目录不渲染，无关的状态补丁不会重绘对话。
+
 ## 📦 安装
 
 先安装官方 DeepSeek Harness CLI：
@@ -56,7 +58,7 @@ Runtime 到侧边栏的状态投递是有界的：同一时刻最多一个视图
 npm install -g @deepseek-ai/dsh
 ```
 
-DSH 应安装在扩展实际运行的主机上；使用 Remote SSH 时，应安装在远程主机上。需要 DeepSeek Harness `0.1.2-rc.1` 或更新版本；历史搜索与 Schedule 需要 `0.2.0-rc.2` 或更新版本，实验性 bundle 已在 `0.2.1-rc.3` 上验证。
+DSH 应安装在扩展实际运行的主机上；使用 Remote SSH 时，应安装在远程主机上。需要 DeepSeek Harness `0.1.2-rc.1` 或更新版本；历史搜索与 Schedule 需要 `0.2.0-rc.2` 或更新版本，实验性 bundle 已在 `0.2.2-alpha.2` 上验证，`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。alpha CLI 本身要求 Node.js 24.9 或更新版本。
 
 ### 发布版
 
@@ -86,9 +88,9 @@ pnpm run package
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
 
-### 升级到 0.2.1
+### 升级到 0.2.2
 
-0.2.1 补齐 DSH 的会话操作并修复分叉边界；0.2.0 是面向 Stop 与会话切换的客户端可靠性版本。更新后重新加载 VS Code 窗口即可；共享的受管 runtime 不需要为此重启。它不要求升级 DSH：侧边栏在运行时探测能力，`0.2.1-rc.2` 与 `0.2.1-rc.3` 均可工作，实验性 bundle 仅在 runtime 提供对应契约时出现。
+0.2.2 适配 DeepSeek Harness `0.2.2-alpha.2` 并降低启动与会话切换延迟。0.2.1 补齐 DSH 的会话操作并修复分叉边界；0.2.0 是面向 Stop 与会话切换的客户端可靠性版本。更新后重新加载 VS Code 窗口即可；共享的受管 runtime 不需要为此重启。它不要求升级 DSH：侧边栏在运行时探测能力，`0.2.1-rc.2`、`0.2.1-rc.3` 与 `0.2.2-alpha.2` 均可工作，实验性 bundle 仅在 runtime 提供对应契约时出现。
 
 ## 🚀 使用
 
@@ -181,9 +183,9 @@ VS Code 原生设置入口。搜索页可选择 Messages API 或 Search / Fetch 
 profile，也不同于原有的 VS Code SecretStorage 密钥。它不是加密保管库，不能隔离同一
 OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX 打包规则排除该凭据文件及备份。
 
-### DSH 0.2.1-rc.3 实验性功能
+### DSH 0.2.2-alpha.2 实验性功能
 
-本扩展已针对官方 DeepSeek Harness `0.2.1-rc.3` 运行时完成验证。实验性 bundle 仍需在运行时 profile 中按需启用；插件不会代为启用，只在运行时暴露相应契约时显示对应界面。运行时缺少该能力时，界面保持原有行为。
+本扩展已针对官方 DeepSeek Harness `0.2.2-alpha.2` 运行时完成验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。实验性 bundle 仍需在运行时 profile 中按需启用；插件不会代为启用，只在运行时暴露相应契约时显示对应界面。运行时缺少该能力时，界面保持原有行为。alpha 版本新增以 Web 端为先的可选 bundle（Live Share、Forge、Computer Use 与个性化推荐）；它们会出现在插件清单中并显示平台/安装状态，但本侧边栏未实现其 Web 面板。
 
 - **Auto review 权限预设。** 权限选择器读取 `permissionPresets/catalog`；auto-review 集成挂载后，选择器出现实验性 `auto` 预设并标注 `EXP`。无论从菜单选择还是键入 `/permission auto`，切换前都要求显式确认：该预设不使用沙箱，由同一模型逐次复审每个工具调用，可能误放行或误拒绝操作，并额外消耗 token。运行时不提供该目录时，继续使用内置三档预设。
 被 Auto review 拒绝的工具调用在折叠行显示 “Rejected by Auto review”，展开后显示 “Tool was not executed. Reason: …”；缺少原因时回退为 “Auto review did not authorize this action”。
@@ -192,7 +194,7 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 - **会话标题实时刷新。** 随对话更新标题的提供者沿用既有 `title` 投影与 `session/title` 事件；侧边栏本就从该投影刷新标题栏与会话列表，因此标题无需重新加载列表即可更新。
 - **实验性设置与 bundle 管理。** 设置页在 Plugins → Experimental bundles 下列出运行时的可选 bundle（启用状态、版本、描述）；当运行时由本扩展管理时，可通过 `pluginManager/setBundleEnabled` 启停。运行中的任务不会阻止修改：该决定由运行时作出，它返回 `applied` 或 `restart-required`，页面如实呈现而不是假装已经生效。切换在以下情况会被拒绝：附加到外部运行时，或 runtime 不允许写入设置；页面会在变更前要求确认。运行时提供相应设置 namespace 时，同一页面还呈现 Reasoning translation（`cot-translation`：提供方、目标语言）、Voice input（`speech-to-text`：提供方、语言）与 Plugin market（`plugin-market`：索引 URL 列表）；未挂载的 bundle 会隐藏对应卡片。挂载翻译 bundle 后，展开的思考内容会经 `cotTranslation/limits` 与 `cotTranslation/translate` 就地翻译，默认显示译文，可切换到原文；所选服务不可用时显示 Retry。展开的思考内容会发送给该翻译服务，可能包含私有代码或对话细节。
 
-其余实验性 bundle 的现状（完整 13 包矩阵与证据见 [rc.3 适配记录](docs/DSH-0.2.1-RC3-ADAPTATION.md)）：
+其余实验性 bundle 的现状（完整矩阵与证据见 [alpha.2 适配记录](docs/DSH-0.2.2-ALPHA2-ADAPTATION.md)；此前的 [rc.3 记录](docs/DSH-0.2.1-RC3-ADAPTATION.md) 保留作对照）：
 
 - **会话搜索**新增 `session_search` 等模型工具，使用通用工具卡；侧栏正文搜索仍使用标准 `session/search` RPC。不要同时启用该 bundle 与 `enableHistorySearch` 任务服务而不核对 profile：部署中可能出现两个 `session-query-sqlite` 实例。
 - **插件市场与语音输入** 已提供上述配置卡片，但功能界面尚未实现：无市场发现/搜索/安装（`pluginMarket/*`），无语音采集与转写（`speech/*` 的流式方法需要复用现有流通道）。思考翻译已在上一节说明且已实现，不再属于未实现项。这些 bundle 保持按需启用且以 Web 端为先；已安装但停用时不改变侧边栏行为。
@@ -206,7 +208,7 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 
 之后，DeepSeek 就能直接从侧边栏启动调试器、设置断点、单步执行、检查运行时变量、修复代码并验证结果。
 
-核心会话与设置接口已通过 DeepSeek Harness `0.2.1-rc.2` 的隔离检查；此前已验证 `0.2.0-rc.2`、`0.1.7-rc.1` 与 `0.1.7-rc.2`。实验性 bundle 行为随后在隔离的 `0.2.1-rc.3` 运行时上完成验证，详见 [rc.3 适配记录](docs/DSH-0.2.1-RC3-ADAPTATION.md)。近期版本已补齐外部任务、Search / Fetch 设置、自定义推理映射与用户消息脱敏，详见[适配记录](docs/GAP-ANALYSIS.md)。工作目录及 Worktree 集成仍需专项验证。可选服务取决于实际安装的 runtime 版本和 profile。
+核心会话与设置接口已通过 DeepSeek Harness `0.2.1-rc.2` 的隔离检查；此前已验证 `0.2.0-rc.2`、`0.1.7-rc.1` 与 `0.1.7-rc.2`。实验性 bundle 行为随后在隔离的 `0.2.1-rc.3` 与 `0.2.2-alpha.2` 运行时上完成验证，详见 [alpha.2 适配记录](docs/DSH-0.2.2-ALPHA2-ADAPTATION.md)。近期版本已补齐外部任务、Search / Fetch 设置、自定义推理映射与用户消息脱敏，详见[适配记录](docs/GAP-ANALYSIS.md)。工作目录及 Worktree 集成仍需专项验证。可选服务取决于实际安装的 runtime 版本和 profile。
 
 ## 隐私与验证
 
@@ -220,7 +222,7 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 
 通过钥匙按钮配置的 API key 使用 VS Code SecretStorage 保存。已记住的 runtime 启动 URL 保存在仅所有者可访问的本地文件中，不参与同步。文件引用由用户显式添加；添加文件会让 DSH 获得相应上下文，提示词与所选上下文可能发送到配置的模型服务。
 
-[rc.3 适配记录](docs/DSH-0.2.1-RC3-ADAPTATION.md) 与较早的[复核记录](docs/RELEASE-REVIEW-2026-10-15.md) 列出实现证据、隐私检查、测试覆盖与验证限制。开发阶段使用的 `braces` 依赖仍有基于版本的安全告警；本地深度限制补丁覆盖已报告的递归失败，该依赖不进入 VSIX。
+[alpha.2 适配记录](docs/DSH-0.2.2-ALPHA2-ADAPTATION.md)、较早的 [rc.3 记录](docs/DSH-0.2.1-RC3-ADAPTATION.md) 与[复核记录](docs/RELEASE-REVIEW-2026-10-15.md) 列出实现证据、隐私检查、测试覆盖与验证限制。开发阶段使用的 `braces` 依赖仍有基于版本的安全告警；本地深度限制补丁覆盖已报告的递归失败，该依赖不进入 VSIX。
 
 缺陷报告与功能建议请提交至 [GitHub Issues](https://github.com/fallleaves01/dsh-vscode/issues)。
 

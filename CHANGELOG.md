@@ -9,6 +9,50 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-30
+
+### Added
+
+- Support for DeepSeek Harness `0.2.2-alpha.2`, verified in an isolated runtime:
+  explicit `session/follow` activation, the full image-reference attachment
+  request, model-refresh and plugin-update events, and the expanded bundle
+  catalog. `0.2.1-rc.2` and `0.2.1-rc.3` remain supported through the same
+  superset request path.
+- The Plugins page understands the alpha.2 bundle fields (`listedByDefault`,
+  `updatable`, `failedAt`) and explains platform-support failures. An on-demand
+  bundle that is not installed, or a hidden bundle that is disabled, no longer
+  offers a toggle that cannot work.
+
+### Changed
+
+- DeepSeek Harness requirements: experimental bundles verified against
+  `0.2.2-alpha.2`; the alpha CLI requires Node.js 24.9.0 or newer.
+- Performance: the CLI version is cached per executable and only after it
+  passes the contract minimum; the duplicate authenticated contract probe is
+  removed for known versions; event-stream baselines and the first conversation
+  list start concurrently; stale-runtime sweeping and the full background-job
+  scan run after the first paint; a re-resolved view or Open in Editor reuses the
+  active connection.
+- Performance: a switch reuses runtime-wide account, translation and schedule
+  facts and per-conversation feedback plus the goal projection instead of
+  re-reading them; live history appends in O(1); irrelevant events no longer
+  trigger image, review or list work.
+- Performance: a hidden conversation directory is not rendered, unchanged
+  directory input is not rebuilt, unrelated state patches no longer repaint the
+  transcript, and large transcripts reuse per-message row keys.
+
+### Fixed
+
+- Pre-release CLI versions such as `0.2.2-alpha.2` and `-beta` now receive
+  `--no-open`, so a managed runtime no longer opens an extra browser window.
+- Images in an alpha.2 runtime now load: the request sends both the legacy id and
+  the full reference alpha.2 validates. Historical references without a byte
+  length fail per image with a fixed "Image unavailable." state and a redacted
+  diagnostic, instead of crashing.
+- Fixed a version-cache path that could keep reporting a failed start after DSH
+  was upgraded in the same window, a goal projection that left the goal actions
+  disabled, and a restart that could join a superseded startup.
+
 ## [0.2.1] - 2026-10-29
 
 ### Added

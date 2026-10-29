@@ -11,7 +11,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
-The current source version is **0.2.1**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.2.2**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md)
 
@@ -68,6 +68,14 @@ lines also include the runtime's error text. Credentials are redacted by the
 existing DSH error wrapper, but review the panel before sharing it. The
 extension itself has no telemetry. See [Privacy and verification](#privacy-and-verification).
 
+Startup and switching are also bounded. The CLI version is cached per
+executable, the event-stream baselines and the first conversation list start
+together, and a re-resolved view or Open in Editor reuses the active
+connection. Switching reuses runtime-wide account, translation and schedule
+facts and per-conversation ratings instead of re-reading them; a hidden
+conversation directory is not rendered, and an unrelated state patch does not
+repaint the transcript.
+
 ## 📦 Install
 
 Install the official DeepSeek Harness CLI:
@@ -76,7 +84,7 @@ Install the official DeepSeek Harness CLI:
 npm install -g @deepseek-ai/dsh
 ```
 
-Install DSH on the host where the extension runs. For Remote SSH, this is the remote host. DeepSeek Harness `0.1.2-rc.1` or newer is required. History search and Schedule need `0.2.0-rc.2` or newer; the experimental bundles are verified against `0.2.1-rc.3`.
+Install DSH on the host where the extension runs. For Remote SSH, this is the remote host. DeepSeek Harness `0.1.2-rc.1` or newer is required. History search and Schedule need `0.2.0-rc.2` or newer; the experimental bundles are verified against `0.2.2-alpha.2`, while `0.2.1-rc.2` and `0.2.1-rc.3` remain supported. The alpha CLI itself requires Node.js 24.9 or newer.
 
 ### Published release
 
@@ -106,14 +114,16 @@ For a full local check run `pnpm run check`; `./build.sh` writes
 `reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
 `startupTimeout` and `searchBaseUrl`.
 
-### Upgrading to 0.2.1
+### Upgrading to 0.2.2
 
-0.2.1 adds DSH's conversation actions and fixes the fork boundary; 0.2.0 was
-the client-side reliability release for Stop and conversation switching.
-Reload the VS Code window after updating; a shared managed runtime does not
-need to be restarted. It requires no DSH upgrade: the sidebar probes
-capabilities at runtime, so `0.2.1-rc.2` and `0.2.1-rc.3` runtimes both work,
-and experimental bundles appear only when the runtime serves their contracts.
+0.2.2 adds DeepSeek Harness `0.2.2-alpha.2` compatibility and reduces startup
+and conversation-switch latency. 0.2.1 added DSH's conversation actions and
+fixed the fork boundary; 0.2.0 was the client-side reliability release for Stop
+and conversation switching. Reload the VS Code window after updating; a shared
+managed runtime does not need to be restarted. It requires no DSH upgrade: the
+sidebar probes capabilities at runtime, so `0.2.1-rc.2`, `0.2.1-rc.3` and
+`0.2.2-alpha.2` runtimes all work, and experimental bundles appear only when the
+runtime serves their contracts.
 
 ## 🚀 Use
 
@@ -239,9 +249,9 @@ SecretStorage key. It is not an encrypted vault or an isolation boundary against
 tools running as the same OS user. Stored key values are never read back into the
 page, and this repository and its VSIX exclude the credential file and backups.
 
-### DSH 0.2.1-rc.3 experimental features
+### DSH 0.2.2-alpha.2 experimental features
 
-The sidebar is verified against the official DeepSeek Harness `0.2.1-rc.3` runtime. Experimental bundles remain opt-in in the runtime profile; the sidebar does not enable them, and each feature appears only when the runtime exposes its contract. A runtime without the feature keeps the previous behavior.
+The sidebar is verified against the official DeepSeek Harness `0.2.2-alpha.2` runtime; `0.2.1-rc.2` and `0.2.1-rc.3` remain supported. Experimental bundles remain opt-in in the runtime profile; the sidebar does not enable them, and each feature appears only when the runtime exposes its contract. A runtime without the feature keeps the previous behavior. The alpha release adds Web-first optional bundles (Live Share, Forge, Computer Use and personalized recommendations); they appear in the Plugins list with their platform and installation state, but this sidebar does not implement their Web panels.
 
 - **Auto review permission preset.** The Permission selector reads `permissionPresets/catalog`, so the experimental `auto` preset appears when the auto-review integration is mounted. It is marked `EXP` and switching to it, from the selector or by typing `/permission auto`, requires an explicit acknowledgement: it runs without a sandbox, asks the same model to review every tool call, can wrongly allow or deny actions, and uses additional tokens. A runtime that does not serve the catalogue keeps the shipped three presets.
  A tool call refused by Auto review renders as "Rejected by Auto review" in the collapsed row and "Tool was not executed. Reason: …" when expanded; a missing reason falls back to "Auto review did not authorize this action".
@@ -250,7 +260,7 @@ The sidebar is verified against the official DeepSeek Harness `0.2.1-rc.3` runti
 - **Live conversation titles.** The conversation-following title provider updates the existing `title` projection and `session/title` event. The sidebar already refreshes the title bar and conversation list from that projection, so titles change without reloading the list.
 - **Experimental settings and bundle management.** The Settings page lists the runtime's optional bundles under Plugins → Experimental bundles, with their enable state, version and description; when this extension owns the runtime, a switch enables or disables one through `pluginManager/setBundleEnabled`. A running task does not block the switch: the runtime owns that decision and answers with `applied` or `restart-required`, which the page reports instead of pretending the change already applies. The switch is refused for an attached external runtime and when the runtime does not allow settings writes; the page asks for confirmation before the change. When the runtime serves the corresponding settings namespaces, the same page renders Reasoning translation (`cot-translation`: provider, target language), Voice input (`speech-to-text`: provider, language) and Plugin market (`plugin-market`: index URLs); a bundle that is not mounted hides its card. With the translation bundle mounted, expanded reasoning is translated in place through `cotTranslation/limits` and `cotTranslation/translate`, showing the translation by default with a View original toggle and a Retry action when the selected service cannot answer. Expanded reasoning is sent to that service, so it may contain private code or conversation details.
 
-Current state of the remaining experimental bundles (full package matrix and evidence in [the rc.3 adaptation record](docs/DSH-0.2.1-RC3-ADAPTATION.md)):
+Current state of the remaining experimental bundles (full package matrix and evidence in [the alpha.2 adaptation record](docs/DSH-0.2.2-ALPHA2-ADAPTATION.md); the earlier [rc.3 record](docs/DSH-0.2.1-RC3-ADAPTATION.md) remains for comparison):
 
 - **Session search** adds model tools such as `session_search`; they use the generic tool card, while sidebar message search continues to use the standard `session/search` RPC. Do not enable both this bundle and the `enableHistorySearch` task service without checking the runtime profile: the deployment can mount two `session-query-sqlite` rows.
 - **Plugin market and voice input** expose their configuration cards as described above, but the rest of the feature UI is not implemented: no market discovery, search or install (`pluginMarket/*`), and no speech capture or transcription (`speech/*`, whose stream methods require the existing stream carrier). Reasoning translation is implemented (see above). These bundles remain opt-in and Web-first; an installed but disabled bundle changes nothing in the sidebar.
@@ -264,7 +274,7 @@ Enable **DeepSeek Harness: Autonomous Debugging** in VS Code Settings and add a 
 
 DeepSeek can then start the debugger, set breakpoints, step through execution, inspect runtime values, fix the code, and verify the result directly from the sidebar.
 
-Core conversation and settings interfaces have also passed isolated checks against DeepSeek Harness `0.2.1-rc.2`; previous validation covers `0.2.0-rc.2`, `0.1.7-rc.1` and `0.1.7-rc.2`. Experimental-bundle behavior has since been verified against an isolated `0.2.1-rc.3` runtime; see [the rc.3 adaptation record](docs/DSH-0.2.1-RC3-ADAPTATION.md). Recent releases added external task rows, Search / Fetch settings, custom reasoning mappings and user-message masks; see [the compatibility review](docs/GAP-ANALYSIS.md). Workdir/worktree integration still needs dedicated validation. Optional services depend on the installed runtime version and profile.
+Core conversation and settings interfaces have also passed isolated checks against DeepSeek Harness `0.2.1-rc.2`; previous validation covers `0.2.0-rc.2`, `0.1.7-rc.1` and `0.1.7-rc.2`. Experimental-bundle behavior has since been verified against isolated `0.2.1-rc.3` and `0.2.2-alpha.2` runtimes; see [the alpha.2 adaptation record](docs/DSH-0.2.2-ALPHA2-ADAPTATION.md). Recent releases added external task rows, Search / Fetch settings, custom reasoning mappings and user-message masks; see [the compatibility review](docs/GAP-ANALYSIS.md). Workdir/worktree integration still needs dedicated validation. Optional services depend on the installed runtime version and profile.
 
 ## Privacy and verification
 
@@ -288,7 +298,7 @@ arbitrary content cannot appear in a runtime error message.
 
 API keys configured with the key button use VS Code SecretStorage. Remembered runtime launch URLs are stored locally with owner-only permissions and are not synchronized. File references are explicit; adding a file gives DSH access to that context, and prompts and selected context can be sent to the configured model service.
 
-The [rc.3 adaptation record](docs/DSH-0.2.1-RC3-ADAPTATION.md) and the earlier [release review](docs/RELEASE-REVIEW-2026-10-15.md) record implementation evidence, privacy checks, test coverage and verification limits. The development-only `braces` dependency retains a version-based security alert; its local depth-limit patch covers the reported recursion failure and the dependency is excluded from the VSIX.
+The [alpha.2 adaptation record](docs/DSH-0.2.2-ALPHA2-ADAPTATION.md), the earlier [rc.3 record](docs/DSH-0.2.1-RC3-ADAPTATION.md) and the [release review](docs/RELEASE-REVIEW-2026-10-15.md) record implementation evidence, privacy checks, test coverage and verification limits. The development-only `braces` dependency retains a version-based security alert; its local depth-limit patch covers the reported recursion failure and the dependency is excluded from the VSIX.
 
 💬 Found a rough edge or have an idea for what should come next? [Open an issue](https://github.com/fallleaves01/dsh-vscode/issues).
 
