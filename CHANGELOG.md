@@ -11,6 +11,10 @@ VSIX — see the README for installing one.
 
 ## [0.2.2-alpha.2] - 2026-10-30
 
+> Re-published on 2026-10-30 with the security hardening listed below. The
+> version string is unchanged because it tracks the DSH runtime version; the
+> VSIX attached to the tag was rebuilt from the hardened sources.
+
 ### Added
 
 - Support for DeepSeek Harness `0.2.2-alpha.2`, verified in an isolated runtime:
@@ -59,6 +63,42 @@ VSIX — see the README for installing one.
 - Fixed a version-cache path that could keep reporting a failed start after DSH
   was upgraded in the same window, a goal projection that left the goal actions
   disabled, and a restart that could join a superseded startup.
+
+### Security
+
+- Windows: a bare `dsh` command is resolved from absolute `PATH` directories
+  only. The workspace and the current directory are no longer searched, so a
+  repository cannot execute a planted `dsh.exe` when the sidebar opens.
+- Workspace Trust is enforced before the runtime starts.
+  `autonomousDebugging` is machine-scoped and read from user settings, so a
+  repository cannot enable the debugging execution surface from
+  `.vscode/settings.json`.
+- File links in answers are resolved with `realpath` and must stay inside the
+  conversation project or a workspace folder; `~`, `..` and symlink escapes are
+  refused. Reverting a change re-validates the target (device, inode, size,
+  mtime, realpath, link count), refuses symlinks and hard links, and replaces
+  the file through a same-directory temporary file and atomic rename.
+- Sign-in URLs received from the runtime are opened only for HTTPS or loopback
+  HTTP. Plugin manager output is redacted, plugin subprocesses receive a
+  minimized environment, and the plugin CLI has a timeout and an output cap.
+- The chat CSP nonce uses cryptographic randomness; `object-src`, `frame-src`,
+  `base-uri` and `form-action` are disabled; resource URIs are
+  attribute-escaped; KaTeX inline styles keep their layout through
+  `style-src-attr` while scripts remain nonce-only.
+- Runtime data is bounded: session state, projections, pending frames,
+  steering ids, the attachment cache and per-stream frame size all have limits,
+  and a malformed frame or state listener no longer aborts the connection loop.
+  Model-written file references are scanned in linear time.
+- Dependencies: `dompurify` 3.4.17, `@modelcontextprotocol/sdk` 1.32.2,
+  `zod` 4.6.7, `fast-uri` 3.1.9 and `body-parser` 2.4.0. Bundled runtime
+  dependencies moved to `dependencies`, so the production dependency audit
+  covers them.
+- Release integrity: read-only build and write-scoped release jobs split behind
+  the `release` environment; the full CI gate (typecheck, tests, build, three
+  Chromium checks, production audit) runs before publishing; the tag must equal
+  `v` + `package.json` version; the release publishes a `SHA256SUMS` asset; the
+  prerelease flag is derived from the version; all actions are pinned to commit
+  SHAs.
 
 ## [0.2.1] - 2026-10-29
 
