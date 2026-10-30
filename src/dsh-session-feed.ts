@@ -23,6 +23,58 @@ const UNKNOWN_FRAME_TYPE_LIMIT = 16
  */
 export const FOLLOW_SNAPSHOT_TIMEOUT_MS = 8_000
 
+/** Per-session protocol state is bounded; a hostile runtime must not grow it without limit. */
+export const SESSION_STATE_LIMIT = 20_000
+/** One frame larger than this is refused before it reaches any parser. */
+export const MAX_FRAME_BYTES = 8 * 1024 * 1024
+const UNSAFE_PROJECTION_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+const safeProjectionKey = (key: string): boolean => !UNSAFE_PROJECTION_KEYS.has(key)
+
+/** A projection record without prototype-poisoning keys and without a shared prototype. */
+function safeProjectionValues(source: Record<string, unknown> | undefined): Record<string, unknown> {
+  const values: Record<string, unknown> = Object.create(null) as Record<string, unknown>
+  for (const [key, value] of Object.entries(source ?? {})) if (safeProjectionKey(key)) values[key] = value
+  return values
+}
+
+/** Insertion-ordered bounded write: evict the oldest entries, keeping the recent ones. */
+function remember<Key, Value>(map: Map<Key, Value>, key: Key, value: Value, limit = SESSION_STATE_LIMIT): void {
+  map.set(key, value)
+  while (map.size > limit) {
+    const oldest = map.keys().next().value
+    if (oldest === undefined) break
+    map.delete(oldest)
+  }
+}
+
+function rememberSet<Value>(set: Set<Value>, value: Value, limit = SESSION_STATE_LIMIT): void {
+  set.add(value)
+  while (set.size > limit) {
+    const oldest = set.values().next().value
+    if (oldest === undefined) break
+    set.delete(oldest)
+  }
+}
+
+/** Projection keys one conversation may carry; updates refresh the insertion order. */
+export const PROJECTION_KEYS_PER_SESSION = 2_000
+/** Frames a not-yet-activated follow may buffer before the oldest are dropped. */
+export const PENDING_FRAMES_PER_SESSION = 1_000
+/** Committed steering message ids remembered per conversation. */
+export const COMMITTED_MESSAGES_PER_SESSION = 20_000
+
+function rememberProjectionValue(map: Map<string, Projection>, key: string, value: Projection): void {
+  // Re-insert so an updated key counts as recent for the insertion-order LRU.
+  map.delete(key)
+  map.set(key, value)
+  while (map.size > PROJECTION_KEYS_PER_SESSION) {
+    const oldest = map.keys().next().value
+    if (oldest === undefined) break
+    map.delete(oldest)
+  }
+}
+
 /**
  * Actionable failure text for a follow snapshot that never arrived.
  *
@@ -138,6 +190,8 @@ export class DshSessionFeed {
   private readonly nonBlankSessions = new Set<string>()
   /** Unknown top-level frame types already reported, keyed by stream endpoint. */
   private readonly ignoredFrameTypes = new Map<string, UnknownFrameBudget>()
+  private readonly reportedOversized = new Set<string>()
+  private readonly reportedPendingOverflow = new Set<string>()
 
   constructor(private readonly connection: DshConnection, private readonly emit: (frame: DshFrame) => void,
     private readonly error: (error: Error) => void,
@@ -163,7 +217,14 @@ export class DshSessionFeed {
           this.clientId = frame.clientId
           return true
         }
-        this.remoteEvent(frame)
+        try {
+          this.remoteEvent(frame)
+        } catch (error) {
+          // A known event type with an invalid shape is ignored and diagnosed;
+          // throwing would abort the shared `$events` handler and force a
+          // reconnect loop. The payload is never copied into the diagnostic.
+          this.diagnostic('$events: ignored a malformed remote event')
+        }
         return false
       }),
       this.baseline('session/control', frame => { this.control(frame); return frame.type === 'baseline' }),
@@ -231,7 +292,7 @@ export class DshSessionFeed {
   monitorJobs(sessionIds: readonly string[], refresh = false): void {
     this.monitoredJobs.clear()
     for (const id of sessionIds) {
-      this.monitoredJobs.add(id)
+      rememberSet(this.monitoredJobs, id)
       if (refresh) this.scannedJobs.delete(id)
       if (!this.scannedJobs.has(id) && !this.jobStreams.has(id)) this.queuedJobBaselines.add(id)
     }
@@ -257,6 +318,7 @@ export class DshSessionFeed {
   observeJob(sessionId: string, jobId: string, from: number, item: (frame: Record<string, unknown>) => void, fail: (error: Error) => void): () => void {
     return this.streams.open('job/follow', { request: { sessionId, jobId, from } }, raw => {
       if (!wireRecord(raw)) throw new Error('Invalid background output frame.')
+      if (this.oversizedFrame(raw, 'job/follow')) return
       item(raw)
     }, fail, true)
   }
@@ -271,18 +333,18 @@ export class DshSessionFeed {
   }
 
   private summary(summary: SessionSummary): SessionSummary {
-    if (!this.running.has(summary.sessionId)) this.running.set(summary.sessionId, summary.running)
+    if (!this.running.has(summary.sessionId)) remember(this.running, summary.sessionId, summary.running)
     if (summary.origin === 'subagent' && typeof summary.parentSessionId === 'string') {
-      this.subagentParents.set(summary.sessionId, summary.parentSessionId)
+      remember(this.subagentParents, summary.sessionId, summary.parentSessionId)
     }
-    const values = { ...summary.projections?.values }
+    const values = safeProjectionValues(summary.projections?.values)
     const watermark = summary.projections?.asOfSeq ?? -1
     for (const [key, projection] of this.projections.get(summary.sessionId) ?? []) {
-      if (projection.seq >= watermark) values[key] = projection.value
+      if (projection.seq >= watermark && safeProjectionKey(key)) values[key] = projection.value
     }
     this.trackCatalog(summary.sessionId, values.subagentCatalog)
     const activity = this.activity.get(summary.sessionId)
-    if (!summary.blank || summary.running) this.nonBlankSessions.add(summary.sessionId)
+    if (!summary.blank || summary.running) rememberSet(this.nonBlankSessions, summary.sessionId)
     return { ...summary, updatedAt: Math.max(summary.updatedAt, activity ?? 0),
       blank: !this.nonBlankSessions.has(summary.sessionId),
       running: this.running.get(summary.sessionId) ?? summary.running,
@@ -291,7 +353,9 @@ export class DshSessionFeed {
   }
 
   projectionValues(sessionId: string): Record<string, unknown> {
-    return Object.fromEntries([...this.projections.get(sessionId) ?? []].map(([key, projection]) => [key, projection.value]))
+    const values: Record<string, unknown> = Object.create(null) as Record<string, unknown>
+    for (const [key, projection] of this.projections.get(sessionId) ?? []) if (safeProjectionKey(key)) values[key] = projection.value
+    return values
   }
 
   adoptProjections(sessionId: string, seq: number, values: Record<string, unknown>): Record<string, unknown> {
@@ -310,7 +374,7 @@ export class DshSessionFeed {
   }
 
   open(sessionId: string, parentSessionId?: string): Promise<SessionOpening> {
-    if (parentSessionId !== undefined) this.subagentParents.set(sessionId, parentSessionId)
+    if (parentSessionId !== undefined) remember(this.subagentParents, sessionId, parentSessionId)
     this.closeFollow()
     const address = sessionAddress(sessionId, parentSessionId)
     return new Promise((resolve, reject) => {
@@ -338,6 +402,7 @@ export class DshSessionFeed {
       state.cancel = this.streams.open('session/follow', { request: { address, maxMessages: 100, assistantStream: true, activate: true } }, raw => {
         if (this.follow !== state) return
         if (!wireRecord(raw)) throw new Error('Invalid session frame.')
+        if (this.oversizedFrame(raw, 'session/follow')) return
         if (!opened) {
           if (raw.type !== 'snapshot' || !Number.isSafeInteger(raw.cursor) || !wireRecord(raw.header)
             || raw.header.id !== sessionId || !wireRecord(raw.projections) || !wireRecord(raw.projections.values)
@@ -354,7 +419,7 @@ export class DshSessionFeed {
           resolve({ events, hasMore: raw.hasMore, asOfSeq: state.cursor, projections: this.projectionValues(sessionId), isCurrent: () => this.follow === state, activate: () => {
             if (this.follow !== state || state.active) return
             state.active = true
-            this.requestSessions.add(sessionId)
+            rememberSet(this.requestSessions, sessionId)
             this.mux({ type: 'session/queue', sessionId, items: this.queueItems(sessionId) })
             this.mux({ type: 'session/jobs', sessionId, jobs: this.jobs.get(sessionId) ?? [] })
             for (const [key, projection] of this.projections.get(sessionId) ?? []) {
@@ -442,12 +507,25 @@ export class DshSessionFeed {
     previous.reject(error)
   }
 
+  /** Refuse one frame over the size budget, naming the endpoint once. */
+  private oversizedFrame(frame: Record<string, unknown>, endpoint: string): boolean {
+    let size = 0
+    try { size = JSON.stringify(frame).length } catch { size = MAX_FRAME_BYTES + 1 }
+    if (size <= MAX_FRAME_BYTES) return false
+    if (!this.reportedOversized.has(endpoint)) {
+      this.reportedOversized.add(endpoint)
+      this.diagnostic(`${endpoint}: ignored a frame larger than ${String(MAX_FRAME_BYTES)} bytes`)
+    }
+    return true
+  }
+
   private baseline(endpoint: string, item: (value: Record<string, unknown>) => boolean): Promise<void> {
     return new Promise((resolve, reject) => {
       let cancel = (): void => {}
       const timer = setTimeout(() => { cancel(); reject(new Error(`DSH ${endpoint} baseline timed out.`)) }, 30_000)
       cancel = this.streams.open(endpoint, {}, raw => {
         if (!wireRecord(raw)) throw new Error('Invalid DSH baseline.')
+        if (this.oversizedFrame(raw, endpoint)) return
         if (item(raw)) { clearTimeout(timer); resolve() }
       }, error => { clearTimeout(timer); reject(error) })
     })
@@ -461,9 +539,21 @@ export class DshSessionFeed {
    * not serve `job/list` (DSH <= 0.1.5) must degrade to an empty job list rather
    * than fail the shared stream carrier.
    */
+  /** Keep one close callback per session, bounded; an evicted stream is cancelled. */
+  private rememberJobStream(sessionId: string, close: () => void): void {
+    this.jobStreams.set(sessionId, close)
+    while (this.jobStreams.size > SESSION_STATE_LIMIT) {
+      const oldest = this.jobStreams.keys().next().value
+      if (oldest === undefined) break
+      const cancel = this.jobStreams.get(oldest)
+      this.jobStreams.delete(oldest)
+      cancel?.()
+    }
+  }
+
   private subscribeJobs(sessionId: string): void {
     if (this.jobStreams.has(sessionId)) return
-    this.scannedJobs.add(sessionId)
+    rememberSet(this.scannedJobs, sessionId)
     this.pendingJobBaselines.add(sessionId)
     let failed = false
     let timer: NodeJS.Timeout | undefined
@@ -476,6 +566,7 @@ export class DshSessionFeed {
     }
     const close = this.streams.open('job/list', { request: { sessionId } }, raw => {
       if (!wireRecord(raw) || raw.type !== 'rows' || !Array.isArray(raw.jobs)) return
+      if (this.oversizedFrame(raw, 'job/list')) return
       if (timer !== undefined) clearTimeout(timer)
       this.pendingJobBaselines.delete(sessionId)
       this.jobs.set(sessionId, raw.jobs)
@@ -486,7 +577,7 @@ export class DshSessionFeed {
     }, failure, true)
     if (!failed) {
       const cancel = (): void => { if (timer !== undefined) clearTimeout(timer); close() }
-      this.jobStreams.set(sessionId, cancel)
+      this.rememberJobStream(sessionId, () => cancel())
       if (this.pendingJobBaselines.has(sessionId)) timer = setTimeout(() => {
         cancel(); failure(new Error('Task status timed out. Refresh tasks to retry.'))
       }, 10_000)
@@ -509,7 +600,7 @@ export class DshSessionFeed {
     if (!Array.isArray(value)) return
     for (const [child, parent] of this.catalogParents) if (parent === parentId) this.catalogParents.delete(child)
     for (const entry of value) if (wireRecord(entry) && entry.mode !== 'external' && typeof entry.id === 'string' && entry.id !== parentId) {
-      this.catalogParents.set(entry.id, parentId)
+      remember(this.catalogParents, entry.id, parentId)
     }
   }
 
@@ -545,11 +636,11 @@ export class DshSessionFeed {
   private installProjections(sessionId: string, seq: number, values: Record<string, unknown>): void {
     const previous = this.projections.get(sessionId)
     const next = new Map<string, Projection>()
-    for (const [key, value] of Object.entries(values)) next.set(key, { seq, value })
+    for (const [key, value] of Object.entries(values)) if (safeProjectionKey(key)) rememberProjectionValue(next, key, { seq, value })
     // The control stream can already be ahead of the history snapshot.
-    for (const [key, projection] of previous ?? []) if (projection.seq > seq) next.set(key, projection)
-    this.projections.set(sessionId, next)
-    this.projectionFloors.set(sessionId, Math.max(seq, this.projectionFloors.get(sessionId) ?? -1))
+    for (const [key, projection] of previous ?? []) if (projection.seq > seq) rememberProjectionValue(next, key, projection)
+    remember(this.projections, sessionId, next)
+    remember(this.projectionFloors, sessionId, Math.max(seq, this.projectionFloors.get(sessionId) ?? -1))
     // DSH 0.1.7 carries the message queue in the `inbox` projection, so seed the
     // queue model from the merged snapshot rather than only from live frames.
     const inbox = next.get('inbox')
@@ -585,17 +676,18 @@ export class DshSessionFeed {
     const id = frame.sessionId
     if (typeof id !== 'string') throw new Error('Invalid control session.')
     if (frame.type === 'queue' && Array.isArray(frame.items)) {
-      this.queues.set(id, frame.items)
+      remember(this.queues, id, frame.items)
       if (this.follow?.active) this.mux({ type: 'session/queue', sessionId: id, items: this.queueItems(id) })
     } else if (frame.type === 'jobs' && Array.isArray(frame.jobs)) {
-      this.jobs.set(id, frame.jobs)
+      remember(this.jobs, id, frame.jobs)
       this.publishJobs(id, frame.jobs)
     } else if (frame.type === 'projection' && typeof frame.key === 'string' && Number.isSafeInteger(frame.seq)) {
       if ((frame.seq as number) < (this.projectionFloors.get(id) ?? -1)) return
+      if (!safeProjectionKey(frame.key)) return
       const map = this.projections.get(id) ?? new Map<string, Projection>()
       if ((map.get(frame.key)?.seq ?? -1) > (frame.seq as number)) return
-      map.set(frame.key, { seq: frame.seq as number, value: frame.value })
-      this.projections.set(id, map)
+      rememberProjectionValue(map, frame.key, { seq: frame.seq as number, value: frame.value })
+      remember(this.projections, id, map)
       // DSH 0.1.7 delivers the message queue as the `inbox` projection.
       if (frame.key === 'inbox') this.applyInbox(id, frame.value)
       if (frame.key === 'subagentCatalog') this.trackCatalog(id, frame.value)
@@ -619,6 +711,11 @@ export class DshSessionFeed {
     if (type !== 'user/message' || !wireRecord(data) || typeof data.id !== 'string') return
     const before = this.queueItems(state.sessionId)
     state.committedMessages.add(data.id)
+    while (state.committedMessages.size > COMMITTED_MESSAGES_PER_SESSION) {
+      const oldest = state.committedMessages.values().next().value
+      if (oldest === undefined) break
+      state.committedMessages.delete(oldest)
+    }
     const items = this.queueItems(state.sessionId)
     if (state.active && before.length !== items.length) this.mux({ type: 'session/queue', sessionId: state.sessionId, items })
   }
@@ -645,7 +742,7 @@ export class DshSessionFeed {
         return
       }
       const question = { sessionId: frame.agentId, event: frame.event, request: frame.request }
-      this.questions.set(frame.eventId, question)
+      remember(this.questions, frame.eventId, question)
       this.publishAttention(frame.agentId)
       this.presentQuestions()
       return
@@ -686,28 +783,28 @@ export class DshSessionFeed {
       && typeof id.updatedAt === 'number' && Number.isFinite(id.updatedAt)
       && typeof id.running === 'boolean' && typeof id.blank === 'boolean') {
       const summary = id as unknown as SessionSummary
-      this.addedSessions.set(summary.sessionId, { revision: ++this.addedRevision, summary })
-      this.running.set(summary.sessionId, summary.running)
-      if (typeof summary.agentAvailable === 'boolean') this.available.set(summary.sessionId, summary.agentAvailable)
+      remember(this.addedSessions, summary.sessionId, { revision: ++this.addedRevision, summary })
+      remember(this.running, summary.sessionId, summary.running)
+      if (typeof summary.agentAvailable === 'boolean') remember(this.available, summary.sessionId, summary.agentAvailable)
       this.host({ ...this.summary(summary), type: 'host/session-added' })
     }
     else if (typeof id === 'string') {
       if (frame.event === 'api-session/status' && typeof value === 'boolean') {
-        this.running.set(id, value)
-        this.available.set(id, true)
+        remember(this.running, id, value)
+        remember(this.available, id, true)
         if (value && this.monitoredJobs.has(id)) { this.queuedJobBaselines.add(id); this.pumpJobBaselines() }
         else this.releaseIdleJobStream(id)
-        if (value) this.nonBlankSessions.add(id)
+        if (value) rememberSet(this.nonBlankSessions, id)
         this.host({ type: 'host/session-status', sessionId: id, running: value, agentAvailable: true })
       } else if (frame.event === 'api-session/activity' && typeof value === 'number' && Number.isFinite(value)) {
         const updatedAt = Math.max(this.activity.get(id) ?? 0, value)
-        this.activity.set(id, updatedAt)
-        this.nonBlankSessions.add(id)
+        remember(this.activity, id, updatedAt)
+        rememberSet(this.nonBlankSessions, id)
         this.host({ type: 'host/session-activity', sessionId: id, updatedAt })
       } else if (frame.event === 'api-session/removed') {
         // A disposed live instance is not a deletion of its persisted history.
-        this.running.set(id, false)
-        this.available.set(id, false)
+        remember(this.running, id, false)
+        remember(this.available, id, false)
         this.requestSessions.delete(id)
         this.queues.delete(id)
         this.jobs.delete(id)
@@ -811,8 +908,16 @@ export class DshSessionFeed {
   private mux(payload: Record<string, unknown>): void {
     const frame: DshFrame = { channel: 'mux', rpcId: '', payload }
     const state = this.follow
-    if (state !== undefined && !state.active && payload.sessionId === state.sessionId) state.pending.push(frame)
-    else this.emit(frame)
+    if (state !== undefined && !state.active && payload.sessionId === state.sessionId) {
+      if (state.pending.length >= PENDING_FRAMES_PER_SESSION) {
+        state.pending.shift()
+        if (!this.reportedPendingOverflow.has(state.sessionId)) {
+          rememberSet(this.reportedPendingOverflow, state.sessionId)
+          this.diagnostic('session/follow: dropped the oldest buffered frame beyond the pending limit')
+        }
+      }
+      state.pending.push(frame)
+    } else this.emit(frame)
   }
 
   private host(payload: Record<string, unknown>): void { this.emit({ channel: 'host', rpcId: '', payload }) }

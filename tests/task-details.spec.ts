@@ -205,3 +205,14 @@ it('preserves expanded thinking while a child streams a new answer', () => {
   sendState({ messages: [{ id: 'a', role: 'assistant', text: 'First, more', reasoning: 'Checking more', streaming: true }] })
   expect(document.querySelector<HTMLDetailsElement>('#messages details')!.open).toBe(true)
 })
+
+describe('task details document hardening', () => {
+  it('closes base/form navigation and escapes resource URIs', () => {
+    const evil = { toString: () => 'asset" onload="alert(1)\'<&>' } as any
+    const html = taskDetailsHtml({ cspSource: 'vscode-webview:' } as any, { script: evil, markdown: evil, style: evil })
+    expect(html).toContain("base-uri 'none';")
+    expect(html).toContain("form-action 'none';")
+    expect(html).toContain('asset&quot; onload=&quot;alert(1)&#39;&lt;&amp;&gt;')
+    expect(html).not.toContain('onload="alert(1)')
+  })
+})

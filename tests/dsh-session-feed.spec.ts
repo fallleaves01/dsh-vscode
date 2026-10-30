@@ -136,12 +136,23 @@ describe('$events top-level frame tolerance', () => {
     ['emit without event name', { type: 'emit', args: [] }],
     ['cancel without eventId', { type: 'cancel' }],
     ['waterfall without request', { type: 'waterfall', eventId: 'e', agentId: 'a', event: 'approval/request' }],
-    ['ready without clientId', { type: 'ready' }],
-  ])('keeps strict validation for a known top-level type: %s', async (_case, frame) => {
+  ])('ignores a known top-level type with an invalid shape: %s', async (_case, frame) => {
     const h = harness()
     await h.feed.start()
 
     h.push('$events', frame)
+
+    // The frame is diagnosed, not thrown: the shared carrier must stay alive.
+    expect(h.diagnostics).toContain('$events: ignored a malformed remote event')
+    expect(h.errors).toEqual([])
+    expect(h.terminate).not.toHaveBeenCalled()
+  })
+
+  it('keeps strict validation for a ready frame without a client id', async () => {
+    const h = harness()
+    await h.feed.start()
+
+    h.push('$events', { type: 'ready' })
 
     expect(h.errors).toEqual([
       expect.objectContaining({ name: 'DshStreamError', message: expect.stringContaining('invalid event stream frame') }),
@@ -397,5 +408,128 @@ describe('workspace pinned sessions', () => {
     h.push('workspace/follow', { type: 'pinned', pinnedSessionIds: 'a' })
     expect(h.errors).toEqual([expect.objectContaining({ message: expect.stringContaining('invalid event stream frame') })])
     expect(h.terminate).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('runtime data bounds and prototype safety', () => {
+  it('filters prototype-poisoning projection keys without touching the prototype', async () => {
+    const h = harness()
+    await h.feed.start()
+    h.push('session/control', { type: 'baseline', value: { projections: { a: { asOfSeq: 1, values: {
+      title: 'kept', '__proto__': { polluted: true }, constructor: { prototype: { polluted: true } }, prototype: { polluted: true },
+    } } } } })
+    expect((Object.prototype as any).polluted).toBeUndefined()
+    expect(Object.keys(h.feed.projectionValues('a'))).toEqual(['title'])
+    expect(h.feed.projectionValues('a').title).toBe('kept')
+  })
+
+  it('ignores a malformed known event and keeps the stream alive', async () => {
+    const h = harness()
+    await h.feed.start()
+    h.push('$events', { type: 'emit', event: 'future/event', args: 'not-an-array' })
+    expect(h.diagnostics).toContain('$events: ignored a malformed remote event')
+    expect(h.errors).toEqual([])
+    // The same stream still carries later valid events.
+    h.push('$events', { type: 'emit', event: 'llm/models-updated', args: [] })
+    expect(h.frames).toContainEqual({ channel: 'host', rpcId: '', payload: { type: 'host/models-changed' } })
+  })
+
+  it('applies the frame cap to the follow stream and keeps it alive', async () => {
+    const h = harness()
+    await h.feed.start()
+    const opening = h.feed.open('a')
+    h.push('session/follow', snapshot('a', 1))
+    ;(await opening).activate()
+    h.push('session/follow', { type: 'event', event: { type: 'user/message', seq: 2, time: 2, data: { content: 'x'.repeat(9 * 1024 * 1024) } } })
+    expect(h.diagnostics.filter(line => line.includes('session/follow: ignored a frame larger than')).length).toBe(1)
+    expect(h.errors).toEqual([])
+    // A later, valid frame still reaches the projector.
+    h.push('session/follow', { type: 'event', event: { type: 'turn/end', seq: 2, time: 3, data: { turn: 1 } } })
+    expect(h.frames.some(frame => frame.payload.type === 'session/event')).toBe(true)
+  })
+
+  it('bounds per-session projection state', async () => {
+    const h = harness()
+    await h.feed.start()
+    for (let index = 0; index < 20_050; index++) {
+      h.push('session/control', { type: 'projection', sessionId: `forged-${String(index)}`, key: 'title', seq: 1, value: 'x' })
+    }
+    const projections = (h.feed as unknown as { projections: Map<string, unknown> }).projections
+    expect(projections.size).toBeLessThanOrEqual(20_000)
+    expect(projections.has('forged-20049')).toBe(true)
+  })
+
+  it('rejects an oversized runtime frame with one diagnostic', async () => {
+    const h = harness()
+    await h.feed.start()
+    h.push('$events', { type: 'emit', event: 'future/huge', args: ['x'.repeat(9 * 1024 * 1024)] })
+    h.push('$events', { type: 'emit', event: 'future/huge', args: ['x'.repeat(9 * 1024 * 1024)] })
+    expect(h.diagnostics.filter(line => line.includes('ignored a frame larger than'))).toHaveLength(1)
+    expect(h.errors).toEqual([])
+  })
+
+  it('bounds per-session status maps under a flood of forged sessions', async () => {
+    const h = harness()
+    await h.feed.start()
+    for (let index = 0; index < 20_050; index++) {
+      h.push('$events', { type: 'emit', event: 'api-session/status', args: [`forged-${String(index)}`, true] })
+    }
+    const running = (h.feed as unknown as { running: Map<string, boolean> }).running
+    expect(running.size).toBeLessThanOrEqual(20_000)
+    expect(running.has('forged-20049')).toBe(true)
+  })
+
+  it('truncates an over-budget history page instead of expanding it', async () => {
+    const { decodeHistory, MAX_HISTORY_RECORDS } = await import('../src/dsh-history.ts')
+    const records = Array.from({ length: MAX_HISTORY_RECORDS + 10 }, (_value, seq) => ({ type: 'event', event: { type: 'user/message', seq, time: seq, data: {} }, view: {} }))
+    expect(decodeHistory(records)).toHaveLength(MAX_HISTORY_RECORDS)
+  })
+})
+
+describe('per-conversation protocol state caps', () => {
+  it('bounds inner projection keys per session and keeps the newest', async () => {
+    const h = harness()
+    await h.feed.start()
+    for (let index = 0; index < 2_500; index++) {
+      h.push('session/control', { type: 'projection', sessionId: 'a', key: `key-${String(index)}`, seq: index + 1, value: index })
+    }
+    const inner = (h.feed as unknown as { projections: Map<string, Map<string, unknown>> }).projections.get('a')!
+    expect(inner.size).toBeLessThanOrEqual(2_000)
+    expect(inner.has('key-2499')).toBe(true)
+    expect(inner.has('key-0')).toBe(false)
+  })
+
+  it('bounds frames buffered behind an inactive follow and reports once', async () => {
+    const h = harness()
+    await h.feed.start()
+    const opening = h.feed.open('a')
+    h.push('session/follow', snapshot('a', 0))
+    await opening
+    for (let index = 1; index <= 1_200; index++) {
+      h.push('session/follow', { type: 'event', event: { type: 'turn/end', seq: index, time: index, data: { turn: 1 } } })
+    }
+    const state = (h.feed as unknown as { follow: { pending: unknown[] } }).follow
+    expect(state.pending.length).toBeLessThanOrEqual(1_000)
+    expect(h.diagnostics.filter(line => line.includes('dropped the oldest buffered frame')).length).toBe(1)
+    expect(h.errors).toEqual([])
+  })
+
+  it('bounds committed steering message ids per conversation', async () => {
+    const h = harness()
+    await h.feed.start()
+    const opening = h.feed.open('a')
+    h.push('session/follow', snapshot('a', 0))
+    await opening
+    const feed = h.feed as unknown as {
+      follow: unknown
+      acceptQueuedMessage(state: unknown, entry: { event: { type: string; data: Record<string, unknown> } }): void
+    }
+    for (let index = 0; index < 25_000; index++) {
+      feed.acceptQueuedMessage(feed.follow, { event: { type: 'user/message', data: { id: `m-${String(index)}` } } })
+    }
+    const state = (h.feed as unknown as { follow: { committedMessages: Set<string> } }).follow
+    expect(state.committedMessages.size).toBeLessThanOrEqual(20_000)
+    expect(state.committedMessages.has('m-24999')).toBe(true)
+    expect(state.committedMessages.has('m-0')).toBe(false)
   })
 })

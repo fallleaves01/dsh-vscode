@@ -19,6 +19,35 @@ describe('chat webview', () => {
     expect(html).toContain('if (current.canReconnect)')
   })
 
+  it('hardens the chat CSP and mints a cryptographic nonce', () => {
+    const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark.svg' } as vscode.Uri)
+    // Directives that take a compromised document somewhere else are closed too
+    // (S2-L1 / CSP hardening): no plugin objects, frames, base rewriting or forms.
+    expect(html).toContain("object-src 'none';")
+    expect(html).toContain("frame-src 'none';")
+    expect(html).toContain("base-uri 'none';")
+    expect(html).toContain("form-action 'none';")
+    // KaTeX positions every glyph with an inline style attribute, which CSP3
+    // blocks unless style-src-attr allows it; without this the formulas collapse
+    // (SEC-V2 M2). Scripts stay nonce-only.
+    expect(html).toContain("style-src-attr 'unsafe-inline';")
+    expect(html).not.toMatch(/script-src[^;]*unsafe-inline/)
+    // The nonce is 16 random bytes in hex, not the Math.random alphabet.
+    const nonce = /script-src 'nonce-([^']+)'/.exec(html)?.[1]
+    expect(nonce).toMatch(/^[0-9a-f]{32}$/)
+    const second = /script-src 'nonce-([^']+)'/.exec(chatHtml(
+      { cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark.svg' } as vscode.Uri))?.[1]
+    expect(second).not.toBe(nonce)
+  })
+
+  it('escapes every resource URI placed in an attribute', () => {
+    const evil = 'vscode-resource:/x" onload="alert(1)\'<&>'
+    const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => evil } as vscode.Uri)
+    const escaped = 'vscode-resource:/x&quot; onload=&quot;alert(1)&#39;&lt;&amp;&gt;'
+    expect(html).toContain(escaped)
+    expect(html).not.toContain('onload="alert(1)')
+  })
+
   it('loads bundled Markdown, math CSS and fonts without remote scripts or unsafe script execution', () => {
     const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark.svg' } as vscode.Uri)
     expect(html).toContain('src="vscode-resource:/dist/webview/markdown.js"')
@@ -26,7 +55,10 @@ describe('chat webview', () => {
     expect(html).toContain('font-src vscode-webview:')
     expect(html).toMatch(/script-src 'nonce-[A-Za-z0-9]+';/)
     expect(html).not.toContain('unsafe-eval')
-    expect(html).not.toContain('unsafe-inline')
+    // Inline *styles* are allowed for KaTeX's inline positioning, but inline
+    // scripts are still nonce-gated.
+    expect(html).toContain("style-src-attr 'unsafe-inline';")
+    expect(html).not.toMatch(/script-src[^;]*unsafe-inline/)
     expect(html).toContain('dshMarkdown.renderMarkdown')
     expect(html).toContain('dshMarkdown.scanMarkdownStream')
   })

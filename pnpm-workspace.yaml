@@ -2,5 +2,8 @@ allowBuilds:
   '@vscode/vsce-sign': true
   esbuild: true
   keytar: true
+overrides:
+  body-parser: 2.4.0
+  fast-uri: 3.1.9
 patchedDependencies:
   braces@3.0.3: patches/braces@3.0.3.patch

@@ -5,7 +5,9 @@ import {
   accountClientMetadata,
   accountStateOf,
   accountWalletText,
+  authorizeBrowserUrl,
   unavailableAccountState,
+  UNSAFE_AUTHORIZE_URL_MESSAGE,
 } from '../src/account.js'
 
 /** The exact shape `account/getState` returned from a live 0.1.7-rc.2 runtime. */
@@ -121,5 +123,30 @@ describe('account state', () => {
     // Offset is east-positive, the sign the Platform expects.
     expect(metadata.timezoneOffsetSeconds).toBe(-new Date().getTimezoneOffset() * 60)
     expect(accountClientMetadata('0.0.11', '').locale).toBe('en')
+  })
+})
+
+describe('authorize URL safety', () => {
+  const attempt = (authorizeUrl: string) => ({ id: 'a1', phase: 'waiting-browser', authorizeUrl, expiresAt: 1 })
+  it.each([
+    'https://platform.deepseek.com/dsh/authorize?x=1',
+    'http://127.0.0.1:43127/authorize?x=1',
+    'http://localhost:43127/authorize',
+    'http://[::1]:43127/authorize',
+  ])('allows %s', url => {
+    expect(authorizeBrowserUrl(url)).toBe(url)
+  })
+  it.each([
+    'file:///etc/passwd', 'command:workbench.action.terminal.new', 'javascript:alert(1)',
+    'http://example.com/authorize', 'not a url', '',
+  ])('rejects %s', url => {
+    expect(authorizeBrowserUrl(url)).toBeUndefined()
+  })
+  it('drops an unsafe authorize URL from the projected account state', () => {
+    expect(accountStateOf(view(attempt('javascript:alert(1)')))).not.toHaveProperty('authorizeUrl')
+    expect(accountStateOf(view(attempt('https://platform.deepseek.com/x')))).toMatchObject({ authorizeUrl: 'https://platform.deepseek.com/x' })
+  })
+  it('names the refusal in fixed copy', () => {
+    expect(UNSAFE_AUTHORIZE_URL_MESSAGE).toContain('unsafe sign-in URL')
   })
 })

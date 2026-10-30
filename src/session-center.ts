@@ -199,6 +199,20 @@ function toSessionItem(
   }
 }
 
+/**
+ * Upper bounds for the conversation-forest walk.
+ *
+ * `sessionItems` runs on every session list update, including updates driven by
+ * an untrusted `$events` frame. A forged lineage (the Host can report an
+ * arbitrary `parentSessionId`/`subagentCatalog`) therefore must not be able to
+ * recurse until the extension host throws a `RangeError` in the middle of frame
+ * dispatch. The walk stops at these limits and keeps the rows it already
+ * collected; a sibling root that is within bounds still renders.
+ */
+export const MAX_SESSION_NESTING_DEPTH = 64
+/** Hard cap on emitted rows, including external tasks and catalog-only children. */
+export const MAX_SESSION_ITEMS = 20_000
+
 export function sessionItems(
   summaries: readonly SessionSummary[],
   archivedSessionIds: ReadonlySet<string>,
@@ -219,10 +233,13 @@ export function sessionItems(
   const keep = new Set<string>()
   // A cycle among declared parents has no fixed point, so the walk has to
   // remember where it has been: without this the sidebar list never returns and
-  // the extension host hangs. `emit` guards the same shape one loop below.
+  // the extension host hangs. `emit` guards the same shape one loop below. The
+  // depth bound also keeps a forged 20k-deep chain from walking every ancestor
+  // on each list refresh.
+  let keptAncestors = 0
   for (let cursor = selectedId === undefined ? undefined : parentOf.get(selectedId);
-    cursor !== undefined && !keep.has(cursor);
-    cursor = parentOf.get(cursor)) {
+    cursor !== undefined && !keep.has(cursor) && keptAncestors < MAX_SESSION_NESTING_DEPTH;
+    cursor = parentOf.get(cursor), ++keptAncestors) {
     keep.add(cursor)
   }
 
@@ -250,28 +267,41 @@ export function sessionItems(
     parentId: string | undefined,
     subagent: SubagentIdentity | undefined,
     ancestors: ReadonlySet<string>,
+    depth: number,
   ): void => {
     // Delegation can nest, so the walk is recursive; a cycle in malformed data
-    // stops at the repeat instead of recursing forever.
+    // stops at the repeat instead of recursing forever, and the depth/node caps
+    // stop an unbounded forged chain before it can exhaust the stack.
+    if (depth > MAX_SESSION_NESTING_DEPTH || items.length >= MAX_SESSION_ITEMS) return
     const next = new Set(ancestors).add(summary.sessionId)
     const catalog = catalogOf(summary)
-    const kids = (children.get(summary.sessionId) ?? [])
-      .filter(kid => !next.has(kid.sessionId) && !archivedSessionIds.has(kid.sessionId)
-        && (earns(kid) || keep.has(kid.sessionId) || catalog.has(kid.sessionId)))
-      .sort((left, right) => left.updatedAt - right.updatedAt)
-    // The count must match what expanding reveals, or the disclosure would
-    // promise rows that are not there.
+    // Do not promise children that the depth bound will not emit; childCount
+    // must match what expanding the row can actually reveal.
+    const canDescend = depth < MAX_SESSION_NESTING_DEPTH
+    const kids = canDescend
+      ? (children.get(summary.sessionId) ?? [])
+        .filter(kid => !next.has(kid.sessionId) && !archivedSessionIds.has(kid.sessionId)
+          && (earns(kid) || keep.has(kid.sessionId) || catalog.has(kid.sessionId)))
+        .sort((left, right) => left.updatedAt - right.updatedAt)
+      : []
     const external = externalTasks(summary)
     const unloaded = [...catalog].filter(([id]) => !next.has(id) && !listedIds.has(id) && !archivedSessionIds.has(id))
     items.push(toSessionItem(summary, unreadSessionIds, attention, parentId, subagent, kids.length + external.length + unloaded.length))
-    for (const kid of kids) emit(kid, summary.sessionId, identity.get(kid.sessionId) ?? { mode: 'unknown' }, next)
+    for (const kid of kids) emit(kid, summary.sessionId, identity.get(kid.sessionId) ?? { mode: 'unknown' }, next, depth + 1)
     for (const [id, child] of unloaded) {
+      if (items.length >= MAX_SESSION_ITEMS) break
       items.push({ id, parentId: summary.sessionId, subagent: child, title: child.label ?? id, updatedAt: summary.updatedAt,
         running: false, blank: true, unread: unreadSessionIds.has(id), childCount: 0, catalogOnly: true })
     }
-    items.push(...external)
+    for (const task of external) {
+      if (items.length >= MAX_SESSION_ITEMS) break
+      items.push(task)
+    }
   }
-  for (const root of visibleRoots) emit(root, undefined, undefined, new Set())
+  for (const root of visibleRoots) {
+    if (items.length >= MAX_SESSION_ITEMS) break
+    emit(root, undefined, undefined, new Set(), 0)
+  }
   return items
 }
 

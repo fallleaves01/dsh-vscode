@@ -12,6 +12,8 @@ import { at, credentialRef, endpoint, fieldMutations, protocols, providerMutatio
 type Host = Pick<DshChatController, 'state' | 'cwd' | 'runtimeIdentity' | 'runtimeOwnership' | 'onDidChangeState' | 'onDidChangeRuntimeSettings' | 'settings' | 'settingsClient' | 'mutateSettings' | 'start'>
 type SettingsSurface = { webview: Pick<vscode.Webview, 'postMessage' | 'onDidReceiveMessage'>; onDidDispose: vscode.Event<void> }
 const text = (value: unknown): string => value instanceof Error ? value.message : String(value)
+const UNSAFE_CREDENTIAL_REFS = new Set(['__proto__', 'constructor', 'prototype'])
+
 const ALLOWLIST_NS = 'subagent-model-selection-settings'
 function apiKey(value: unknown): string {
   if (value === undefined || value === '') return ''
@@ -165,14 +167,15 @@ export class SettingsPanelManager implements vscode.Disposable {
           if (ns && ns.ns !== 'llm-deepseek-account') refs.add(credentialRef(ns, entry))
         }
         for (const search of description.namespaces.filter(item => (SEARCH_PROFILES as readonly string[]).includes(item.ns))) refs.add(credentialRef(search))
-        credentials = {}
+        // Null prototype: a runtime-chosen credential reference cannot mutate this record's prototype.
+        credentials = Object.create(null) as typeof credentials
         const list = [...refs]
         for (let index = 0; index < list.length; index += 16) {
           try {
             const batch = await next.describeCredentials(list.slice(index, index + 16))
             if (disposed || request !== generation || scope !== readScope || !connected()) return
             // Copy only the two public capability facts; never forward an arbitrary response.
-            for (const ref of list.slice(index, index + 16)) if (record(batch[ref])) credentials[ref] = { configured: batch[ref]!.configured === true, writable: batch[ref]!.writable === true }
+            for (const ref of list.slice(index, index + 16)) if (!UNSAFE_CREDENTIAL_REFS.has(ref) && record(batch[ref])) credentials[ref] = { configured: batch[ref]!.configured === true, writable: batch[ref]!.writable === true }
           } catch { modelsError = 'Credential status is unavailable. Credential changes are disabled until it can be refreshed.' }
         }
       } catch (cause) {

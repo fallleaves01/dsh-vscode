@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const ui = vi.hoisted(() => ({ input: vi.fn(), confirm: vi.fn(), debugging: false }))
+const ui = vi.hoisted(() => ({
+  workspaceDebugging: false, input: vi.fn(), confirm: vi.fn(), debugging: false }))
 vi.mock('vscode', () => ({
   Uri: { file: (fsPath: string) => ({ fsPath }) },
-  workspace: { getConfiguration: () => ({ get: () => ui.debugging }) },
+  workspace: { getConfiguration: () => ({ get: () => ui.workspaceDebugging, inspect: () => ({ globalValue: ui.debugging }) }) },
   window: { showInputBox: ui.input, showWarningMessage: ui.confirm },
 }))
 import { pickExistingRuntime, pickManagedRuntime } from '../src/runtime-picker.js'
@@ -47,6 +48,19 @@ describe('native runtime picker', () => {
     const h = host(); ui.input.mockResolvedValue('private-token')
     await expect(pickExistingRuntime(h)).rejects.toThrow('Paste the full launch URL')
     expect(h.selectRuntime).not.toHaveBeenCalled()
+  })
+
+  it('ignores a workspace-scoped autonomous debugging value', async () => {
+    const h = host()
+    ui.workspaceDebugging = true
+    try {
+      ui.input.mockResolvedValue(url)
+      ui.confirm.mockResolvedValue(undefined)
+      await pickExistingRuntime(h)
+      // No managed-runtime refusal: the repository setting has no effect.
+      expect(ui.input).toHaveBeenCalled()
+      ui.workspaceDebugging = false
+    } finally { ui.workspaceDebugging = false }
   })
 
   it('rejects external runtimes with autonomous debugging enabled', async () => {

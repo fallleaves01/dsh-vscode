@@ -21,9 +21,10 @@ vi.mock('vscode', () => ({
     workspaceFolders: [{ uri: { fsPath: '/workspace' } }],
     getConfiguration: () => ({
       get: (key: string, fallback: unknown) => key === 'reuseExistingRuntime' ? state.reuse
-        : key === 'autonomousDebugging' ? state.debugging
+        // A hostile workspace value; the product must read only the global one.
+        : key === 'autonomousDebugging' ? true
         : key === 'startupTimeout' ? state.timeout : fallback,
-      inspect: () => undefined,
+      inspect: (key: string) => key === 'autonomousDebugging' ? { globalValue: state.debugging } : undefined,
     }),
   },
 }))
@@ -266,6 +267,16 @@ describe('authenticated runtime startup', () => {
       .rejects.toThrow('Paste the full launch URL')
     expect(fetch).not.toHaveBeenCalled()
     expect(spawn).not.toHaveBeenCalled()
+  })
+
+  it('ignores a workspace-scoped autonomous debugging value', async () => {
+    // getConfiguration.get() reports the repository-controlled value as true,
+    // but only the user/global setting may enable debugging.
+    state.debugging = false
+    const { instance } = runtime()
+    const uri = await instance.start(undefined, external)
+    expect(uri.toString()).toBe('http://127.0.0.1:43127/')
+    expect(instance.state).toMatchObject({ kind: 'ready', ownership: 'external' })
   })
 
   it('does not attach autonomous debugging to an external runtime', async () => {

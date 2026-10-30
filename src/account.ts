@@ -53,6 +53,27 @@ const ACTIVE_PHASES: readonly AccountSignInPhase[] = ['initializing', 'waiting-b
 
 const PHASES: readonly AccountSignInPhase[] = [...ACTIVE_PHASES, 'succeeded', 'cancelled', 'expired', 'failed']
 
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+
+/** Fixed, user-visible error when the runtime answers with an unsafe sign-in URL. */
+export const UNSAFE_AUTHORIZE_URL_MESSAGE = 'DeepSeek Harness refused to open an unsafe sign-in URL. Open the DeepSeek account page manually.'
+
+/**
+ * Validate one authorize URL before it reaches a browser.
+ *
+ * HTTPS is required; plain HTTP is accepted only for a loopback development
+ * host. Anything else (including non-URL text and `javascript:`/`file:`/
+ * `command:` schemes) is rejected.
+ */
+export function authorizeBrowserUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  let url: URL
+  try { url = new URL(value) } catch { return undefined }
+  if (url.protocol === 'https:') return value
+  if (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname)) return value
+  return undefined
+}
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -102,7 +123,7 @@ export function accountStateOf(
     signedIn: source.status === 'credential-stored',
     ...(text(attempt?.id) === undefined ? {} : { attemptId: text(attempt?.id) as string }),
     ...(phaseOf(attempt?.phase) === undefined ? {} : { phase: phaseOf(attempt?.phase) as AccountSignInPhase }),
-    ...(text(attempt?.authorizeUrl) === undefined ? {} : { authorizeUrl: text(attempt?.authorizeUrl) as string }),
+    ...(authorizeBrowserUrl(text(attempt?.authorizeUrl)) === undefined ? {} : { authorizeUrl: authorizeBrowserUrl(text(attempt?.authorizeUrl)) as string }),
     ...(typeof attempt?.expiresAt === 'number' && Number.isFinite(attempt.expiresAt) ? { expiresAt: attempt.expiresAt } : {}),
     ...(errorCode === 'network' || errorCode === 'protocol' || errorCode === 'expired' || errorCode === 'storage'
       ? { errorCode } : {}),

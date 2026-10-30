@@ -55,7 +55,7 @@ describe('keybindings', () => {
 
 describe('launch configuration scope', () => {
   const properties = (manifest as unknown as {
-    contributes: { configuration: { properties: Record<string, { scope?: string }> } }
+    contributes: { configuration: { properties: Record<string, { scope?: string; markdownDescription?: string }> } }
   }).contributes.configuration.properties
 
   it('keeps the executable machine-scoped so Settings Sync cannot move it', () => {
@@ -70,6 +70,17 @@ describe('launch configuration scope', () => {
 
   it('keeps launch arguments machine-scoped, since they can name local paths', () => {
     expect(properties['deepseekHarness.arguments']?.scope).toBe('machine')
+  })
+
+  it('keeps autonomous debugging machine-scoped, so a repository cannot enable it', () => {
+    // The implementation reads `inspect().globalValue`; a `resource`-scoped
+    // declaration would let a workspace setting look valid while the extension
+    // silently ignored it. Machine scope makes the user-setting-only behavior a
+    // contract: a workspace cannot turn this debugging execution surface on.
+    const property = properties['deepseekHarness.autonomousDebugging']
+    expect(property?.scope).toBe('machine')
+    expect(property?.markdownDescription).toContain('user settings')
+    expect(property?.markdownDescription).toContain('workspace setting is ignored')
   })
 })
 

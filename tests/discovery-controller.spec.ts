@@ -21,6 +21,10 @@ vi.mock('vscode', () => ({
     dispose() { this.listeners.clear() }
   },
   Uri: { file: (fsPath: string) => ({ fsPath, scheme: 'file' }) },
+  workspace: {
+    isTrusted: true,
+    getConfiguration: () => ({ get: (_key: string, fallback: unknown) => fallback, inspect: () => undefined }),
+  },
   env: { language: 'en' },
   window: { showWarningMessage: vi.fn(), showInformationMessage: vi.fn(async () => undefined), showErrorMessage: vi.fn(async () => undefined) },
   commands: { executeCommand: vi.fn(async () => undefined) },
@@ -2594,5 +2598,88 @@ describe('startup and switch efficiency', () => {
     await vi.waitFor(() => expect(h.client.monitorJobs).toHaveBeenCalled())
     const first = h.client.monitorJobs.mock.calls[0]![0] as string[]
     expect(first).toEqual([h.controller.state.sessionId])
+  })
+})
+
+describe('bounded attachment storage', () => {
+  it('evicts the oldest hydrated image when the byte budget is exceeded', async () => {
+    const h = await harness()
+    const controller = h.controller as unknown as { attachmentByteBudget: number; rememberAttachment(key: string, value: { data?: string; error?: string }): void; attachmentResults: Map<string, unknown> }
+    controller.attachmentByteBudget = 5
+    controller.rememberAttachment('a\u0000first', { data: 'AAAA' })
+    controller.rememberAttachment('a\u0000second', { data: 'BBBB' })
+    expect(controller.attachmentResults.has('a\u0000first')).toBe(false)
+    expect(controller.attachmentResults.has('a\u0000second')).toBe(true)
+  })
+})
+
+describe('frame and state listener isolation', () => {
+  it('keeps processing frames after one throws', async () => {
+    const h = await harness()
+    const accept = vi.spyOn(h.controller as unknown as { acceptFrame(frame: unknown): void }, 'acceptFrame')
+      .mockImplementationOnce(() => { throw new Error('malformed frame') })
+    h.emit({ type: 'session/projection', sessionId: 'a', key: 'title', value: 'One' }, 'mux')
+    h.emit({ type: 'session/projection', sessionId: 'a', key: 'title', value: 'Two' }, 'mux')
+    await vi.waitFor(() => expect(accept).toHaveBeenCalledTimes(2))
+    const log = h.output.appendLine.mock.calls.map(call => String(call[0])).join('\n')
+    expect(log).toContain('ignored one malformed frame')
+    expect(log).not.toContain('malformed frame\npayload')
+  })
+
+  it('keeps publishing after a state listener throws', async () => {
+    const h = await harness()
+    const changes = (h.controller as unknown as { changes: { listeners: Set<() => void> } }).changes
+    changes.listeners.add(() => { throw new Error('listener boom') })
+    expect(() => h.controller.publish({ statusText: 'still works' })).not.toThrow()
+    expect(h.controller.state.statusText).toBe('still works')
+    const log = h.output.appendLine.mock.calls.map(call => String(call[0])).join('\n')
+    expect(log).toContain('a state listener failed')
+  })
+})
+
+describe('bounded attachment errors', () => {
+  it('caps the number of failed-image records', async () => {
+    const h = await harness()
+    const controller = h.controller as unknown as { rememberAttachment(key: string, value: { error?: string }): void; attachmentResults: Map<string, unknown> }
+    for (let index = 0; index < 600; index++) controller.rememberAttachment(`a\u0000broken-${String(index)}`, { error: 'Image unavailable.' })
+    expect(controller.attachmentResults.size).toBeLessThanOrEqual(512)
+  })
+})
+
+describe('bounded attachment bookkeeping', () => {
+  it('keeps the LRU set bounded and free of dangling keys under 10k failures', async () => {
+    const h = await harness()
+    const controller = h.controller as unknown as {
+      rememberAttachment(key: string, value: { data?: string; error?: string }): void
+      attachmentResults: Map<string, unknown>
+      attachmentOrder: Set<string>
+    }
+    const started = Date.now()
+    for (let index = 0; index < 10_000; index++) controller.rememberAttachment(`a\u0000fail-${String(index)}`, { error: 'Image unavailable.' })
+    const elapsed = Date.now() - started
+    expect(controller.attachmentOrder.size).toBeLessThanOrEqual(4_096)
+    expect(controller.attachmentResults.size).toBeLessThanOrEqual(512)
+    expect(elapsed).toBeLessThan(2_000)
+    for (const key of controller.attachmentOrder) expect(controller.attachmentResults.has(key)).toBe(true)
+    expect(controller.attachmentOrder.has('a\u0000fail-9999')).toBe(true)
+  })
+
+  it('still evicts an over-budget image and reloads it on the next request', async () => {
+    const h = await harness()
+    const controller = h.controller as unknown as {
+      rememberAttachment(key: string, value: { data?: string }): void
+      attachmentResults: Map<string, unknown>
+      attachmentOrder: Set<string>
+      attachmentByteBudget: number
+    }
+    controller.attachmentByteBudget = 5
+    controller.rememberAttachment('a\u0000first', { data: 'AAAA' })
+    controller.rememberAttachment('a\u0000second', { data: 'BBBB' })
+    expect(controller.attachmentResults.has('a\u0000first')).toBe(false)
+    expect(controller.attachmentResults.has('a\u0000second')).toBe(true)
+    // The evicted result is simply reloadable (hydrate would issue a new read).
+    controller.rememberAttachment('a\u0000first', { data: 'CC' })
+    expect(controller.attachmentResults.get('a\u0000first')).toEqual({ data: 'CC' })
+    expect(controller.attachmentOrder.has('a\u0000first')).toBe(true)
   })
 })

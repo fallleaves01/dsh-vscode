@@ -94,11 +94,28 @@ describe('clicking a file a reply named', () => {
     // Only the web link is a link at all; the other two are inert text, so a
     // click on them cannot post anything.
     expect(h.document.querySelectorAll('a')).toHaveLength(1)
+    // The destination a model wrote is visible before the click: a friendly or
+    // truncated label cannot hide where the link leads (S6).
+    const anchor = h.document.querySelector('a')!
+    expect(anchor.getAttribute('href')).toBe('https://example.com/docs')
+    expect(anchor.getAttribute('title')).toBe('Open external link: https://example.com/docs')
+    expect(anchor.getAttribute('aria-label')).toContain('example.com')
     h.click('a')
 
     expect(h.posts).toEqual([{ type: 'open-link', href: 'https://example.com/docs' }])
     expect(h.document.querySelectorAll('button.file-link')).toHaveLength(0)
     expect(h.document.getElementById('messages')?.textContent).toContain('section')
     expect(h.document.getElementById('messages')?.textContent).toContain('bad')
+  })
+
+  it('names the real target even when the label claims another site', async () => {
+    const h = open()
+    answer(h, '[https://trusted.example](https://evil.example/path)')
+    await h.settle()
+    const anchor = h.document.querySelector('a')!
+    expect(anchor.textContent).toBe('https://trusted.example')
+    expect(anchor.getAttribute('href')).toBe('https://evil.example/path')
+    expect(anchor.getAttribute('title')).toContain('evil.example')
+    expect(anchor.getAttribute('aria-label')).toContain('evil.example')
   })
 })

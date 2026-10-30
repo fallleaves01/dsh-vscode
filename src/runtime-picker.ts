@@ -26,7 +26,8 @@ async function confirmSwitch(host: RuntimePickerHost): Promise<boolean> {
 export async function pickExistingRuntime(host: RuntimePickerHost): Promise<void> {
   host.assertCanSelectRuntime()
   const checkDebugging = (): void => {
-    if (vscode.workspace.getConfiguration('deepseekHarness', vscode.Uri.file(host.cwd)).get<boolean>('autonomousDebugging', false)) {
+    // Repository settings cannot switch this on; only the user's global value counts.
+    if (vscode.workspace.getConfiguration('deepseekHarness', vscode.Uri.file(host.cwd)).inspect<boolean>('autonomousDebugging')?.globalValue === true) {
       throw new Error('Autonomous debugging requires a managed runtime. Disable it before connecting to an existing DSH runtime.')
     }
   }

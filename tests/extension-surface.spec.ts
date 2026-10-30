@@ -74,6 +74,7 @@ vi.mock('vscode', () => {
       activeTextEditor: undefined,
     },
     workspace: {
+      isTrusted: true,
       workspaceFolders: [workspaceFolder],
       getConfiguration: () => ({ get: (_key: string, fallback: any) => fallback }),
       registerTextDocumentContentProvider: () => disposable(),
@@ -472,6 +473,41 @@ describe('host surface wiring', () => {
     })
   })
 
+  it('does not start the runtime in an untrusted workspace', async () => {
+    ;(vscode.workspace as { isTrusted: boolean }).isTrusted = false
+    const { client } = testClient()
+    mocks.client = client
+    try {
+      const context: any = {
+        subscriptions: [] as Array<{ dispose(): void }>,
+        extensionUri: { fsPath: '/extension' },
+        extension: { packageJSON: { version: '0.1.16' } },
+        globalStorageUri: undefined,
+        workspaceState: { get: () => [], update: async () => {} },
+        globalState: { get: () => true, update: async () => {} },
+        secrets: { get: async () => undefined, store: async () => {}, delete: async () => {} },
+      }
+      activate(context)
+      mocks.contexts.push(context)
+      await mocks.commands.get('deepseekHarness.openInEditor')!()
+      const entry = mocks.panels.at(-1)
+      // Nothing may reach the runtime or its client until the workspace is trusted.
+      expect(client.permissionCatalog).not.toHaveBeenCalled()
+      expect(client.listCommands).not.toHaveBeenCalled()
+      entry.send({ type: 'ready' })
+      await vi.waitFor(() => {
+        const state = entry.panel.webview.postMessage.mock.calls
+          .map((call: any[]) => call[0])
+          .filter((packet: any) => packet.type === 'state')
+          .at(-1)?.state
+        expect(state?.phase).toBe('error')
+        expect(String(state?.statusText)).toContain('trusted VS Code workspace')
+      })
+    } finally {
+      ;(vscode.workspace as { isTrusted: boolean }).isTrusted = true
+    }
+  })
+
   describe('auto review approval reasons', () => {
     const request = (payload: Record<string, unknown>): Record<string, unknown> => ({
       type: 'approval/requested', sessionId: 'a', approvalId: 'ap-1', toolName: 'bash', ...payload,
@@ -525,6 +561,16 @@ describe('host surface wiring', () => {
         h.emit(request({ reason: 'audited', displayReason: { en: 'English reason' } }), 'mux')
         await vi.waitFor(() => expect(h.mergedState().approval?.reason).toBe('English reason'))
       } finally { env.language = 'en' }
+    })
+
+    it('bounds and sanitizes a runtime approval reason', async () => {
+      const h = await activated()
+      h.emit(request({ reason: 'x'.repeat(6_000) + '\u0007\u0000y' }), 'mux')
+      await vi.waitFor(() => expect(h.mergedState().approval?.reason).toBeDefined())
+      const reason = String(h.mergedState().approval?.reason)
+      expect(reason.length).toBeLessThanOrEqual(4_001)
+      expect(reason).not.toContain('\u0007')
+      expect(reason).not.toContain('\u0000')
     })
 
     it('falls back to the runtime reason when no display reason exists', async () => {

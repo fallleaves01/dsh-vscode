@@ -60,14 +60,19 @@ function textPage(value: string, section: string, cursor: Cursor): { value: stri
   }
 }
 
-function contentText(content: unknown): string {
+const CONTENT_TEXT_MAX_DEPTH = 64
+
+function contentText(content: unknown, depth = 0, visited = new WeakSet<object>()): string {
   if (!Array.isArray(content)) return ''
+  if (depth > CONTENT_TEXT_MAX_DEPTH) return '…'
+  if (visited.has(content)) return '…'
+  visited.add(content)
   return content.map((part) => {
     const item = record(part)
     if (item === undefined) return ''
     if (typeof item.text === 'string') return item.text
     if (typeof item.content === 'string') return item.content
-    return contentText(item.content)
+    return Array.isArray(item.content) ? contentText(item.content, depth + 1, visited) : ''
   }).filter(Boolean).join('\n')
 }
 

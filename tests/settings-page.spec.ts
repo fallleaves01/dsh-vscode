@@ -394,3 +394,16 @@ describe('dedicated DSH settings surface', () => {
     expect(document.body.textContent).toContain('Restart the DeepSeek Harness runtime')
   })
 })
+
+describe('settings page document hardening', () => {
+  it('closes base/form navigation and escapes the script URI', () => {
+    const html = settingsPageHtml({ cspSource: 'vscode-webview:' } as any,
+      { toString: () => 'settings-page.js" onload="alert(1)\'<&>' } as any)
+    expect(html).toContain("base-uri 'none';")
+    expect(html).toContain("form-action 'none';")
+    expect(html).toContain('settings-page.js&quot; onload=&quot;alert(1)&#39;&lt;&amp;&gt;')
+    expect(html).not.toContain('onload="alert(1)')
+    // The nonce stays cryptographic and shared by the document's script tag.
+    expect(html).toMatch(/script-src 'nonce-[0-9a-f]{32}';/)
+  })
+})

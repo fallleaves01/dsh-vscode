@@ -245,12 +245,42 @@ function record(value: unknown): EventData | undefined {
   return typeof value === 'object' && value !== null ? value as EventData : undefined
 }
 
-function textContent(value: unknown): string {
+/**
+ * Bounds for walking content owned by an untrusted runtime.
+ *
+ * Tool results and message content arrive as JSON-shaped arrays that can be
+ * nested arbitrarily deep. The projection recurses into tool-result wrappers so
+ * a nested `content` array renders as text; a 20k-deep or self-referential
+ * object from a hostile frame must not turn that walk into a `RangeError`.
+ */
+export const MAX_CONTENT_NESTING_DEPTH = 64
+/** Stands in for content that exceeds the nesting bound or repeats itself. */
+export const ELIDED_CONTENT = '…'
+
+function textContent(value: unknown, depth = 0, seen: ReadonlySet<unknown> = new Set()): string {
   if (!Array.isArray(value)) return ''
-  return value.flatMap((part) => {
+  if (depth > MAX_CONTENT_NESTING_DEPTH || seen.has(value)) return ELIDED_CONTENT
+  const nextSeen = new Set(seen).add(value)
+  const parts: string[] = []
+  for (const part of value) {
+    if (Array.isArray(part)) {
+      const nested = textContent(part, depth + 1, nextSeen)
+      if (nested !== '') parts.push(nested)
+      continue
+    }
     const item = record(part)
-    return item?.type === 'text' && typeof item.text === 'string' ? [item.text] : []
-  }).join('\n')
+    if (item?.type === 'text' && typeof item.text === 'string') {
+      parts.push(item.text)
+      continue
+    }
+    // A tool result nests its payload: `{ type: 'tool-result', content: [...] }`.
+    // Walk it so multi-level results keep their text, but only within the bound.
+    if (Array.isArray(item?.content)) {
+      const nested = textContent(item.content, depth + 1, nextSeen)
+      if (nested !== '') parts.push(nested)
+    }
+  }
+  return parts.join('\n')
 }
 
 /**
@@ -275,9 +305,18 @@ function imageMediaType(value: unknown): ImageMediaType | undefined {
 /** Finds durable DSH image references, including images nested inside tool results. */
 function imageContent(value: unknown): ConversationImage[] {
   const found = new Map<string, ConversationImage>()
-  const visit = (candidate: unknown): void => {
+  /** Arrays on the current path; cleared on the way out so shared content stays readable. */
+  const seen = new Set<readonly unknown[]>()
+  const visit = (candidate: unknown, depth: number): void => {
+    if (depth > MAX_CONTENT_NESTING_DEPTH) return
     if (Array.isArray(candidate)) {
-      for (const item of candidate) visit(item)
+      if (seen.has(candidate)) return
+      seen.add(candidate)
+      try {
+        for (const item of candidate) visit(item, depth + 1)
+      } finally {
+        seen.delete(candidate)
+      }
       return
     }
     const item = record(candidate)
@@ -310,9 +349,9 @@ function imageContent(value: unknown): ConversationImage[] {
         })
       }
     }
-    if (Array.isArray(item.content)) visit(item.content)
+    if (Array.isArray(item.content)) visit(item.content, depth + 1)
   }
-  visit(value)
+  visit(value, 0)
   return [...found.values()]
 }
 

@@ -327,7 +327,9 @@ export class DshRuntime implements vscode.Disposable {
     let storedApiKey: string | undefined
     try {
       if (target?.kind === 'external') {
-        if (config.get<boolean>('autonomousDebugging', false)) {
+        // Workspace/folder values are repository-controlled; only the user's
+        // global setting may enable this dangerous capability.
+        if (config.inspect<boolean>('autonomousDebugging')?.globalValue === true) {
           throw new Error('Autonomous debugging requires a managed runtime. Disable it before connecting to an existing DSH runtime.')
         }
         const launchUrl = existingRuntimeUrl(target.launchUrl.href)

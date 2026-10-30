@@ -30,9 +30,11 @@ export class DebugRuntimeContribution implements RuntimeLaunchContributor {
   async prepare(launch: RuntimeLaunchContext): Promise<RuntimeLaunchPreparation | undefined> {
     const workspace = debugWorkspaceForPath(vscode.workspace.workspaceFolders ?? [], launch.workspacePath)
     if (workspace === undefined) throw new Error('The selected DeepSeek project is not an open VS Code workspace folder.')
+    // A `.vscode/settings.json` in the workspace must not enable this; only the
+    // user-scope value counts.
     const enabled = vscode.workspace
       .getConfiguration('deepseekHarness', workspace.uri)
-      .get<boolean>('autonomousDebugging', false)
+      .inspect<boolean>('autonomousDebugging')?.globalValue === true
     if (!enabled) return undefined
 
     const tools = new DebugTools(this.sessions, workspace)

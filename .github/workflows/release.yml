@@ -4,51 +4,157 @@ on:
   push:
     tags: ['v*']
 
+# Workflow default is read-only. Only the release job, which creates the
+# GitHub Release, receives contents:write. Build output crosses the job
+# boundary as an artifact; no repository write token is available while the
+# VSIX is compiled.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
+  build:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to immutable commits. Keep the comment in sync with the action's
+      # release tag; renovate/dependabot should update both SHA and comment.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.7.0
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run typecheck
-      - run: pnpm run test
-      - name: Build VSIX
+
+      # Full gate. Any failure here stops the workflow before a Release exists.
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Unit tests (full vitest)
+        run: pnpm run test
+      # The Chromium tests read dist/webview/* (see tests/*.browser.mjs), so
+      # build before running them. build.sh rebuilds and packages afterwards.
+      - name: Build webview and extension bundles
+        run: pnpm run build
+      - name: "Browser test: chat scrolling (Linux Chromium)"
+        run: pnpm run test:scroll-browser
+      - name: "Browser test: settings forms (Linux Chromium)"
+        run: pnpm run test:settings-browser
+      - name: Check KaTeX layout under the chat CSP in Chromium
+        if: runner.os == 'Linux'
+        run: pnpm run test:markdown-csp
+      - name: Dependency audit (high)
+        # Publish-artifact gate: audit production dependencies only. They are
+        # what can reach dist/ and the VSIX; dev-only High advisories
+        # (vite/markdown-it/body-parser/msal-node/undici) are tracked separately
+        # and are not shipped. Do not replace this with a bare full-tree audit.
+        run: pnpm audit --prod --audit-level=high
+
+      - name: Build and package VSIX
         run: ./build.sh
-      - name: Verify tag and package version
+
+      - name: Verify tag, stage release files and checksums
         shell: bash
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
           test "v$version" = "$GITHUB_REF_NAME"
-          test -f "artifacts/dsh-sidebar-$version.vsix"
-          sha256sum "artifacts/dsh-sidebar-$version.vsix"
-      - name: Create GitHub release
+          vsix="artifacts/dsh-sidebar-$version.vsix"
+          test -f "$vsix"
+          mkdir -p release
+          cp "$vsix" "release/dsh-sidebar-$version.vsix"
+          (
+            cd release
+            sha256sum "dsh-sidebar-$version.vsix" > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+          cat release/SHA256SUMS
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dsh-sidebar-release
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    # Required reviewers and wait timers for this environment are repository
+    # settings, not file state. See the FIX4 report for the exact admin steps.
+    environment:
+      name: release
+    permissions:
+      contents: write
+      actions: read # download the artifact produced by the build job
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dsh-sidebar-release
+          path: release
+
+      - name: Verify downloaded checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd release
+            sha256sum -c SHA256SUMS
+          )
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          {
+            printf '%s\n' "## DSH Sidebar $version" ""
+            printf '%s\n' "### Installation" ""
+            printf '%s\n' '```sh'
+            printf '%s\n' "code --install-extension dsh-sidebar-$version.vsix"
+            printf '%s\n' '```'
+            printf '%s\n' "" "### SHA-256 checksum" ""
+            printf '%s\n' '```text'
+            cat release/SHA256SUMS
+            printf '%s\n' '```'
+          } > release-notes.md
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create GitHub Release
         env:
+          # Only this final step receives a write-capable token, and only for
+          # creating the Release and uploading its assets.
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
           version="${tag#v}"
-          gh release create "$tag" "artifacts/dsh-sidebar-$version.vsix" \
-            --title "DSH Sidebar $version" \
-            --generate-notes \
-            --prerelease
+          files=("release/dsh-sidebar-$version.vsix" "release/SHA256SUMS")
+          test -f "${files[0]}"
+          test -f "${files[1]}"
+          create_release() {
+            gh release create "$tag" "${files[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "DSH Sidebar $version" \
+              --notes-file release-notes.md \
+              --verify-tag "$@"
+          }
+          if [[ "$version" == *-* ]]; then
+            create_release --prerelease
+          else
+            create_release
+          fi

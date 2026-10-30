@@ -2,6 +2,13 @@ import { createHash, randomUUID } from 'node:crypto'
 import WebSocket from 'ws'
 import { redactDshSecrets } from './runtime-output.js'
 
+/** One HTTP response body may not exceed this size before it is refused. */
+export const MAX_HTTP_RESPONSE_BYTES = 8 * 1024 * 1024
+/** Image reads carry base64 and are allowed a larger endpoint-level budget. */
+export const MAX_ATTACHMENT_RESPONSE_BYTES = 96 * 1024 * 1024
+/** One multiplexed WebSocket frame may not exceed this size. */
+export const MAX_WS_PAYLOAD_BYTES = 16 * 1024 * 1024
+
 export class DshConnectionError extends Error {
   constructor(
     readonly code: string,
@@ -42,6 +49,30 @@ export function dshLocalUrl(value: URL): URL {
  * Credentials are private fields, never part of runtime state or JSON output.
  * Redirects and automatic RPC retries are deliberately disabled.
  */
+async function readLimitedBody(response: Response, endpoint: string, limit = MAX_HTTP_RESPONSE_BYTES): Promise<string> {
+  const body = response.body
+  if (body === null) return ''
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let text = ''
+  let received = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      received += value.byteLength
+      if (received > limit) {
+        await reader.cancel()
+        throw new DshConnectionError('invalid-response', `DSH ${endpoint} returned a response larger than ${String(limit)} bytes.`)
+      }
+      text += decoder.decode(value, { stream: true })
+    }
+    return text + decoder.decode()
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 export class DshConnection {
   readonly #origin: string
   readonly #lifetime = new AbortController()
@@ -127,7 +158,8 @@ export class DshConnection {
     }
   }
 
-  async call<T>(endpoint: string, args: Record<string, unknown>, timeoutMs = 30_000, signal?: AbortSignal): Promise<T> {
+  async call<T>(endpoint: string, args: Record<string, unknown>, timeoutMs = 30_000, signal?: AbortSignal,
+    maxResponseBytes = MAX_HTTP_RESPONSE_BYTES): Promise<T> {
     // Prevent URL traversal, query injection, and credential-bearing redirects.
     if (!/^(?:\$events|[A-Za-z][A-Za-z0-9]*)\/[A-Za-z][A-Za-z0-9]*$/.test(endpoint)) {
       throw new DshConnectionError('invalid-endpoint', 'Invalid DSH Remote endpoint.')
@@ -148,9 +180,15 @@ export class DshConnection {
         }
         throw new DshConnectionError('http-error', `DSH ${endpoint} failed: HTTP ${String(response.status)}.`, response.status)
       }
+      const declared = Number(response.headers.get('content-length') ?? '')
+      if (Number.isFinite(declared) && declared > maxResponseBytes) {
+        await response.body?.cancel()
+        throw new DshConnectionError('invalid-response', `DSH ${endpoint} returned a response larger than ${String(maxResponseBytes)} bytes.`)
+      }
+      const text = await readLimitedBody(response, endpoint, maxResponseBytes)
       let envelope: unknown
       try {
-        envelope = await response.json()
+        envelope = JSON.parse(text) as unknown
       } catch (error) {
         if (error instanceof SyntaxError) throw new DshConnectionError('invalid-response', `DSH ${endpoint} returned invalid JSON.`)
         throw error
@@ -184,6 +222,7 @@ export class DshConnection {
     url.protocol = 'ws:'
     const socket = new WebSocket(url, {
       headers: this.headers(), followRedirects: false, handshakeTimeout: 10_000,
+      maxPayload: MAX_WS_PAYLOAD_BYTES,
     })
     this.#sockets.add(socket)
     // Avoid an unhandled EventEmitter error if the owner disposes while connecting.

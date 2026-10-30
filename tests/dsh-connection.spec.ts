@@ -326,3 +326,51 @@ describe('DSH authenticated Remote connection', () => {
     await checked
   })
 })
+
+describe('HTTP response bounds', () => {
+  const serveRpc = async (value: () => unknown, declaredSize?: number) => serve((request, response) => {
+    let body = ''
+    request.setEncoding('utf8')
+    request.on('data', chunk => { body += chunk })
+    request.on('end', () => {
+      response.setHeader('content-type', 'application/json')
+      if (declaredSize !== undefined) response.setHeader('content-length', String(declaredSize))
+      const rpcId = (JSON.parse(body) as { rpcId: string }).rpcId
+      response.end(JSON.stringify({ type: 'server-response', rpcId, result: { ok: true, value: value() } }))
+    })
+  })
+  it('accepts an attachment-sized response under the endpoint budget', async () => {
+    const { MAX_ATTACHMENT_RESPONSE_BYTES } = await import('../src/dsh-connection.ts')
+    const url = await serveRpc(() => ({ data: 'x'.repeat(9 * 1024 * 1024) }))
+    const connection = new DshConnection(url)
+    try {
+      await expect(connection.call('session/attachment', {}, 30_000, undefined, MAX_ATTACHMENT_RESPONSE_BYTES)).resolves.toMatchObject({ data: expect.any(String) })
+    } finally { connection.dispose() }
+  })
+  it('rejects the same attachment-sized body for an ordinary RPC', async () => {
+    const url = await serveRpc(() => ({ data: 'x'.repeat(9 * 1024 * 1024) }))
+    const connection = new DshConnection(url)
+    try {
+      await expect(connection.call('session/list', {})).rejects.toThrow('larger than 8388608')
+    } finally { connection.dispose() }
+  })
+  it('rejects a response beyond the attachment budget', async () => {
+    const { MAX_ATTACHMENT_RESPONSE_BYTES } = await import('../src/dsh-connection.ts')
+    const url = await serveRpc(() => ({}), MAX_ATTACHMENT_RESPONSE_BYTES + 1)
+    const connection = new DshConnection(url)
+    try {
+      await expect(connection.call('session/attachment', {}, 30_000, undefined, MAX_ATTACHMENT_RESPONSE_BYTES)).rejects.toThrow('larger than')
+    } finally { connection.dispose() }
+  })
+  it('refuses a response that declares more than the size budget', async () => {
+    const url = await serve((_request, response) => {
+      response.setHeader('content-type', 'application/json')
+      response.setHeader('content-length', String(9 * 1024 * 1024))
+      response.end(JSON.stringify({ type: 'server-response', rpcId: 'x', result: { ok: true, value: {} } }))
+    })
+    const connection = new DshConnection(url)
+    try {
+      await expect(connection.call('session/list', {})).rejects.toThrow('larger than')
+    } finally { connection.dispose() }
+  })
+})

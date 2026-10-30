@@ -4,11 +4,17 @@ import { webviewThemeCss } from './webview-theme.js'
 import { userTextCss } from './user-text-style.js'
 import { subagentLinkCss } from './subagent-link-style.js'
 
+/** Escape a value placed inside an HTML attribute. */
+function escapeAttr(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll("'", '&#39;')
+    .replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
 export function taskDetailsHtml(webview: vscode.Webview, assets: { script: vscode.Uri; markdown: vscode.Uri; style: vscode.Uri }): string {
   const nonce = randomBytes(16).toString('hex')
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
-  <link rel="stylesheet" href="${assets.style}"><style>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}'; base-uri 'none'; form-action 'none';">
+  <link rel="stylesheet" href="${escapeAttr(String(assets.style))}"><style>
   * { box-sizing: border-box; }
   :root { --dsh-content-font-size: var(--vscode-font-size, 14px); --dsh-line: calc(24px + var(--dsh-content-font-size) - 14px); --dsh-bubble: color-mix(in srgb, #4d6bfe 12%, var(--vscode-editor-background)); }
   html, body { height: 100%; margin: 0; min-width: 0; }
@@ -101,5 +107,5 @@ export function taskDetailsHtml(webview: vscode.Webview, assets: { script: vscod
   </style></head><body><header><div class="heading"><div class="heading-copy"><div id="kind" class="eyebrow">Subagent</div><h1 id="title">Task details</h1><div id="meta" class="meta"></div></div><span id="status" role="status"></span></div><nav class="actions" aria-label="Task actions"><button id="owner" title="Return to the owning conversation">← Conversation</button><button id="inChat">Open in chat</button><button id="stop">Stop</button><button id="retry">Refresh</button><button id="copy">Copy output</button></nav></header>
   <div id="notice" role="status"></div><main id="scroll" tabindex="0" aria-label="Task conversation and output"><button id="history" class="hidden">Load earlier messages</button><section id="requests"></section><section id="messages"></section><div id="detailEmpty" class="empty hidden">Waiting for task activity…</div><div id="gap" class="gap hidden">Earlier output is unavailable or was trimmed. This is a live preview.</div><pre id="output"></pre><button id="latest" class="hidden">Jump to latest</button></main>
   <footer><div id="readOnly" class="hint"></div><form id="composer"><textarea id="draft" placeholder="Message this child agent" aria-label="Message this child agent"></textarea><div class="actions"><span class="hint">Enter to send · Shift+Enter for a new line</span><select id="delivery" aria-label="Delivery"><option value="queue">Queue</option><option value="steer">Steer</option></select><button id="send" class="primary" type="submit">Send ↑</button></div></form></footer>
-  <script nonce="${nonce}" src="${assets.markdown}"></script><script nonce="${nonce}" src="${assets.script}"></script></body></html>`
+  <script nonce="${nonce}" src="${escapeAttr(String(assets.markdown))}"></script><script nonce="${nonce}" src="${escapeAttr(String(assets.script))}"></script></body></html>`
 }

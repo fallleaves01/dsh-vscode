@@ -148,16 +148,30 @@ function existingWindowsFile(directory: string, fileName: string): string | unde
   }
 }
 
-/** Resolve exactly the command Windows would pick from PATH and PATHEXT. */
+/** Whether a candidate executable lives inside the workspace directory. */
+function isInsideWorkspace(cwd: string, candidate: string): boolean {
+  const relativePath = relative(resolve(cwd), resolve(candidate))
+  return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath))
+}
+
+/**
+ * Resolve exactly the command Windows would pick from PATH and PATHEXT.
+ *
+ * A bare command name is searched only in the configured PATH directories: the
+ * current directory and the workspace are never searched, so a repository that
+ * contains `dsh.exe` cannot execute it when the sidebar opens. A PATH entry that
+ * resolves inside the workspace is rejected for the same reason. A path the user
+ * typed explicitly is trusted as an informed choice.
+ */
 function resolveWindowsPathCommand(executable: string, host: LaunchHost): string | undefined {
   const hasDirectory = /[\\/]/.test(executable)
   const explicitPath = hasDirectory ? explicitExecutablePath(executable, host.cwd) : undefined
-  const searchDirectories = [
-    ...(environmentValue(host.env, 'NoDefaultCurrentDirectoryInExePath') === undefined ? [host.cwd] : []),
-    ...windowsPathDirectories(host.env),
-  ]
+  // A relative PATH entry resolves against the workspace, which reintroduces the
+  // workspace-executable hazard; only absolute directories are trustworthy.
   const directories = explicitPath === undefined
-    ? searchDirectories.filter((value, index, values) => (
+    ? windowsPathDirectories(host.env)
+      .filter(value => isAbsolute(value))
+      .filter((value, index, values) => (
         values.findIndex(candidate => candidate.toLowerCase() === value.toLowerCase()) === index
       ))
     : [dirname(explicitPath)]
@@ -169,7 +183,11 @@ function resolveWindowsPathCommand(executable: string, host: LaunchHost): string
   for (const directory of directories) {
     for (const candidate of names) {
       const match = existingWindowsFile(directory, candidate)
-      if (match !== undefined) return match
+      if (match === undefined) continue
+      // A PATH entry that resolves inside the workspace is hostile or stale;
+      // skip it and keep looking at the remaining, trustworthy PATH entries.
+      if (explicitPath === undefined && isInsideWorkspace(host.cwd, match)) continue
+      return match
     }
   }
   return undefined
@@ -286,10 +304,13 @@ function resolveWindowsDsh(
     return windowsShellFallback(match, configuredArgs, host.env)
   }
 
-  const fallback = /[\\/]/.test(requested)
-    ? explicitExecutablePath(requested, host.cwd)
-    : requested
-  return windowsShellFallback(fallback, configuredArgs, host.env)
+  if (!/[\\/]/.test(requested)) {
+    // Falling back to cmd.exe for a bare name would search the current directory
+    // again, which is exactly the workspace-executable hazard this resolution
+    // removes. The user must install DSH or point at it explicitly.
+    throw new Error('Could not find "dsh" on the Windows PATH. Install DeepSeek Harness, or set deepseekHarness.executable to the absolute path of dsh.cmd (machine scope). The workspace directory is not searched for security reasons.')
+  }
+  return windowsShellFallback(explicitExecutablePath(requested, host.cwd), configuredArgs, host.env)
 }
 
 interface ParsedDshVersion {

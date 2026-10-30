@@ -1,4 +1,5 @@
 import type { DshConnection } from './dsh-connection.js'
+import { MAX_ATTACHMENT_RESPONSE_BYTES } from './dsh-connection.js'
 import { DshRemoteApi } from './dsh-remote-api.js'
 import { DshSessionFeed, type SessionOpening } from './dsh-session-feed.js'
 import { wireRecord } from './dsh-streams.js'
@@ -451,7 +452,7 @@ export class DshClient {
           ...(image.originalDimensions === undefined ? {} : { originalDimensions: image.originalDimensions }),
         },
       },
-    })
+    }, 30_000, MAX_ATTACHMENT_RESPONSE_BYTES)
   }
   /**
    * Stage one arbitrary file for the next prompt. Mirrors the browser client's
@@ -714,7 +715,8 @@ export class DshClient {
       this.invalidateSessionDiscovery(payload.sessionId)
     }
   }
-  private call<T>(endpoint: string, args: Record<string, unknown>, timeoutMs = 30_000): Promise<T> {
-    return this.connection.call(endpoint, args, timeoutMs, this.lifetime.signal)
+  private call<T>(endpoint: string, args: Record<string, unknown>, timeoutMs = 30_000,
+    maxResponseBytes?: number): Promise<T> {
+    return this.connection.call(endpoint, args, timeoutMs, this.lifetime.signal, maxResponseBytes)
   }
 }

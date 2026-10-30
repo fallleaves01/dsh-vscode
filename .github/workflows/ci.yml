@@ -6,6 +6,7 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege at workflow level; each job narrows what it needs.
 permissions:
   contents: read
 
@@ -15,23 +16,35 @@ concurrency:
 
 jobs:
   check:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      # Pinned to immutable commits. Keep the comment in sync with the action's
+      # release tag; renovate/dependabot should update both SHA and comment.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.7.0
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Dependency audit (high)
+        if: runner.os == 'Linux'
+        # Audit only production dependencies: they are what can reach dist/ and
+        # the VSIX. The full tree currently reports dev-only High advisories
+        # (vite/markdown-it/body-parser/msal-node/undici) that are not shipped.
+        run: pnpm audit --prod --audit-level=high
       - run: pnpm run typecheck
       - run: pnpm run test
       - run: pnpm run build
@@ -41,4 +54,7 @@ jobs:
       - name: Check settings forms in Chromium
         if: runner.os == 'Linux'
         run: pnpm run test:settings-browser
+      - name: Check KaTeX layout under the chat CSP in Chromium
+        if: runner.os == 'Linux'
+        run: pnpm run test:markdown-csp
       - run: pnpm run package

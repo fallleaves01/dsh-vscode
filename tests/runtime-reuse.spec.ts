@@ -35,9 +35,9 @@ vi.mock('vscode', () => ({
     workspaceFolders: [{ uri: { fsPath: '/workspace' } }],
     getConfiguration: () => ({
       get: (key: string, fallback: unknown) => key === 'reuseExistingRuntime' ? state.reuse
-        : key === 'autonomousDebugging' ? state.debugging
+        : key === 'autonomousDebugging' ? true
         : key === 'startupTimeout' ? state.timeout : fallback,
-      inspect: () => undefined,
+      inspect: (key: string) => key === 'autonomousDebugging' ? { globalValue: state.debugging } : undefined,
     }),
   },
 }))

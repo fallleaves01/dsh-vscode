@@ -1,5 +1,4 @@
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import * as vscode from 'vscode'
@@ -46,6 +45,19 @@ interface ReviewFile {
   turn: number
   snapshots: ReviewSnapshot[]
   identity?: string
+  /** The project root the review was recorded in; revert re-checks containment. */
+  root: string
+}
+
+/** Filesystem identity of the target when Revert validated it (TOCTOU, S3-05). */
+interface FileStamp {
+  dev: number
+  ino: number
+  size: number
+  mtimeMs: number
+  nlink: number
+  physical: string
+  symbolicLink: boolean
 }
 
 interface FileImage {
@@ -105,11 +117,36 @@ function inside(basePath: string, filePath: string): boolean {
   return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
 }
 
-/** A reply may spell the home directory as `~`, which the file system does not. */
-function expandHome(value: string): string {
-  if (value !== '~' && !value.startsWith('~/') && !value.startsWith('~\\')) return value
-  const home = os.homedir()
-  return value.length === 1 ? home : path.join(home, value.slice(2))
+/** Whether a reply spelled the home directory, which is never a project path. */
+function isHomeSpelling(value: string): boolean {
+  return value === '~' || value.startsWith('~/') || value.startsWith('~\\')
+}
+
+/**
+ * The physical location of a path: symlinks along the existing prefix resolved.
+ *
+ * Nothing here opens a path; it only turns a lexical spelling into the file the
+ * operating system would reach, which is what a containment check must inspect.
+ */
+function physicalPath(filePath: string): string {
+  const resolved = path.resolve(filePath)
+  let ancestor = resolved
+  while (!fs.existsSync(ancestor) && path.dirname(ancestor) !== ancestor) ancestor = path.dirname(ancestor)
+  try {
+    return path.resolve(fs.realpathSync.native(ancestor), path.relative(ancestor, resolved))
+  } catch {
+    return resolved
+  }
+}
+
+/** Whether an existing path is, after following symlinks, inside a root. */
+function containedIn(root: string, filePath: string): boolean {
+  return inside(physicalPath(root), physicalPath(filePath))
+}
+
+/** The one sentence a refused path gets, so a click on an outside file is legible. */
+function outsideProject(value: string): Error {
+  return new Error(`Could not open ${value}: the path is outside this project.`)
 }
 
 /** A written path, as a workspace glob literal: only the names, never a pattern. */
@@ -201,6 +238,23 @@ function readImage(filePath: string): FileImage | undefined {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { text: null }
     return undefined
+  }
+}
+
+/**
+ * Filesystem identity of a path for the revert guard.
+ *
+ * `lstat` is deliberate: a symbolic link must stay visible as one instead of
+ * being followed to whatever it currently points at.
+ */
+function stampOf(filePath: string): FileStamp | undefined {
+  try {
+    const stat = fs.lstatSync(filePath)
+    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, nlink: stat.nlink,
+      physical: comparableFilePath(filePath), symbolicLink: stat.isSymbolicLink() }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
   }
 }
 
@@ -379,7 +433,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
         : fragmentSnapshot(actualDiffs, mutation !== undefined && !created)
       if (snapshot === undefined) continue
       this.record(sessionId, { absolutePath, displayPath, turn: fileTurn, identity: comparableFilePath(absolutePath),
-        snapshots: [{ ...snapshot, eventSeq: event.seq }] })
+        root: cwd, snapshots: [{ ...snapshot, eventSeq: event.seq }] })
       updated = true
     }
     return updated
@@ -451,24 +505,46 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
    * caller's cue to ask rather than to guess.
    */
   private async openCandidates(cwd: string, value: string): Promise<string[]> {
-    const written = expandHome(value.trim())
+    const written = value.trim()
     if (written === '') return []
+    // A reply may spell a home file, but a click must not leave the project;
+    // expanding `~` would only produce a path this method then refuses.
+    if (isHomeSpelling(written)) throw outsideProject(value)
     // Without a project of its own, the window's folders are the only roots.
-    const roots = cwd === '' ? (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath) : [cwd]
+    const roots = (cwd === '' ? (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath) : [cwd])
+      .filter(root => root !== '')
+    if (roots.length === 0) throw outsideProject(value)
+    // An absolute path is opened when it is the user's own workspace; the
+    // folders are included so another open folder stays reachable.
+    const workspaceRoots = [...roots, ...(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath)]
+      .filter(root => root !== '')
     if (path.isAbsolute(written)) {
-      // An absolute path is the model's own spelling of a file anywhere on the
-      // machine, and reading it is what the click asked for.
       const absolute = path.normalize(written)
-      if (await exists(absolute)) return [absolute]
+      if (await exists(absolute)) {
+        if (workspaceRoots.some(root => containedIn(root, absolute))) return [absolute]
+        throw outsideProject(value)
+      }
       // A reply also spells a *project* path with a leading slash
       // (`/csrc/kernels/rdma.cuh`), which is not where this project lives: that
       // spelling is answered for below rather than refused here.
+    } else {
+      // A relative path may not climb above the root it is read against, whether
+      // or not the outside target happens to exist.
+      const escaping = roots.every(root => !inside(path.resolve(root), path.resolve(root, written)))
+      if (escaping) throw outsideProject(value)
     }
     const relative = written.replace(/^[\\/]+/, '')
+    let outsideLiteral = false
     for (const root of roots) {
       const resolved = path.normalize(path.resolve(root, relative))
-      if (await exists(resolved)) return [resolved]
+      if (!inside(path.resolve(root), resolved)) continue
+      if (!(await exists(resolved))) continue
+      // The path exists under the root the reply spelled, but a symlink moved
+      // its physical target elsewhere: that is an outside file, not a miss.
+      if (containedIn(root, resolved)) return [resolved]
+      outsideLiteral = true
     }
+    if (outsideLiteral) throw outsideProject(value)
     // A Windows separator is a glob escape, so the search reads the path the
     // way the glob language does before the pattern is built.
     const suffix = searchSuffix(relative)
@@ -476,7 +552,11 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     const found: string[] = []
     for (const root of roots) {
       const matches = await searchProject(root, suffix)
-      for (const uri of matches) if (!found.includes(uri.fsPath)) found.push(uri.fsPath)
+      for (const uri of matches) {
+        // The workspace search can surface a symlinked path; the physical target
+        // is what decides whether the file is really inside the root.
+        if (!found.includes(uri.fsPath) && await exists(uri.fsPath) && containedIn(root, uri.fsPath)) found.push(uri.fsPath)
+      }
     }
     // The shallowest and shortest path is the likeliest one meant.
     return found.sort((left, right) => depth(left) - depth(right)
@@ -513,7 +593,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     const review = this.findReview(sessionId, cwd, value, turn)
     if (review === undefined) throw new Error(`No completed DeepSeek change is available for ${value}.`)
     const content = this.validateRevert(review)
-    this.applyRevert(review, content.before)
+    this.applyRevert(review, content.before, content.after, content.stamp)
     this.dismiss(sessionId, review)
     return this.changedFiles(sessionId)
   }
@@ -529,7 +609,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
       else existing.push(review)
     }
     const validated = [...byFile.values()].map(series => this.validateRevertSeries(series))
-    for (const item of validated) this.applyRevert(item.review, item.before)
+    for (const item of validated) this.applyRevert(item.review, item.before, item.after, item.stamp)
     for (const review of reviews) this.markDismissed(sessionId, review)
     this.reviews.delete(sessionId)
     return []
@@ -630,16 +710,16 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     if (turns?.size === 0) this.reviews.delete(sessionId)
   }
 
-  private validateRevert(review: ReviewFile): { before: string | null; after: string | null } {
+  private validateRevert(review: ReviewFile): { before: string | null; after: string | null; stamp: FileStamp | undefined } {
     const content = this.reviewContent(review)
     if (!content.fullFile) {
       throw new Error(`Cannot safely revert ${review.displayPath}: its full snapshot is no longer available.`)
     }
-    this.validateCurrentFile(review, content.after)
-    return content
+    const stamp = this.validateCurrentFile(review, content.after)
+    return { ...content, stamp }
   }
 
-  private validateRevertSeries(series: ReviewFile[]): { review: ReviewFile; before: string | null } {
+  private validateRevertSeries(series: ReviewFile[]): { review: ReviewFile; before: string | null; after: string | null; stamp: FileStamp | undefined } {
     const ordered = [...series].sort((left, right) => left.turn - right.turn)
     const contents = ordered.map(review => ({ review, content: this.reviewContent(review) }))
     const unavailable = contents.find(item => !item.content.fullFile)
@@ -654,36 +734,111 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     const latest = contents.at(-1)
     const earliest = contents[0]
     if (latest === undefined || earliest === undefined) throw new Error('No completed DeepSeek changes are available to revert.')
-    this.validateCurrentFile(latest.review, latest.content.after)
-    return { review: latest.review, before: earliest.content.before }
+    const stamp = this.validateCurrentFile(latest.review, latest.content.after)
+    return { review: latest.review, before: earliest.content.before, after: latest.content.after, stamp }
   }
 
-  private validateCurrentFile(review: ReviewFile, expected: string | null): void {
-    const reviewPath = comparableFilePath(review.absolutePath)
+  /** The target changed since validation, in the one way this message describes. */
+  private targetChanged(review: ReviewFile): Error {
+    return new Error(`Cannot revert ${review.displayPath}: the file changed after DeepSeek edited it.`)
+  }
+
+  private validateCurrentFile(review: ReviewFile, expected: string | null): FileStamp | undefined {
+    const target = path.resolve(review.absolutePath)
+    if (review.root !== '' && !inside(path.resolve(review.root), target)) {
+      throw new Error(`Cannot revert ${review.displayPath}: its target is outside this project.`)
+    }
+    const reviewPath = comparableFilePath(target)
     if (review.identity !== undefined && reviewPath !== review.identity) throw new Error(`Cannot revert ${review.displayPath}: its filesystem target changed.`)
+    if (review.root !== '' && !containedIn(review.root, target)) {
+      throw new Error(`Cannot revert ${review.displayPath}: its target is outside this project.`)
+    }
     const dirty = vscode.workspace.textDocuments.some(document =>
       document.isDirty
       && comparableFilePath(path.resolve(document.uri.fsPath)) === reviewPath,
     )
     if (dirty) throw new Error(`Cannot revert ${review.displayPath}: it has unsaved VS Code changes.`)
-    const current = readImage(review.absolutePath)
+    const current = readImage(target)
     if (current === undefined) throw new Error(`Cannot safely read ${review.displayPath} before reverting.`)
-    if (current.text !== expected) {
-      throw new Error(`Cannot revert ${review.displayPath}: the file changed after DeepSeek edited it.`)
-    }
+    if (current.text !== expected) throw this.targetChanged(review)
+    const stamp = stampOf(target)
+    if (stamp?.symbolicLink === true) throw new Error(`Cannot revert ${review.displayPath}: its target is a symbolic link.`)
+    return stamp
   }
 
-  private applyRevert(review: ReviewFile, before: string | null): void {
+  /**
+   * Re-establish the validated facts at the last moment before writing (S3-05).
+   *
+   * `validateCurrentFile` compared one read of the target; this re-reads the
+   * same facts immediately before the write, so a path that was replaced with a
+   * symlink, another file or different bytes in between is refused instead of
+   * written through.
+   */
+  private assertRevertTarget(review: ReviewFile, expected: string | null, stamp: FileStamp | undefined): void {
+    const target = path.resolve(review.absolutePath)
+    if (review.root !== '' && !inside(path.resolve(review.root), target)) {
+      throw new Error(`Cannot revert ${review.displayPath}: its target is outside this project.`)
+    }
+    const current = stampOf(target)
+    if (stamp === undefined) {
+      if (current !== undefined) throw this.targetChanged(review)
+    } else {
+      if (current === undefined || current.symbolicLink || stamp.symbolicLink) {
+        throw new Error(`Cannot revert ${review.displayPath}: its target is a symbolic link.`)
+      }
+      // A second link means another name shares this inode, possibly one outside
+      // the project: writing through it would change a file the project does not
+      // own.
+      if (current.nlink > 1 || stamp.nlink > 1) {
+        throw new Error(`Cannot revert ${review.displayPath}: its target has other hard links.`)
+      }
+      if (current.dev !== stamp.dev || current.ino !== stamp.ino || current.size !== stamp.size
+        || current.mtimeMs !== stamp.mtimeMs || current.physical !== stamp.physical) throw this.targetChanged(review)
+      if (review.identity !== undefined && current.physical !== review.identity) {
+        throw new Error(`Cannot revert ${review.displayPath}: its filesystem target changed.`)
+      }
+      if (review.root !== '' && !inside(physicalPath(review.root), current.physical)) {
+        throw new Error(`Cannot revert ${review.displayPath}: its target is outside this project.`)
+      }
+    }
+    const image = readImage(target)
+    if (image === undefined || image.text !== expected) throw this.targetChanged(review)
+  }
+
+  private applyRevert(review: ReviewFile, before: string | null, after: string | null, stamp: FileStamp | undefined): void {
+    this.assertRevertTarget(review, after, stamp)
+    const target = path.resolve(review.absolutePath)
     if (before === null) {
       try {
-        fs.unlinkSync(review.absolutePath)
+        fs.unlinkSync(target)
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
       return
     }
-    fs.mkdirSync(path.dirname(review.absolutePath), { recursive: true })
-    fs.writeFileSync(review.absolutePath, before, 'utf8')
+    const directory = path.dirname(target)
+    fs.mkdirSync(directory, { recursive: true })
+    // Write beside the target and rename it into place: a failed write leaves
+    // the reviewed file byte-for-byte unchanged instead of truncated (S2).
+    const temporary = path.join(directory, '.' + path.basename(target) + '.dsh-revert-' + randomUUID())
+    const mode = fs.statSync(target).mode & 0o777
+    let descriptor: number | undefined
+    try {
+      descriptor = fs.openSync(temporary, 'wx', mode)
+      fs.writeFileSync(descriptor, before, 'utf8')
+      fs.fsyncSync(descriptor)
+    } catch (error) {
+      if (descriptor !== undefined) { try { fs.closeSync(descriptor) } catch { /* cleanup below */ } }
+      try { fs.rmSync(temporary, { force: true }) } catch { /* the original is untouched */ }
+      throw error
+    }
+    fs.closeSync(descriptor)
+    try {
+      fs.renameSync(temporary, target)
+    } catch (error) {
+      try { fs.rmSync(temporary, { force: true }) } catch { /* the original is untouched */ }
+      throw error
+    }
   }
 
   private previewKey(sessionId: string, review: ReviewFile): string {

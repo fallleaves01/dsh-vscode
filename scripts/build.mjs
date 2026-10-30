@@ -16,7 +16,11 @@ await build({
   external: ['vscode'],
   minify: true,
   sourcemap: true,
-  legalComments: 'none',
+  // `linked` emits one .LEGAL.txt sidecar per bundle instead of dropping the
+  // dependency licenses (the extension and runtime host bundle ws/zod/MCP SDK
+  // and friends). The sidecar ships in the VSIX so third-party notices remain
+  // available without inflating each JS file with duplicated comments.
+  legalComments: 'linked',
   logLevel: 'info',
 })
 
@@ -44,20 +48,21 @@ await build({
   target: 'chrome132',
   minify: true,
   sourcemap: true,
+  legalComments: 'linked',
   logLevel: 'info',
 })
 
 await build({
   entryPoints: { 'task-details': 'src/task-details.mts' },
   outdir: 'dist/webview', bundle: true, platform: 'browser', format: 'iife',
-  target: 'chrome132', minify: true, sourcemap: true, logLevel: 'info',
+  target: 'chrome132', minify: true, sourcemap: true, legalComments: 'linked', logLevel: 'info',
 })
 
 await build({
   entryPoints: { 'settings-page': 'src/settings-page.mts' },
   outdir: 'dist/webview', bundle: true, platform: 'browser', format: 'iife',
   globalName: 'dshSettingsPage',
-  target: 'chrome132', minify: true, sourcemap: true, logLevel: 'info',
+  target: 'chrome132', minify: true, sourcemap: true, legalComments: 'linked', logLevel: 'info',
 })
 
 const require = createRequire(import.meta.url)

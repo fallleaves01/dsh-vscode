@@ -2,9 +2,13 @@ import type { HistoryEntry } from './dsh-client.js'
 import { wireRecord } from './dsh-streams.js'
 
 /** Expand the official lossless chunk encoding before the existing projector. */
+export const MAX_HISTORY_RECORDS = 20_000
+
 export function decodeHistory(records: unknown): HistoryEntry[] {
   if (!Array.isArray(records)) throw new Error('Invalid DSH history records.')
-  return records.flatMap((record): HistoryEntry[] => {
+  // A runtime page larger than the budget is truncated, not expanded.
+  const bounded = records.length > MAX_HISTORY_RECORDS ? records.slice(0, MAX_HISTORY_RECORDS) : records
+  return bounded.flatMap((record): HistoryEntry[] => {
     if (!wireRecord(record) || !wireRecord(record.event)) throw new Error('Invalid DSH history record.')
     const event = record.event
     if (typeof event.type !== 'string' || !Number.isSafeInteger(event.seq) || !Number.isSafeInteger(event.time)) {

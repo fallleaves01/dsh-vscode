@@ -4,6 +4,7 @@ import { DshConnectionError } from './dsh-connection.js'
 import { pickRuntimeSettingsNamespace } from './runtime-settings-picker.js'
 import { PLUGIN_STATUS_ICONS, PLUGIN_STATUS_LABELS, runtimePluginGroups } from './runtime-plugin-inventory.js'
 import { resolveLaunch } from './launch.js'
+import { redactDshSecrets } from './runtime-output.js'
 import { terminateProcessTree } from './process-tree.js'
 import {
   isCurrentRuntimeTarget,
@@ -41,6 +42,50 @@ import {
 const CATALOG_CACHE_KEY = 'deepseekHarness.communityRuntimePlugins'
 const MAX_REGISTRY_BYTES = 5 * 1024 * 1024
 
+/** Upper bound for one official plugin CLI process before it is terminated. */
+export const PLUGIN_COMMAND_TIMEOUT_MS = 120_000
+
+/** Collected stdout/stderr bytes retained and written for one plugin command. */
+export const PLUGIN_COMMAND_OUTPUT_LIMIT_BYTES = 256 * 1024
+
+/** Environment variable families a plugin CLI must not inherit. */
+const SENSITIVE_ENV_EXACT = new Set(['DEEPSEEK_API_KEY', 'GITHUB_TOKEN', 'GH_TOKEN', 'NPM_TOKEN', 'VSCE_PAT', 'SSH_AUTH_SOCK'])
+
+function isSensitivePluginEnvKey(key: string): boolean {
+  const upper = key.toUpperCase()
+  return SENSITIVE_ENV_EXACT.has(upper)
+    || /^DEEPSEEK_.*_KEY$/.test(upper)
+    || /(?:^|_)TOKEN$/.test(upper)
+    || upper.startsWith('AZURE_')
+    || upper.startsWith('AWS_')
+}
+
+/**
+ * Environment for one official `dsh plugin` / pnpm child process.
+ *
+ * Runtime and package-manager credentials are removed from the inherited
+ * environment; only variables the CLI needs to find its own home, the network
+ * proxy/CA setup and the user's shell remain. The function is pure so the
+ * sanitization can be tested without spawning a process.
+ */
+export function pluginCommandEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(base)) {
+    if (value === undefined || isSensitivePluginEnvKey(key)) continue
+    env[key] = value
+  }
+  return env
+}
+
+/** One OutputChannel line: secrets redacted, control characters removed, no newline. */
+function pluginOutputLine(value: string): string {
+  return redactDshSecrets(value)
+    .replace(/\bsk-[A-Za-z0-9_-]{10,}/g, '[redacted]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [redacted]')
+    .replace(/[\r\n\u2028\u2029]+/gu, ' ')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, '')
+}
+
 interface CatalogCache {
   fetchedAt: number
   plugins: CommunityRuntimePlugin[]
@@ -71,6 +116,10 @@ export class DshPluginManager {
     private readonly output: vscode.OutputChannel,
     private readonly openSettingsPage?: () => void,
   ) {}
+
+  private outputLine(text: string): void {
+    this.output.appendLine(pluginOutputLine(text))
+  }
 
   async show(): Promise<void> {
     while (true) {
@@ -200,7 +249,7 @@ export class DshPluginManager {
     try {
       return await this.controller.pluginInventory()
     } catch (error) {
-      this.output.appendLine(`[plugins] Runtime inventory unavailable: ${this.message(error)}`)
+      this.outputLine(`[plugins] Runtime inventory unavailable: ${this.message(error)}`)
       return undefined
     }
   }
@@ -328,7 +377,7 @@ export class DshPluginManager {
     } catch (error) {
       const cached = this.context.globalState.get<CatalogCache>(CATALOG_CACHE_KEY)
       if (cached !== undefined && Array.isArray(cached.plugins) && cached.plugins.length > 0) {
-        this.output.appendLine(`[plugins] Community registry unavailable; using cache from ${new Date(cached.fetchedAt).toISOString()}: ${this.message(error)}`)
+        this.outputLine(`[plugins] Community registry unavailable; using cache from ${new Date(cached.fetchedAt).toISOString()}: ${this.message(error)}`)
         return cached.plugins
       }
       throw new Error(`Could not load community runtime plugins: ${this.message(error)}`)
@@ -558,8 +607,8 @@ export class DshPluginManager {
       { cwd },
     )
     const rendered = [launch.command, ...launch.args].map(part => JSON.stringify(part)).join(' ')
-    this.output.appendLine(`[plugins] cwd: ${cwd}`)
-    this.output.appendLine(`[plugins] launch: ${rendered}`)
+    this.outputLine(`[plugins] cwd: ${cwd}`)
+    this.outputLine(`[plugins] launch: ${rendered}`)
 
     await vscode.window.withProgress({
       location: vscode.ProgressLocation.Notification,
@@ -573,55 +622,109 @@ export class DshPluginManager {
         return
       }
       let diagnostics = ''
-      let cancelled = false
+      let outputBytes = 0
+      let truncated = false
+      let lineBuffer = ''
       let settled = false
+      let cancelled = false
+      let timeout: NodeJS.Timeout | undefined
+      let cancellation: vscode.Disposable | undefined
+      let outputFinished = false
+
+      const writeOutputLine = (line: string): void => {
+        if (line !== '') this.outputLine(line)
+      }
+      const flushOutput = (): void => {
+        if (outputFinished) return
+        outputFinished = true
+        if (lineBuffer !== '') { writeOutputLine(lineBuffer); lineBuffer = '' }
+        if (truncated) writeOutputLine(`[plugins] output truncated after ${String(PLUGIN_COMMAND_OUTPUT_LIMIT_BYTES / 1024)} KiB.`)
+      }
+      const appendOutput = (value: Buffer | string): void => {
+        if (settled || outputBytes >= PLUGIN_COMMAND_OUTPUT_LIMIT_BYTES) {
+          if (!settled) truncated = true
+          return
+        }
+        const text = String(value)
+        const bytes = Buffer.from(text)
+        const remaining = PLUGIN_COMMAND_OUTPUT_LIMIT_BYTES - outputBytes
+        const accepted = bytes.length > remaining ? bytes.subarray(0, remaining).toString('utf8') : text
+        if (bytes.length > remaining) truncated = true
+        outputBytes += Buffer.byteLength(accepted)
+        diagnostics = `${diagnostics}${accepted}`.slice(-16_000)
+        lineBuffer += accepted
+        const lines = lineBuffer.split(/\r\n|\r|\n/)
+        lineBuffer = lines.pop() ?? ''
+        for (const line of lines) writeOutputLine(line)
+      }
+      const disposeCancellation = (): void => {
+        cancellation?.dispose()
+        cancellation = undefined
+      }
+      const clearTimer = (): void => {
+        if (timeout !== undefined) clearTimeout(timeout)
+        timeout = undefined
+      }
+      const fail = (error: Error): void => {
+        if (settled) return
+        settled = true
+        clearTimer()
+        disposeCancellation()
+        flushOutput()
+        rejectPromise(new Error(pluginOutputLine(error.message)))
+      }
+      const succeed = (): void => {
+        if (settled) return
+        settled = true
+        clearTimer()
+        disposeCancellation()
+        flushOutput()
+        resolvePromise()
+      }
+
       const child = spawn(launch.command, launch.args, {
         cwd,
-        env: { ...process.env, NO_COLOR: '1', ...launch.env },
+        env: { ...pluginCommandEnv({ ...process.env, ...launch.env }), NO_COLOR: '1' },
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         windowsVerbatimArguments: launch.windowsVerbatimArguments,
       })
-      const append = (chunk: Buffer | string): void => {
-        const text = String(chunk)
-        this.output.append(text)
-        diagnostics = `${diagnostics}${text}`.slice(-16_000)
-      }
-      child.stdout.on('data', append)
-      child.stderr.on('data', append)
-      const cancellation = token.onCancellationRequested(() => {
+      child.stdout.on('data', appendOutput)
+      child.stderr.on('data', appendOutput)
+      timeout = setTimeout(() => {
+        if (settled) return
+        writeOutputLine(`[plugins] command timed out after ${String(PLUGIN_COMMAND_TIMEOUT_MS / 1000)} seconds; terminating it.`)
+        terminateProcessTree(child)
+        fail(new Error(`The official DSH plugin command timed out after ${String(PLUGIN_COMMAND_TIMEOUT_MS / 1000)} seconds. Open DeepSeek Harness output for details.`))
+      }, PLUGIN_COMMAND_TIMEOUT_MS)
+      timeout.unref?.()
+      cancellation = token.onCancellationRequested(() => {
         cancelled = true
         terminateProcessTree(child)
       })
       child.once('error', (error) => {
-        if (settled) return
-        settled = true
-        cancellation.dispose()
-        rejectPromise(error)
+        fail(error instanceof Error ? error : new Error(String(error)))
       })
       child.once('close', (code) => {
-        if (settled) return
-        settled = true
-        cancellation.dispose()
         if (cancelled) {
-          rejectPromise(new Error('Plugin operation cancelled.'))
+          fail(new Error('Plugin operation cancelled.'))
           return
         }
         if (code === 0) {
-          resolvePromise()
+          succeed()
           return
         }
         if (/pnpm not found|ENOENT.*pnpm/i.test(diagnostics) || code === 127) {
-          rejectPromise(new Error('DSH plugin management requires pnpm on PATH. Install or enable pnpm, then try again.'))
+          fail(new Error('DSH plugin management requires pnpm on PATH. Install or enable pnpm, then try again.'))
           return
         }
-        rejectPromise(new Error(`The official DSH plugin command failed with code ${String(code)}. Open DeepSeek Harness output for details.`))
+        fail(new Error(`The official DSH plugin command failed with code ${String(code)}. Open DeepSeek Harness output for details.`))
       })
     }))
     return target
   }
 
   private message(error: unknown): string {
-    return error instanceof Error ? error.message : String(error)
+    return pluginOutputLine(error instanceof Error ? error.message : String(error))
   }
 }

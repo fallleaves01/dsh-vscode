@@ -22,9 +22,13 @@ function integer(value: unknown, minimum = 0): value is number {
 function invalid(): never { throw new Error('Invalid DSH assistant stream. Reconnect the runtime.') }
 
 /** Expand only the compact reconnect prefix; durable V3 history stays untouched. */
-function expandPrefix(value: unknown): Record<string, unknown>[] {
-  if (!Array.isArray(value)) return invalid()
-  return value.flatMap((run): Record<string, unknown>[] => {
+export const MAX_STREAM_PREFIX_PARTS = 5_000
+export const MAX_STREAM_PREFIX_DEPTH = 64
+
+function expandPrefix(value: unknown, depth = 0): Record<string, unknown>[] {
+  if (!Array.isArray(value) || depth > MAX_STREAM_PREFIX_DEPTH) return invalid()
+  const bounded = value.length > MAX_STREAM_PREFIX_PARTS ? value.slice(0, MAX_STREAM_PREFIX_PARTS) : value
+  return bounded.flatMap((run): Record<string, unknown>[] => {
     if (!wireRecord(run)) return invalid()
     if (run.type === 'chunk') {
       if (!integer(run.time, Number.MIN_SAFE_INTEGER) || !wireRecord(run.chunk) || typeof run.chunk.type !== 'string') return invalid()

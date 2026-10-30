@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_RUNTIME_SCHEMA_DEPTH,
+  MAX_RUNTIME_SETTING_FIELDS,
   parseRuntimeSetting,
   runtimeSettingFields,
   settingConstantOptions,
   type SettingsNamespace,
+  type SettingsSchemaNode,
 } from '../src/runtime-settings.js'
 
 const namespace: SettingsNamespace = {
@@ -52,5 +55,62 @@ describe('runtime settings schemas', () => {
     expect(() => parseRuntimeSetting(field as never, '')).toThrow('Enter a valid number.')
     expect(() => parseRuntimeSetting(field as never, '   ')).toThrow('Enter a valid number.')
     expect(parseRuntimeSetting(field as never, '0')).toBe(0)
+  })
+})
+
+describe('hostile settings schemas', () => {
+  it('skips a self-referencing schema instead of recursing forever', () => {
+    const cyclic: SettingsNamespace = {
+      ns: 'cyclic-plugin',
+      schema: {
+        uid: 1,
+        refs: {
+          '1': { type: 'object', dict: { self: 1, ok: 2 } },
+          '2': { type: 'string' },
+        },
+      },
+      value: { ok: 'readable' },
+      base: {},
+      user: {},
+      applies: 'live',
+      secrets: [],
+      revision: 1,
+    }
+    expect(runtimeSettingFields(cyclic).map(field => field.path.join('.'))).toEqual(['ok'])
+  })
+
+  it('stops at the schema depth bound instead of throwing', () => {
+    const refs: Record<string, SettingsSchemaNode> = {}
+    for (let uid = 1; uid <= MAX_RUNTIME_SCHEMA_DEPTH + 20; uid++) {
+      refs[String(uid)] = { type: 'object', dict: { next: uid + 1 } }
+    }
+    refs[String(MAX_RUNTIME_SCHEMA_DEPTH + 21)] = { type: 'string' }
+    const deep: SettingsNamespace = {
+      ns: 'deep-plugin',
+      schema: { uid: 1, refs },
+      value: {},
+      base: {},
+      user: {},
+      applies: 'live',
+      secrets: [],
+      revision: 1,
+    }
+    expect(runtimeSettingFields(deep)).toEqual([])
+  })
+
+  it('stops after the field cap for a wide schema', () => {
+    const dict: Record<string, number> = {}
+    for (let index = 0; index <= MAX_RUNTIME_SETTING_FIELDS; index++) dict[`field-${String(index)}`] = 999
+    const wide: SettingsNamespace = {
+      ns: 'wide-plugin',
+      schema: { uid: 1, refs: { '1': { type: 'object', dict }, '999': { type: 'string' } } },
+      value: {},
+      base: {},
+      user: {},
+      applies: 'live',
+      secrets: [],
+      revision: 1,
+    }
+    expect(runtimeSettingFields(wide)).toHaveLength(MAX_RUNTIME_SETTING_FIELDS)
   })
 })

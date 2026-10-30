@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionSummary } from '../src/dsh-client.js'
-import { archivedSessionItems, filterSessionItems, parentIdOf, sessionItems, sessionTitle } from '../src/session-center.js'
+import {
+  archivedSessionItems,
+  filterSessionItems,
+  MAX_SESSION_ITEMS,
+  MAX_SESSION_NESTING_DEPTH,
+  parentIdOf,
+  sessionItems,
+  sessionTitle,
+} from '../src/session-center.js'
 
 function summary(overrides: Partial<SessionSummary> & Pick<SessionSummary, 'sessionId'>): SessionSummary {
   return {
@@ -332,5 +340,39 @@ describe('pinned conversations front the list', () => {
     ], new Set(), 'parent', new Set(), new Map(), ['parent'])
     // Pinned first, and the child still follows its owning conversation.
     expect(ids(items)).toEqual(['parent', 'child', 'other'])
+  })
+})
+
+describe('untrusted lineage bounds', () => {
+  it('bounds a 20k-level forged subagent chain instead of overflowing the stack', () => {
+    const depth = 20_000
+    const summaries: SessionSummary[] = [summary({ sessionId: 's0', updatedAt: 0 })]
+    for (let index = 1; index <= depth; index++) {
+      summaries.push(summary({
+        sessionId: `s${String(index)}`,
+        updatedAt: index,
+        origin: 'subagent',
+        parentSessionId: `s${String(index - 1)}`,
+      }))
+    }
+    summaries.push(summary({ sessionId: 'solo', updatedAt: 1 }))
+
+    const items = sessionItems(summaries, new Set(), 's0', new Set())
+    // A sibling root still renders; only the over-deep tail of the forged chain
+    // is dropped.
+    expect(items.some(item => item.id === 'solo')).toBe(true)
+    expect(items.some(item => item.id === 's0')).toBe(true)
+    expect(items.some(item => item.id === `s${String(MAX_SESSION_NESTING_DEPTH + 1)}`)).toBe(false)
+    expect(items.length).toBeLessThanOrEqual(MAX_SESSION_NESTING_DEPTH + 2)
+    expect(new Set(items.map(item => item.id)).size).toBe(items.length)
+  })
+
+  it('caps emitted rows for an oversized session list', () => {
+    const summaries: SessionSummary[] = []
+    for (let index = 0; index <= MAX_SESSION_ITEMS; index++) {
+      summaries.push(summary({ sessionId: `root-${String(index)}`, updatedAt: index }))
+    }
+    const items = sessionItems(summaries, new Set(), undefined, new Set())
+    expect(items).toHaveLength(MAX_SESSION_ITEMS)
   })
 })

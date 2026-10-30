@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { ConversationProjector, turnFooters, type DshEvent, type MessageMeta } from '../src/conversation.js'
+import {
+  ConversationProjector,
+  ELIDED_CONTENT,
+  MAX_CONTENT_NESTING_DEPTH,
+  turnFooters,
+  type DshEvent,
+  type MessageMeta,
+} from '../src/conversation.js'
 import { withIdeContext } from '../src/ide-context.js'
 
 function event(type: string, seq: number, data: unknown): DshEvent {
@@ -376,5 +383,56 @@ describe('turn boundaries for forking', () => {
     // step's own assistant message; its boundary is still refused.
     const failing = [...footers.values()].filter(footer => footer.forkAtSeq === 6)
     expect(failing).toEqual([expect.objectContaining({ forkable: false })])
+  })
+})
+
+describe('hostile content nesting', () => {
+  it('elides a deeply nested tool-result chain instead of overflowing the stack', () => {
+    const projector = new ConversationProjector()
+    let content: unknown = { type: 'text', text: 'deep' }
+    for (let index = 0; index < MAX_CONTENT_NESTING_DEPTH + 8; index++) {
+      content = { type: 'tool-result', content: [content] }
+    }
+    projector.apply(event('tool/result', 1, {
+      message: {
+        source: { kind: 'tool', callId: 'deep' },
+        content: [content],
+      },
+    }))
+    const message = projector.messages().find(item => item.id === 'tool:deep')
+    expect(message?.rawResult).toBe(ELIDED_CONTENT)
+  })
+
+  it('does not loop on self-referential tool content', () => {
+    const projector = new ConversationProjector()
+    const content: unknown[] = []
+    content.push({ type: 'tool-result', content })
+    projector.apply(event('tool/result', 1, {
+      message: {
+        source: { kind: 'tool', callId: 'loop' },
+        content: [{ type: 'tool-result', content }],
+      },
+    }))
+    expect(projector.messages().find(item => item.id === 'tool:loop')?.rawResult).toBe(ELIDED_CONTENT)
+  })
+
+  it('bounds image discovery for deep and cyclic content', () => {
+    const projector = new ConversationProjector()
+    const image = {
+      type: 'image',
+      attachment: { attachmentId: 'deep-image', mediaType: 'image/png', width: 1, height: 1 },
+    }
+    let value: unknown = image
+    for (let index = 0; index < MAX_CONTENT_NESTING_DEPTH + 8; index++) value = [value]
+    projector.apply(event('assistant/message', 1, { turn: 1, step: 1, message: { content: value } }))
+    expect(() => projector.messages()).not.toThrow()
+    expect(projector.messages().some(message => message.images?.some(item => item.attachmentId === 'deep-image'))).toBe(false)
+
+    // A cyclic array must terminate too; the walk skips a branch it has seen.
+    const loop: unknown[] = []
+    loop.push(loop)
+    const cyclic = new ConversationProjector()
+    cyclic.apply(event('assistant/message', 2, { turn: 1, step: 1, message: { content: loop } }))
+    expect(() => cyclic.messages()).not.toThrow()
   })
 })

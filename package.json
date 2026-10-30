@@ -294,9 +294,9 @@
         },
         "deepseekHarness.autonomousDebugging": {
           "type": "boolean",
-          "scope": "resource",
+          "scope": "machine",
           "default": false,
-          "markdownDescription": "Expose this workspace's native VS Code debugger to DSH. The bridge belongs to one VS Code window and cannot safely control other windows. Disable autonomous debugging for a shared runtime, or explicitly disable deepseekHarness.reuseAcrossWindows to use a dedicated debugging runtime."
+          "markdownDescription": "Expose this workspace's native VS Code debugger to DSH. The bridge belongs to one VS Code window and cannot safely control other windows. Enable it only in your user settings; a workspace setting is ignored, so a repository cannot turn on this debugging execution surface. Disable autonomous debugging for a shared runtime, or explicitly disable deepseekHarness.reuseAcrossWindows to use a dedicated debugging runtime."
         },
         "deepseekHarness.startupTimeout": {
           "type": "number",
@@ -334,30 +334,33 @@
     "test": "vitest run --config vitest.config.ts",
     "test:scroll-browser": "node tests/conversation-scroll.browser.mjs",
     "test:settings-browser": "node tests/settings-page.browser.mjs",
+    "test:markdown-csp": "node tests/markdown-csp.browser.mjs",
     "test:settings-runtime": "node tests/settings-page.runtime.mjs",
     "check": "tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts && node scripts/build.mjs",
-    "package": "vsce package --readme-path README.marketplace.md --out dsh-vscode.vsix",
+    "package": "vsce package --readme-path README.marketplace.md --no-dependencies --out dsh-vscode.vsix",
     "publish:marketplace": "vsce publish --readme-path README.marketplace.md",
     "test:task-runtime": "node tests/task-features.runtime.mjs",
     "test:shared-runtime": "node tests/shared-runtime.runtime.mjs",
     "test:runtime-host": "node tests/runtime-host.runtime.mjs"
   },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "diff": "^9.0.0",
+    "dompurify": "^3.4.17",
+    "highlight.js": "^11.12.0",
+    "katex": "0.18.7",
+    "marked": "^18.1.0",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
+  },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.31.0",
     "@types/node": "^22.20.5",
     "@types/vscode": "1.100.0",
     "@types/ws": "^8.18.2",
     "@vscode/vsce": "^3.9.2",
-    "diff": "^9.0.0",
-    "dompurify": "^3.4.16",
     "esbuild": "^0.25.12",
-    "highlight.js": "^11.12.0",
     "jsdom": "^27.4.0",
-    "katex": "0.18.7",
-    "marked": "^18.1.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.11",
-    "ws": "^8.22.0",
-    "zod": "^3.25.76"
+    "vitest": "^4.1.11"
   }
 }

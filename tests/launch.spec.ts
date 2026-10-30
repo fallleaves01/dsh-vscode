@@ -130,16 +130,58 @@ describe('DSH launch resolution', () => {
     })
   })
 
-  it('routes an explicitly configured dsh command through cmd.exe on Windows', () => {
-    expect(resolveLaunch('/not/a/source/tree', 'dsh', ['web'], {
+  it('refuses to guess a bare dsh command on Windows when PATH has no match', () => {
+    // Falling back to cmd.exe would search the workspace again; the failure must
+    // be explicit so the user can install DSH or set executable.
+    expect(() => resolveLaunch('/not/a/source/tree', '', ['web'], {
       platform: 'win32',
-      env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
-    })).toEqual({
-      command: 'C:\\Windows\\System32\\cmd.exe',
-      args: ['/d', '/s', '/c', '"dsh ^"web^""'],
-      sourceCheckout: false,
-      windowsVerbatimArguments: true,
-    })
+      cwd: 'C:\\workspace',
+      env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe', Path: 'C:\\Windows\\System32' },
+    })).toThrow('Could not find "dsh" on the Windows PATH')
+  })
+
+  it('never executes a workspace dsh.exe when PATH also names the workspace', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-workspace-'))
+    const outside = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-outside-'))
+    writeFileSync(join(workspace, 'dsh.exe'), '')
+    writeFileSync(join(outside, 'dsh.exe'), '')
+    // The workspace first in PATH is the hostile shape; the real PATH entry wins.
+    expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
+      platform: 'win32', cwd: workspace,
+      env: { Path: `${workspace};${outside}`, PATHEXT: '.EXE' },
+    })).toEqual({ command: join(outside, 'dsh.exe'), args: ['web'], sourceCheckout: false })
+    // With no safe PATH entry the workspace executable is rejected and the call
+    // fails instead of executing repository content.
+    expect(() => resolveLaunch('/not/a/source/tree', '', ['web'], {
+      platform: 'win32', cwd: workspace,
+      env: { Path: workspace, PATHEXT: '.EXE' },
+    })).toThrow('Could not find "dsh" on the Windows PATH')
+  })
+
+  it('ignores relative PATH entries that could resolve inside the workspace', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-relative-path-'))
+    const outside = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-safe-path-'))
+    writeFileSync(join(workspace, 'dsh.exe'), '')
+    writeFileSync(join(outside, 'dsh.exe'), '')
+    // 'relative-tools' resolves against the workspace under cmd.exe; skip it and
+    // keep searching only the absolute, trustworthy entry.
+    expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
+      platform: 'win32', cwd: workspace,
+      env: { Path: `relative-tools;${outside}`, PATHEXT: '.EXE' },
+    })).toEqual({ command: join(outside, 'dsh.exe'), args: ['web'], sourceCheckout: false })
+    expect(() => resolveLaunch('/not/a/source/tree', '', ['web'], {
+      platform: 'win32', cwd: workspace,
+      env: { Path: 'relative-tools', PATHEXT: '.EXE' },
+    })).toThrow('Could not find "dsh" on the Windows PATH')
+  })
+
+  it('keeps an explicitly configured executable path usable even inside the workspace', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-explicit-'))
+    const explicit = join(workspace, 'dsh.exe')
+    writeFileSync(explicit, '')
+    expect(resolveLaunch('/not/a/source/tree', explicit, ['web'], {
+      platform: 'win32', cwd: workspace, env: { Path: '', PATHEXT: '.EXE' },
+    })).toEqual({ command: explicit, args: ['web'], sourceCheckout: false })
   })
 
   it('resolves an explicitly configured npm dsh command from PATH on Windows', () => {
@@ -209,26 +251,20 @@ describe('DSH launch resolution', () => {
     })
   })
 
-  it('resolves the current directory before PATH like cmd.exe', () => {
+  it('does not search the current directory for a bare Windows command', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-cwd-'))
     const pathPrefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-path-'))
-    const local = join(workspace, 'dsh.exe')
-    writeFileSync(local, '')
+    writeFileSync(join(workspace, 'dsh.exe'), '')
     writeFileSync(join(pathPrefix, 'dsh.exe'), '')
-
-    expect(resolveLaunch('/not/a/source/tree', 'dsh', ['web'], {
-      platform: 'win32',
-      cwd: workspace,
+    // The workspace copy exists but the PATH copy is the only acceptable match.
+    expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
+      platform: 'win32', cwd: workspace,
       env: { Path: pathPrefix, PATHEXT: '.EXE' },
-    })).toEqual({
-      command: local,
-      args: ['web'],
-      sourceCheckout: false,
-    })
+    })).toEqual({ command: join(pathPrefix, 'dsh.exe'), args: ['web'], sourceCheckout: false })
   })
 
   it('rejects newline injection before building a cmd.exe fallback', () => {
-    expect(() => resolveLaunch('/not/a/source/tree', 'dsh', ['safe\r\necho injected'], {
+    expect(() => resolveLaunch('/not/a/source/tree', 'C:\\tools\\dsh.cmd', ['safe\r\necho injected'], {
       platform: 'win32',
       env: { Path: '', ComSpec: 'cmd.exe' },
     })).toThrow('cannot contain NUL or newline')
@@ -319,30 +355,16 @@ describe('DSH launch resolution', () => {
     })
   })
 
-  it('routes the PATH fallback through cmd.exe when a Windows install cannot be resolved', () => {
+  it('reports a clear error instead of a cmd.exe fallback when PATH has no install', () => {
     const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-missing-'))
-    expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
+    expect(() => resolveLaunch('/not/a/source/tree', '', ['web'], {
       platform: 'win32',
       env: { Path: prefix, ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
-    })).toEqual({
-      command: 'C:\\Windows\\System32\\cmd.exe',
-      args: ['/d', '/s', '/c', '"dsh ^"web^""'],
-      sourceCheckout: false,
-      windowsVerbatimArguments: true,
-    })
-  })
-
-  it('defaults to cmd.exe when ComSpec is unset for the Windows fallback', () => {
-    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-nocomspec-'))
-    expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
+    })).toThrow('Could not find "dsh" on the Windows PATH')
+    expect(() => resolveLaunch('/not/a/source/tree', '', ['web'], {
       platform: 'win32',
       env: { Path: prefix },
-    })).toEqual({
-      command: 'cmd.exe',
-      args: ['/d', '/s', '/c', '"dsh ^"web^""'],
-      sourceCheckout: false,
-      windowsVerbatimArguments: true,
-    })
+    })).toThrow('Could not find "dsh" on the Windows PATH')
   })
 
   it('resolves a relative explicit dsh.cmd against the workspace before invoking cmd.exe', () => {

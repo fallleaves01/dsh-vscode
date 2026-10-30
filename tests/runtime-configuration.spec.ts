@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
 }))
 vi.mock('vscode', () => ({
   window: { showInputBox: mocks.input, showWarningMessage: mocks.warning, showInformationMessage: mocks.info, showErrorMessage: mocks.error },
-  workspace: { getConfiguration: () => ({ get: mocks.config }), onDidChangeConfiguration: mocks.listen },
+  workspace: { getConfiguration: () => ({ get: mocks.config, inspect: () => ({ globalValue: mocks.config() }) }), onDidChangeConfiguration: mocks.listen },
   Uri: { file: (fsPath: string) => ({ fsPath }) },
 }))
 import { configureApiKey, clearApiKey, watchDebugConfiguration } from '../src/runtime-configuration.js'

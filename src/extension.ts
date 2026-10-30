@@ -105,8 +105,7 @@ import {
   accountStateOf,
   accountWalletText,
   unavailableAccountState,
-  type AccountState,
-} from './account.js'
+  type AccountState, authorizeBrowserUrl, UNSAFE_AUTHORIZE_URL_MESSAGE } from './account.js'
 import {
   CONVERSATION_HELD_TEXT,
   dshErrorText,
@@ -389,6 +388,17 @@ function stateUpdateForWebview(update: ChatViewStateUpdate): ChatViewStateUpdate
   }
 }
 
+const UNTRUSTED_WORKSPACE_STATUS = 'DeepSeek Harness needs a trusted VS Code workspace. Trust this workspace and reload the window to start the runtime; running repository code without trust is blocked.'
+
+/** VS Code reports workspace trust; a host double without the flag is treated as trusted. */
+function workspaceTrusted(): boolean {
+  // Test doubles may omit the whole export; reading a missing ESM export
+  // throws, so test for its presence before touching it.
+  if (!('workspace' in vscode)) return true
+  const value = (vscode.workspace as { isTrusted?: unknown } | undefined)?.isTrusted
+  return value !== false
+}
+
 function initialState(cwd: string): ChatViewState {
   return {
     phase: cwd === '' ? 'error' : 'idle',
@@ -465,6 +475,13 @@ export class DshChatController implements vscode.Disposable {
   private readonly guardedDirtyCalls = new Set<string>()
   private queueRawText = new Map<string, string>()
   private readonly attachmentResults = new Map<string, Pick<ConversationImage, 'data' | 'error'>>()
+  /** Base64 bytes currently held by `attachmentResults`; bounded so a huge reply cannot exhaust memory. */
+  private attachmentBytes = 0
+  private readonly attachmentOrder = new Set<string>()
+  /** Error-only results do not consume the byte budget; their count is capped. */
+  private readonly attachmentErrorKeys = new Set<string>()
+  /** Overridable in tests to exercise eviction without allocating 64 MB. */
+  private attachmentByteBudget = ATTACHMENT_BYTE_BUDGET
   private readonly attachmentLoads = new Map<string, Promise<void>>()
   private readonly jobsBySession = new Map<string, JobItem[]>()
   private readonly jobErrors = new Map<string, string>()
@@ -757,7 +774,13 @@ export class DshChatController implements vscode.Disposable {
 
   publish(patch: Partial<ChatViewState>): void {
     this._state = { ...this._state, ...patch }
-    this.changes.fire(this._state)
+    try {
+      this.changes.fire(this._state)
+    } catch (error) {
+      // A subscriber that throws must not travel back into frame handling and
+      // abort the transport; the state itself is already consistent.
+      this.output.appendLine(`[state] a state listener failed: ${diagnosticText(error instanceof Error ? error.message : error)}`)
+    }
     if (!this.firstReady && this._state.phase === 'ready') {
       this.firstReady = true
       // Idle deferral: the hooks may take a lock or spawn a process, which must
@@ -852,6 +875,12 @@ export class DshChatController implements vscode.Disposable {
 
   private async startNow(target?: RuntimeTarget): Promise<void> {
     this.streamsGate = undefined
+    // Every explicit start path funnels here: an untrusted workspace may not
+    // launch a runtime (or a repository-controlled executable) at all.
+    if (!workspaceTrusted()) {
+      this.publish({ phase: 'error', statusText: UNTRUSTED_WORKSPACE_STATUS, setup: 'workspace', canReconnect: false })
+      return
+    }
     // Starting again — a restart, or the view being re-created — must not move
     // the user to a different conversation. The id is captured before the reset
     // below clears it, because clearing it is what made the reload fall through
@@ -868,6 +897,9 @@ export class DshChatController implements vscode.Disposable {
     this.guardedDirtyCalls.clear()
     this.queueRawText.clear()
     this.attachmentResults.clear()
+    this.attachmentBytes = 0
+    this.attachmentOrder.clear()
+    this.attachmentErrorKeys.clear()
     this.attachmentLoads.clear()
     this.jobsBySession.clear()
     this.historyEntries = []
@@ -1128,11 +1160,17 @@ export class DshChatController implements vscode.Disposable {
     this.clientDisposables.push(
       client.onFrame(frame => {
         if (this.client !== client) return
-        const type = frame.payload.type
-        if (typeof type === 'string' && (type.startsWith('approval/') || type.startsWith('question/'))) {
-          this.output.appendLine(`[protocol] ${type} for ${String(frame.payload.sessionId ?? 'unknown session')}`)
+        // One malformed frame must not escape the carrier callback: the stream
+        // reader treats an exception as a connection failure and reconnects.
+        try {
+          const type = frame.payload.type
+          if (typeof type === 'string' && (type.startsWith('approval/') || type.startsWith('question/'))) {
+            this.output.appendLine(`[protocol] ${type} for ${String(frame.payload.sessionId ?? 'unknown session')}`)
+          }
+          this.acceptFrame(frame)
+        } catch (error) {
+          this.output.appendLine(`[protocol] ignored one malformed frame: ${diagnosticText(error instanceof Error ? error.message : error)}`)
         }
-        this.acceptFrame(frame)
       }),
       client.onError(error => {
         if (this.client !== client) return
@@ -2060,8 +2098,13 @@ export class DshChatController implements vscode.Disposable {
     if (attemptId === undefined || account.authorizeUrl === undefined) return
     if (this.openedSignInAttempt === attemptId) return
     this.openedSignInAttempt = attemptId
+    const url = authorizeBrowserUrl(account.authorizeUrl)
+    if (url === undefined) {
+      this.output.appendLine(`[account] ${UNSAFE_AUTHORIZE_URL_MESSAGE}`)
+      return
+    }
     try {
-      await vscode.env.openExternal(vscode.Uri.parse(account.authorizeUrl))
+      await vscode.env.openExternal(vscode.Uri.parse(url))
     } catch (error) {
       // The URL stays in the menu for a manual open, and polling continues.
       this.output.appendLine(`[account] could not open the sign-in page: ${dshErrorText(error)}`)
@@ -2726,7 +2769,7 @@ export class DshChatController implements vscode.Disposable {
     const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
     this.taskFeatures.frame(frame)
     if (frame.channel === 'mux' && type === 'session/jobs-status') {
-      if (typeof payload.error === 'string') this.jobErrors.set(sessionId, payload.error)
+      if (typeof payload.error === 'string') { this.jobErrors.set(sessionId, payload.error); capSessionMap(this.jobErrors) }
       else this.jobErrors.delete(sessionId)
       this.publish({ jobsStatus: [...this.jobErrors.values()].join('\n') || null })
       return
@@ -2815,7 +2858,7 @@ export class DshChatController implements vscode.Disposable {
 
     if (frame.channel === 'mux' && type === 'session/subscribed' && sessionId === this._state.sessionId) {
       this.queueRawText.clear()
-      this.jobsBySession.set(sessionId, [])
+      this.jobsBySession.set(sessionId, []); capSessionMap(this.jobsBySession)
       this.publish({ queue: [], jobs: [] })
       return
     }
@@ -2827,7 +2870,7 @@ export class DshChatController implements vscode.Disposable {
 
     if (frame.channel === 'mux' && type === 'session/jobs') {
       const jobs = jobsSnapshotOf(payload.jobs)
-      this.jobsBySession.set(sessionId, jobs)
+      this.jobsBySession.set(sessionId, jobs); capSessionMap(this.jobsBySession)
       if (sessionId === this._state.sessionId) this.publish({ jobs })
       this.publish({ projectJobs: this.projectJobs() })
       return
@@ -2845,7 +2888,7 @@ export class DshChatController implements vscode.Disposable {
       // Auto review's ask path carries a localized display reason; DSH's own
       // approval panel prefers it over the audited English `reason`.
       const displayText = approvalDisplayReason(payload.displayReason)
-      const reason = displayText ?? (typeof payload.reason === 'string' ? payload.reason : undefined)
+      const reason = safeDisplayText(displayText ?? payload.reason)
       this.publish({
         approval: {
           rpcId: frame.rpcId,
@@ -2868,6 +2911,8 @@ export class DshChatController implements vscode.Disposable {
         if (typeof value !== 'object' || value === null) return []
         const item = value as Record<string, unknown>
         if (typeof item.id !== 'string' || typeof item.question !== 'string') return []
+        const question = safeDisplayText(item.question)
+        if (question === undefined) return []
         const options = Array.isArray(item.options)
           ? item.options.flatMap((option): QuestionOption[] => {
             if (typeof option !== 'object' || option === null) return []
@@ -3242,6 +3287,45 @@ export class DshChatController implements vscode.Disposable {
         })
   }
 
+  /**
+   * Remember one hydrated image within the byte budget, evicting the oldest
+   * result first. An evicted image is simply reloaded on the next open.
+   */
+  /** Drop one recorded result and every index for it; O(1). */
+  private forgetAttachment(key: string): void {
+    const value = this.attachmentResults.get(key)
+    if (value?.data !== undefined) this.attachmentBytes -= value.data.length
+    this.attachmentResults.delete(key)
+    this.attachmentOrder.delete(key)
+    this.attachmentErrorKeys.delete(key)
+  }
+
+  private evictOldestAttachment(): boolean {
+    const oldest = this.attachmentOrder.values().next().value
+    if (oldest === undefined) return false
+    this.forgetAttachment(oldest)
+    return true
+  }
+
+  private rememberAttachment(key: string, value: Pick<ConversationImage, 'data' | 'error'>): void {
+    // Re-insertion is the LRU touch: drop any prior record and its indexes first.
+    this.forgetAttachment(key)
+    this.attachmentResults.set(key, value)
+    this.attachmentOrder.add(key)
+    if (value.data !== undefined) this.attachmentBytes += value.data.length
+    if (value.error !== undefined) this.attachmentErrorKeys.add(key)
+    // Failed reads carry no bytes, so their count is the only bound that applies.
+    while (this.attachmentErrorKeys.size > 512) {
+      const oldest = this.attachmentErrorKeys.values().next().value
+      if (oldest === undefined) break
+      this.forgetAttachment(oldest)
+    }
+    while (this.attachmentOrder.size > 1
+      && (this.attachmentBytes > this.attachmentByteBudget || this.attachmentOrder.size > ATTACHMENT_ORDER_LIMIT)) {
+      if (!this.evictOldestAttachment()) break
+    }
+  }
+
   private hydrateImages(client: DshClient, sessionId: string): void {
     const images = this.projector.messages().flatMap(message => message.images ?? [])
     for (const image of images) {
@@ -3267,13 +3351,13 @@ export class DshChatController implements vscode.Disposable {
           if (mismatch) {
             throw new Error('DeepSeek Harness returned mismatched image metadata.')
           }
-          this.attachmentResults.set(key, { data: result.data })
+          this.rememberAttachment(key, { data: result.data })
         })
         .catch((error: unknown) => {
           if (this.client !== client || this.attachmentLoads.get(key) !== load) return
           const detail = error instanceof Error ? error.message : String(error)
           this.output.appendLine(`[attachment] ${image.attachmentId}: ${detail}`)
-          this.attachmentResults.set(key, { error: 'Image unavailable.' })
+          this.rememberAttachment(key, { error: 'Image unavailable.' })
         })
         .finally(() => {
           if (this.attachmentLoads.get(key) !== load) return
@@ -3427,6 +3511,31 @@ function approvalDisplayReason(display: unknown): string | undefined {
     return typeof value === 'string' && value.trim() !== '' ? value : undefined
   }
   return text(locale) ?? text('en')
+}
+
+const DISPLAY_TEXT_LIMIT = 4_000
+
+/** One runtime-provided display string: no control characters, bounded length. */
+function safeDisplayText(value: unknown, limit = DISPLAY_TEXT_LIMIT): string | undefined {
+  if (typeof value !== 'string') return undefined
+  // eslint-disable-next-line no-control-regex
+  const cleaned = value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/gu, '')
+  return cleaned.length > limit ? `${cleaned.slice(0, limit)}…` : cleaned
+}
+
+const ATTACHMENT_BYTE_BUDGET = 64 * 1024 * 1024
+/** Hard bound on tracked attachment keys, including byte-less failures. */
+const ATTACHMENT_ORDER_LIMIT = 4_096
+
+const SESSION_MAP_LIMIT = 20_000
+
+/** Keep per-session extension maps bounded; oldest inserted entries go first. */
+function capSessionMap<Key, Value>(map: Map<Key, Value>): void {
+  while (map.size > SESSION_MAP_LIMIT) {
+    const oldest = map.keys().next().value
+    if (oldest === undefined) break
+    map.delete(oldest)
+  }
 }
 
 function diagnosticText(value: unknown): string {
@@ -4766,7 +4875,9 @@ class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
       if (this.surface === surface) this.surface = undefined
     })
     const autoStart = vscode.workspace.getConfiguration('deepseekHarness').get<boolean>('autoStart', true)
-    if (autoStart) void this.controller.ensureStarted()
+    if (!workspaceTrusted()) {
+      if (autoStart) this.controller.publish({ phase: 'error', statusText: UNTRUSTED_WORKSPACE_STATUS, setup: 'workspace', canReconnect: false })
+    } else if (autoStart) void this.controller.ensureStarted()
   }
 
   dispose(): void {

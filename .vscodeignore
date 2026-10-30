@@ -1,5 +1,6 @@
 .github/**
 .vscode/**
+.vscode/settings.json
 src/**
 tests/**
 scripts/**
@@ -11,6 +12,14 @@ build.sh
 artifacts/**
 coverage/**
 node_modules/**
+.npmrc
+.pnpm-store/**
+*.code-workspace
+**/*.code-workspace
+.dsh*/**
+.history/**
+.DS_Store
+**/.DS_Store
 website/**
 media/*.mp4
 media/sidebar-0.2.0.png

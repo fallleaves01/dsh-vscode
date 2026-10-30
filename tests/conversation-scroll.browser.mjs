@@ -30,7 +30,7 @@ const [{ outputFiles }, markdown, scrollBundle, tailPng, markSvg, settingsBundle
   readFile(new URL('dist/webview/settings-page.js', root), 'utf8'),
 ])
 const module = { exports: {} }
-new Function('module', 'exports', outputFiles[0].text)(module, module.exports)
+new Function('module', 'exports', 'require', outputFiles[0].text)(module, module.exports, createRequire(import.meta.url))
 const uri = name => ({ toString: () => `https://assets.invalid/${name}` })
 const html = module.exports.chatHtml({ cspSource: 'https://assets.invalid' }, { toString: () => 'data:image/svg+xml;base64,' + markSvg.toString('base64') }, {
   script: uri('markdown.js'), style: uri('katex.css'), scroll: uri('scroll.js'),

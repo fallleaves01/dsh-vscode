@@ -85,6 +85,24 @@ vi.mock('vscode', () => {
   }
 })
 
+// S2: the write path is atomic (temp file + fsync + rename). These switches
+// inject a failure at each step without touching the rest of the real fs module.
+const fsFailure = vi.hoisted(() => ({ fsync: false, rename: false }))
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {
+    ...actual,
+    fsyncSync: (...args: Parameters<typeof actual.fsyncSync>) => {
+      if (fsFailure.fsync) { fsFailure.fsync = false; throw Object.assign(new Error('injected fsync failure'), { code: 'EIO' }) }
+      return actual.fsyncSync(...args)
+    },
+    renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+      if (fsFailure.rename) { fsFailure.rename = false; throw Object.assign(new Error('injected rename failure'), { code: 'EIO' }) }
+      return actual.renameSync(...args)
+    },
+  }
+})
+
 import type { DshEvent } from '../src/conversation.js'
 import { DiffReviewManager } from '../src/diff-review.js'
 import { appliedHunks } from '../src/tool-diff.js'
@@ -101,6 +119,8 @@ describe('DiffReviewManager', () => {
     mocks.textDocuments.splice(0)
     mocks.workspaceFolders.splice(0)
     mocks.findPatterns.splice(0)
+    fsFailure.fsync = false
+    fsFailure.rename = false
     mocks.showQuickPick.mockReset()
     mocks.showTextDocument.mockReset()
     mocks.openTextDocument.mockReset()
@@ -331,6 +351,103 @@ describe('DiffReviewManager', () => {
     expect(() => manager.revertAll('link')).toThrow('target changed')
     expect(fs.readFileSync(other, 'utf8')).toBe('new\n')
     expect(manager.rebuild('link', cwd, [call, result].map(event => ({ event })))[0]?.files[0]?.canRevert).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('refuses to revert through a symbolic link even when it is unchanged', () => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'a.ts'), link = path.join(cwd, 'link.ts')
+    fs.writeFileSync(file, 'old\n')
+    fs.symlinkSync(file, link)
+    const { call, result } = modernEvents('write', { file_path: 'link.ts', content: 'new\n' }, 'old\n', 'new\n')
+    const manager = new DiffReviewManager()
+    manager.accept('unchanged-link', cwd, call)
+    fs.writeFileSync(file, 'new\n')
+    manager.accept('unchanged-link', cwd, result)
+    expect(manager.changedFiles('unchanged-link')[0]?.files[0]?.canRevert).toBe(true)
+
+    // The identity check alone would accept this link; the revert guard also
+    // refuses to write through a symlink (S3-05).
+    expect(() => manager.revertAll('unchanged-link')).toThrow('symbolic link')
+    expect(fs.readFileSync(file, 'utf8')).toBe('new\n')
+  })
+
+  it.skipIf(process.platform === 'win32')('re-checks the revert target between validation and the write', () => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
+    const { call, result } = modernEvents('write', { file_path: 'app.ts', content: 'new\n' }, 'old\n', 'new\n')
+    const manager = new DiffReviewManager()
+    fs.writeFileSync(file, 'old\n')
+    manager.accept('toctou', cwd, call)
+    fs.writeFileSync(file, 'new\n')
+    manager.accept('toctou', cwd, result)
+
+    // The production window is synchronous; the re-check is driven directly to
+    // prove that a target replaced after validation is refused, not written.
+    const review = (manager as unknown as { allReviews(sessionId: string): Array<Record<string, any>> }).allReviews('toctou')[0]!
+    const content = (manager as unknown as { reviewContent(review: unknown): { before: string | null; after: string | null } }).reviewContent(review)
+    const validate = manager as unknown as {
+      validateCurrentFile(review: unknown, expected: string | null): unknown
+      applyRevert(review: unknown, before: string | null, after: string | null, stamp: unknown): void
+    }
+    const stamp = validate.validateCurrentFile(review, content.after)
+    // A new inode with the same bytes is a different file, not the reviewed one.
+    fs.renameSync(file, file + '.replaced')
+    fs.writeFileSync(file, content.after)
+    expect(() => validate.applyRevert(review, content.before, content.after, stamp)).toThrow('changed after DeepSeek')
+
+    // The same guard refuses a symlink that appeared in that window.
+    fs.rmSync(file)
+    const outside = temporaryWorkspace()
+    fs.writeFileSync(path.join(outside, 'x.ts'), content.after)
+    fs.symlinkSync(path.join(outside, 'x.ts'), file)
+    expect(() => validate.applyRevert(review, content.before, content.after, stamp)).toThrow(/symbolic link|changed after DeepSeek/)
+  })
+
+  it.skipIf(process.platform === 'win32')('refuses to revert a file that other hard links share', () => {
+    const cwd = temporaryWorkspace(), outside = temporaryWorkspace()
+    const external = path.join(outside, 'shared.ts')
+    fs.writeFileSync(external, 'old\n')
+    // A hard link inside the project names the same inode as a file the project
+    // does not own; writing through it would change that outside file (M4).
+    const link = path.join(cwd, 'shared.ts')
+    fs.linkSync(external, link)
+    const { call, result } = modernEvents('write', { file_path: 'shared.ts', content: 'new\n' }, 'old\n', 'new\n')
+    const manager = new DiffReviewManager()
+    manager.accept('hard-link', cwd, call)
+    fs.writeFileSync(link, 'new\n')
+    manager.accept('hard-link', cwd, result)
+    expect(manager.changedFiles('hard-link')[0]?.files[0]?.canRevert).toBe(true)
+
+    expect(() => manager.revertAll('hard-link')).toThrow('hard link')
+    expect(fs.readFileSync(link, 'utf8')).toBe('new\n')
+    expect(fs.readFileSync(external, 'utf8')).toBe('new\n')
+  })
+
+  it('keeps the original bytes when the atomic revert write fails', () => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
+    const { call, result } = modernEvents('write', { file_path: 'app.ts', content: 'new\n' }, 'old\n', 'new\n')
+    const manager = new DiffReviewManager()
+    fs.writeFileSync(file, 'old\n')
+    manager.accept('atomic', cwd, call)
+    fs.writeFileSync(file, 'new\n')
+    manager.accept('atomic', cwd, result)
+    const temporaryFiles = (): string[] => fs.readdirSync(cwd).filter(name => name.includes('.dsh-revert-'))
+
+    // A failed fsync (the write step) leaves the reviewed file byte-for-byte
+    // unchanged and removes the temporary file (S2).
+    fsFailure.fsync = true
+    expect(() => manager.revertAll('atomic')).toThrow('injected fsync failure')
+    expect(fs.readFileSync(file, 'utf8')).toBe('new\n')
+    expect(temporaryFiles()).toEqual([])
+
+    // A failed rename has the same property: the original is never truncated.
+    fsFailure.rename = true
+    expect(() => manager.revertAll('atomic')).toThrow('injected rename failure')
+    expect(fs.readFileSync(file, 'utf8')).toBe('new\n')
+    expect(temporaryFiles()).toEqual([])
+
+    // With no injected failure the same review reverts normally.
+    expect(manager.revertAll('atomic')).toEqual([])
+    expect(fs.readFileSync(file, 'utf8')).toBe('old\n')
+    expect(temporaryFiles()).toEqual([])
   })
 
   it('rebuilds changed files from official DSH diff views and opens a native diff', async () => {
@@ -673,18 +790,17 @@ describe('DiffReviewManager', () => {
       expect(await opened()).toEqual([offered[0]!.detail])
     })
 
-    it('opens a path the reply spelled above the project', async () => {
+    it('refuses a path the reply spelled above the project', async () => {
       const parent = temporaryWorkspace()
       const cwd = path.join(parent, 'project')
       fs.mkdirSync(cwd)
       fs.writeFileSync(path.join(parent, 'shared.cuh'), 'kernel')
       const manager = new DiffReviewManager()
 
-      // Opening is a read the click asked for, so it is not confined to the
-      // project; review, keep and revert still are.
-      await manager.openFile(cwd, path.join('..', 'shared.cuh'))
-
-      expect(await opened()).toEqual([path.join(parent, 'shared.cuh')])
+      // The click is a read, but it stays inside the project it belongs to:
+      // a spelling that climbs above the root must not reach a file there.
+      await expect(manager.openFile(cwd, path.join('..', 'shared.cuh'))).rejects.toThrow('outside this project')
+      expect(await opened()).toEqual([])
     })
 
     it('reads a leading slash as the project root, not as an absolute path', async () => {
@@ -771,26 +887,52 @@ describe('DiffReviewManager', () => {
       expect(await opened()).toEqual([path.join(cwd, 'csrc', 'kernels', 'reduce_scatter.hpp')])
     })
 
-    it('opens an absolute path outside the project, and expands a home directory', async () => {
+    it('refuses an absolute path outside the project and a home-directory spelling', async () => {
       const cwd = temporaryWorkspace()
       const outside = temporaryWorkspace()
-      const file = path.join(outside, 'notes.md')
-      fs.writeFileSync(file, 'notes')
+      const file = path.join(outside, 'passwd')
+      fs.writeFileSync(file, 'secret')
+      const manager = new DiffReviewManager()
+
+      const notes = path.join(outside, 'notes.md')
+      fs.writeFileSync(notes, 'notes')
+      await expect(manager.openFile(cwd, file)).rejects.toThrow('outside this project')
+      await expect(manager.openFile(cwd, notes)).rejects.toThrow('outside this project')
+      // `~` names the home directory, which is outside every project root;
+      // expanding it would only produce a path the containment check refuses.
+      await expect(manager.openFile(cwd, '~/dsh-open-file-spec.tmp')).rejects.toThrow('outside this project')
+      expect(await opened()).toEqual([])
+    })
+
+    it('opens an absolute path that is inside the project', async () => {
+      const cwd = temporaryWorkspace()
+      const file = path.join(cwd, 'src', 'app.ts')
+      fs.mkdirSync(path.dirname(file))
+      fs.writeFileSync(file, 'export {}')
       const manager = new DiffReviewManager()
 
       await manager.openFile(cwd, file)
-      expect(await opened()).toEqual([file])
 
-      // A reply may spell the home directory as `~`, which no file system does.
-      const home = process.env.HOME ?? os.homedir()
-      const managed = path.join(home, 'dsh-open-file-spec.tmp')
-      fs.writeFileSync(managed, 'home')
-      try {
-        await manager.openFile(cwd, '~/dsh-open-file-spec.tmp')
-        expect(await opened()).toEqual([file, managed])
-      } finally {
-        fs.rmSync(managed, { force: true })
-      }
+      expect(await opened()).toEqual([file])
+    })
+
+    it.skipIf(process.platform === 'win32')('refuses a link whose physical target is outside the project', async () => {
+      const cwd = temporaryWorkspace(), outside = temporaryWorkspace()
+      fs.writeFileSync(path.join(outside, 'secret.md'), 'secret')
+      fs.symlinkSync(outside, path.join(cwd, 'external'))
+      const manager = new DiffReviewManager()
+
+      // The path is spelled inside the project, but its realpath is not: the
+      // containment check follows the symlink before the file is opened.
+      await expect(manager.openFile(cwd, path.join('external', 'secret.md'))).rejects.toThrow('outside this project')
+      expect(await opened()).toEqual([])
+
+      // A symlink that stays inside the project is still a project file.
+      const real = path.join(cwd, 'real.md')
+      fs.writeFileSync(real, 'real')
+      fs.symlinkSync(real, path.join(cwd, 'alias.md'))
+      await manager.openFile(cwd, 'alias.md')
+      expect(await opened()).toEqual([path.join(cwd, 'alias.md')])
     })
 
     it('reports a name the project cannot answer for, instead of claiming the file was deleted', async () => {

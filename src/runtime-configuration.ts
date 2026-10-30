@@ -70,7 +70,7 @@ export function watchDebugConfiguration(
   const listener = vscode.workspace.onDidChangeConfiguration(event => {
     const resource = controller.cwd === '' ? workspace : vscode.Uri.file(controller.cwd)
     if (!event.affectsConfiguration('deepseekHarness.autonomousDebugging', resource)) return
-    const enabled = vscode.workspace.getConfiguration('deepseekHarness', resource).get<boolean>('autonomousDebugging', false)
+    const enabled = vscode.workspace.getConfiguration('deepseekHarness', resource).inspect<boolean>('autonomousDebugging')?.globalValue === true
     const target = runtimeChangeTarget(controller)
     const request = ++revision
     if (timer !== undefined) clearTimeout(timer)

@@ -13,6 +13,13 @@ artifacts/
 .drift/
 .npm-cache/
 .dsh-vscode/
+# Local tool state that must never be tracked or published.
+.npmrc
+.pnpm-store/
+*.code-workspace
+.vscode/settings.json
+.dsh*/
+.history/
 # Local credentials and conversation transcripts must never be published.
 .env
 .env.*

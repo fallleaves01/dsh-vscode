@@ -82,13 +82,37 @@ function samePath(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((part, index) => part === right[index])
 }
 
+/**
+ * Bounds for flattening a settings schema served by an untrusted runtime.
+ *
+ * `runtimeSettingFields` walks an arbitrary `SchemaNode` graph from
+ * `settings/describe`. A malformed schema can contain a reference cycle
+ * (`/dict/... -> ancestor uid`) or an extremely deep chain; without these
+ * bounds the recursion ends in a `RangeError` while building the settings page.
+ * A cyclic or over-deep branch is skipped, so the remaining readable fields
+ * stay available.
+ */
+export const MAX_RUNTIME_SCHEMA_DEPTH = 64
+/** Hard cap on fields surfaced from one namespace. */
+export const MAX_RUNTIME_SETTING_FIELDS = 10_000
+
 export function runtimeSettingFields(namespace: SettingsNamespace): RuntimeSettingField[] {
   const fields: RuntimeSettingField[] = []
-  const visit = (uid: number, path: string[]): void => {
+  /** Uids on the current descent path; deleted on the way out so a schema that
+   * legitimately shares a node between two keys still renders both fields. */
+  const visiting = new Set<number>()
+  const visit = (uid: number, path: string[], depth: number): void => {
+    if (depth > MAX_RUNTIME_SCHEMA_DEPTH || fields.length >= MAX_RUNTIME_SETTING_FIELDS) return
+    if (visiting.has(uid)) return
     const node = nodeOf(namespace.schema, uid)
     if (node === undefined) return
     if (node.type === 'object' && node.dict !== undefined) {
-      for (const [key, childUid] of Object.entries(node.dict)) visit(childUid, [...path, key])
+      visiting.add(uid)
+      try {
+        for (const [key, childUid] of Object.entries(node.dict)) visit(childUid, [...path, key], depth + 1)
+      } finally {
+        visiting.delete(uid)
+      }
       return
     }
     const secret = namespace.secrets.find(candidate => samePath(candidate.path, path))
@@ -101,7 +125,7 @@ export function runtimeSettingFields(namespace: SettingsNamespace): RuntimeSetti
       ...(secret === undefined ? {} : { secretSet: secret.set }),
     })
   }
-  visit(namespace.schema.uid, [])
+  visit(namespace.schema.uid, [], 0)
   return fields
 }
 

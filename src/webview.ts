@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import type * as vscode from 'vscode'
 import { webviewThemeCss } from './webview-theme.js'
 import { userTextCss } from './user-text-style.js'
@@ -5,14 +6,15 @@ import { settingsPageCss, settingsIcon } from './settings-ui.js'
 import { subagentLinkCss } from './subagent-link-style.js'
 
 function nonce(): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-  let value = ''
-  for (let index = 0; index < 32; index += 1) value += alphabet.charAt(Math.floor(Math.random() * alphabet.length))
-  return value
+  // A CSP nonce must be unpredictable; `Math.random` is not a cryptographic
+  // source (S2-L1). settings-page-html.ts already salts its nonce this way.
+  return randomBytes(16).toString('hex')
 }
 
+/** Escape a value placed inside an HTML attribute. */
 function escapeHtml(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+  return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll("'", '&#39;')
+    .replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
 export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, markdownAssets: { script: vscode.Uri; style: vscode.Uri; scroll: vscode.Uri; tail: vscode.Uri; settings?: vscode.Uri }): string {
@@ -24,7 +26,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; style-src ${webview.cspSource} 'nonce-${token}'; script-src 'nonce-${token}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; style-src ${webview.cspSource} 'nonce-${token}'; style-src-attr 'unsafe-inline'; script-src 'nonce-${token}'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none';">
   <link rel="stylesheet" href="${escapeHtml(markdownAssets.style.toString(true))}">
   <style nonce="${token}">
     /**
@@ -1454,24 +1456,67 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       try { return JSON.stringify(value, null, 2); } catch { return String(value); }
     }
-    function contentText(content) {
+    /**
+     * Flatten a content block into text (S4).
+     *
+     * Tool output is model/plugin supplied and can nest arbitrarily or even
+     * reference itself. The depth bound and the visited set turn either into a
+     * placeholder instead of letting the recursion exhaust the stack.
+     */
+    const CONTENT_TEXT_MAX_DEPTH = 64;
+    const CONTENT_TEXT_PLACEHOLDER = '[nested content omitted]';
+    function contentText(content, depth, visited) {
+      const level = depth || 0;
+      const seen = visited || new Set();
+      if (level >= CONTENT_TEXT_MAX_DEPTH) return CONTENT_TEXT_PLACEHOLDER;
       return array(content).map(part => {
         const item = record(part);
         if (!item) return '';
+        if (seen.has(item)) return CONTENT_TEXT_PLACEHOLDER;
         if (typeof item.text === 'string') return item.text;
         if (typeof item.content === 'string') return item.content;
-        if (Array.isArray(item.content)) return contentText(item.content);
+        if (Array.isArray(item.content)) {
+          const next = new Set(seen);
+          next.add(item);
+          return contentText(item.content, level + 1, next);
+        }
         return '';
       }).filter(Boolean).join('\\n');
+    }
+    /** The domain a web link really points at, for the tooltip that names it. */
+    function externalTargetOf(href) {
+      try {
+        const url = new URL(href);
+        return url.host || href;
+      } catch { return href; }
     }
     function link(href, label) {
       const anchor = node('a', '', label || href);
       anchor.href = href;
+      // A model writes both the label and the destination: naming the real
+      // target in the tooltip and accessible name shows where a friendly or
+      // truncated label actually leads (S6).
+      anchor.title = 'Open external link: ' + href;
+      anchor.setAttribute('aria-label', 'External link to ' + externalTargetOf(href) + ': ' + href);
       anchor.addEventListener('click', event => { event.preventDefault(); vscode.postMessage({ type: 'open-link', href }); });
       return anchor;
     }
 
+    /**
+     * The longest candidate a file-reference scan examines (ReDoS bound, F2/S5).
+     *
+     * The regex only ever runs on a bounded run, so the scan stays linear; 2048
+     * keeps legitimate deep project paths linkable without giving the pattern
+     * an unbounded input.
+     */
+    const FILE_REFERENCE_LIMIT = 2048;
+    /** Characters a file reference can be built from, plus separators and colons. */
+    const fileReferenceRun = /[A-Za-z0-9_@.+~:\\/\\\\-]/;
     function fileReference(value) {
+      // A path a reply writes is short. Refusing longer candidates before the
+      // pattern sees them is what keeps a chain such as 'a/a/a/...!' from
+      // backtracking quadratically in the Webview.
+      if (typeof value !== 'string' || value.length > FILE_REFERENCE_LIMIT) return undefined;
       const match = /^((?:[A-Za-z]:[\\\\/]|\\/)?(?:[A-Za-z0-9_@.+~-]+[\\\\/])*[A-Za-z0-9_@.+~-]+\\.[A-Za-z][A-Za-z0-9]{0,9})(?::(\\d+))?(?::\\d+)?$/.exec(value);
       if (!match) return undefined;
       return { path: match[1], ...(match[2] ? { line: Number(match[2]) } : {}) };
@@ -1485,13 +1530,30 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function appendFileText(parent, text) {
       const pattern = /(?:[A-Za-z]:[\\\\/]|\\/)?(?:[A-Za-z0-9_@.+~-]+[\\\\/])*[A-Za-z0-9_@.+~-]+\\.[A-Za-z][A-Za-z0-9]{0,9}(?::\\d+)?(?::\\d+)?/g;
       let last = 0;
-      for (const match of text.matchAll(pattern)) {
-        const index = match.index || 0;
-        const reference = fileReference(match[0]);
-        if (!reference) continue;
-        if (index > last) parent.append(document.createTextNode(text.slice(last, index)));
-        parent.append(fileButton(reference.path, reference.line, match[0]));
-        last = index + match[0].length;
+      let index = 0;
+      while (index < text.length) {
+        if (!fileReferenceRun.test(text[index])) { index += 1; continue; }
+        const runStart = index;
+        while (index < text.length && fileReferenceRun.test(text[index])) index += 1;
+        const run = text.slice(runStart, index);
+        // The pattern is bounded to short runs: a run longer than any path a
+        // reply writes is skipped rather than matched inside, so the scan stays
+        // linear in the message length (F2).
+        if (run.length > FILE_REFERENCE_LIMIT) continue;
+        if (runStart > last) parent.append(document.createTextNode(text.slice(last, runStart)));
+        pattern.lastIndex = 0;
+        let cursor = runStart;
+        let match;
+        while ((match = pattern.exec(run)) !== null) {
+          const reference = fileReference(match[0]);
+          if (reference === undefined) continue;
+          const at = runStart + match.index;
+          if (at > cursor) parent.append(document.createTextNode(text.slice(cursor, at)));
+          parent.append(fileButton(reference.path, reference.line, match[0]));
+          cursor = at + match[0].length;
+        }
+        if (cursor < index) parent.append(document.createTextNode(text.slice(cursor, index)));
+        last = index;
       }
       if (last < text.length) parent.append(document.createTextNode(text.slice(last)));
     }
