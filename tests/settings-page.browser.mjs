@@ -178,7 +178,17 @@ try {
   if(!await evaluate(`Boolean(document.querySelector('input[type="password"]'))`))await evaluate(`document.querySelector('[data-provider="anthropic"]').click()`)
   await input('api-key','scope-key');await click('Save changes')
   await evaluate(`window.staleRequest=sent.at(-1);settingsState={...settingsState,scope:'runtime-b'};show(settingsState);reply(staleRequest.requestId,{ok:true})`)
-  assert.equal(await evaluate('document.body.textContent.includes("Saved.")'),false)
+  // The toast element keeps its previous text while hidden, so only visible
+  // feedback counts: an invisible stale toast is not a user-visible regression.
+  assert.equal(await evaluate(`(()=>{
+    const toast=document.querySelector('#settings-toast');
+    const text=document.querySelector('#settings-toast-text');
+    const banner=document.querySelector('#banner');
+    const parts=[];
+    if(toast&&!toast.hidden)parts.push(text?text.textContent:'');
+    if(banner&&!banner.hidden&&banner.offsetParent!==null)parts.push(banner.textContent||'');
+    return parts.join('\\n').includes('Saved.');
+  })()`),false)
   assert.equal(await evaluate(`document.querySelector('input[type="password"]')`),null)
   assert.deepEqual(await evaluate('errors'),[])
   console.log('PASS: changing runtimes clears all secret drafts and rejects a late reply')

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RuntimeBroker, type ProcessProbe, type RuntimeDescriptor } from '../src/runtime-broker.ts'
 import { inspectRuntimeRestart, stopRuntimeForRestart, validateRuntimeRestart } from '../src/runtime-restart.ts'
+import { waitForChildExit } from './child-exit.ts'
 
 const roots: string[] = [], children: ChildProcess[] = []
 afterEach(() => {
@@ -47,6 +48,8 @@ describe('explicit shared runtime restart', () => {
     const plan = (await inspectRuntimeRestart(broker, 'failed-window'))!
     const lock = await broker.acquireTransition()
     try { await stopRuntimeForRestart(broker, plan, 'failed-window') } finally { lock.release() }
+    // The broker may prove the PID dead before the ChildProcess handle updates.
+    await waitForChildExit(child)
     expect(child.exitCode !== null || child.signalCode !== null).toBe(true)
     expect(broker.readDescriptor()).toBeUndefined()
     expect(broker.readLeases().map(x => x.instanceId)).toEqual(['borrower'])

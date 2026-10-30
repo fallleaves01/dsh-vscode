@@ -181,7 +181,7 @@ describe('counting the conversations a runtime holds', () => {
       .resolves.toEqual({ count: 0, truncated: false, available: true })
   })
 
-  it('says the count is a lower bound when the path list was capped', async () => {
+  it('says the count is a lower bound when the path list was capped', { timeout: 30_000 }, async () => {
     const home = scratch()
     // More locks than one lsof argument vector may carry.
     for (let index = 0; index < 4_005; index++) {

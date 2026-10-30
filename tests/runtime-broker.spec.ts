@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { waitForChildExit } from './child-exit.ts'
 import {
   BROKER_SCHEMA, RuntimeBroker, describeDescriptor, describeLockHolders, fingerprintsMatch, fingerprintDifferences,
   nodeProcessProbe, parseDescriptor, parseLease, sessionLockPaths,
@@ -340,6 +341,8 @@ describe('stopping a runtime this extension spawned', () => {
     broker.writeDescriptor(descriptor({ pid: child.pid!, manageable: true, processStartTime: 'child-start' }))
     await expect(broker.stop(broker.readDescriptor()!, { graceMs: 3_000 })).resolves.toBe(true)
     expect(broker.readDescriptor()).toBeUndefined()
+    // Windows updates the handle after the broker's liveness probe reports dead.
+    await waitForChildExit(child)
     expect(child.killed || child.exitCode !== null || child.signalCode !== null).toBe(true)
   })
 

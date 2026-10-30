@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { waitForChildExit } from './child-exit.ts'
 
 /**
  * Cross-window reuse, end to end through the runtime state machine.
@@ -329,6 +330,7 @@ describe('attaching to a runtime another window started', () => {
     expect(broker.readLeases()).toEqual([])
     const restart = instance.restart()
     await vi.waitFor(() => expect(state.children).toHaveLength(1))
+    await waitForChildExit(child)
     expect(child.exitCode !== null || child.signalCode !== null).toBe(true)
     state.children[0]!.stdout.emit('data', 'dsh web: http://127.0.0.1:43127/?token=replacement-token\n')
     await restart
