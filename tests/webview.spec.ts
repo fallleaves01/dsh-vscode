@@ -261,18 +261,21 @@ describe('chat webview', () => {
     expect(html).toContain("? ['application/vnd.code.uri-list']")
   })
 
-  it('arms a job stop before it kills, so one click cannot end a background job', () => {
+  it('arms a job stop before it kills, and keeps a rejected stop inline', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
     const html = chatHtml(webview, mark)
-    const source = html.slice(html.indexOf('function armJob(jobId)'), html.indexOf('function renderConversation('))
+    const source = html.slice(html.indexOf('function pressJobStop(job)'), html.indexOf('function renderConversation('))
 
-    expect(source).toContain('function armJob(jobId)')
-    expect(source).toContain('armedJobId === job.id')
-    expect(source).toContain("armed ? 'Confirm' : 'Stop'")
-    expect(source).toContain('armJob(job.id)')
+    expect(source).toContain('function pressJobStop(job)')
+    // The first press only arms for three seconds: killing stays behind the
+    // confirming branch, and the button is disabled while the host decides.
+    expect(source).toContain("state: 'armed'")
+    expect(source).toContain("state: 'pending'")
+    expect(source).toContain("state: 'failed'")
     expect(source).toContain('}, 3000)')
-    // The first press only arms: killing stays behind the confirm branch.
-    expect(source).toContain("if (armed) { armJob(undefined); vscode.postMessage({ type: 'kill-job'")
+    expect(source).toContain('}, 4000)')
+    expect(source).toContain("type: 'kill-job'")
+    expect(source).toContain('Stop failed')
   })
 })

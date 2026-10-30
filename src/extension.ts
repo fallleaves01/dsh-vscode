@@ -74,7 +74,7 @@ import { jobsSnapshotOf, type JobItem } from './jobs.js'
 import { todosOf, type TodoItem } from './task-state.js'
 import { agentTeamOf, type AgentTeamView } from './agent-team-state.js'
 import { TaskFeatureController, type TaskFeatureState, type GoalAction } from './task-feature-controller.js'
-import { emptyGoalState, emptyScheduleState, emptySearchState, workflowsOf, type WorkflowRun } from './task-features.js'
+import { emptyGoalState, emptyScheduleState, emptySearchState, JobOutputTail, workflowsOf, type JobChunk, type WorkflowRun } from './task-features.js'
 import { TaskPanelManager } from './task-panels.js'
 import { queueSnapshotOf, type QueuedCommandItem, type QueueItemState } from './queue.js'
 import type { AssistantStreamUpdate } from './dsh-assistant-stream.js'
@@ -484,6 +484,22 @@ export class DshChatController implements vscode.Disposable {
   private attachmentByteBudget = ATTACHMENT_BYTE_BUDGET
   private readonly attachmentLoads = new Map<string, Promise<void>>()
   private readonly jobsBySession = new Map<string, JobItem[]>()
+  /** A background job stop already in flight; repeated clicks share it. */
+  private readonly pendingJobKills = new Set<string>()
+  /** One inline background-output observation from the chat surface. */
+  private jobOutput: {
+    key: string
+    client: DshClient
+    sessionId: string
+    jobId: string
+    cancel: () => void
+    tail: JobOutputTail
+    pending: JobChunk[]
+    pendingBytes: number
+    lossy: boolean
+    timer: NodeJS.Timeout | undefined
+    post: (message: Record<string, unknown>) => void
+  } | undefined
   private readonly jobErrors = new Map<string, string>()
   private readonly taskFeatures = new TaskFeatureController(patch => this.publish(patch), () => this.summaries)
   /**
@@ -1281,6 +1297,9 @@ export class DshChatController implements vscode.Disposable {
   }
 
   private async selectSessionNow(sessionId: string): Promise<void> {
+    // Inline output belongs to the row that opened it; a conversation switch
+    // must not leave that observation running in the background.
+    this.closeJobOutput()
     // Deliberately not gated on the ready phase. A conversation that will not
     // open leaves the sidebar loading or failed, and switching to another one is
     // the only way out of it; `loadSession` supersedes the load in flight and
@@ -1406,12 +1425,160 @@ export class DshChatController implements vscode.Disposable {
    * Asks DSH to stop one background job. The row converges through the
    * `job/list` stream, so the authoritative state arrives on its own.
    */
-  async killJob(sessionId: string, jobId: string): Promise<void> {
-    const client = this.taskClient(false)
-    if (!this.summaries.some(summary => summary.sessionId === sessionId)) return
+  async killJob(sessionId: string, jobId: string): Promise<{ ok: boolean; error?: string }> {
+    const key = `${sessionId}\u0000${jobId}`
+    if (this.pendingJobKills.has(key)) return { ok: true }
+    if (!this.summaries.some(summary => summary.sessionId === sessionId)) {
+      return { ok: false, error: 'This background task is no longer available.' }
+    }
     const job = this.jobsBySession.get(sessionId)?.find(item => item.id === jobId)
-    if (job === undefined || (job.status !== 'running' && job.status !== 'stopping')) return
-    await client.killJob(sessionId, jobId)
+    if (job === undefined) return { ok: false, error: 'This background task is no longer available.' }
+    if (job.status !== 'running' && job.status !== 'stopping') return { ok: true }
+    this.pendingJobKills.add(key)
+    try {
+      await this.taskClient(false).killJob(sessionId, jobId)
+      return { ok: true }
+    } catch (error) {
+      const detail = diagnosticText(error instanceof Error ? error.message : String(error)).slice(0, 500)
+      this.output.appendLine(`[jobs] could not stop ${safeLogId(jobId)}: ${detail}`)
+      return { ok: false, error: detail === '' ? 'The runtime refused to stop this background task.' : detail }
+    } finally {
+      this.pendingJobKills.delete(key)
+    }
+  }
+
+  /** Cancel the inline output observation; omitted ids close whatever is open. */
+  closeJobOutput(jobId?: string, sessionId?: string): void {
+    const current = this.jobOutput
+    if (current === undefined) return
+    if (jobId !== undefined && current.jobId !== jobId) return
+    if (sessionId !== undefined && current.sessionId !== sessionId) return
+    this.jobOutput = undefined
+    if (current.timer !== undefined) { clearTimeout(current.timer); current.timer = undefined }
+    current.pending.length = 0
+    current.cancel()
+  }
+
+  private flushJobOutput(): void {
+    const current = this.jobOutput
+    if (current === undefined) return
+    if (current.timer !== undefined) { clearTimeout(current.timer); current.timer = undefined }
+    const chunks = current.pending.splice(0)
+    current.pendingBytes = 0
+    if (chunks.length === 0) return
+    const lossy = current.tail.gap || current.lossy
+    current.lossy = false
+    const MAX_BATCH = 64 * 1024
+    const batches: JobChunk[][] = []
+    let batch: JobChunk[] = []
+    let bytes = 0
+    for (const chunk of chunks) {
+      const size = Buffer.byteLength(chunk.text)
+      if (batch.length > 0 && bytes + size > MAX_BATCH) { batches.push(batch); batch = []; bytes = 0 }
+      batch.push(chunk); bytes += size
+      if (bytes >= MAX_BATCH) { batches.push(batch); batch = []; bytes = 0 }
+    }
+    if (batch.length > 0) batches.push(batch)
+    for (const value of batches) {
+      current.post({ type: 'job-output', sessionId: current.sessionId, jobId: current.jobId,
+        chunks: value, next: current.tail.next, lossy })
+    }
+  }
+
+  /**
+   * Observe one running background job's output for the inline row.
+   *
+   * The observation is exclusive: opening another closes the previous one, and
+   * frames that arrive after a close/session switch are discarded by identity.
+   */
+  openJobOutput(sessionId: string, jobId: string, from: number, post: (message: Record<string, unknown>) => void): void {
+    this.closeJobOutput()
+    const client = this.client
+    const fail = (error: string): void => { post({ type: 'job-output-error', sessionId, jobId, error }) }
+    const known = this.jobsBySession.get(sessionId)?.some(item => item.id === jobId) === true
+      || this.projectJobs().some(item => item.sessionId === sessionId && item.id === jobId)
+    // The Project aggregate shows jobs from every known conversation, so the
+    // selected conversation is not a precondition: a live client and a known
+    // session+job pair are. Unknown pairs still report the unavailable error.
+    if (client === undefined || !known) { fail('This background task is no longer available.'); return }
+    const tail = new JobOutputTail()
+    tail.opened(Number.isSafeInteger(from) && from >= 0 ? from : 0)
+    const observer = {
+      key: `${sessionId}\u0000${jobId}`, client, sessionId, jobId, cancel: () => {}, tail, pending: [] as JobChunk[],
+      pendingBytes: 0, lossy: false,
+      timer: undefined as NodeJS.Timeout | undefined, post,
+    }
+    this.jobOutput = observer
+    const valid = (): boolean => this.jobOutput === observer && this.client === client
+    const stop = (error: string): void => {
+      if (!valid()) return
+      this.jobOutput = undefined
+      if (observer.timer !== undefined) { clearTimeout(observer.timer); observer.timer = undefined }
+      observer.pending.length = 0
+      observer.pendingBytes = 0
+      observer.cancel()
+      post({ type: 'job-output-error', sessionId, jobId, error })
+    }
+    try {
+    observer.cancel = client.observeJob(sessionId, jobId, tail.next, frame => {
+      if (!valid()) return
+      if (frame.type === 'opened') return
+      if (frame.type === 'status') {
+        const job = jobsSnapshotOf([frame.job])[0]
+        if (job === undefined || job.id !== jobId) return
+        this.flushJobOutput()
+        post({ type: 'job-output-status', sessionId, jobId, status: job.status })
+        return
+      }
+      if (frame.type !== 'output') return
+      try { tail.output(frame) } catch {
+        stop('Invalid background output frame returned by DSH.')
+        return
+      }
+      const raw = Array.isArray(frame.chunks) ? frame.chunks : []
+      for (const value of raw) {
+        if (typeof value !== 'object' || value === null) { stop('Invalid background output frame returned by DSH.'); return }
+        const chunk = value as Record<string, unknown>
+        if (typeof chunk.at !== 'number' || !Number.isSafeInteger(chunk.at) || chunk.at < 0
+          || typeof chunk.text !== 'string') { stop('Invalid background output frame returned by DSH.'); return }
+        // Never forward the raw frame text: bound one chunk at a UTF-8 boundary
+        // and mark the loss so the UI shows a gap instead of silent corruption.
+        const truncated = truncateUtf8Head(chunk.text)
+        const chunkItem: JobChunk = {
+          at: chunk.at, text: truncated,
+          ...(chunk.channel === 'stdout' || chunk.channel === 'stderr' || chunk.channel === 'log' ? { channel: chunk.channel } : {}),
+          ...(truncated !== chunk.text || chunk.gapBefore === true ? { gapBefore: true } : {}),
+        }
+        observer.pending.push(chunkItem)
+        observer.pendingBytes += Buffer.byteLength(chunkItem.text)
+        while (observer.pending.length > JOB_OUTPUT_PENDING_CHUNKS || observer.pendingBytes > JOB_OUTPUT_PENDING_BYTES) {
+          const oldest = observer.pending.shift()
+          if (oldest === undefined) break
+          observer.pendingBytes -= Buffer.byteLength(oldest.text)
+          observer.lossy = true
+        }
+      }
+      if (observer.timer === undefined) {
+        observer.timer = setTimeout(() => { if (valid()) this.flushJobOutput() }, 100)
+        observer.timer.unref?.()
+      }
+    }, error => {
+      if (!valid()) return
+      const detail = diagnosticText(error.message).slice(0, 500)
+      this.jobOutput = undefined
+      if (observer.timer !== undefined) clearTimeout(observer.timer)
+      post({ type: 'job-output-error', sessionId, jobId, error: detail === '' ? 'Background output observation stopped.' : detail })
+    })
+    } catch (error) {
+      // A synchronous throw from the stream opener must not leave a half-open
+      // observation behind; report it in the row and clean up.
+      this.jobOutput = undefined
+      if (observer.timer !== undefined) clearTimeout(observer.timer)
+      observer.pending.length = 0
+      observer.pendingBytes = 0
+      const detail = diagnosticText(error instanceof Error ? error.message : String(error)).slice(0, 500)
+      post({ type: 'job-output-error', sessionId, jobId, error: detail === '' ? 'Could not observe background output.' : detail })
+    }
   }
 
   async loadOlderHistory(): Promise<void> {
@@ -2189,6 +2356,7 @@ export class DshChatController implements vscode.Disposable {
   }
 
   private disconnectClient(): void {
+    this.closeJobOutput()
     this.catalogReads.clear()
     // The catalogue belongs to the runtime, so a replacement connection reads
     // its own: keeping the old one could offer a preset the new runtime lacks.
@@ -2769,7 +2937,10 @@ export class DshChatController implements vscode.Disposable {
     const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
     this.taskFeatures.frame(frame)
     if (frame.channel === 'mux' && type === 'session/jobs-status') {
-      if (typeof payload.error === 'string') { this.jobErrors.set(sessionId, payload.error); capSessionMap(this.jobErrors) }
+      if (typeof payload.error === 'string') {
+        const detail = diagnosticText(payload.error).slice(0, 500)
+        this.jobErrors.set(sessionId, detail); capSessionMap(this.jobErrors)
+      }
       else this.jobErrors.delete(sessionId)
       this.publish({ jobsStatus: [...this.jobErrors.values()].join('\n') || null })
       return
@@ -3528,6 +3699,20 @@ const ATTACHMENT_BYTE_BUDGET = 64 * 1024 * 1024
 const ATTACHMENT_ORDER_LIMIT = 4_096
 
 const SESSION_MAP_LIMIT = 20_000
+/** One inline-output chunk and one sent batch may not exceed this many bytes. */
+const JOB_OUTPUT_CHUNK_BYTES = 64 * 1024
+/** The not-yet-flushed inline-output buffer: bytes and chunk-count bounds. */
+const JOB_OUTPUT_PENDING_BYTES = 128 * 1024
+const JOB_OUTPUT_PENDING_CHUNKS = 256
+
+/** Cut text to a UTF-8 boundary so a multi-byte character is never split. */
+function truncateUtf8Head(text: string, maxBytes = JOB_OUTPUT_CHUNK_BYTES): string {
+  const buffer = Buffer.from(text)
+  if (buffer.length <= maxBytes) return text
+  let end = maxBytes
+  while (end > 0 && (buffer[end]! & 0xc0) === 0x80) end -= 1
+  return buffer.subarray(0, end).toString('utf8')
+}
 
 /** Keep per-session extension maps bounded; oldest inserted entries go first. */
 function capSessionMap<Key, Value>(map: Map<Key, Value>): void {
@@ -3717,6 +3902,7 @@ class DshSurface implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.controller.closeJobOutput()
     if (this.stateTimer !== undefined) clearTimeout(this.stateTimer)
     if (this.deliveryRecoveryTimer !== undefined) clearTimeout(this.deliveryRecoveryTimer)
     for (const disposable of this.disposables) disposable.dispose()
@@ -4402,13 +4588,22 @@ class DshSurface implements vscode.Disposable {
           }
           return
         case 'kill-job':
-          if (typeof value.sessionId === 'string' && typeof value.jobId === 'string') {
-            try {
-              await this.controller.killJob(value.sessionId, value.jobId)
-            } catch (error) {
-              const detail = error instanceof Error ? error.message : String(error)
-              await vscode.window.showErrorMessage(`Could not stop the background job. ${detail} Update DSH if this method is unavailable.`)
-            }
+          if (typeof value.sessionId === 'string' && typeof value.jobId === 'string' && value.jobId !== '') {
+            const result = await this.controller.killJob(value.sessionId, value.jobId)
+            void this.webview.postMessage({ type: 'job-kill-result', sessionId: value.sessionId, jobId: value.jobId,
+              ok: result.ok, ...(result.error === undefined ? {} : { error: result.error }) })
+          }
+          return
+        case 'job-output-open':
+          if (typeof value.sessionId === 'string' && typeof value.jobId === 'string'
+            && value.jobId !== '' && value.jobId.length <= 256) {
+            const from = typeof value.from === 'number' && Number.isSafeInteger(value.from) && value.from >= 0 ? value.from : 0
+            this.controller.openJobOutput(value.sessionId, value.jobId, from, message => { void this.webview.postMessage(message) })
+          }
+          return
+        case 'job-output-close':
+          if (typeof value.jobId === 'string') {
+            this.controller.closeJobOutput(value.jobId, typeof value.sessionId === 'string' ? value.sessionId : undefined)
           }
           return
         case 'load-history': await this.controller.loadOlderHistory(); return

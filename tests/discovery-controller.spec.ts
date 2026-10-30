@@ -50,7 +50,7 @@ function testClient() {
     onFrame: vi.fn((callback: (frame: DshFrame) => void) => { listeners.add(callback); return () => listeners.delete(callback) }),
     onError: vi.fn((callback: (error: Error) => void) => { errors.add(callback); return () => errors.delete(callback) }),
     startStreams: vi.fn(async () => {}), dispose: vi.fn(), handledSessionIds: [] as string[], respond: vi.fn(async () => ({ accepted: true })),
-    monitorJobs: vi.fn(), goal: vi.fn(async () => null), schedules: vi.fn(async () => []), searchHistory: vi.fn(async () => ({ items: [], hasMore: false })),
+    monitorJobs: vi.fn(), observeJob: vi.fn(() => () => {}), goal: vi.fn(async () => null), schedules: vi.fn(async () => []), searchHistory: vi.fn(async () => ({ items: [], hasMore: false })),
     scheduleHistory: vi.fn(), changeGoal: vi.fn(), pendingRequests: vi.fn(() => []),
     listWorkspaces: vi.fn(async () => ({ archivedSessionIds: [] })),
     sessionProjections: vi.fn(async (): Promise<any> => ({kind:'sequenced',asOfSeq:1,values:{}})),
@@ -2681,5 +2681,168 @@ describe('bounded attachment bookkeeping', () => {
     controller.rememberAttachment('a\u0000first', { data: 'CC' })
     expect(controller.attachmentResults.get('a\u0000first')).toEqual({ data: 'CC' })
     expect(controller.attachmentOrder.has('a\u0000first')).toBe(true)
+  })
+})
+
+describe('inline background output observation', () => {
+  const jobs = { type: 'session/jobs', sessionId: 'a', jobs: [{ id: 'job1', kind: 'bash', label: 'npm test', status: 'running', startedAt: 1 }] }
+  function opened(h: Awaited<ReturnType<typeof harness>>, from = 0) {
+    let item: ((frame: Record<string, unknown>) => void) | undefined
+    let fail: ((error: Error) => void) | undefined
+    let cancels = 0
+    const posted: Record<string, any>[] = []
+    h.client.observeJob.mockImplementation((_sessionId: string, _jobId: string, _from: number, onItem: any, onFail: any) => {
+      item = onItem; fail = onFail
+      return () => { cancels += 1 }
+    })
+    h.controller.openJobOutput('a', 'job1', from, message => posted.push(message as Record<string, any>))
+    return { item: () => item!, fail: () => fail!, posted, cancels: () => cancels }
+  }
+  it('streams batches and status, then cancels on close', async () => {
+    vi.useFakeTimers()
+    const h = await harness()
+    h.emit(jobs, 'mux')
+    const o = opened(h)
+    expect(h.client.observeJob).toHaveBeenCalledWith('a', 'job1', 0, expect.any(Function), expect.any(Function))
+    o.item()({ type: 'opened', from: 0 })
+    o.item()({ type: 'output', chunks: [{ at: 1, text: 'hello', channel: 'log' }], next: 1 })
+    await vi.advanceTimersByTimeAsync(100)
+    expect(o.posted).toContainEqual({ type: 'job-output', sessionId: 'a', jobId: 'job1',
+      chunks: [{ at: 1, text: 'hello', channel: 'log' }], next: 1, lossy: false })
+    o.item()({ type: 'status', job: { id: 'job1', kind: 'bash', label: 'npm test', status: 'completed', startedAt: 1 } })
+    expect(o.posted).toContainEqual({ type: 'job-output-status', sessionId: 'a', jobId: 'job1', status: 'completed' })
+    h.controller.closeJobOutput('job1', 'a')
+    expect(o.cancels()).toBe(1)
+  })
+  it('reports an unknown job without opening a stream', async () => {
+    const h = await harness()
+    const posted: Record<string, any>[] = []
+    h.controller.openJobOutput('a', 'missing', 0, message => posted.push(message as Record<string, any>))
+    expect(h.client.observeJob).not.toHaveBeenCalled()
+    expect(posted[0]).toMatchObject({ type: 'job-output-error', error: 'This background task is no longer available.' })
+  })
+  it('cancels the observation when the conversation changes', async () => {
+    const h = await harness()
+    h.emit(jobs, 'mux')
+    const o = opened(h)
+    await h.controller.selectSession('b')
+    expect(o.cancels()).toBe(1)
+  })
+  it('observes a known job from another conversation in the project aggregate', async () => {
+    vi.useFakeTimers()
+    const h = await harness()
+    // Current conversation is 'a'; the job belongs to 'b' and is known from its snapshot.
+    h.emit({ type: 'session/jobs', sessionId: 'b', jobs: [{ id: 'job-b', kind: 'bash', label: 'other', status: 'running', startedAt: 1 }] }, 'mux')
+    let item: ((frame: Record<string, unknown>) => void) | undefined
+    let cancels = 0
+    const posted: Record<string, any>[] = []
+    h.client.observeJob.mockImplementation((_sessionId: string, _jobId: string, _from: number, onItem: any) => {
+      item = onItem
+      return () => { cancels += 1 }
+    })
+    h.controller.openJobOutput('b', 'job-b', 0, message => posted.push(message as Record<string, any>))
+    expect(h.controller.state.sessionId).toBe('a')
+    expect(h.client.observeJob).toHaveBeenCalledWith('b', 'job-b', 0, expect.any(Function), expect.any(Function))
+    item!({ type: 'output', chunks: [{ at: 1, text: 'from b', channel: 'log' }], next: 1 })
+    await vi.advanceTimersByTimeAsync(100)
+    expect(posted).toContainEqual({ type: 'job-output', sessionId: 'b', jobId: 'job-b',
+      chunks: [{ at: 1, text: 'from b', channel: 'log' }], next: 1, lossy: false })
+    // Switching conversations still closes a cross-session observation.
+    await h.controller.selectSession('b')
+    expect(cancels).toBe(1)
+  })
+  it('rejects a completely unknown conversation or job', async () => {
+    const h = await harness()
+    const posted: Record<string, any>[] = []
+    h.controller.openJobOutput('never-seen', 'job1', 0, message => posted.push(message as Record<string, any>))
+    h.controller.openJobOutput('a', 'never-seen-job', 0, message => posted.push(message as Record<string, any>))
+    expect(h.client.observeJob).not.toHaveBeenCalled()
+    expect(posted).toHaveLength(2)
+    for (const message of posted) expect(message).toMatchObject({ type: 'job-output-error', error: 'This background task is no longer available.' })
+  })
+  it('truncates an oversized single chunk at a UTF-8 boundary', async () => {
+    vi.useFakeTimers()
+    const h = await harness()
+    h.emit(jobs, 'mux')
+    const o = opened(h)
+    o.item()({ type: 'output', chunks: [{ at: 1, text: '😀'.repeat(30_000) }], next: 1 })
+    await vi.advanceTimersByTimeAsync(100)
+    const messages = o.posted.filter(message => message.type === 'job-output')
+    expect(messages.length).toBeGreaterThan(0)
+    for (const message of messages) {
+      for (const chunk of message.chunks) {
+        expect(Buffer.byteLength(chunk.text)).toBeLessThanOrEqual(64 * 1024)
+        expect(chunk.text).not.toContain('\uFFFD')
+      }
+    }
+    const total = messages.reduce((sum, message) => sum + message.chunks.reduce((bytes: number, chunk: any) => bytes + Buffer.byteLength(chunk.text), 0), 0)
+    expect(total).toBeLessThanOrEqual(128 * 1024)
+    expect(messages.some(message => message.chunks.some((chunk: any) => chunk.gapBefore === true))).toBe(true)
+  })
+
+  it('bounds the pending buffer and keeps lossy under a flood of small frames', async () => {
+    vi.useFakeTimers()
+    const h = await harness()
+    h.emit(jobs, 'mux')
+    const o = opened(h)
+    for (let index = 0; index < 2_000; index++) {
+      o.item()({ type: 'output', chunks: [{ at: index, text: 'a'.repeat(10), channel: 'log' }], next: index + 1 })
+    }
+    await vi.advanceTimersByTimeAsync(100)
+    const messages = o.posted.filter(message => message.type === 'job-output')
+    const chunks = messages.flatMap(message => message.chunks)
+    expect(chunks.length).toBeLessThanOrEqual(256)
+    expect(messages.some(message => message.lossy === true)).toBe(true)
+  })
+
+  it('rejects an invalid chunk and reports a synchronous stream failure', async () => {
+    vi.useFakeTimers()
+    const h = await harness()
+    h.emit(jobs, 'mux')
+    const first = opened(h)
+    first.item()({ type: 'output', chunks: [{ at: Number.NaN, text: 'x' }], next: 1 })
+    expect(first.posted.some(message => message.type === 'job-output-error')).toBe(true)
+    h.client.observeJob.mockImplementationOnce(() => { throw new Error('stream opener failed') })
+    const posted: Record<string, any>[] = []
+    h.controller.openJobOutput('a', 'job1', 0, message => posted.push(message as Record<string, any>))
+    expect(posted.some(message => message.type === 'job-output-error' && String(message.error).includes('stream opener failed'))).toBe(true)
+  })
+
+  it('redacts and single-lines a jobs-status error before projecting it', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/jobs-status', sessionId: 'a', error: 'line one\nsk-abcdefghijklmnop /Users/private/path' }, 'mux')
+    const projected = String(h.controller.state.jobsStatus ?? '')
+    expect(projected).not.toContain('\n')
+    expect(projected).not.toContain('sk-abcdefghijklmnop')
+    expect(projected.length).toBeLessThanOrEqual(500)
+  })
+
+  it('works through a real session/jobs snapshot for the current conversation', async () => {
+    const h = await harness()
+    h.emit(jobs, 'mux')
+    const o = opened(h)
+    o.fail()(new Error('stream dropped'))
+    expect(o.posted).toContainEqual({ type: 'job-output-error', sessionId: 'a', jobId: 'job1', error: 'stream dropped' })
+  })
+})
+
+describe('background job stop results', () => {
+  const jobs = { type: 'session/jobs', sessionId: 'a', jobs: [{ id: 'job1', kind: 'bash', label: 'npm test', status: 'running', startedAt: 1 }] }
+  it('de-duplicates in-flight stops and reports failures without a dialog', async () => {
+    const h = await harness()
+    h.emit(jobs, 'mux')
+    const pending = Promise.withResolvers<void>()
+    h.client.killJob.mockReturnValueOnce(pending.promise)
+    const first = h.controller.killJob('a', 'job1')
+    const second = h.controller.killJob('a', 'job1')
+    expect(await second).toEqual({ ok: true })
+    pending.resolve()
+    expect(await first).toEqual({ ok: true })
+    h.client.killJob.mockRejectedValueOnce(new Error('runtime refused'))
+    const failed = await h.controller.killJob('a', 'job1')
+    expect(failed.ok).toBe(false)
+    expect(failed.error).toContain('runtime refused')
+    expect(h.client.killJob).toHaveBeenCalledTimes(2)
+    expect((vscode.window.showErrorMessage as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(0)
   })
 })

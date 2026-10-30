@@ -41,10 +41,15 @@ describe('Goal, reminders, workflows, search and background output UI', () => {
     expect(h.document.querySelector('#taskList')?.textContent).toContain('finished')
     h.click('.workflow-member'); expect(h.posts.at(-1)).toEqual({ type: 'open-task-details', kind: 'subagent', sessionId: 'c' })
   })
-  it('routes project jobs to their owner for output and the confirmed Stop action', async () => {
+  it('opens a project job output stream and confirms its Stop action', async () => {
     const h = open(); h.sendState({ projectJobs: [{ id: 'j', sessionId: 'owner', sessionTitle: 'Other conversation', kind: 'process', label: 'Build', status: 'running', startedAt: Date.now() }], jobsStatus: 'Status may be stale' }); await h.settle()
-    h.click('#jobsTrigger'); h.click('.job-row .feature-action')
-    expect(h.posts.at(-1)).toEqual({ type: 'open-task-details', kind: 'job', sessionId: 'owner', jobId: 'j' })
+    h.click('#jobsTrigger')
+    // The row's chevron is the inline output panel; it opens and closes the
+    // observation stream for that job.
+    h.click('.job-chevron')
+    expect(h.posts.at(-1)).toEqual({ type: 'job-output-open', sessionId: 'owner', jobId: 'j' })
+    h.click('.job-chevron')
+    expect(h.posts.at(-1)).toEqual({ type: 'job-output-close', sessionId: 'owner', jobId: 'j' })
     h.click('.job-stop'); h.click('.job-stop'); expect(h.posts.at(-1)).toEqual({ type: 'kill-job', sessionId: 'owner', jobId: 'j' })
     expect(h.document.querySelector('#jobsMenu')?.textContent).toContain('Status may be stale')
   })

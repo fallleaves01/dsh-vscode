@@ -1103,4 +1103,23 @@ describe('host surface wiring', () => {
       expect(h.client.forkSession).not.toHaveBeenCalled()
     })
   })
+
+
+
+  describe('background task host wiring', () => {
+  it('answers an inline output open for an unknown job with an error message', async () => {
+    const h = await activated()
+    h.send({ type: 'job-output-open', sessionId: 'a', jobId: 'missing-job' })
+    await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'job-output-error')).toBe(true))
+    expect(h.posts().find(packet => packet.type === 'job-output-error')).toMatchObject({ jobId: 'missing-job' })
+  })
+  it('reports a failed background-job stop inline instead of a dialog', async () => {
+    const h = await activated()
+    h.send({ type: 'kill-job', sessionId: 'a', jobId: 'missing-job' })
+    await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'job-kill-result')).toBe(true))
+    const result = h.posts().find(packet => packet.type === 'job-kill-result')!
+    expect(result).toMatchObject({ ok: false, jobId: 'missing-job' })
+    expect(mocks.error).not.toHaveBeenCalled()
+  })
+})
 })

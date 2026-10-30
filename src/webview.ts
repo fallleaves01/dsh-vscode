@@ -252,17 +252,38 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .jobs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--vscode-descriptionForeground); }
     .jobs-trigger.live .jobs-dot { background: var(--vscode-charts-blue, #4d6bfe); box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-charts-blue, #4d6bfe) 20%, transparent); }
     .jobs-menu { position: absolute; z-index: 20; top: calc(100% + 5px); right: 0; width: min(340px, calc(100vw - 20px)); max-height: min(420px, 70vh); padding: 6px; overflow: auto; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 5px 18px var(--vscode-widget-shadow); }
-    .jobs-title { padding: 5px 7px 7px; font-size: 11px; font-weight: 600; }
-    .job-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; gap: 2px 7px; padding: 7px; border-radius: 5px; }
-    .job-row + .job-row { border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 50%, transparent); }
-    .job-kind { grid-row: 1 / 3; align-self: start; padding: 1px 5px; border-radius: 999px; color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); font-size: 9px; text-transform: uppercase; }
-    .job-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; font-weight: 600; }
-    .job-status { color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .jobs-section { display: flex; align-items: center; gap: 4px; padding: 5px 7px 3px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+    .jobs-section-toggle { display: flex; align-items: center; gap: 3px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+    .jobs-section-toggle:hover { color: var(--vscode-foreground); }
+    .jobs-section-chevron { display: inline-block; transition: transform 100ms ease; }
+    .jobs-section-chevron.open { transform: rotate(90deg); }
+    .jobs-clear { margin-left: auto; padding: 0 3px; border: 0; background: transparent; color: var(--vscode-textLink-foreground); font: inherit; letter-spacing: normal; text-transform: none; cursor: pointer; }
+    .jobs-clear:hover { text-decoration: underline; }
+    .job-item { border-radius: 5px; }
+    .job-item + .job-item { border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 50%, transparent); }
+    .job-row { min-width: 0; display: flex; align-items: center; gap: 6px; padding: 7px; border-radius: 5px; }
+    .job-chevron { flex: none; width: 14px; padding: 0; border: 0; background: transparent; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 14px; text-align: center; cursor: pointer; transition: transform 100ms ease; }
+    .job-chevron:hover { color: var(--vscode-foreground); }
+    .job-chevron.expanded { transform: rotate(90deg); }
+    .job-chevron.empty { visibility: hidden; cursor: default; }
+    .job-kind { flex: none; padding: 1px 5px; border-radius: 999px; color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); font-size: 9px; text-transform: uppercase; }
+    .job-main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 1px; }
+    .job-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-foreground); font: 11px var(--vscode-editor-font-family); }
     .job-detail { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 10px; }
-    .job-duration { grid-column: 3; grid-row: 1 / 3; align-self: center; color: var(--vscode-descriptionForeground); font: 10px var(--vscode-editor-font-family); }
-    .job-stop { grid-column: 4; grid-row: 1 / 3; align-self: center; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; color: var(--vscode-foreground); background: transparent; font-size: 10px; }
-    .job-stop:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .job-duration { flex: none; color: var(--vscode-descriptionForeground); font: 10px var(--vscode-editor-font-family); }
+    .job-stop { flex: none; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; color: var(--vscode-foreground); background: transparent; font-size: 10px; }
+    .job-stop:hover:not(:disabled) { background: var(--vscode-toolbar-hoverBackground); }
+    .job-stop:disabled { opacity: .55; cursor: default; }
     .job-stop.armed { border-color: var(--vscode-inputValidation-errorBorder, #be1100); color: var(--vscode-errorForeground, #f48771); font-weight: 600; }
+    .job-stop.failed { border-color: var(--vscode-inputValidation-errorBorder, #be1100); color: var(--vscode-errorForeground, #f48771); }
+    .job-output { margin: 0 7px 7px 27px; padding: 6px 7px; border-radius: 5px; background: color-mix(in srgb, var(--vscode-textCodeBlock-background, #000000) 55%, transparent); }
+    .job-output-notice { padding: 1px 0; color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .job-output-notice.error { color: var(--vscode-errorForeground, #f48771); }
+    .job-output-pre { margin: 3px 0 0; max-height: 190px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.5 var(--vscode-editor-font-family); color: var(--vscode-foreground); }
+    .job-output-pre .stderr { color: var(--vscode-errorForeground, #f48771); }
+    .job-output-pre .log { color: var(--vscode-descriptionForeground); }
+    .job-output-empty { color: var(--vscode-descriptionForeground); }
+    .job-output-actions { display: flex; gap: 5px; margin-top: 5px; }
     .icon-button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible, button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
     svg:where(:not(.katex svg)) { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
     .conversation-pane { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); }
@@ -952,9 +973,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let lastHomeOpen = false;
     let homeReading;
     const expandedChanges = new Set();
-    let armedJobId;
-    let armedJobTimer;
+    /** Two-press stop state: armed -> pending -> (failed). One job at a time. */
+    let jobKillPhase;
+    let jobKillTimer;
     let jobsTimer;
+    /** Rows the user cleared locally; no protocol message, just hidden finished rows. */
+    const clearedJobIds = new Set();
+    /** undefined follows DSH's default (Finished starts open when nothing runs). */
+    let settledJobsOpen;
+    /** Key of the one row whose inline output panel is expanded. */
+    let expandedJobKey;
+    /** Inline output received per observed job, keyed the same way. */
+    const jobOutputViews = new Map();
+    /** Status patches from the output stream so a row reacts before the roster does. */
+    const jobStatusOverrides = new Map();
+    /** The roster array the overrides were received against, so a new snapshot wins. */
+    let renderedJobsSource;
     let taskTimer;
     let subagentLinkTimer;
     const subagentLinkViews = new Map();
@@ -4063,14 +4097,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
             button.addEventListener('click', () => vscode.postMessage({ type: 'open-task-details', kind: 'subagent', sessionId: member.childId })); section.append(button);
           }
         }
-        section.append(featureButton('View workflow output', () => { jobsOpen = true; jobScope = 'project'; elements.jobsMenu.classList.remove('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'true'); renderJobs(); }));
+        section.append(featureButton('View workflow output', () => { jobScope = 'project'; openJobsMenu(); }));
         section.append(node('div', 'feature-hint', 'Choose the workflow background task for live phases and logs.'));
         elements.taskList.append(section);
       }
       if (children.some(item => item.running === true && item.activity && typeof item.activity.activeSince === 'number')) taskTimer = setInterval(syncTaskDurations, 1000);
     }
     function jobDuration(job) {
-      const end = liveJob(job) ? Date.now() : (Number(job.finishedAt) || Number(job.startedAt));
+      const end = jobLive(job) ? Date.now() : (Number(job.finishedAt) || Number(job.startedAt));
       const seconds = Math.max(0, Math.floor((end - Number(job.startedAt)) / 1000));
       if (seconds < 60) return seconds + 's';
       const minutes = Math.floor(seconds / 60); if (minutes < 60) return minutes + 'm ' + (seconds % 60) + 's';
@@ -4096,10 +4130,256 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       vscode.postMessage({ type: 'copy-text', text });
       confirm();
     }
-    function armJob(jobId) {
-      armedJobId = jobId;
-      if (armedJobTimer) { clearTimeout(armedJobTimer); armedJobTimer = undefined; }
-      if (jobId !== undefined) armedJobTimer = setTimeout(() => { armedJobId = undefined; armedJobTimer = undefined; renderJobs(); }, 3000);
+    /** The per-row key: jobs are addressed by their owning Session and id. */
+    function jobKeyOf(job) {
+      return (string(job && job.sessionId) || string(state && state.sessionId)) + ':' + string(job && job.id);
+    }
+    function jobOwnerOf(job) {
+      return string(job && job.sessionId) || string(state && state.sessionId);
+    }
+    /** Retained output bytes for a job, from the roster field DSH projects. */
+    function jobOutputTotal(job) {
+      const total = Number(job && job.outputTotal);
+      if (Number.isFinite(total) && total >= 0) return total;
+      const output = record(job && job.output);
+      const nested = Number(output && output.total);
+      return Number.isFinite(nested) && nested >= 0 ? nested : 0;
+    }
+    function jobStatusOf(job) {
+      return string(jobStatusOverrides.get(jobKeyOf(job))) || string(job && job.status);
+    }
+    function jobStatusLabel(job) {
+      const status = jobStatusOf(job);
+      // DSH calls a killed job "cancelled": it ended on request, not by itself.
+      return status === 'killed' ? 'cancelled' : status === '' ? 'unknown' : status;
+    }
+    /** Live progress while running, the terminal reason once settled, else the status. */
+    function jobDetailOf(job) {
+      const progress = string(job && job.progress);
+      if (progress !== '') return progress;
+      const detail = string(job && job.detail);
+      return detail !== '' ? detail : jobStatusLabel(job);
+    }
+    function jobLive(job) {
+      const status = jobStatusOf(job);
+      return status === 'running' || status === 'stopping';
+    }
+    /** DSH exposes output for a live job or a settled one that retained output. */
+    function observableJob(job) { return jobLive(job) || jobOutputTotal(job) > 0; }
+    function jobOutputBytes(text) {
+      try { return new TextEncoder().encode(text).length; } catch { return text.length; }
+    }
+    const JOB_OUTPUT_MAX_CHUNKS = 512;
+    const JOB_OUTPUT_MAX_BYTES = 256 * 1024;
+    function clearJobKillPhase() {
+      if (jobKillTimer !== undefined) { clearTimeout(jobKillTimer); jobKillTimer = undefined; }
+      jobKillPhase = undefined;
+    }
+    function setJobKillPhase(phase, timeoutMs) {
+      clearJobKillPhase();
+      jobKillPhase = phase;
+      if (timeoutMs !== undefined) {
+        jobKillTimer = setTimeout(() => { jobKillTimer = undefined; jobKillPhase = undefined; renderJobs(); }, timeoutMs);
+      }
+    }
+    /**
+     * DSH's two-press stop: the first press arms for three seconds, the second
+     * sends the kill. A rejected kill shows inline instead of a native modal.
+     */
+    function pressJobStop(job) {
+      const key = string(job && job.id);
+      const current = jobKillPhase;
+      if (current !== undefined && current.key === key && current.state === 'armed') {
+        setJobKillPhase({ key, state: 'pending' });
+        vscode.postMessage({ type: 'kill-job', sessionId: jobOwnerOf(job), jobId: key });
+      } else {
+        setJobKillPhase({ key, state: 'armed' }, 3000);
+      }
+      renderJobs();
+    }
+    /** Close the open inline output stream, if any (idempotent). */
+    function collapseJobOutput() {
+      const key = expandedJobKey;
+      if (key === undefined) return;
+      const view = jobOutputViews.get(key);
+      if (view !== undefined) {
+        vscode.postMessage({ type: 'job-output-close', sessionId: view.sessionId, jobId: view.jobId });
+      }
+      expandedJobKey = undefined;
+    }
+    function toggleJobOutput(job) {
+      const key = jobKeyOf(job);
+      if (expandedJobKey === key) {
+        collapseJobOutput();
+        if (jobsOpen) renderJobs();
+        return;
+      }
+      collapseJobOutput();
+      expandedJobKey = key;
+      let view = jobOutputViews.get(key);
+      if (view === undefined) {
+        view = { sessionId: jobOwnerOf(job), jobId: string(job && job.id), chunks: [], bytes: 0, next: undefined, gap: false, lossy: false, error: '' };
+        jobOutputViews.set(key, view);
+      }
+      const from = Number(view.next);
+      vscode.postMessage({ type: 'job-output-open', sessionId: view.sessionId, jobId: view.jobId, ...(Number.isFinite(from) && from >= 0 ? { from } : {}) });
+      if (jobsOpen) renderJobs();
+    }
+    function resetJobTransients() {
+      clearJobKillPhase();
+      collapseJobOutput();
+      jobStatusOverrides.clear();
+      settledJobsOpen = undefined;
+      clearedJobIds.clear();
+    }
+    function openJobsMenu() {
+      jobsOpen = true;
+      elements.jobsMenu.classList.remove('hidden');
+      elements.jobsTrigger.setAttribute('aria-expanded', 'true');
+      renderJobs();
+    }
+    function closeJobsMenu(focusTrigger) {
+      jobsOpen = false;
+      elements.jobsMenu.classList.add('hidden');
+      elements.jobsTrigger.setAttribute('aria-expanded', 'false');
+      clearJobKillPhase();
+      collapseJobOutput();
+      if (focusTrigger) elements.jobsTrigger.focus();
+    }
+    function appendJobOutputChunks(view, data) {
+      for (const value of array(data.chunks)) {
+        const chunk = record(value);
+        if (chunk === undefined || typeof chunk.text !== 'string' || chunk.text === '') continue;
+        const channel = chunk.channel === 'stderr' || chunk.channel === 'log' ? chunk.channel : 'stdout';
+        view.chunks.push({ text: chunk.text, channel, gapBefore: chunk.gapBefore === true });
+        view.bytes += jobOutputBytes(chunk.text);
+      }
+      const next = Number(data.next);
+      if (Number.isFinite(next) && next >= 0) view.next = next;
+      if (data.lossy === true) view.lossy = view.gap = true;
+      // The panel is a tail, not a log viewer: keep it bounded like DSH does.
+      while (view.chunks.length > JOB_OUTPUT_MAX_CHUNKS || view.bytes > JOB_OUTPUT_MAX_BYTES) {
+        const dropped = view.chunks.shift();
+        if (dropped === undefined) break;
+        view.bytes = Math.max(0, view.bytes - jobOutputBytes(dropped.text));
+        view.gap = true;
+      }
+    }
+    function receiveJobOutput(data) {
+      const key = string(data.sessionId) + ':' + string(data.jobId);
+      const view = jobOutputViews.get(key);
+      if (view === undefined) return;
+      appendJobOutputChunks(view, data);
+      if (jobsOpen && expandedJobKey === key) renderJobs();
+    }
+    function receiveJobOutputStatus(data) {
+      const jobId = string(data.jobId);
+      const status = string(data.status);
+      if (jobId === '' || status === '') return;
+      jobStatusOverrides.set(string(data.sessionId) + ':' + jobId, status);
+      if (jobKillPhase !== undefined && jobKillPhase.key === jobId && status !== 'running') clearJobKillPhase();
+      const view = jobOutputViews.get(string(data.sessionId) + ':' + jobId);
+      if (view !== undefined) view.status = status;
+      if (jobsOpen) renderJobs();
+    }
+    function receiveJobOutputError(data) {
+      const key = string(data.sessionId) + ':' + string(data.jobId);
+      const view = jobOutputViews.get(key);
+      if (view === undefined) return;
+      view.error = string(data.error);
+      if (jobsOpen && expandedJobKey === key) renderJobs();
+    }
+    function receiveJobKillResult(data) {
+      const phase = jobKillPhase;
+      if (phase === undefined || phase.key !== string(data.jobId)) return;
+      // An accepted kill stays pending until the roster stops reporting running;
+      // a rejected one shows inline for four seconds, then the button resets.
+      if (data.ok === true) return;
+      setJobKillPhase({ key: phase.key, state: 'failed', detail: string(data.error).slice(0, 160) }, 4000);
+      if (jobsOpen) renderJobs();
+    }
+    function jobOutputPanel(job, key) {
+      const view = jobOutputViews.get(key);
+      const panel = node('div', 'job-output');
+      const gap = view !== undefined && (view.gap === true || view.lossy === true
+        || (view.chunks.length > 0 && view.chunks[0].gapBefore === true));
+      if (gap) panel.append(node('div', 'job-output-notice', '… earlier output dropped …'));
+      if (view !== undefined && string(view.error) !== '') {
+        panel.append(node('div', 'job-output-notice error', 'live output stream interrupted: ' + string(view.error)));
+      }
+      const pre = node('pre', 'job-output-pre');
+      if (view === undefined || view.chunks.length === 0) pre.append(node('span', 'job-output-empty', '(no output)'));
+      else for (const chunk of view.chunks) {
+        if (chunk.channel === 'stdout') pre.append(document.createTextNode(chunk.text));
+        else pre.append(node('span', chunk.channel, chunk.text));
+      }
+      panel.append(pre);
+      const actions = node('div', 'job-output-actions');
+      // DSH copies the command line, not the output: the output can be a tail.
+      const copy = node('button', 'feature-action', 'Copy command');
+      copy.type = 'button'; copy.title = 'Copy the command line';
+      copy.addEventListener('click', event => {
+        event.stopPropagation();
+        vscode.postMessage({ type: 'copy-text', text: string(job && job.label) });
+        copy.textContent = 'Copied';
+        setTimeout(() => { if (copy.isConnected) copy.textContent = 'Copy command'; }, 1500);
+      });
+      const collapse = node('button', 'feature-action', 'Collapse');
+      collapse.type = 'button';
+      collapse.addEventListener('click', event => { event.stopPropagation(); collapseJobOutput(); if (jobsOpen) renderJobs(); });
+      actions.append(copy, collapse);
+      panel.append(actions);
+      return panel;
+    }
+    function jobItem(job) {
+      const key = jobKeyOf(job);
+      const status = jobStatusOf(job);
+      const live = jobLive(job);
+      const observable = observableJob(job);
+      const expanded = expandedJobKey === key;
+      const item = node('div', 'job-item');
+      const row = node('div', 'job-row');
+      if (observable) {
+        const chevron = node('button', 'job-chevron' + (expanded ? ' expanded' : ''), '▸');
+        chevron.type = 'button';
+        chevron.setAttribute('aria-expanded', String(expanded));
+        chevron.setAttribute('aria-label', (expanded ? 'Hide live output of ' : 'Show live output of ') + string(job && job.label, 'background job'));
+        chevron.addEventListener('click', event => { event.stopPropagation(); toggleJobOutput(job); });
+        row.append(chevron);
+      } else {
+        const spacer = node('span', 'job-chevron empty');
+        spacer.setAttribute('aria-hidden', 'true');
+        row.append(spacer);
+      }
+      row.append(node('span', 'job-kind', string(job && job.kind, 'job')));
+      const main = node('div', 'job-main');
+      const label = node('span', 'job-label', string(job && job.label, 'Background job'));
+      label.title = string(job && job.label, 'Background job');
+      main.append(label, node('span', 'job-detail', jobDetailOf(job)));
+      row.append(main);
+      const duration = jobDuration(job);
+      const durationCell = node('span', 'job-duration', duration);
+      durationCell.title = (live ? 'Running for ' : 'Took ') + duration;
+      row.append(durationCell);
+      const owner = string(job && job.sessionTitle);
+      if (owner !== '') row.title = owner;
+      if (status === 'running') {
+        const phase = jobKillPhase !== undefined && jobKillPhase.key === string(job && job.id) ? jobKillPhase : undefined;
+        const phaseState = phase === undefined ? 'idle' : phase.state;
+        const text = phaseState === 'armed' ? 'Confirm' : phaseState === 'failed' ? 'Stop failed' : 'Stop';
+        const stop = node('button', 'job-stop' + (phaseState === 'armed' ? ' armed' : '') + (phaseState === 'failed' ? ' failed' : ''), text);
+        stop.type = 'button';
+        stop.disabled = phaseState === 'pending';
+        stop.title = phaseState === 'armed' ? 'Click again to confirm'
+          : phaseState === 'failed' ? 'Stop failed' + (phase !== undefined && string(phase.detail) !== '' ? ': ' + string(phase.detail) : '')
+          : phaseState === 'pending' ? 'Stopping…' : 'Stop task ' + string(job && job.label, 'background job');
+        stop.setAttribute('aria-label', stop.title);
+        stop.addEventListener('click', event => { event.stopPropagation(); pressJobStop(job); });
+        row.append(stop);
+      }
+      item.append(row);
+      if (expanded) item.append(jobOutputPanel(job, key));
+      return item;
     }
     function renderAccount(current) {
       const account = record(current.account);
@@ -4166,52 +4446,90 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
 
     function renderJobs() {
       const projectJobs = array(state && state.projectJobs);
-      const jobs = jobScope === 'project' && state && Array.isArray(state.projectJobs) ? projectJobs : array(state && state.jobs);
-      const live = jobs.filter(liveJob).length;
-      if (!jobsOpen && armedJobId !== undefined) { armedJobId = undefined; if (armedJobTimer) { clearTimeout(armedJobTimer); armedJobTimer = undefined; } }
-      elements.jobsControl.classList.toggle('hidden', (!state || state.phase !== 'ready') || (jobs.length === 0 && projectJobs.length === 0 && !state.jobsStatus));
-      elements.jobsTrigger.classList.toggle('live', live > 0);
-      elements.jobsCount.textContent = String(live || jobs.length);
-      elements.jobsTrigger.title = live > 0 ? live + ' background ' + (live === 1 ? 'job' : 'jobs') + ' running' : jobs.length + ' background ' + (jobs.length === 1 ? 'job' : 'jobs');
+      const jobSource = jobScope === 'project' && state && Array.isArray(state.projectJobs) ? state.projectJobs : array(state && state.jobs);
+      if (jobSource !== renderedJobsSource) {
+        // A new roster is authoritative: the stream patches were interim.
+        renderedJobsSource = jobSource;
+        jobStatusOverrides.clear();
+      }
+      const jobs = array(jobSource);
+      if (jobKillPhase !== undefined) {
+        const target = jobs.find(job => string(job && job.id) === jobKillPhase.key);
+        if (target === undefined || jobStatusOf(target) !== 'running') clearJobKillPhase();
+      }
+      if (!jobsOpen) { clearJobKillPhase(); collapseJobOutput(); }
+      if (expandedJobKey !== undefined) {
+        const active = jobs.find(job => jobKeyOf(job) === expandedJobKey);
+        if (active === undefined || !observableJob(active)) collapseJobOutput();
+      }
+      const liveJobs = jobs.filter(jobLive).sort((left, right) => (Number(left.startedAt) || 0) - (Number(right.startedAt) || 0));
+      const settledJobs = jobs.filter(job => !jobLive(job) && !clearedJobIds.has(string(job && job.id))).sort((left, right) => {
+        const finished = (Number(right.finishedAt) || Number(right.startedAt) || 0) - (Number(left.finishedAt) || Number(left.startedAt) || 0);
+        return finished !== 0 ? finished : (Number(left.startedAt) || 0) - (Number(right.startedAt) || 0);
+      });
+      // Rows the user cleared are gone from the menu, so they must not keep the
+      // trigger visible or its counter high (VERIFY-JOBS B3).
+      const visibleCount = liveJobs.length + settledJobs.length;
+      const visibleProjectCount = projectJobs.filter(job => jobLive(job) || !clearedJobIds.has(string(job && job.id))).length;
+      elements.jobsControl.classList.toggle('hidden', (!state || state.phase !== 'ready')
+        || (visibleCount === 0 && visibleProjectCount === 0 && !state.jobsStatus));
+      elements.jobsTrigger.classList.toggle('live', liveJobs.length > 0);
+      const count = liveJobs.length > 0 ? liveJobs.length : visibleCount;
+      elements.jobsCount.textContent = String(count);
+      const noun = value => value === 1 ? 'background job' : 'background jobs';
+      elements.jobsTrigger.title = liveJobs.length > 0
+        ? liveJobs.length + ' ' + noun(liveJobs.length) + ' running'
+        : count + ' ' + noun(count);
+      elements.jobsTrigger.setAttribute('aria-label', elements.jobsTrigger.title);
+      elements.jobsMenu.setAttribute('aria-label', 'Background jobs');
       elements.jobsMenu.replaceChildren();
       const actions = node('div', 'feature-actions');
       for (const [scope, label] of [['project', 'Project'], ['session', 'This chat']]) {
         const button = node('button', 'feature-action', label); button.type = 'button'; button.disabled = jobScope === scope;
-        button.addEventListener('click', event => { event.stopPropagation(); jobScope = scope; armJob(undefined); renderJobs(); }); actions.append(button);
+        button.addEventListener('click', event => { event.stopPropagation(); jobScope = scope; clearJobKillPhase(); collapseJobOutput(); renderJobs(); });
+        actions.append(button);
       }
-      const refresh = node('button', 'feature-action', 'Refresh'); refresh.type = 'button'; refresh.addEventListener('click', event => { event.stopPropagation(); vscode.postMessage({ type: 'refresh-tasks' }); }); actions.append(refresh);
+      const refresh = node('button', 'feature-action', 'Refresh'); refresh.type = 'button';
+      refresh.addEventListener('click', event => { event.stopPropagation(); vscode.postMessage({ type: 'refresh-tasks' }); });
+      actions.append(refresh);
       elements.jobsMenu.append(actions);
       if (state && state.jobsStatus) elements.jobsMenu.append(node('div', 'session-empty', state.jobsStatus));
-      if (!jobs.length) elements.jobsMenu.append(node('div', 'session-empty', 'No background tasks in this scope'));
-      if (jobs.length) {
-        elements.jobsMenu.append(node('div', 'jobs-title', live > 0 ? 'Background jobs · ' + live + ' running' : 'Background jobs'));
-        const ordered = [...jobs].sort((a, b) => liveJob(a) !== liveJob(b) ? (liveJob(a) ? -1 : 1) : (liveJob(a) ? Number(a.startedAt) - Number(b.startedAt) : Number(b.finishedAt || b.startedAt) - Number(a.finishedAt || a.startedAt)));
-        for (const job of ordered) {
-          const row = node('div', 'job-row'); const status = string(job.detail) || string(job.status);
-          row.title = status; row.append(node('span', 'job-kind', string(job.kind, 'job')), node('span', 'job-label', string(job.label, 'Background job')), node('span', 'job-detail', status), node('span', 'job-duration', jobDuration(job)));
-          const details = node('button', 'feature-action', 'Output'); details.type = 'button';
-          details.addEventListener('click', event => { event.stopPropagation(); vscode.postMessage({ type: 'open-task-details', kind: 'job', sessionId: job.sessionId || state.sessionId, jobId: job.id }); }); row.append(details);
-          if (job.sessionTitle) row.append(node('span', 'job-detail', job.sessionTitle));
-          if (liveJob(job)) {
-            // DSH web arms first and confirms on a second press within three seconds.
-            const armed = armedJobId === job.id;
-            const stop = node('button', 'job-stop' + (armed ? ' armed' : ''), armed ? 'Confirm' : 'Stop');
-            stop.type = 'button';
-            stop.title = armed ? 'Click again within 3 seconds to stop this job' : 'Stop this background job';
-            stop.setAttribute('aria-label', (armed ? 'Confirm stopping ' : 'Stop ') + string(job.label, 'background job'));
-            stop.addEventListener('click', event => {
-              event.stopPropagation();
-              if (armed) { armJob(undefined); vscode.postMessage({ type: 'kill-job', sessionId: job.sessionId || state.sessionId, jobId: job.id }); }
-              else armJob(job.id);
-              renderJobs();
-            });
-            row.append(stop);
-          }
-          elements.jobsMenu.append(row);
-        }
+      if (liveJobs.length === 0 && settledJobs.length === 0) {
+        elements.jobsMenu.append(node('div', 'session-empty', 'No background tasks in this scope'));
       }
-      if (jobsTimer) { clearInterval(jobsTimer); jobsTimer = undefined; }
-      if (jobsOpen && live > 0) jobsTimer = setInterval(renderJobs, 1000);
+      if (liveJobs.length > 0) {
+        elements.jobsMenu.append(node('div', 'jobs-section', 'Running'));
+        for (const job of liveJobs) elements.jobsMenu.append(jobItem(job));
+      }
+      if (settledJobs.length > 0) {
+        const open = settledJobsOpen === undefined ? liveJobs.length === 0 : settledJobsOpen;
+        const header = node('div', 'jobs-section');
+        const toggle = node('button', 'jobs-section-toggle');
+        toggle.type = 'button';
+        toggle.setAttribute('aria-expanded', String(open));
+        toggle.setAttribute('aria-label', 'Finished ' + String(settledJobs.length));
+        const chevron = node('span', 'jobs-section-chevron' + (open ? ' open' : ''), '▸');
+        chevron.setAttribute('aria-hidden', 'true');
+        toggle.append(chevron, document.createTextNode('Finished ' + String(settledJobs.length)));
+        toggle.addEventListener('click', event => { event.stopPropagation(); settledJobsOpen = !open; renderJobs(); });
+        const clear = node('button', 'jobs-clear', 'Clear');
+        clear.type = 'button';
+        clear.title = 'Clear finished background jobs';
+        clear.addEventListener('click', event => {
+          event.stopPropagation();
+          const clearing = new Set(settledJobs.map(job => jobKeyOf(job)));
+          for (const job of settledJobs) clearedJobIds.add(string(job && job.id));
+          // A running row's panel is unrelated to this Clear; only close when
+          // the expanded row itself is one of the settled rows being cleared.
+          if (expandedJobKey !== undefined && clearing.has(expandedJobKey)) collapseJobOutput();
+          renderJobs();
+        });
+        header.append(toggle, clear);
+        elements.jobsMenu.append(header);
+        if (open) for (const job of settledJobs) elements.jobsMenu.append(jobItem(job));
+      }
+      if (jobsTimer !== undefined) { clearInterval(jobsTimer); jobsTimer = undefined; }
+      if (jobsOpen && liveJobs.length > 0) jobsTimer = setInterval(renderJobs, 1000);
     }
     function renderConversation(current) {
       if (renderedSessionId !== current.sessionId) {
@@ -4333,6 +4651,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.runtimeConnection.disabled = current.phase === 'loading' || current.setup === 'workspace';
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
       state = current;
+      // A different conversation starts with a clean stop/output state; the
+      // roster itself is reconciled by renderJobs below.
+      if (renderedChrome.sessionId !== undefined && renderedChrome.sessionId !== current.sessionId) resetJobTransients();
       const createdConversation = reconcileConversationCreation(current);
       if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
         elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
@@ -4376,7 +4697,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const policyChanged = renderedChrome.agentPreset !== current.agentPreset || renderedChrome.permissions !== current.permissions || renderedChrome.plan !== current.plan || renderedChrome.running !== current.running || renderedChrome.phase !== current.phase;
       if (policyChanged) renderPolicyState(current);
       if (renderedChrome.usage !== current.usage) renderUsage(current);
-      if (renderedChrome.jobs !== current.jobs || renderedChrome.projectJobs !== current.projectJobs || renderedChrome.jobsStatus !== current.jobsStatus || renderedChrome.phase !== current.phase) renderJobs();
+      if (renderedChrome.jobs !== current.jobs || renderedChrome.projectJobs !== current.projectJobs || renderedChrome.jobsStatus !== current.jobsStatus || renderedChrome.phase !== current.phase || renderedChrome.sessionId !== current.sessionId) renderJobs();
       if (renderedChrome.sessions !== current.sessions || renderedChrome.todos !== current.todos || renderedChrome.team !== current.team
         || renderedChrome.sessionId !== current.sessionId || renderedChrome.phase !== current.phase || renderedChrome.workflows !== current.workflows) renderTaskPanel(current);
       if (renderedChrome.goal !== current.goal || renderedChrome.schedules !== current.schedules || renderedChrome.childReadOnlyReason !== current.childReadOnlyReason || renderedChrome.sessionId !== current.sessionId || renderedChrome.phase !== current.phase) renderTaskFeatures(current);
@@ -4932,11 +5253,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     elements.accountTrigger.addEventListener('click', event => {
       event.stopPropagation();
       accountOpen = !accountOpen;
-      jobsOpen = false; elements.jobsMenu.classList.add('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'false');
+      closeJobsMenu(false);
       if (state) renderAccount(state);
     });
     elements.jobsTrigger.addEventListener('click', event => {
-      event.stopPropagation(); jobsOpen = !jobsOpen; accountOpen = false; elements.accountMenu.classList.add('hidden'); elements.accountTrigger.setAttribute('aria-expanded', 'false'); elements.jobsMenu.classList.toggle('hidden', !jobsOpen); elements.jobsTrigger.setAttribute('aria-expanded', String(jobsOpen)); renderJobs();
+      event.stopPropagation();
+      if (jobsOpen) { closeJobsMenu(false); return; }
+      accountOpen = false; elements.accountMenu.classList.add('hidden'); elements.accountTrigger.setAttribute('aria-expanded', 'false');
+      openJobsMenu();
     });
     elements.taskToggle.addEventListener('click', () => {
       if (!state) return;
@@ -5029,9 +5353,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (usageOpen && !elements.usagePanel.contains(event.target) && !elements.usageTrigger.contains(event.target)) {
         usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false');
       }
-      if (jobsOpen && !elements.jobsMenu.contains(event.target) && !elements.jobsTrigger.contains(event.target)) {
-        jobsOpen = false; elements.jobsMenu.classList.add('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'false'); renderJobs();
-      }
+      if (jobsOpen && !elements.jobsMenu.contains(event.target) && !elements.jobsTrigger.contains(event.target)) closeJobsMenu(false);
       if (sessionMenuOpen && !elements.sessionControl.contains(event.target) && !elements.sessionActions.contains(event.target)) closeSessionMenu(false);
     });
     document.addEventListener('keydown', event => {
@@ -5045,6 +5367,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         event.preventDefault(); closeModelMenu(true);
       } else if (event.key === 'Escape' && usageOpen) {
         usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false'); elements.usageTrigger.focus();
+      } else if (event.key === 'Escape' && jobsOpen) {
+        event.preventDefault(); closeJobsMenu(true);
       }
     });
     window.addEventListener('message', event => {
@@ -5060,6 +5384,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       if (event.data.type === 'state') { pendingMessageAppends.clear(); lastStateAt = Date.now(); scheduleRender(event.data.state); }
       if (event.data.type === 'state-update') { lastStateAt = Date.now(); applyStateUpdate(event.data.update); }
+      if (event.data.type === 'job-output') receiveJobOutput(event.data);
+      if (event.data.type === 'job-output-status') receiveJobOutputStatus(event.data);
+      if (event.data.type === 'job-output-error') receiveJobOutputError(event.data);
+      if (event.data.type === 'job-kill-result') receiveJobKillResult(event.data);
       // The Host answers one reasoning translation per request id.
       if (event.data.type === 'translate-reasoning-result') cotAcceptResult(event.data);
       if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && typeof event.data.messageId === 'string') {
