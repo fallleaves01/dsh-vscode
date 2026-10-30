@@ -105,6 +105,14 @@ pnpm run package
 
 运行 **DeepSeek Harness: Configure Task Services**，调整扩展的 `enableHistorySearch` 与 `enableSchedule` 设置。它们在标准受管 DSH Web runtime 中启用消息正文搜索与 Schedule；修改后需重启该 runtime。自定义或外部 runtime 需要在其自己的 profile 中提供相应服务。
 
+### 后台任务
+
+工具栏的 **Background jobs** 菜单对齐 DSH Web 的 jobs 界面，读取运行时的 `session/jobs` 行。可在 **Project**（项目内各会话已知任务）与 **This chat** 之间切换。运行中的任务排在前；已结束任务归入 **Finished** 分组，显示数量，可折叠，并可用 **Clear** 仅在本地隐藏（不修改运行时数据）。有实时 `progress` 时行内显示进度，否则显示状态详情；耗时单独显示。只有运行中的任务或保留了输出的已结束任务才显示输出箭头。
+
+展开行时通过 `job/follow` 观察该任务，折叠行、关闭菜单、切换范围或运行时断开时释放观察。行内输出面板是**有界尾部**：区分 stdout/stderr/log，提示被丢弃或中断的输出，并提供 **Copy command**（复制命令行，而非可能被截断的输出）。**Project** 聚合档中来自其他已知会话的任务也可观察；未知任务或已断开的运行时会提示该任务不再可用。
+
+**Stop** 使用 DSH 的两次点击交互：第一次点击使行进入三秒 armed 状态，第二次点击进入禁用的 **Stopping…** 状态，等待 `job/list` 收敛。停止请求被拒绝时，在行内显示 **Stop failed** 与运行时原因，四秒后恢复；行不再是 running 时清除该状态。Escape 关闭菜单并将焦点返回 jobs 触发器；同一任务的并发 kill 请求会去重。
+
 ### 多窗口共享运行时
 
 启用 `reuseAcrossWindows` 后，同一主机、同一 OS 账号的窗口，在 `DSH_HOME` 和启动配置
@@ -201,6 +209,13 @@ Auto review 的失败（`AUTO_REVIEW_FAILED`）按普通工具失败呈现。Web
 缺少 `bytes` 的旧 PNG/JPEG 引用在 alpha.2 无法读取。Computer Use 还需要 macOS
 与 runtime 自带的 CUA native 二进制；缺失时 bundle 开关会报告平台/操作失败，
 而不是显示为已启用。
+
+以下 DSH Web 管理界面同样未在侧栏实现：Schedule 任务删除与批量清理
+（`schedule/delete`、`schedule/deleteInactive`）；运行中会话的“停止并归档”
+（`workspace/archiveSession` 的 `stopActivity`）；通用 slash command 选项风险确认；
+以及 Task Details 的命令行与完整保留输出链接。Live Share 停止分享确认与 Forge
+合并确认仍随其 Web 面板一起属于 Web-only。后台任务本身已在上文 **Background jobs**
+菜单中实现。
 
 - **Auto review 权限预设。** 权限选择器读取 `permissionPresets/catalog`；auto-review 集成挂载后，选择器出现实验性 `auto` 预设并标注 `EXP`。无论从菜单选择还是键入 `/permission auto`，切换前都要求显式确认：该预设不使用沙箱，由同一模型逐次复审每个工具调用，可能误放行或误拒绝操作，并额外消耗 token。运行时不提供该目录时，继续使用内置三档预设。
 被 Auto review 拒绝的工具调用在折叠行显示 “Rejected by Auto review”，展开后显示 “Tool was not executed. Reason: …”；缺少原因时回退为 “Auto review did not authorize this action”。

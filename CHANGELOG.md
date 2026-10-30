@@ -9,6 +9,35 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+### Added
+
+- Background jobs menu alignment with DeepSeek Harness `0.2.2-alpha.2`:
+  **Running** and collapsible **Finished** groups with counts and a local
+  **Clear** action; live progress and duration; a bounded inline `job/follow`
+  output panel with stdout/stderr/log channels, gap/interruption notices, and
+  **Copy command**; **Project** and **This chat** scopes; and a two-press
+  **Stop** state machine with armed (3 s), disabled pending, and inline failed
+  states. Escape closes the menu and returns focus to the jobs trigger.
+  Background jobs known from another project conversation can be observed from
+  the **Project** aggregate; unknown jobs or a disconnected runtime report that
+  the task is no longer available.
+- The jobs menu updates inline output while a row is expanded, releases the
+  observation when the row collapses, the menu closes, scope changes, or the
+  runtime disconnects, and exposes no output chevron for a settled job without
+  retained output.
+
+### Changed
+
+- `JobItem` now projects the runtime's `progress` and retained-output counters
+  (`outputTotal`, `outputEarliest`); the menu shows `progress ?? detail` and
+  uses the retained-output count to decide whether a settled row can be
+  expanded.
+- A rejected background-job stop renders inline as **Stop failed** with the
+  runtime reason for four seconds instead of a native modal; concurrent kill
+  requests for the same job are deduplicated, and the row clears its stop phase
+  when it is no longer running. The **Finished** group and output tail remain
+  local view state and do not mutate runtime data.
+
 ## [0.2.2-alpha.2] - 2026-10-30
 
 > Re-published on 2026-10-30 with the security hardening listed below. The

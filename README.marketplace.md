@@ -54,6 +54,14 @@ Use the conversation-settings menu for Permission and agent composition, `/plan`
 
 Run **DeepSeek Harness: Configure Task Services** to enable history search and Schedule in a standard managed Web runtime. Restart that runtime to apply these options. Custom and external profiles must provide the corresponding services themselves.
 
+### Background tasks
+
+The toolbar **Background jobs** menu mirrors the DSH Web jobs surface for the runtime's `session/jobs` rows. Choose **Project** to aggregate jobs known across project conversations, or **This chat**. Running jobs come first; **Finished** jobs are count-labelled, collapsible and can be hidden locally with **Clear** (no runtime mutation). Rows show live `progress` when available, otherwise status detail, plus elapsed duration; only live jobs or settled jobs with retained output expose the output chevron.
+
+Expanding a row observes it with `job/follow` while open; collapsing, closing the menu, changing scope or disconnecting releases the observation. The inline panel is a bounded tail with stdout/stderr/log channels, dropped/interrupted-output notices, and **Copy command** (the command line, not the possibly truncated output). Known jobs from other project conversations can be observed from **Project**; unknown jobs report that the task is no longer available.
+
+**Stop** is the DSH two-press interaction: the first press arms for three seconds, the second enters a disabled **Stopping…** state until the `job/list` roster converges. A rejected stop shows **Stop failed** with the reason inline for four seconds; a row that is no longer running clears the phase. Escape closes the menu and returns focus to the trigger; concurrent kill requests are deduplicated.
+
 ### Shared runtime across windows
 
 Windows on the same host, OS account and DSH home share one managed DSH process
@@ -176,6 +184,14 @@ are not shown, and PNG/JPEG references without a stored byte length cannot be
 read on alpha.2. PTC nested `tool/ptc-dispatch` rows are not rendered
 separately; the parent tool card shows the result. Computer Use also needs macOS and the runtime's native CUA
 binary; without it the bundle switch reports a platform/operation failure.
+
+DSH Web management surfaces not implemented here are Schedule task deletion and
+clearing inactive tasks (`schedule/delete`, `schedule/deleteInactive`), stopping
+and archiving a running conversation (`workspace/archiveSession` with
+`stopActivity`), generic slash-command option risk confirmation, and the Task
+Details command bar with full retained-output links. Live Share stop-sharing and
+Forge merge confirmations remain Web-only with their panels. Background jobs
+themselves are implemented in the **Background jobs** menu above.
 
 - **Auto review permission preset.** When the runtime serves
   `permissionPresets/catalog`, the Permission selector offers an `EXP`-marked

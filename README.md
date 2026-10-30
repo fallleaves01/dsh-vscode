@@ -138,6 +138,14 @@ runtime serves their contracts.
 
 Run **DeepSeek Harness: Configure Task Services** to access the extension's `enableHistorySearch` and `enableSchedule` settings. They enable message-body search and Schedule in a standard managed DSH Web runtime. Restart that runtime to apply the change. Custom and external runtimes must expose the corresponding services in their own profile.
 
+### Background tasks
+
+The toolbar **Background jobs** menu follows the DSH Web jobs surface for the runtime's `session/jobs` rows. Switch between **Project** (jobs known across the project's conversations) and **This chat**. Running jobs appear first; **Finished** jobs are grouped, count-labelled, collapsible, and can be hidden locally with **Clear** (no runtime mutation). A row shows live `progress` when the runtime publishes it, otherwise the status detail and elapsed duration. Only a live job or a settled job with retained output has an output chevron.
+
+Expanding a row observes that job with `job/follow` while the panel is open and releases the observation when the row is collapsed, the menu closes, the scope changes, or the runtime disconnects. The inline panel is a bounded output tail: it shows stdout/stderr/log channels, reports dropped or interrupted output, and offers **Copy command** (the command line, not the possibly truncated output). A job from another known project conversation can be observed from the **Project** aggregate; an unknown job or a disconnected runtime reports that the task is no longer available.
+
+**Stop** uses the two-press DSH interaction. The first press arms the row for three seconds; the second press enters a disabled **Stopping…** state until the `job/list` roster converges. A rejected stop shows **Stop failed** with the runtime's reason inline for four seconds, and a row that is no longer running clears the phase. Escape closes the menu and returns focus to the jobs trigger. Kill requests are deduplicated while in flight.
+
 ### Shared runtime across windows
 
 With `reuseAcrossWindows` enabled, windows on the same host and OS account share
@@ -272,6 +280,15 @@ badges are not shown, and PNG/JPEG references that predate the stored byte
 length cannot be read on alpha.2. Computer Use also needs macOS and the runtime's
 native CUA binary; when that binary is missing the bundle switch reports a
 platform/operation failure instead of appearing enabled.
+
+Related DSH Web management surfaces are also not implemented in this sidebar:
+Schedule task deletion and clearing inactive tasks (`schedule/delete`,
+`schedule/deleteInactive`); stopping and archiving a running conversation
+(`workspace/archiveSession` with `stopActivity`); generic slash-command option
+risk confirmation; and the Task Details command bar with links to the full
+retained output stream. Live Share stop-sharing confirmation and Forge merge
+confirmation remain Web-only together with their panels. Background jobs
+themselves are implemented in the **Background jobs** menu described above.
 
 - **Auto review permission preset.** The Permission selector reads `permissionPresets/catalog`, so the experimental `auto` preset appears when the auto-review integration is mounted. It is marked `EXP` and switching to it, from the selector or by typing `/permission auto`, requires an explicit acknowledgement: it runs without a sandbox, asks the same model to review every tool call, can wrongly allow or deny actions, and uses additional tokens. A runtime that does not serve the catalogue keeps the shipped three presets.
  A tool call refused by Auto review renders as "Rejected by Auto review" in the collapsed row and "Tool was not executed. Reason: …" when expanded; a missing reason falls back to "Auto review did not authorize this action".
