@@ -63,6 +63,8 @@ export type DshReferenceKind = 'file' | 'folder'
 export interface DshReference { text: string; label: string; kind: DshReferenceKind }
 
 const UNSAFE_REFERENCE_PATH = /[\u0000-\u001F\u007F-\u009F"]/u
+/** Zero-width and bidirectional formatting characters must not appear in a path literal. */
+const UNSAFE_REFERENCE_BIDI = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069]/u
 
 /**
  * Build one DSH `@` reference literal for a dropped resource.
@@ -78,6 +80,9 @@ export function dshReferenceFor(cwd: string, fsPath: string, kind: DshReferenceK
   const display = (inside ? relativePath : fsPath).split(path.sep).join('/')
   if (display === '' || UNSAFE_REFERENCE_PATH.test(display)) {
     return { error: 'A dropped path contains characters that cannot be referenced.' }
+  }
+  if (UNSAFE_REFERENCE_BIDI.test(display)) {
+    return { error: 'A dropped path contains bidirectional or zero-width control characters that cannot be referenced.' }
   }
   // Network shares are not local project paths, and any parent-directory
   // segment (before or after normalization) can escape the workspace root.

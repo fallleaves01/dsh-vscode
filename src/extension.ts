@@ -3858,6 +3858,12 @@ class DshSurface implements vscode.Disposable {
   private readonly pendingUploads = new Map<string, number>()
   /** One reference-resolution pass at a time; a concurrent drop is refused. */
   private resolvingReferences = false
+  /** Draft bytes are released when their conversation is archived or the runtime goes away. */
+  private draftsRuntimeLive = true
+  /** Native warning cooldown for webview-reported attachment errors. */
+  private lastAttachmentErrorAt = 0
+  /** The common file picker is modal: a second click must not open another one. */
+  private choosingFiles = false
   /** Short-lived stat cache so one multi-file drop does not stat the same URI twice. */
   private readonly referenceStatCache = new Map<string, { expiresAt: number; type: vscode.FileType }>()
   private ready = false
@@ -3920,10 +3926,32 @@ class DshSurface implements vscode.Disposable {
     })
     this.disposables = [
       this.settingsPanel,
-      controller.onDidChangeState(state => { this.queueState(state) }),
+      controller.onDidChangeState(state => { this.reconcileDrafts(state); this.queueState(state) }),
       editorContext.onDidChange(state => { void webview.postMessage({ type: 'ide-context', state }) }),
       webview.onDidReceiveMessage(message => { this.acceptMessage(message) }),
     ]
+  }
+
+  /**
+   * Release draft attachment bytes that this runtime can no longer use.
+   *
+   * Archived conversations keep their drafts only while they are still listed;
+   * losing the runtime connection drops every draft, matching the Webview's own
+   * thumbnail cleanup. Ordinary conversation switches are not a runtime loss, so
+   * their per-session drafts survive.
+   */
+  private reconcileDrafts(state: ChatViewState): void {
+    const runtimeLive = state.runtimeConnection !== null
+    if (!runtimeLive && this.draftsRuntimeLive) {
+      this.draftImagesBySession.clear()
+      this.draftFilesBySession.clear()
+    }
+    this.draftsRuntimeLive = runtimeLive
+    const archived = new Set(state.archivedSessions.map(item => item.id))
+    for (const id of archived) {
+      this.draftImagesBySession.delete(id)
+      this.draftFilesBySession.delete(id)
+    }
   }
 
   focusPrompt(): void {
@@ -4294,6 +4322,13 @@ class DshSurface implements vscode.Disposable {
           errors.push('Dragged text paths are only supported for files inside this workspace.')
           continue
         }
+        if (uri.scheme !== 'file' && !this.workspaceAuthorities().has(authority)) {
+          // A forged remote/virtual authority would make the provider perform a
+          // network request before any containment check; only this window's
+          // workspace folders may be stat-ed.
+          errors.push('Only workspace files can be referenced.')
+          continue
+        }
         let type: vscode.FileType
         try { type = await this.droppedUriType(uri) } catch { errors.push('A dropped item could not be read.'); continue }
         const kind: 'file' | 'folder' = type === vscode.FileType.Directory ? 'folder' : 'file'
@@ -4316,6 +4351,13 @@ class DshSurface implements vscode.Disposable {
     }
   }
 
+  /** Authorities of this window's workspace folders, for remote/virtual drops. */
+  private workspaceAuthorities(): Set<string> {
+    return new Set((vscode.workspace.workspaceFolders ?? []).map(folder => (
+      typeof folder.uri.authority === 'string' ? folder.uri.authority : ''
+    )))
+  }
+
   /** Stat one dropped URI through the short cache used by reference resolution. */
   private async droppedUriType(uri: vscode.Uri): Promise<vscode.FileType> {
     const authority = typeof uri.authority === 'string' ? uri.authority : ''
@@ -4331,48 +4373,54 @@ class DshSurface implements vscode.Disposable {
 
   /** Common file picker: images become draft images, other files upload. */
   private async chooseFiles(): Promise<void> {
-    const sessionId = this.controller.state.sessionId
-    if (sessionId === '') return
-    const selected = await vscode.window.showOpenDialog({
-      title: 'Attach files to the DeepSeek prompt',
-      canSelectFiles: true,
-      canSelectFolders: false,
-      canSelectMany: true,
-      openLabel: 'Add',
-    })
-    if (selected === undefined) return
-    const images: DraftImage[] = []
-    const files: { name: string; data: string }[] = []
-    for (const uri of selected.slice(0, MAX_DRAFT_FILES * 2)) {
-      const name = path.basename(uri.fsPath)
-      try {
-        const stat = await vscode.workspace.fs.stat(uri)
-        if (stat.type === vscode.FileType.Directory) continue
-        if (typeof stat.size === 'number' && stat.size > MAX_DRAFT_FILE_BYTES) {
+    if (this.choosingFiles) return
+    this.choosingFiles = true
+    try {
+      const sessionId = this.controller.state.sessionId
+      if (sessionId === '') return
+      const selected = await vscode.window.showOpenDialog({
+        title: 'Attach files to the DeepSeek prompt',
+        canSelectFiles: true,
+        canSelectFolders: false,
+        canSelectMany: true,
+        openLabel: 'Add',
+      })
+      if (selected === undefined) return
+      const images: DraftImage[] = []
+      const files: { name: string; data: string }[] = []
+      for (const uri of selected.slice(0, MAX_DRAFT_FILES * 2)) {
+        const name = path.basename(uri.fsPath)
+        try {
+          const stat = await vscode.workspace.fs.stat(uri)
+          if (stat.type === vscode.FileType.Directory) continue
+          if (typeof stat.size === 'number' && stat.size > MAX_DRAFT_FILE_BYTES) {
+            await this.webview.postMessage({ type: 'file-upload', sessionId, requestId: 0, name, state: 'error',
+              error: `This file is larger than the ${String(MAX_DRAFT_FILE_BYTES / (1024 * 1024))} MB attachment limit.` })
+            continue
+          }
+          const bytes = Buffer.from(await vscode.workspace.fs.readFile(uri))
+          if (bytes.byteLength > MAX_DRAFT_FILE_BYTES) {
+            await this.webview.postMessage({ type: 'file-upload', sessionId, requestId: 0, name, state: 'error',
+              error: `This file is larger than the ${String(MAX_DRAFT_FILE_BYTES / (1024 * 1024))} MB attachment limit.` })
+            continue
+          }
+          const mediaType = imageMediaType(name)
+          if (mediaType !== undefined && images.length < MAX_DRAFT_FILES) {
+            images.push({ id: randomUUID(), type: 'image', mediaType, data: bytes.toString('base64'), name })
+          } else if (files.length < MAX_DRAFT_FILES) {
+            files.push({ name, data: bytes.toString('base64') })
+          }
+        } catch {
           await this.webview.postMessage({ type: 'file-upload', sessionId, requestId: 0, name, state: 'error',
-            error: `This file is larger than the ${String(MAX_DRAFT_FILE_BYTES / (1024 * 1024))} MB attachment limit.` })
-          continue
+            error: 'This file could not be read.' })
         }
-        const bytes = Buffer.from(await vscode.workspace.fs.readFile(uri))
-        if (bytes.byteLength > MAX_DRAFT_FILE_BYTES) {
-          await this.webview.postMessage({ type: 'file-upload', sessionId, requestId: 0, name, state: 'error',
-            error: `This file is larger than the ${String(MAX_DRAFT_FILE_BYTES / (1024 * 1024))} MB attachment limit.` })
-          continue
-        }
-        const mediaType = imageMediaType(name)
-        if (mediaType !== undefined && images.length < MAX_DRAFT_FILES) {
-          images.push({ id: randomUUID(), type: 'image', mediaType, data: bytes.toString('base64'), name })
-        } else if (files.length < MAX_DRAFT_FILES) {
-          files.push({ name, data: bytes.toString('base64') })
-        }
-      } catch {
-        await this.webview.postMessage({ type: 'file-upload', sessionId, requestId: 0, name, state: 'error',
-          error: 'This file could not be read.' })
       }
+      if (images.length > 0) await this.addDraftImages(sessionId, images)
+      if (files.length > 0) await this.addEncodedFiles(sessionId, files, 0)
+      await this.webview.postMessage({ type: 'attachments-added', sessionId, requestId: 0 })
+    } finally {
+      this.choosingFiles = false
     }
-    if (images.length > 0) await this.addDraftImages(sessionId, images)
-    if (files.length > 0) await this.addEncodedFiles(sessionId, files, 0)
-    await this.webview.postMessage({ type: 'attachments-added', sessionId, requestId: 0 })
   }
 
   private async addDraftImages(sessionId: string, incoming: readonly DraftImage[]): Promise<void> {
@@ -4475,7 +4523,9 @@ class DshSurface implements vscode.Disposable {
    * drags in a remote window, and every drag in a browser-hosted window.
    */
   private async addEncodedFiles(sessionId: string, values: unknown, requestId = 0): Promise<void> {
-    if (!Array.isArray(values)) return
+    // Forged or stale messages may target another conversation; uploading there
+    // would leak this draft's metadata back into the current Webview.
+    if (sessionId !== this.controller.state.sessionId || !Array.isArray(values)) return
     const post = async (name: string, state: 'uploading' | 'ready' | 'error', extra: Record<string, unknown> = {}): Promise<void> => {
       await this.webview.postMessage({ type: 'file-upload', sessionId, requestId, name, state, ...extra })
     }
@@ -4962,7 +5012,15 @@ class DshSurface implements vscode.Disposable {
         case 'resolve-references': await this.resolveReferences(value); return
         case 'choose-files': await this.chooseFiles(); return
         case 'attachment-error':
-          if (typeof value.message === 'string') await vscode.window.showWarningMessage(diagnosticText(value.message).slice(0, 500))
+          if (typeof value.message === 'string') {
+            // A forged or noisy Webview must not turn repeated errors into a
+            // stack of native modal warnings.
+            const now = Date.now()
+            if (now - this.lastAttachmentErrorAt >= 1_500) {
+              this.lastAttachmentErrorAt = now
+              await vscode.window.showWarningMessage(diagnosticText(value.message).slice(0, 500))
+            }
+          }
           return
         case 'choose-workspace': await this.chooseWorkspace(); return
         case 'request-mentions':
@@ -5191,7 +5249,9 @@ function draftImageFromWebview(value: unknown): DraftImage | undefined {
 
 /** Decoded size of one base64 payload, rejecting anything that is not canonical base64. */
 function canonicalBase64(value: unknown): { data: string; bytes: number } | undefined {
-  if (typeof value !== 'string' || value === '' || value.length % 4 !== 0) return undefined
+  // '' is the canonical base64 encoding of a zero-byte file; the runtime's
+  // file upload path accepts it (only the image decoder rejects empty data).
+  if (typeof value !== 'string' || value.length % 4 !== 0) return undefined
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return undefined
   return { data: value, bytes: base64Bytes(value) }
 }

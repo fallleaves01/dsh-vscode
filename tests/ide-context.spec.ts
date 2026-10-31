@@ -123,6 +123,11 @@ describe('DSH reference literals', () => {
     expect(dshReferenceFor('/workspace', '/workspace/bad\u0007.txt', 'file').error).toContain('cannot be referenced')
     expect(dshReferenceFor('/workspace', '/workspace/quo"te.txt', 'file').error).toContain('cannot be referenced')
   })
+  it('rejects zero-width and bidirectional control characters', () => {
+    expect(dshReferenceFor('/workspace', '/workspace/zero\u200bwidth.ts', 'file').error).toContain('bidirectional')
+    expect(dshReferenceFor('/workspace', '/workspace/bidi\u202Eevil.ts', 'file').error).toContain('bidirectional')
+    expect(dshReferenceFor('/workspace', '/workspace/iso\u2066late.ts', 'file').error).toContain('bidirectional')
+  })
   it('rejects parent-directory segments and network shares', () => {
     expect(dshReferenceFor('/workspace', '/workspace/../outside.ts', 'file').error).toContain('parent-directory')
     expect(dshReferenceFor('/workspace', '//server/share/file.ts', 'file').error).toContain('Network share')

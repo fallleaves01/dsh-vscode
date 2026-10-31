@@ -962,6 +962,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let contextLoading = false;
     let contextError = '';
     const pendingContextRequests = new Map();
+    /** Resolve-reference waits that must not gate Send forever (P2). */
+    const pendingReferenceTimers = new Map();
+    const REFERENCE_RESOLVE_TIMEOUT_MS = 10_000;
     let contextChangeId = 0;
     let commandIndex = 0;
     let mentionIndex = 0;
@@ -1067,6 +1070,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let renderedHistoryKey = '';
     let renderedTail = {};
     let renderedChrome = {};
+    /** Archived session ids of the last render; a change releases local state. */
+    let renderedArchivedKey;
     /**
      * The directory rows are only visible while the directory view is open.
      * While it is closed they are not rebuilt; the flag makes the next open
@@ -3320,6 +3325,30 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         previews.delete(oldest);
       }
     }
+    /** A lost runtime cannot finish staged uploads: keep them retryable instead. */
+    function interruptUploadCards() {
+      for (const cards of uploadCardsBySession.values()) {
+        for (const card of cards) {
+          if (card.status !== 'uploading') continue;
+          card.status = 'error';
+          card.error = 'The upload was interrupted. Retry.';
+        }
+      }
+      pendingUploadsBySession.clear();
+    }
+    /** Archived conversations must not keep thumbnails, cards or counters. */
+    function pruneArchivedUploadState(sessionId) {
+      imagePreviewsBySession.delete(sessionId);
+      uploadCardsBySession.delete(sessionId);
+      pendingUploadsBySession.delete(sessionId);
+      dropIntakeBySession.delete(sessionId);
+    }
+    /** Drop pending reference waits so a lost/late Host answer cannot gate Send. */
+    function clearPendingReferences() {
+      for (const timer of pendingReferenceTimers.values()) clearTimeout(timer);
+      pendingReferenceTimers.clear();
+      pendingContextRequests.clear();
+    }
     /** Failed cards are transient local state; a conversation switch drops them. */
     function clearFailedUploadCards() {
       for (const cards of uploadCardsBySession.values()) {
@@ -3344,7 +3373,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       for (const key of [...previews.keys()]) if (!names.has(key)) previews.delete(key);
     }
     function retryUploadCard(card) {
-      if (!state || !state.sessionId) return;
+      if (!state || !state.sessionId || card.status !== 'error') return;
       const sessionId = state.sessionId;
       card.requestId = ++attachmentRequestId;
       card.status = 'uploading'; card.error = ''; card.id = undefined;
@@ -3383,7 +3412,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         } else if (card.status === 'error') {
           const status = node('div', 'attachment-status'); status.append(node('span', '', 'Upload failed')); chip.append(status);
           const retry = node('button', 'attachment-retry', 'Retry'); retry.type = 'button'; retry.title = 'Retry uploading ' + card.name;
-          retry.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); retryUploadCard(card); });
+          retry.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); retry.disabled = true; retryUploadCard(card); });
           chip.append(retry);
           if (card.error) { const detail = node('span', 'attachment-error-text', card.error); detail.title = card.error; chip.append(detail); }
         }
@@ -3670,6 +3699,27 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const requestId = ++contextChangeId;
       pendingContextRequests.set(requestId, state.sessionId);
       vscode.postMessage({ ...change, sessionId: state.sessionId, requestId }); updateSend();
+    }
+    /**
+     * Ask the Host to resolve dropped resources into DSH @ references. A Host
+     * answer is not guaranteed (the conversation may switch or the runtime may
+     * stall), so the wait is bounded: otherwise pendingContextRequests would
+     * keep Send disabled forever.
+     */
+    function requestReferences(sessionId, resources) {
+      const requestId = ++contextChangeId;
+      pendingContextRequests.set(requestId, sessionId);
+      const timer = setTimeout(() => {
+        if (pendingReferenceTimers.get(requestId) !== timer) return;
+        pendingReferenceTimers.delete(requestId);
+        if (pendingContextRequests.get(requestId) !== sessionId) return;
+        pendingContextRequests.delete(requestId);
+        showSessionNotice('The dropped files could not be added: the runtime did not answer.');
+        updateSend();
+      }, REFERENCE_RESOLVE_TIMEOUT_MS);
+      pendingReferenceTimers.set(requestId, timer);
+      updateSend();
+      vscode.postMessage({ type: 'resolve-references', sessionId, requestId, resources });
     }
     function toggleContext(candidate) {
       const chosen = chosenContext(candidate);
@@ -4828,6 +4878,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.runtimeConnection.disabled = current.phase === 'loading' || current.setup === 'workspace';
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
       state = current;
+      // Archived conversations keep no local upload state: thumbnails, cards,
+      // counters and in-flight intake are released when the archived set grows.
+      const archivedIds = array(current.archivedSessions).map(item => string(item && item.id)).filter(Boolean);
+      const archivedKey = archivedIds.join(String.fromCharCode(0));
+      if (renderedArchivedKey !== archivedKey) {
+        renderedArchivedKey = archivedKey;
+        const currentSessionId = string(current.sessionId);
+        for (const sessionId of archivedIds) if (sessionId !== currentSessionId && sessionId !== '') pruneArchivedUploadState(sessionId);
+      }
       // A different conversation starts with a clean stop/output state; the
       // roster itself is reconciled by renderJobs below.
       const jobSessionChanged = renderedChrome.sessionId !== undefined && renderedChrome.sessionId !== current.sessionId;
@@ -4841,9 +4900,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         // Retry, so a disconnect clears them exactly like a conversation switch.
         imagePreviewsBySession.clear();
         clearFailedUploadCards();
-        // A session switch re-renders attachments further down once the new
-        // drafts are restored; a lost runtime has no such pass.
-        if (jobRuntimeLost) renderAttachments();
+        clearPendingReferences();
+        // A lost runtime cannot finish its uploads either: turn them into a
+        // retryable failure and drop the Host counters so Send reopens after the
+        // reconnect. A session switch keeps its cards for the Host's own
+        // draft-files reconciliation.
+        if (jobRuntimeLost) {
+          interruptUploadCards();
+          renderAttachments();
+        }
+        updateSend();
       }
       const createdConversation = reconcileConversationCreation(current);
       if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
@@ -5231,6 +5297,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function codeFileUri(value) {
       const text = String(value || '').trim();
       if (text === '') return '';
+      // A Windows drive path such as C:/dir/a.ts (or its backslash spelling)
+      // looks like a URI scheme to the generic test; it must become
+      // file:///C:/dir/a.ts instead.
+      if (/^[a-zA-Z]:[\\\\/]/.test(text)) {
+        const drive = text.charAt(0).toUpperCase();
+        const rest = text.slice(2).split(String.fromCharCode(92)).join('/');
+        return 'file:///' + drive + ':' + encodeURI(rest.startsWith('/') ? rest : '/' + rest);
+      }
       if (/^[a-z][a-z0-9+.-]*:/i.test(text)) return text;
       return 'file://' + (text.startsWith('/') ? '' : '/') + encodeURI(text.split(String.fromCharCode(92)).join('/'));
     }
@@ -5370,9 +5444,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (resources.length > 0) {
         // Explorer and editor drops become DSH @ references: the Host resolves
         // and relativizes the paths; the Webview just asks and inserts the text.
-        const requestId = ++contextChangeId;
-        pendingContextRequests.set(requestId, sessionId); updateSend();
-        vscode.postMessage({ type: 'resolve-references', sessionId, requestId, resources });
+        requestReferences(sessionId, resources);
       }
       if (imageFiles.length > 0) {
         const requestId = ++attachmentRequestId;
@@ -5725,7 +5797,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const hostNames = new Set(files.map(file => string(file && file.name)));
         for (let index = cards.length - 1; index >= 0; index -= 1) {
           const card = cards[index];
-          if (card.status === 'ready' && hostNames.has(card.name)) cards.splice(index, 1);
+          if (card.status === 'ready' && (hostNames.has(card.name) || outstanding === 0)) cards.splice(index, 1);
           else if (outstanding === 0 && card.status === 'uploading') {
             card.status = 'error';
             card.error = 'The upload was not completed.';
@@ -5750,20 +5822,27 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           card.status = 'ready'; card.id = string(event.data.id) || undefined;
           const bytes = Number(event.data.bytes);
           if (Number.isFinite(bytes) && bytes >= 0) card.bytes = bytes;
-        } else if (card !== undefined && phase === 'uploading') {
-          card.status = 'uploading';
-        } else if (phase === 'error' && string(event.data.error) !== '') {
+        }
+        // A trailing "uploading" phase from a runtime that was lost must not
+        // revive an interrupted or finished card (it would gate Send again).
+        else if (phase === 'error' && string(event.data.error) !== '') {
           // Picker failures carry no local card: surface the Host's first error.
           showSessionNotice(string(event.data.error));
         }
         if (state && sessionId === state.sessionId) renderAttachments(); else updateSend();
       }
       if (event.data.type === 'references-resolved' && typeof event.data.requestId === 'number') {
-        const owner = pendingContextRequests.get(event.data.requestId);
-        if (owner !== undefined) { pendingContextRequests.delete(event.data.requestId); updateSend(); }
+        const requestId = event.data.requestId;
+        const timer = pendingReferenceTimers.get(requestId);
+        if (timer !== undefined) { clearTimeout(timer); pendingReferenceTimers.delete(requestId); }
+        const owner = pendingContextRequests.get(requestId);
+        // A late or repeated answer is ignored: the prompt must not be edited
+        // twice, and the timeout already told the user nothing was added.
+        if (owner === undefined) return;
+        pendingContextRequests.delete(requestId); updateSend();
         const errors = array(event.data.errors).filter(item => typeof item === 'string' && item !== '');
         if (errors.length > 0) showSessionNotice(errors[0]);
-        if (owner !== undefined && state && owner === state.sessionId) insertReferenceTexts(event.data.references);
+        if (state && owner === state.sessionId) insertReferenceTexts(event.data.references);
       }
       if (event.data.type === 'attachments-added' && typeof event.data.requestId === 'number') {
         const pending = pendingAttachmentRequests.get(event.data.requestId);

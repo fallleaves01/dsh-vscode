@@ -1219,6 +1219,22 @@ describe('host surface wiring', () => {
       await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'draft-images')).toBe(true))
       expect(mocks.openDialog).toHaveBeenCalled()
     })
+
+    it('opens only one picker for repeated choose-files messages', async () => {
+      const h = await activated()
+      const pending = Promise.withResolvers<unknown>()
+      mocks.openDialog.mockReset()
+      mocks.openDialog.mockReturnValueOnce(pending.promise)
+      h.send({ type: 'choose-files', sessionId: 'a' })
+      h.send({ type: 'choose-files', sessionId: 'a' })
+      await vi.waitFor(() => expect(mocks.openDialog).toHaveBeenCalledTimes(1))
+      pending.resolve(undefined)
+      // Let the first picker finish (and clear its single-flight flag) first.
+      await new Promise(resolve => setTimeout(resolve, 10))
+      mocks.openDialog.mockResolvedValue(undefined)
+      h.send({ type: 'choose-files', sessionId: 'a' })
+      await vi.waitFor(() => expect(mocks.openDialog).toHaveBeenCalledTimes(2))
+    })
   })
 
   describe('drop authorization hardening', () => {
@@ -1321,6 +1337,25 @@ describe('host surface wiring', () => {
       const ready = h.posts().find(packet => packet.type === 'file-upload' && packet.state === 'ready')!
       expect(String(ready.name)).not.toContain('\n')
       expect(String(ready.name).length).toBeLessThanOrEqual(256)
+    })
+
+    it('throttles repeated webview attachment-error warnings', async () => {
+      const h = await activated()
+      mocks.warning.mockClear()
+      h.send({ type: 'attachment-error', message: 'first' })
+      h.send({ type: 'attachment-error', message: 'second' })
+      h.send({ type: 'attachment-error', message: 'third' })
+      await vi.waitFor(() => expect(mocks.warning).toHaveBeenCalledTimes(1))
+      await new Promise(resolve => setTimeout(resolve, 30))
+      expect(mocks.warning).toHaveBeenCalledTimes(1)
+      expect(String(mocks.warning.mock.calls[0]![0])).toBe('first')
+    })
+
+    it('uploads a zero-byte file through the normal state machine', async () => {
+      const h = await activated()
+      h.send({ type: 'attach-files', sessionId: 'a', requestId: 1, files: [{ name: 'empty.txt', data: '' }] })
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'file-upload' && packet.state === 'ready')).toBe(true))
+      expect(h.client.uploadFile).toHaveBeenCalledWith('a', '', 'empty.txt')
     })
 
     it('bounds forged image batches and reports rejected images inline', async () => {

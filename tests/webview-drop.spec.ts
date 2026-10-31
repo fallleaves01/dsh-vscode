@@ -10,6 +10,7 @@ import { chatHtml, harness, type Harness } from './webview-harness.js'
  */
 const live: Harness[] = []
 afterEach(async () => {
+  vi.useRealTimers()
   await new Promise(resolve => setTimeout(resolve, 0))
   live.splice(0).forEach(instance => instance.dispose())
   document.body.replaceChildren()
@@ -112,6 +113,13 @@ describe('webview drag and drop', () => {
       expect(first(h, 'resolve-references')!.resources).toEqual([{ uri: 'file:///workspace/src/c.ts', source: 'internal' }])
     })
 
+    it('normalizes a Windows drive path from CodeFiles', async () => {
+      const h = open()
+      drop({ types: ['codefiles'], data: { CodeFiles: JSON.stringify(['C:\\Users\\dev\\a.ts']) } })
+      await vi.waitFor(() => expect(first(h, 'resolve-references')).toBeDefined())
+      expect(first(h, 'resolve-references')!.resources).toEqual([{ uri: 'file:///C:/Users/dev/a.ts', source: 'internal' }])
+    })
+
     it('falls back to the legacy fragment spelling when the object is absent', async () => {
       const h = open()
       drop({ types: ['codeeditors'], data: { CodeEditors: JSON.stringify([{ resource: 'file:///workspace/a.ts', options: { selection: 'L12' } }]) } })
@@ -158,6 +166,78 @@ describe('webview drag and drop', () => {
       h.send({ type: 'references-resolved', requestId: first(h, 'resolve-references')!.requestId as number, references: [], pinned: 0, errors: ['That item is outside the DeepSeek project.'] })
       await vi.waitFor(() => expect(h.document.getElementById('sessionNotice')!.classList.contains('hidden')).toBe(false))
       expect(h.document.getElementById('sessionNotice')!.textContent).toContain('outside the DeepSeek project')
+    })
+
+    it('ignores a references answer for a conversation that was switched away from', async () => {
+      const h = open()
+      await h.settle()
+      const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+      prompt.value = 'keep this draft'
+      prompt.dispatchEvent(new Event('input', { bubbles: true }))
+      h.posts.length = 0
+      drop({ types: ['resourceurls'], data: { ResourceURLs: JSON.stringify(['file:///workspace/old.ts']) } })
+      await vi.waitFor(() => expect(first(h, 'resolve-references')).toBeDefined())
+      const requestId = first(h, 'resolve-references')!.requestId as number
+
+      // Switching away clears the wait; an answer that arrives afterwards must
+      // neither insert text nor toast into the conversation the user is in.
+      h.sendState({ sessionId: 'session-b' })
+      await h.settle()
+      h.send({ type: 'references-resolved', requestId, references: [{ text: '@old.ts', label: 'old.ts', kind: 'file' }], pinned: 0, errors: ['late error'] })
+      expect(h.document.getElementById('sessionNotice')!.classList.contains('hidden')).toBe(true)
+
+      // Switching back must not replay the old answer either.
+      h.sendState({ sessionId: 'session-a' })
+      await h.settle()
+      expect((h.document.getElementById('prompt') as HTMLTextAreaElement).value).toBe('keep this draft')
+      expect(h.document.getElementById('prompt') as HTMLTextAreaElement).not.toBeNull()
+      expect((h.document.getElementById('prompt') as HTMLTextAreaElement).value).not.toContain('@old.ts')
+    })
+
+    it('applies one references answer exactly once', async () => {
+      const h = open()
+      await h.settle()
+      const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+      prompt.value = 'draft'
+      prompt.dispatchEvent(new Event('input', { bubbles: true }))
+      h.posts.length = 0
+      drop({ types: ['resourceurls'], data: { ResourceURLs: JSON.stringify(['file:///workspace/first.ts']) } })
+      await vi.waitFor(() => expect(first(h, 'resolve-references')).toBeDefined())
+      const requestId = first(h, 'resolve-references')!.requestId as number
+      h.send({ type: 'references-resolved', requestId, references: [{ text: '@first.ts', label: 'first.ts', kind: 'file' }], pinned: 0, errors: ['first error'] })
+      expect(prompt.value).toBe('draft @first.ts')
+      expect(h.document.getElementById('sessionNotice')!.textContent).toContain('first error')
+
+      // A repeated answer is ignored: no second insertion and no second toast.
+      h.send({ type: 'references-resolved', requestId, references: [{ text: '@second.ts', label: 'second.ts', kind: 'file' }], pinned: 0, errors: ['second error'] })
+      expect(prompt.value).toBe('draft @first.ts')
+      expect(h.document.getElementById('sessionNotice')!.textContent).toContain('first error')
+      expect(h.document.getElementById('sessionNotice')!.textContent).not.toContain('second error')
+    })
+
+    it('times out a resolve-references wait and ignores the late answer', async () => {
+      const h = open()
+      await h.settle()
+      const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+      prompt.value = 'summarize'
+      prompt.dispatchEvent(new Event('input', { bubbles: true }))
+      h.posts.length = 0
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      drop({ types: ['resourceurls'], data: { ResourceURLs: JSON.stringify(['file:///workspace/a.ts']) } })
+      for (let tick = 0; tick < 8; tick += 1) await Promise.resolve()
+      const request = first(h, 'resolve-references')!
+      expect(request).toBeDefined()
+      vi.advanceTimersByTime(10_000)
+      expect(h.document.getElementById('sessionNotice')!.classList.contains('hidden')).toBe(false)
+      expect(h.document.getElementById('sessionNotice')!.textContent).toContain('did not answer')
+
+      // A late answer must not edit the prompt after the timeout notice.
+      h.send({ type: 'references-resolved', requestId: request.requestId as number, references: [{ text: '@a.ts', label: 'a.ts', kind: 'file' }], pinned: 0, errors: [] })
+      expect(prompt.value).toBe('summarize')
+      // The gate is free again: the request no longer blocks Send.
+      h.enter('send without references')
+      expect(first(h, 'send')).toBeDefined()
+      vi.useRealTimers()
     })
 
     it('leaves a dragged hyperlink alone instead of swallowing it as a reference', () => {
@@ -310,6 +390,21 @@ describe('webview drag and drop', () => {
       await vi.waitFor(() => expect(first(h, 'send')).toBeDefined())
     })
 
+    it('sends a single retry request for a double-clicked Retry button', async () => {
+      const h = open()
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([6])], 'double.bin', { type: 'application/octet-stream' })])
+      await vi.waitFor(() => expect(first(h, 'attach-files')).toBeDefined())
+      h.send({ type: 'file-upload', sessionId: 'session-a', requestId: first(h, 'attach-files')!.requestId as number, name: 'double.bin', state: 'error', error: 'network' })
+      const retry = h.document.querySelector<HTMLButtonElement>('.attachment-retry')!
+      // A detached double click must not post the file twice.
+      retry.click()
+      retry.click()
+      await vi.waitFor(() => expect(all(h, 'attach-files')).toHaveLength(2))
+      expect(all(h, 'attach-files')).toHaveLength(2)
+      expect(h.document.querySelectorAll('.attachment-chip.uploading')).toHaveLength(1)
+      expect(retry.disabled).toBe(true)
+    })
+
     it('turns a settled upload the Host never staged into a retryable failure', async () => {
       const h = open()
       osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([5])], 'lost.bin', { type: 'application/octet-stream' })])
@@ -321,6 +416,55 @@ describe('webview drag and drop', () => {
       expect(h.document.querySelector('.attachment-chip.upload-error')).not.toBeNull()
       expect(h.document.getElementById('attachments')!.textContent).toContain('The upload was not completed.')
       expect(h.document.querySelector('.attachment-retry')).not.toBeNull()
+    })
+
+    it('removes a ready card the Host did not publish once the batch settles', async () => {
+      const h = open()
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([2])], 'ready.bin', { type: 'application/octet-stream' })])
+      await vi.waitFor(() => expect(first(h, 'attach-files')).toBeDefined())
+      const requestId = first(h, 'attach-files')!.requestId as number
+      h.send({ type: 'file-upload', sessionId: 'session-a', requestId, name: 'ready.bin', state: 'ready', id: 'receipt-1', bytes: 1 })
+      expect(h.document.querySelectorAll('.attachment-chip')).toHaveLength(1)
+      // The batch settles without this file in the Host list: the local ready
+      // card is stale and must not survive as a phantom attachment.
+      h.send({ type: 'draft-files', sessionId: 'session-a', files: [], uploads: 0 })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(h.document.querySelectorAll('.attachment-chip')).toHaveLength(0)
+    })
+
+    it('turns an interrupted upload into a retryable failure when the runtime is lost', async () => {
+      const h = open()
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([3])], 'inflight.bin', { type: 'application/octet-stream' })])
+      await vi.waitFor(() => expect(first(h, 'attach-files')).toBeDefined())
+      expect(h.document.querySelectorAll('.attachment-chip.uploading')).toHaveLength(1)
+      h.enter('while uploading')
+      expect(first(h, 'send')).toBeUndefined()
+
+      h.sendState({ phase: 'error' })
+      await h.settle()
+      // The uploading card becomes retryable, not stuck behind a dead upload.
+      expect(h.document.querySelectorAll('.attachment-chip.uploading')).toHaveLength(0)
+      expect(h.document.querySelector('.attachment-spinner')).toBeNull()
+      expect(h.document.querySelectorAll('.attachment-chip.upload-error')).toHaveLength(1)
+      expect(h.document.getElementById('attachments')!.textContent).toContain('The upload was interrupted. Retry.')
+      expect(h.document.querySelector('.attachment-retry')).not.toBeNull()
+
+      h.sendState({ phase: 'ready' })
+      await h.settle()
+      // A stale "uploading" phase from the lost runtime must not revive the
+      // interrupted card and re-gate Send.
+      h.send({ type: 'file-upload', sessionId: 'session-a', requestId: first(h, 'attach-files')!.requestId as number, name: 'inflight.bin', state: 'uploading' })
+      expect(h.document.querySelectorAll('.attachment-chip.uploading')).toHaveLength(0)
+      expect(h.document.querySelectorAll('.attachment-chip.upload-error')).toHaveLength(1)
+      h.click('.attachment-retry')
+      await vi.waitFor(() => expect(all(h, 'attach-files')).toHaveLength(2))
+      const retry = all(h, 'attach-files')[1]!
+      h.send({ type: 'file-upload', sessionId: 'session-a', requestId: retry.requestId as number, name: 'inflight.bin', state: 'ready', id: 'receipt-2', bytes: 3 })
+      h.send({ type: 'draft-files', sessionId: 'session-a', files: [{ id: 'draft-2', name: 'inflight.bin', bytes: 3 }], uploads: 0 })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(h.document.querySelector('.attachment-retry')).toBeNull()
+      h.enter('after reconnect')
+      await vi.waitFor(() => expect(first(h, 'send')).toBeDefined())
     })
 
     it('uses getAsFileSystemHandle when webkitGetAsEntry is unavailable', async () => {
@@ -457,6 +601,45 @@ describe('webview drag and drop', () => {
       const html = chatHtml()
       const branch = html.slice(html.indexOf('if (jobSessionChanged || jobRuntimeLost) {'))
       expect(branch.slice(0, branch.indexOf('}') + 1)).toContain('clearFailedUploadCards();')
+    })
+
+    it('releases upload state when a conversation is archived, leaving the current one alone', async () => {
+      const h = open()
+      // Conversation A: one failed card, one in-flight card and one thumbnail.
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([1])], 'bad.bin', { type: 'application/octet-stream' })])
+      await vi.waitFor(() => expect(first(h, 'attach-files')).toBeDefined())
+      h.send({ type: 'file-upload', sessionId: 'session-a', requestId: first(h, 'attach-files')!.requestId as number, name: 'bad.bin', state: 'error', error: 'refused' })
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([2])], 'inflight.bin', { type: 'application/octet-stream' })])
+      await vi.waitFor(() => expect(all(h, 'attach-files')).toHaveLength(2))
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([137, 80, 78, 71])], 'a.png', { type: 'image/png' })])
+      await vi.waitFor(() => expect(first(h, 'attach-images')).toBeDefined())
+      h.send({ type: 'draft-images', sessionId: 'session-a', images: [{ id: 'img-a', name: 'a.png' }] })
+      expect(h.document.querySelectorAll('.attachment-thumb')).toHaveLength(1)
+
+      // Switch away: previews/failed cards are already released by the switch,
+      // but the in-flight card and the pending counter belong to A alone.
+      h.sendState({ sessionId: 'session-b' })
+      await h.settle()
+      // Seed a thumbnail in the current conversation B.
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([137, 80, 78, 71])], 'b.png', { type: 'image/png' })])
+      await vi.waitFor(() => expect(all(h, 'attach-images')).toHaveLength(2))
+      h.send({ type: 'draft-images', sessionId: 'session-b', images: [{ id: 'img-b', name: 'b.png' }] })
+      expect(h.document.querySelectorAll('.attachment-thumb')).toHaveLength(1)
+
+      // Archiving A must release A's resident state and leave B untouched.
+      h.sendState({ sessionId: 'session-b', archivedSessions: [{ id: 'session-a', title: 'Archived A' }] })
+      await h.settle()
+      expect(h.document.querySelectorAll('.attachment-thumb')).toHaveLength(1)
+
+      h.sendState({ sessionId: 'session-a', archivedSessions: [{ id: 'session-a', title: 'Archived A' }] })
+      await h.settle()
+      // Returning to A revives neither the in-flight card nor the failed card...
+      expect(h.document.querySelectorAll('.attachment-chip.uploading')).toHaveLength(0)
+      expect(h.document.querySelectorAll('.attachment-chip.upload-error')).toHaveLength(0)
+      expect(h.document.querySelectorAll('.attachment-thumb')).toHaveLength(0)
+      // ...and re-publishing the Host's draft metadata cannot restore base64.
+      h.send({ type: 'draft-images', sessionId: 'session-a', images: [{ id: 'img-a', name: 'a.png' }] })
+      expect(h.document.querySelectorAll('.attachment-thumb')).toHaveLength(0)
     })
 
     it('clears resident thumbnails when the runtime is no longer ready', async () => {
