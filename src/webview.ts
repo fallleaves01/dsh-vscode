@@ -3336,12 +3336,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       pendingUploadsBySession.clear();
     }
-    /** Archived conversations must not keep thumbnails, cards or counters. */
+    /** Archived conversations must not keep thumbnails, cards, counters or drafts. */
     function pruneArchivedUploadState(sessionId) {
       imagePreviewsBySession.delete(sessionId);
       uploadCardsBySession.delete(sessionId);
       pendingUploadsBySession.delete(sessionId);
       dropIntakeBySession.delete(sessionId);
+      draftImagesBySession.delete(sessionId);
+      draftFilesBySession.delete(sessionId);
     }
     /** Drop pending reference waits so a lost/late Host answer cannot gate Send. */
     function clearPendingReferences() {
@@ -4903,10 +4905,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         clearPendingReferences();
         // A lost runtime cannot finish its uploads either: turn them into a
         // retryable failure and drop the Host counters so Send reopens after the
-        // reconnect. A session switch keeps its cards for the Host's own
-        // draft-files reconciliation.
+        // reconnect. Its draft bytes are gone too, and the Host's empty publish
+        // may never arrive, so clear the attachment UI here as a fallback.
+        // A session switch keeps its drafts and cards (they belong to the
+        // conversation the user left).
         if (jobRuntimeLost) {
           interruptUploadCards();
+          // The Host will not acknowledge image staging after the connection is
+          // gone; without clearing these the Send gate would wait forever.
+          pendingAttachmentRequests.clear();
+          draftImagesBySession.clear();
+          draftFilesBySession.clear();
+          draftImages = [];
+          draftFiles = [];
           renderAttachments();
         }
         updateSend();

@@ -541,6 +541,8 @@ export class DshChatController implements vscode.Disposable {
   private translationProbe: { client: DshClient; promise: Promise<void> } | undefined
   /** The connection whose account state was already read. */
   private accountClient: DshClient | undefined
+  /** Surfaces that must drop draft attachments when conversations are archived. */
+  private readonly draftResetListeners = new Set<(sessionIds: readonly string[]) => void>()
   /** First-ready hooks run once, after the connection work that built the UI. */
   private firstReady = false
   private readonly firstReadyHooks: Array<() => void> = []
@@ -887,6 +889,17 @@ export class DshChatController implements vscode.Disposable {
     // A runtime that never becomes ready must still get the cleanup once.
     const timer = setTimeout(run, fallbackMs)
     timer.unref?.()
+  }
+
+  /** Register a surface callback for archived-conversation draft cleanup. */
+  registerDraftReset(listener: (sessionIds: readonly string[]) => void): { dispose: () => void } {
+    this.draftResetListeners.add(listener)
+    return { dispose: () => { this.draftResetListeners.delete(listener) } }
+  }
+
+  private resetDraftsFor(sessionIds: readonly string[]): void {
+    if (sessionIds.length === 0) return
+    for (const listener of this.draftResetListeners) listener(sessionIds)
   }
 
   private async startNow(target?: RuntimeTarget): Promise<void> {
@@ -1371,9 +1384,11 @@ export class DshChatController implements vscode.Disposable {
     const client = this.requireClient()
     const result = await client.archiveSession(sessionId)
     if (this.client !== client) return
+    const previouslyArchived = this.archivedSessionIds
     this.archivedSessionIds = new Set(result.archivedSessionIds)
     this.unreadSessionIds.delete(sessionId)
     this.persistUnreadSessions()
+    this.resetDraftsFor([...this.archivedSessionIds].filter(id => !previouslyArchived.has(id)))
     // Job rows and live output of an archived conversation must disappear here.
     this.pruneArchivedJobs()
     await this.loadSessions()
@@ -3258,9 +3273,11 @@ export class DshChatController implements vscode.Disposable {
       const archived = Array.isArray(payload.archivedSessionIds)
         ? payload.archivedSessionIds.filter((value): value is string => typeof value === 'string')
         : []
+      const previouslyArchived = this.archivedSessionIds
       this.archivedSessionIds = new Set(archived)
       for (const id of archived) this.unreadSessionIds.delete(id)
       this.persistUnreadSessions()
+      this.resetDraftsFor(archived.filter(id => !previouslyArchived.has(id)))
       this.pruneArchivedJobs()
       void this.loadSessions().catch(error => { this.report(error) })
       return
@@ -3927,9 +3944,21 @@ class DshSurface implements vscode.Disposable {
     this.disposables = [
       this.settingsPanel,
       controller.onDidChangeState(state => { this.reconcileDrafts(state); this.queueState(state) }),
+      controller.registerDraftReset(sessionIds => { this.clearDraftsFor(sessionIds) }),
       editorContext.onDidChange(state => { void webview.postMessage({ type: 'ide-context', state }) }),
       webview.onDidReceiveMessage(message => { this.acceptMessage(message) }),
     ]
+  }
+
+  /** Archived conversations lose their drafts; tell the Webview so no stale chip remains. */
+  private clearDraftsFor(sessionIds: readonly string[]): void {
+    for (const id of sessionIds) {
+      // Evaluate both deletes: `||` short-circuiting would leave the second map
+      // (commonly draft files) holding stale bytes after an image entry matched.
+      const removedImage = this.draftImagesBySession.delete(id)
+      const removedFile = this.draftFilesBySession.delete(id)
+      if (removedImage || removedFile) void this.publishDraftAttachments(id).catch(() => undefined)
+    }
   }
 
   /**
@@ -3942,15 +3971,21 @@ class DshSurface implements vscode.Disposable {
    */
   private reconcileDrafts(state: ChatViewState): void {
     const runtimeLive = state.runtimeConnection !== null
+    const cleared = new Set<string>()
     if (!runtimeLive && this.draftsRuntimeLive) {
+      // Runtime loss invalidates every draft: remember which conversations had
+      // one so the Webview is told to drop its chips instead of keeping stale
+      // attachments whose bytes no longer exist here.
+      for (const id of this.draftImagesBySession.keys()) cleared.add(id)
+      for (const id of this.draftFilesBySession.keys()) cleared.add(id)
       this.draftImagesBySession.clear()
       this.draftFilesBySession.clear()
     }
     this.draftsRuntimeLive = runtimeLive
-    const archived = new Set(state.archivedSessions.map(item => item.id))
-    for (const id of archived) {
-      this.draftImagesBySession.delete(id)
-      this.draftFilesBySession.delete(id)
+    for (const id of cleared) {
+      // A publish failure must never break the state listener; each message still
+      // carries its own sessionId so the owning composer clears.
+      void this.publishDraftAttachments(id).catch(() => undefined)
     }
   }
 

@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   fsStat: vi.fn(async (..._args: any[]) => ({ type: 1 })),
   fsReadFile: vi.fn(async (..._args: any[]) => Buffer.from('abc')),
   openDialog: vi.fn(async (..._args: any[]) => undefined as any),
+  runtime: undefined as any,
 }))
 
 vi.mock('vscode', () => {
@@ -120,14 +121,16 @@ vi.mock('../src/runtime.js', () => ({
   DshRuntime: class {
     state = { kind: 'ready' as const }
     connection: any
+    listener: ((state: any) => void) | undefined
     constructor() {
       this.connection = { canReauthenticate: true, reauthenticate: async () => {} }
+      mocks.runtime = this
     }
     async start() {}
     async stop() {}
     async assertCanRestart() {}
     async prepareRestart() { return undefined }
-    onDidChangeState = () => ({ dispose: () => {} })
+    onDidChangeState = (listener: (state: any) => void) => { this.listener = listener; return { dispose: () => {} } }
     externalRuntimeUrlToRemember() { return undefined }
     async rememberExternalRuntime() { return true }
   },
@@ -1349,6 +1352,49 @@ describe('host surface wiring', () => {
       await new Promise(resolve => setTimeout(resolve, 30))
       expect(mocks.warning).toHaveBeenCalledTimes(1)
       expect(String(mocks.warning.mock.calls[0]![0])).toBe('first')
+    })
+
+    const seedDraft = async (h: any) => {
+      h.send({ type: 'attach-files', sessionId: 'a', requestId: 1, files: [{ name: 'draft.txt', data: Buffer.from('abc').toString('base64') }] })
+      await vi.waitFor(() => expect(h.posts().some((packet: any) => packet.type === 'draft-files'
+        && packet.sessionId === 'a' && (packet.files as unknown[]).length === 1)).toBe(true))
+    }
+    const emptyPublishes = (h: any) => h.posts().filter((packet: any) => packet.sessionId === 'a'
+      && ((packet.type === 'draft-files' && (packet.files as unknown[]).length === 0)
+        || (packet.type === 'draft-images' && (packet.images as unknown[]).length === 0))).length
+
+    it('publishes empty draft lists when the runtime connection is lost', async () => {
+      const h = await activated()
+      await seedDraft(h)
+      const before = emptyPublishes(h)
+      // The runtime going away is what invalidates drafts (not a conversation switch).
+      mocks.runtime.listener!({ kind: 'failed', message: 'lost' })
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'draft-files'
+        && packet.sessionId === 'a' && (packet.files as unknown[]).length === 0)).toBe(true))
+      expect(emptyPublishes(h)).toBeGreaterThan(before)
+      expect(h.posts().some(packet => packet.type === 'draft-images' && packet.sessionId === 'a' && (packet.images as unknown[]).length === 0)).toBe(true)
+    })
+
+    it('publishes an empty draft list for an archived conversation', async () => {
+      const h = await activated()
+      await seedDraft(h)
+      const before = emptyPublishes(h)
+      h.emit({ type: 'host/archived-sessions-changed', archivedSessionIds: ['a'] }, 'host')
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'draft-files'
+        && packet.sessionId === 'a' && (packet.files as unknown[]).length === 0)).toBe(true))
+      expect(emptyPublishes(h)).toBeGreaterThan(before)
+    })
+
+    it('does not clear drafts on an ordinary conversation switch', async () => {
+      const h = await activated()
+      await seedDraft(h)
+      const before = emptyPublishes(h)
+      h.send({ type: 'select-session', sessionId: 'b' })
+      await vi.waitFor(() => expect(h.mergedState().sessionId).toBe('b'))
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(emptyPublishes(h)).toBe(before)
+      // The original conversation's draft is still held for when the user returns.
+      expect(h.posts().some(packet => packet.type === 'draft-files' && packet.sessionId === 'a' && (packet.files as unknown[]).length === 1)).toBe(true)
     })
 
     it('uploads a zero-byte file through the normal state machine', async () => {

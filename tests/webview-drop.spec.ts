@@ -642,6 +642,68 @@ describe('webview drag and drop', () => {
       expect(h.document.querySelectorAll('.attachment-thumb')).toHaveLength(0)
     })
 
+    it('drops stale draft attachments on a runtime loss without touching the text', async () => {
+      const h = open()
+      await h.settle()
+      const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+      prompt.value = 'keep this text'
+      prompt.dispatchEvent(new Event('input', { bubbles: true }))
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([137, 80, 78, 71])], 'stale.png', { type: 'image/png' })])
+      await vi.waitFor(() => expect(first(h, 'attach-images')).toBeDefined())
+      h.send({ type: 'draft-images', sessionId: 'session-a', images: [{ id: 'img-1', name: 'stale.png' }] })
+      expect(h.document.querySelectorAll('.attachment-chip')).toHaveLength(1)
+
+      // The Host may drop the draft bytes on disconnect without publishing an
+      // empty draft; the Webview must not keep ghost attachments visible.
+      h.sendState({ phase: 'error' })
+      await h.settle()
+      expect(h.document.querySelectorAll('.attachment-chip')).toHaveLength(0)
+      expect(h.document.querySelectorAll('.attachment-thumb')).toHaveLength(0)
+      expect(h.document.getElementById('attachments')!.classList.contains('hidden')).toBe(true)
+
+      h.sendState({ phase: 'ready' })
+      await h.settle()
+      expect(h.document.querySelectorAll('.attachment-chip')).toHaveLength(0)
+      expect(prompt.value).toBe('keep this text')
+      // With the stale drafts gone the send gate still accepts the text.
+      h.enter('keep this text')
+      await vi.waitFor(() => expect(first(h, 'send')).toBeDefined())
+      expect(first(h, 'send')!.text).toBe('keep this text')
+    })
+
+    it('archives draft attachments away and does not revive them on return', async () => {
+      const h = open()
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([137, 80, 78, 71])], 'a.png', { type: 'image/png' })])
+      await vi.waitFor(() => expect(first(h, 'attach-images')).toBeDefined())
+      h.send({ type: 'draft-images', sessionId: 'session-a', images: [{ id: 'img-a', name: 'a.png' }] })
+      expect(h.document.querySelectorAll('.attachment-chip')).toHaveLength(1)
+
+      h.sendState({ sessionId: 'session-b' })
+      await h.settle()
+      h.sendState({ sessionId: 'session-b', archivedSessions: [{ id: 'session-a', title: 'Archived A' }] })
+      await h.settle()
+      h.sendState({ sessionId: 'session-a', archivedSessions: [{ id: 'session-a', title: 'Archived A' }] })
+      await h.settle()
+      expect(h.document.querySelectorAll('.attachment-chip')).toHaveLength(0)
+      expect(h.document.getElementById('attachments')!.classList.contains('hidden')).toBe(true)
+    })
+
+    it('keeps drafts across an ordinary conversation switch', async () => {
+      const h = open()
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([137, 80, 78, 71])], 'keep.png', { type: 'image/png' })])
+      await vi.waitFor(() => expect(first(h, 'attach-images')).toBeDefined())
+      h.send({ type: 'draft-images', sessionId: 'session-a', images: [{ id: 'img-k', name: 'keep.png' }] })
+      h.sendState({ sessionId: 'session-b' })
+      await h.settle()
+      h.sendState({ sessionId: 'session-a' })
+      await h.settle()
+      // Drafts belong to their conversation and survive a switch; only the
+      // local base64 thumbnail is released with the switch.
+      expect(h.document.querySelectorAll('.attachment-chip.image')).toHaveLength(1)
+      expect(h.document.getElementById('attachments')!.textContent).toContain('keep.png')
+      expect(h.document.querySelectorAll('.attachment-thumb')).toHaveLength(0)
+    })
+
     it('clears resident thumbnails when the runtime is no longer ready', async () => {
       const h = open()
       osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' })])
