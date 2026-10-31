@@ -239,10 +239,21 @@ describe('chat webview', () => {
     const html = chatHtml(webview, mark)
 
     expect(html).toContain('id="dropOverlay"')
+    expect(html).toContain('id="dropTitle"')
+    expect(html).toContain('Up to 8 files, 32 MB each · folders from the Explorer')
     expect(html).toContain("getData('CodeEditors')")
     expect(html).toContain("getData('ResourceURLs')")
-    expect(html).toContain("type: 'attach-resources'")
+    // Explorer/editor resources become DSH @ references, resolved by the Host.
+    expect(html).toContain("type: 'resolve-references'")
     expect(html).toContain("type: 'attach-files'")
+    expect(html).toContain("type: 'choose-files'")
+    // Images keep their local base64 preview as a 64px chip thumbnail.
+    expect(html).toContain('.attachment-thumb')
+    expect(html).toContain('width: 64px; height: 64px')
+    // The drop caps are enforced in the Webview before any bytes are read.
+    expect(html).toContain('const MAX_DROP_FILES = 8;')
+    expect(html).toContain('You can attach up to 8 files at once.')
+    expect(html).toContain('const MAX_IMAGE_PREVIEW_BYTES = 64 * 1024 * 1024;')
     // An OS drop never yields a path inside a webview, so bytes are the only
     // transport this side can offer.
     expect(html).not.toContain('getPathForFile')
@@ -255,10 +266,12 @@ describe('chat webview', () => {
 
     // A native file drag also sets the generic web URI list, whose file:// paths
     // belong to the client machine. Those must not be offered as workspace
-    // references once real files are in hand.
+    // references once real files are in hand; without files it is a Host-checked
+    // uri-list candidate instead.
     expect(html).toContain('function droppedResources(dataTransfer, hasOsFiles)')
     expect(html).toContain('droppedResources(dataTransfer, osFiles.length > 0)')
-    expect(html).toContain("? ['application/vnd.code.uri-list']")
+    expect(html).toContain('if (!hasOsFiles) {')
+    expect(html).toContain("push(value, 'uri-list', {})")
   })
 
   it('arms a job stop before it kills, and keeps a rejected stop inline', () => {

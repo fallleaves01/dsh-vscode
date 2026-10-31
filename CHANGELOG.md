@@ -11,6 +11,17 @@ VSIX — see the README for installing one.
 
 ### Added
 
+- Composer drag and drop. Resources dropped from the Explorer or an editor tab
+  become DSH `@` references (project-relative paths, absolute paths outside the
+  project, a trailing `/` for folders, and `@"path with spaces"` for paths
+  containing whitespace); an editor-tab drop keeps its selected line range as
+  IDE context. Files dropped from the operating system are uploaded as in the
+  DSH browser: images travel inline in the message, other files are staged in
+  the runtime attachment library, and one operating-system file drop accepts at
+  most eight files of at most 32 MiB each. Explorer and editor references are
+  path-only and are not subject to the byte limit.
+- The attachment rail shows upload state with **Retry** and removal controls,
+  and the composer's **+** menu adds a general **Add files…** picker.
 - Background jobs menu alignment with DeepSeek Harness `0.2.2-alpha.2`:
   **Running** and collapsible **Finished** groups with counts and a local
   **Clear** action; live progress and duration; a bounded inline `job/follow`
@@ -28,6 +39,11 @@ VSIX — see the README for installing one.
 
 ### Changed
 
+- Composer help and privacy documentation now state that a dropped reference
+  exposes its original path to the model, while an uploaded file copies its
+  bytes below `<DSH_HOME>/attachments/v1` and is not removed automatically.
+  DSH Desktop's native host-path bridge has no VS Code counterpart, so
+  operating-system files are always uploaded in this sidebar.
 - `JobItem` now projects the runtime's `progress` and retained-output counters
   (`outputTotal`, `outputEarliest`); the menu shows `progress ?? detail` and
   uses the retained-output count to decide whether a settled row can be
@@ -37,6 +53,22 @@ VSIX — see the README for installing one.
   requests for the same job are deduplicated, and the row clears its stop phase
   when it is no longer running. The **Finished** group and output tail remain
   local view state and do not mutate runtime data.
+
+### Fixed
+
+- A dropped editor tab now carries its selected line range: the `CodeEditors`
+  selection object was previously read as a URI fragment. Directory drops use
+  the browser entry API instead of a zero-byte heuristic, `CodeFiles` absolute
+  paths are accepted as internal candidates, and a complete quoted reference no
+  longer opens the mention menu.
+
+### Security
+
+- In a remote window, a client-local `file:` path from a text URI list is
+  refused instead of being resolved against the remote filesystem. The
+  reference builder rejects control characters, embedded quotes,
+  parent-directory segments and network shares before insertion, and unsafe
+  dropped paths are rejected before the prompt is sent.
 
 ## [0.2.2-alpha.2] - 2026-10-30
 

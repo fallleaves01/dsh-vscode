@@ -1,3 +1,4 @@
+import { dshReferenceFor, remoteDroppedUriError } from '../src/ide-context.js'
 import { describe, expect, it } from 'vitest'
 import {
   mentionedPaths,
@@ -108,5 +109,42 @@ describe('IDE context', () => {
       path: '.',
       text: JSON.stringify([problem], null, 2),
     }])
+  })
+})
+
+describe('DSH reference literals', () => {
+  it('builds relative, absolute, folder and whitespace-quoted literals', () => {
+    expect(dshReferenceFor('/workspace', '/workspace/src/a.ts', 'file').reference).toEqual({ text: '@src/a.ts', label: 'a.ts', kind: 'file' })
+    expect(dshReferenceFor('/workspace', '/elsewhere/b.ts', 'file').reference).toEqual({ text: '@/elsewhere/b.ts', label: 'b.ts', kind: 'file' })
+    expect(dshReferenceFor('/workspace', '/workspace/docs', 'folder').reference).toMatchObject({ text: '@docs/', kind: 'folder' })
+    expect(dshReferenceFor('/workspace', '/workspace/my file.txt', 'file').reference).toMatchObject({ text: '@"my file.txt"' })
+  })
+  it('rejects control characters and quotes in a path', () => {
+    expect(dshReferenceFor('/workspace', '/workspace/bad\u0007.txt', 'file').error).toContain('cannot be referenced')
+    expect(dshReferenceFor('/workspace', '/workspace/quo"te.txt', 'file').error).toContain('cannot be referenced')
+  })
+  it('rejects parent-directory segments and network shares', () => {
+    expect(dshReferenceFor('/workspace', '/workspace/../outside.ts', 'file').error).toContain('parent-directory')
+    expect(dshReferenceFor('/workspace', '//server/share/file.ts', 'file').error).toContain('Network share')
+    expect(dshReferenceFor('/workspace', '\\\\server\\share\\file.ts', 'file').error).toContain('Network share')
+  })
+  it('rejects a local file URI in a remote window', () => {
+    expect(remoteDroppedUriError('ssh-remote', 'file')).toContain('remote window')
+    expect(remoteDroppedUriError(undefined, 'file')).toBeUndefined()
+  })
+})
+
+describe('quoted DSH references in the mention parser', () => {
+  it('parses @"path with space", folders, mixed grammars and ignores empty quotes', () => {
+    expect(mentionedPaths('see @"a b/c.ts"')).toEqual(['a b/c.ts'])
+    expect(mentionedPaths('see @"dir x/"')).toEqual(['dir x'])
+    expect(mentionedPaths('@"a b/c.ts" then @src/x.ts and @{dir y/z}')).toEqual(['a b/c.ts', 'src/x.ts', 'dir y/z'])
+    expect(mentionedPaths('nothing @" " and @"" here')).toEqual([])
+  })
+  it('does not open the candidate query for a quoted reference', () => {
+    expect(mentionQueryAt('look @"a b', 11)).toBeUndefined()
+    expect(mentionQueryAt('look @"a b"', 12)).toBeUndefined()
+    expect(mentionQueryAt('look @{a b', 11)).toEqual({ start: 5, query: 'a b' })
+    expect(mentionQueryAt('look @src/a', 12)).toEqual({ start: 5, query: 'src/a' })
   })
 })

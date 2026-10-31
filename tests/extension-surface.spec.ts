@@ -22,6 +22,9 @@ const mocks = vi.hoisted(() => ({
   contexts: [] as any[],
   commands: new Map<string, (...args: any[]) => any>(),
   output: [] as string[],
+  fsStat: vi.fn(async (..._args: any[]) => ({ type: 1 })),
+  fsReadFile: vi.fn(async (..._args: any[]) => Buffer.from('abc')),
+  openDialog: vi.fn(async (..._args: any[]) => undefined as any),
 }))
 
 vi.mock('vscode', () => {
@@ -35,7 +38,11 @@ vi.mock('vscode', () => {
   const uri = (fsPath: string) => ({ fsPath, scheme: 'file', path: fsPath, toString: () => fsPath })
   const Uri = {
     file: uri,
-    parse: (value: string) => uri(value),
+    parse: (value: string) => {
+      const match = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/]*)(\/.*)?$/.exec(value)
+      if (match === null) return uri(value)
+      return { fsPath: match[3] ?? '/', scheme: match[1]!.toLowerCase(), authority: match[2] ?? '', path: match[3] ?? '/', toString: () => value }
+    },
     joinPath: (...parts: any[]) => uri(parts.map(part => typeof part === 'string' ? part : part.fsPath).join('/')),
   }
   const workspaceFolder = { uri: uri('/workspace'), name: 'workspace', index: 0 }
@@ -44,6 +51,7 @@ vi.mock('vscode', () => {
     Uri,
     ViewColumn: { Active: 1, Beside: 2 },
     StatusBarAlignment: { Left: 1, Right: 2 },
+    FileType: { File: 1, Directory: 2 },
     env: { language: 'en', remoteName: undefined, clipboard: { writeText: vi.fn(async () => {}) }, openExternal: vi.fn(async () => true), asExternalUri: vi.fn(async (value: any) => value) },
     window: {
       createOutputChannel: () => ({ appendLine: (line: string) => { mocks.output.push(String(line)) }, append: () => {}, show: vi.fn(), dispose: vi.fn() }),
@@ -69,6 +77,7 @@ vi.mock('vscode', () => {
       showErrorMessage: mocks.error,
       showInputBox: vi.fn(async () => undefined),
       showQuickPick: vi.fn(async () => undefined),
+      showOpenDialog: (...args: any[]) => (mocks.openDialog as any)(...args),
       onDidChangeActiveTextEditor: () => disposable(),
       onDidChangeTextEditorSelection: () => disposable(),
       activeTextEditor: undefined,
@@ -84,7 +93,7 @@ vi.mock('vscode', () => {
       onDidCreateFiles: () => disposable(),
       onDidDeleteFiles: () => disposable(),
       onDidRenameFiles: () => disposable(),
-      fs: {},
+      fs: { stat: (...args: any[]) => (mocks.fsStat as any)(...args), readFile: (...args: any[]) => (mocks.fsReadFile as any)(...args) },
     },
     commands: {
       registerCommand: (name: string, handler: (...args: any[]) => any) => { mocks.commands.set(name, handler); return disposable() },
@@ -180,6 +189,7 @@ function testClient() {
     pinSession: vi.fn(async () => ({ pinnedSessionIds: [] })),
     unpinSession: vi.fn(async () => ({ pinnedSessionIds: [] })),
     killJob: vi.fn(async () => ({ outcome: 'requested' as const })),
+    uploadFile: vi.fn(async (_sessionId: string, _data: string, name?: string) => ({ receiptId: 'receipt-1', file: { attachmentId: 'att-1', name: name ?? 'file', bytes: 3 } })),
     observeJob: vi.fn(() => () => {}),
     cancel: vi.fn(async () => ({ accepted: true as const })),
     interruptSubagent: vi.fn(async () => ({ accepted: true as const })),
@@ -1132,6 +1142,198 @@ describe('host surface wiring', () => {
     expect(h.client.observeJob).not.toHaveBeenCalled()
     expect(h.client.killJob).not.toHaveBeenCalled()
     expect(h.posts().find(packet => packet.type === 'job-kill-result')).toMatchObject({ ok: false })
+  })
+
+  describe('dropped reference resolution', () => {
+    const resolve = (h: any, resources: unknown[], requestId = 1) => h.send({ type: 'resolve-references', sessionId: 'a', requestId, resources })
+    const resolved = (h: any) => h.posts().filter((packet: any) => packet.type === 'references-resolved').at(-1)
+    beforeEach(() => { mocks.fsStat.mockReset(); mocks.fsStat.mockResolvedValue({ type: 1 }); mocks.fsReadFile.mockReset(); mocks.openDialog.mockReset() })
+
+    it('builds workspace-relative, absolute, folder and quoted references', async () => {
+      const h = await activated()
+      resolve(h, [
+        { uri: '/workspace/src/a.ts', source: 'internal' },
+        { uri: '/elsewhere/b.ts', source: 'internal' },
+      ])
+      await vi.waitFor(() => expect(resolved(h)).toBeDefined())
+      expect(resolved(h).references).toEqual([
+        { text: '@src/a.ts', label: 'a.ts', kind: 'file' },
+        { text: '@/elsewhere/b.ts', label: 'b.ts', kind: 'file' },
+      ])
+      mocks.fsStat.mockResolvedValue({ type: 2 })
+      resolve(h, [{ uri: '/workspace/docs', source: 'internal' }], 2)
+      await vi.waitFor(() => expect(resolved(h).requestId).toBe(2))
+      expect(resolved(h).references[0]).toMatchObject({ text: '@docs/', kind: 'folder' })
+      mocks.fsStat.mockResolvedValue({ type: 1 })
+      resolve(h, [{ uri: '/workspace/my file.txt', source: 'internal' }], 3)
+      await vi.waitFor(() => expect(resolved(h).requestId).toBe(3))
+      expect(resolved(h).references[0].text).toBe('@"my file.txt"')
+    })
+
+    it('rejects unsafe paths and a remote window local file drop', async () => {
+      const h = await activated()
+      resolve(h, [{ uri: '/workspace/bad\u0007.txt', source: 'internal' }])
+      await vi.waitFor(() => expect(resolved(h)).toBeDefined())
+      expect(resolved(h).references).toEqual([])
+      expect(resolved(h).errors.length).toBeGreaterThan(0)
+      const env = (vscode.env as { remoteName?: string })
+      const before = env.remoteName
+      env.remoteName = 'ssh-remote'
+      try {
+        resolve(h, [{ uri: '/workspace/src/a.ts', source: 'uri-list' }], 2)
+        await vi.waitFor(() => expect(resolved(h).requestId).toBe(2))
+        expect(resolved(h).references).toEqual([])
+        expect(resolved(h).errors[0]).toContain('remote window')
+      } finally { env.remoteName = before }
+    })
+
+    it('pins a line-range drag as IDE context and still returns the path reference', async () => {
+      const h = await activated()
+      resolve(h, [{ uri: '/workspace/src/a.ts', source: 'internal', startLine: 2, endLine: 4 }])
+      await vi.waitFor(() => expect(resolved(h)).toBeDefined())
+      expect(resolved(h).pinned).toBe(1)
+      expect(resolved(h).references[0].text).toBe('@src/a.ts')
+    })
+
+    it('reports upload states inline without a warning dialog', async () => {
+      const h = await activated()
+      h.send({ type: 'attach-files', sessionId: 'a', requestId: 7, files: [{ name: 'notes.txt', data: Buffer.from('abc').toString('base64') }] })
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'file-upload' && packet.state === 'ready')).toBe(true))
+      const states = h.posts().filter(packet => packet.type === 'file-upload').map(packet => packet.state)
+      expect(states).toContain('uploading')
+      expect(states).toContain('ready')
+      expect(mocks.warning).not.toHaveBeenCalled()
+      h.client.uploadFile.mockRejectedValueOnce(new Error('upload failed'))
+      h.send({ type: 'attach-files', sessionId: 'a', requestId: 8, files: [{ name: 'bad.txt', data: Buffer.from('abc').toString('base64') }] })
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'file-upload' && packet.state === 'error' && packet.requestId === 8)).toBe(true))
+      expect(mocks.warning).not.toHaveBeenCalled()
+    })
+
+    it('splits picker selections into uploaded files and draft images', async () => {
+      const h = await activated()
+      mocks.openDialog.mockResolvedValue([{ fsPath: '/workspace/notes.txt', scheme: 'file' }, { fsPath: '/workspace/pic.png', scheme: 'file' }])
+      mocks.fsStat.mockResolvedValue({ type: 1, size: 3 })
+      mocks.fsReadFile.mockResolvedValue(Buffer.from('abc'))
+      h.send({ type: 'choose-files', sessionId: 'a' })
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'file-upload' && packet.state === 'ready')).toBe(true))
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'draft-images')).toBe(true))
+      expect(mocks.openDialog).toHaveBeenCalled()
+    })
+  })
+
+  describe('drop authorization hardening', () => {
+    const send = (h: any, resources: unknown[], requestId: number) => h.send({ type: 'resolve-references', sessionId: 'a', requestId, resources })
+    const last = (h: any, requestId: number) => h.posts().filter((packet: any) => packet.type === 'references-resolved' && packet.requestId === requestId).at(-1)
+    beforeEach(() => { mocks.fsStat.mockReset(); mocks.fsStat.mockResolvedValue({ type: 1 }) })
+
+    it('rejects parent-directory and UNC paths', async () => {
+      const h = await activated()
+      send(h, [
+        { uri: '/workspace/../outside.ts', source: 'internal' },
+        { uri: '//server/share/file.ts', source: 'internal' },
+        { uri: 'file://server/share/file.ts', source: 'internal' },
+      ], 1)
+      await vi.waitFor(() => expect(last(h, 1)).toBeDefined())
+      expect(last(h, 1).references).toEqual([])
+      expect(last(h, 1).errors.length).toBeGreaterThanOrEqual(3)
+      expect(last(h, 1).errors.join(' ')).toMatch(/parent-directory|Network share/)
+    })
+
+    it('requires uri-list drops to stay inside the local workspace', async () => {
+      const h = await activated()
+      send(h, [{ uri: '/workspace/src/a.ts', source: 'uri-list' }], 1)
+      await vi.waitFor(() => expect(last(h, 1)).toBeDefined())
+      expect(last(h, 1).references[0].text).toBe('@src/a.ts')
+      send(h, [{ uri: '/elsewhere/b.ts', source: 'uri-list' }], 2)
+      await vi.waitFor(() => expect(last(h, 2)).toBeDefined())
+      expect(last(h, 2).references).toEqual([])
+      expect(last(h, 2).errors[0]).toContain('inside this workspace')
+    })
+
+    it('rejects a raw Windows drive path with a readable error', async () => {
+      const h = await activated()
+      send(h, [{ uri: 'C:\\work\\a.ts', source: 'internal' }], 1)
+      await vi.waitFor(() => expect(last(h, 1)).toBeDefined())
+      expect(last(h, 1).references).toEqual([])
+      expect(last(h, 1).errors[0]).toContain('file:// URI')
+      expect(mocks.fsStat).not.toHaveBeenCalled()
+    })
+
+    it('refuses a second concurrent resolution and caches duplicate stats', async () => {
+      const h = await activated()
+      const pending = Promise.withResolvers<{ type: number }>()
+      mocks.fsStat.mockReturnValueOnce(pending.promise)
+      send(h, [{ uri: '/workspace/src/a.ts', source: 'internal' }], 1)
+      await vi.waitFor(() => expect(mocks.fsStat).toHaveBeenCalledTimes(1))
+      send(h, [{ uri: '/workspace/src/b.ts', source: 'internal' }], 2)
+      await vi.waitFor(() => expect(last(h, 2)).toBeDefined())
+      expect(last(h, 2).errors[0]).toContain('previous drop')
+      pending.resolve({ type: 1 })
+      await vi.waitFor(() => expect(last(h, 1)).toBeDefined())
+      mocks.fsStat.mockClear()
+      send(h, [
+        { uri: '/workspace/src/a.ts', source: 'internal' },
+        { uri: '/workspace/src/a.ts', source: 'internal' },
+      ], 3)
+      await vi.waitFor(() => expect(last(h, 3)).toBeDefined())
+      // The 5 s stat cache (and the text de-duplication) mean the repeated URI
+      // costs no second stat at all.
+      expect(mocks.fsStat.mock.calls.length).toBeLessThanOrEqual(1)
+      expect(last(h, 3).references).toHaveLength(1)
+    })
+
+    it('redacts an attachment error before showing it', async () => {
+      const h = await activated()
+      h.send({ type: 'attachment-error', message: 'boom\nsk-abcdefghijklmnop' })
+      await vi.waitFor(() => expect(mocks.warning).toHaveBeenCalled())
+      const shown = String(mocks.warning.mock.calls.at(-1)![0])
+      expect(shown).not.toContain('\n')
+      expect(shown).not.toContain('sk-abcdefghijklmnop')
+      expect(shown.length).toBeLessThanOrEqual(500)
+    })
+  })
+
+  describe('forged attachment bounds', () => {
+    const MAX_BASE64 = Math.ceil(32 * 1024 * 1024 * 4 / 3) + 4
+    const data = Buffer.from('abc').toString('base64')
+    beforeEach(() => { mocks.fsStat.mockReset() })
+
+    it('uploads at most eight files from a forged oversized list', async () => {
+      const h = await activated()
+      const files = Array.from({ length: 20 }, (_value, index) => ({ name: `f-${String(index)}.txt`, data }))
+      h.send({ type: 'attach-files', sessionId: 'a', requestId: 1, files })
+      await vi.waitFor(() => expect(h.posts().filter(packet => packet.type === 'file-upload' && packet.state === 'ready')).toHaveLength(8))
+      expect(h.client.uploadFile).toHaveBeenCalledTimes(8)
+    })
+
+    it('rejects an oversized base64 payload before decoding or uploading', async () => {
+      const h = await activated()
+      h.send({ type: 'attach-files', sessionId: 'a', requestId: 1, files: [{ name: 'huge.bin', data: 'A'.repeat(MAX_BASE64 + 1) }] })
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'file-upload' && packet.state === 'error')).toBe(true))
+      expect(h.client.uploadFile).not.toHaveBeenCalled()
+    })
+
+    it('sanitizes a forged file name to one bounded line', async () => {
+      const h = await activated()
+      h.send({ type: 'attach-files', sessionId: 'a', requestId: 1,
+        files: [{ name: `bad\nname${'x'.repeat(400)}`, data }] })
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'file-upload' && packet.state === 'ready')).toBe(true))
+      const ready = h.posts().find(packet => packet.type === 'file-upload' && packet.state === 'ready')!
+      expect(String(ready.name)).not.toContain('\n')
+      expect(String(ready.name).length).toBeLessThanOrEqual(256)
+    })
+
+    it('bounds forged image batches and reports rejected images inline', async () => {
+      const h = await activated()
+      const png = Buffer.from('png').toString('base64')
+      const images = Array.from({ length: 20 }, (_value, index) => ({ mediaType: 'image/png', data: png, name: `p-${String(index)}.png` }))
+      h.send({ type: 'attach-images', sessionId: 'a', requestId: 1, images })
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'draft-images')).toBe(true))
+      const draft = h.posts().filter(packet => packet.type === 'draft-images').at(-1)!
+      expect((draft.images as unknown[]).length).toBeLessThanOrEqual(8)
+      h.send({ type: 'attach-images', sessionId: 'a', requestId: 2, images: [{ mediaType: 'image/png', data: 'A'.repeat(MAX_BASE64 + 1), name: 'huge.png' }] })
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'attachment-error')).toBe(true))
+    })
   })
 })
 })

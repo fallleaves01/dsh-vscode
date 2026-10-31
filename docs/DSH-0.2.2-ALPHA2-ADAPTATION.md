@@ -19,6 +19,7 @@
 | BundleInfo/ChangeResult 新字段（`listedByDefault`、`updatable`、`failedAt`、`unsupported-platform`） | 类型与插件页投影新增字段；`listedByDefault:false` 的 bundle 仍可切换（`setBundleEnabled` 接受）；仅 on-demand 未安装 bundle 无开关；页面不显示 `Updatable` 文案（`updatable` 仅投影保留），`failedAt` 仅类型保留；平台不支持在状态行提示 | 旧字段缺省时按原有行为显示 |
 | 新增 optional bundle（liveshare、forge、CUA、personalized recommendations） | 只作为运行时 bundle 行出现；侧栏不实现其 Web 面板；未知投影/事件安全忽略 | 无影响 |
 | Background jobs 管理界面（`dsh-client-ui-jobs` / `dsh-api-job-controller`） | **完成**：Running/Finished 分组、Finished 本地 Clear、live `progress`/duration、`job/follow` 行内有界输出（gap/error 提示、Copy command）、Stop 两击状态机（armed/pending/failed 内联）、Escape 关闭并回焦、Project/This chat 两档；`JobItem` 投影 `progress`、`outputTotal`、`outputEarliest`；Project 档可观察其他已知会话的 job | 运行时不提供 jobs 服务时不显示菜单；未知 job 或已断连 runtime 报 "background task is no longer available"；旧宿主无该 UI |
+| 拖拽文件（`dsh-client-ui-attachment`、`ui-conversation`、`ui-file-drag` 的 reference/upload 判定；DSH `@` mention grammar） | **完成**：Explorer/编辑器拖入 → `@` 引用（项目内相对、项目外绝对、目录尾 `/`、空白 `@"..."`；selection 作为 IDE context 行范围；不复制/不上传/不读文件内容）。外部 OS 拖入 → 上传（非图片写入 `<DSH_HOME>/attachments/v1`，不随聊天自动删除；图片随消息内联；外部文件单次 8 个、单个 ≤32 MiB）；上传卡片 uploading/ready/error + Retry/Remove；`Add files…` 选择器；OS 目录拖入被拒绝并提示改用 Explorer。远程窗口拒绝客户端 `file:` 引用 | 旧宿主无该 UI；DSH Desktop 的 `__DSH_HOST_PATHS__` native bridge 在本扩展中不存在，外部文件一律上传 |
 | CLI 预发布版本 | `--no-open` 版本解析接受 `alpha`/`beta`/build metadata；`0.1.0` 的 `rc.8` 阈值保持 | 旧版本解析行为不变 |
 | alpha CLI 要求 Node.js `>= 24.9.0` | 文档说明；扩展宿主自身的 Node 版本要求不变 | 不适用 |
 
@@ -31,10 +32,14 @@
 - `src/extension.ts`：完整图片引用传给 `hydrateImages`；bytes 缺失时脱敏诊断并允许单图失败；bundle 字段透传。
 - `src/settings-page-state.ts`、`src/settings-page.mts`、`src/settings-panel.ts`：bundle 新字段投影、开关可见性、平台不支持/未安装说明。
 - `src/jobs.ts`：`JobItem` 投影 `progress`、`outputTotal`、`outputEarliest`；`src/extension.ts`：`killJob` 去重、`openJobOutput`/`closeJobOutput` 的 `job/follow` 生命周期与 Project 已知 job 校验；`src/webview.ts`：Background jobs 菜单、分组/Clear、行内输出、两击 Stop、Escape 回焦。
+- `src/ide-context.ts`：`dshReferenceFor` 生成 DSH `@` 引用字面量（相对/绝对、目录尾 `/`、空白 `@"..."`、拒绝控制字符/引号/父目录/网络共享）；`remoteDroppedUriError` 拒绝远程窗口的客户端 `file:` 路径；`withIdeContext` 保留行范围等 IDE context。
+- `src/webview.ts`：拖放入口区分内部资源与外部 OS 文件；合并 `CodeEditors`/`ResourceURLs`/`application/vnd.code.uri-list`/`CodeFiles`/`text/uri-list` 并去重；解析 `CodeEditors.options.selection` 对象与 URI fragment；Entry API 目录检测；外部 OS 文件单次 8 个/每个 ≤32 MiB；上传卡片三态、Retry/Remove、`Add files…`、overlay 与引用插入。
+- `src/extension.ts`：`resolveReferences`（引用构建、workspace/远程校验、selection pin）、`chooseFiles`（通用文件选择器）、`addEncodedFiles`（base64 → `fileUploads/upload` receipt）、草稿附件投影；`src/extension.ts:2354` 的 `uploadFile` 调用运行时 `fileUploads/upload`。
+- 测试：`tests/webview-drop.spec.ts`、`tests/ide-context.spec.ts`、`tests/extension-surface.spec.ts`、`tests/webview.spec.ts` 覆盖拖放、引用语法、上传卡片/重试/移除、目录与远程拒绝。
 
 ## 3. 验证记录
 
-- 全量测试：本轮 jobs/隐私修复后 123 个文件、1919 passed / 1 skipped / 0 failed；`tsc --noEmit` 与 `node scripts/build.mjs` 通过。
+- 全量测试：本轮拖放功能与文档复核时 123 个文件、1956 passed / 1 skipped / 0 failed；`tsc --noEmit` 与 `node scripts/build.mjs` 通过。
 - 真实 alpha.2：冷/热会话打开、`session/follow` 成功、prompt 完成、停止/取消、fork（无/有 atSeq）、pin/archive、Agent Teams、live title、translation、permission presets 均通过，0 客户端错误。
 - 真实 rc.3：同一超集请求通过（`activate` 被剥离、旧 `attachmentId` 有效），无严格解码拒绝。
 - 附件：alpha.2 对完整引用（含 `bytes`）成功读取真实 PNG；无 bytes 的旧引用返回 `gateway/input-invalid`，侧栏按单图 "Image unavailable." 处理并记录脱敏诊断，不崩溃。
@@ -42,6 +47,7 @@
 - 性能：隔离基准显示启动主要由 DSH 进程 URL 就绪（1.3–1.5 s）支配；本次扩展侧优化覆盖版本缓存、去除重复 contract probe、事件流与首屏列表并发、延迟 sweep/job 扫描、幂等视图复用、切换 RPC 收敛、隐藏会话目录不渲染与无关状态补丁不重绘。A/B 详见提交记录与构建说明。
 - 修复复验：`listedByDefault:false` 的 hidden bundle 开关恢复（仅 on-demand 未安装项无开关）、过期 `0.2.1-rc.3` 文案更正、不可达 `Updatable` 标签移除、Auto review `displayReason` 按编辑器语言选择；定向 settings/extension-surface 测试与全量回归通过。
 - Background jobs 复验：`tests/webview-jobs.spec.ts` 覆盖 Running/Finished 分组、默认折叠、Clear、progress/duration、Copy command、gap/error、二击 Stop 的 armed/pending/failed、Escape 回焦；`tests/discovery-controller.spec.ts` 覆盖 Project 档观察其他会话已知 job、未知 job/断连错误；全量回归通过。
+- 拖放复验：`tests/webview-drop.spec.ts` 覆盖 Explorer/编辑器资源→`@` 引用（相对/绝对/目录/引号、selection 对象与 fragment、`CodeFiles`、多来源去重）、外部 OS 文件→上传（8 个/32 MiB、目录 Entry API、空文件、上传卡片/Retry/Remove、overlay、`Add files…`）、远程 `file:` 拒绝；`tests/ide-context.spec.ts` 覆盖引用字面量与不安全路径规则；`tests/extension-surface.spec.ts` 覆盖行范围 pin 与远程拒绝；全量回归通过。
 
 ## 4. 限制与残余
 
@@ -56,6 +62,8 @@
 - 未实现插件详情/版本/升级（`readBundleDetail`/`listVersions`/`updateBundle`）与市场条目详情（`readEntryDetail`）；on-demand 未安装 bundle 无开关。
 - Web 外观/默认设置不适用：`ui-*`、`locale`、`ui-chat`（含 `foldedReplies`）、`agent-default-model`、`permission.defaultPreset`；模型 badge 不显示。
 - `AUTO_REVIEW_FAILED` 按普通工具失败呈现；缺少 `bytes` 的旧图片引用无法读取；PTC 嵌套 `tool/ptc-dispatch` 明细不单独显示。
+- 拖放残余：VS Code 没有 DSH Desktop 的 `__DSH_HOST_PATHS__` native host-path bridge，外部 OS 文件只能上传，不能转成 `@` 引用；上传卡片只有 uploading/ready/error 三态，没有 DSH Web 的字节级进度条；图片随 prompt 内联发送，不经过 `fileUploads/upload` 的 staged receipt（只有非图片文件走 receipt）；VS Code 未提供 Webview 拖放/插入引用的公开 API，实现依赖 DOM `DataTransfer` + `postMessage` + 宿主 URI 解析。`@` 引用只传路径，模型仍需调用文件工具才能读取内容。
+- 拖放 overlay 的说明行已与实际上限同步（`Up to 8 files, 32 MB each · folders from the Explorer`）。
 - 跨窗口 feedback 缓存的失效、schedule 缓存的会话集合过滤、延迟 markRead 的失败回滚等列为后续 Low 项。
 
 ## 5. 已知缺口（未实现，来自 2026-10-31 扫描）

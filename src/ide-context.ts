@@ -1,3 +1,5 @@
+import * as path from 'node:path'
+
 export type IdeProblemSeverity = 'error' | 'warning'
 export type IdeReferenceKind = 'file' | 'folder' | 'selection' | 'problem' | 'problems'
 
@@ -55,6 +57,50 @@ function referenceKey(reference: IdeContextReference): string {
   ].join(':')
 }
 
+/** URI schemes a dropped VS Code resource may use. */
+export const DSH_REFERENCE_SCHEMES: ReadonlySet<string> = new Set(['file', 'vscode-remote', 'vscode-vfs'])
+export type DshReferenceKind = 'file' | 'folder'
+export interface DshReference { text: string; label: string; kind: DshReferenceKind }
+
+const UNSAFE_REFERENCE_PATH = /[\u0000-\u001F\u007F-\u009F"]/u
+
+/**
+ * Build one DSH `@` reference literal for a dropped resource.
+ *
+ * Workspace-relative paths use `/` separators; paths outside the workspace stay
+ * absolute. A folder keeps its trailing `/`. Paths containing whitespace are
+ * quoted with `@"..."`; control characters or a quote are rejected because the
+ * literal would not round-trip.
+ */
+export function dshReferenceFor(cwd: string, fsPath: string, kind: DshReferenceKind): { reference?: DshReference; error?: string } {
+  const relativePath = path.relative(cwd, fsPath)
+  const inside = relativePath !== '' && !relativePath.startsWith('..') && !path.isAbsolute(relativePath)
+  const display = (inside ? relativePath : fsPath).split(path.sep).join('/')
+  if (display === '' || UNSAFE_REFERENCE_PATH.test(display)) {
+    return { error: 'A dropped path contains characters that cannot be referenced.' }
+  }
+  // Network shares are not local project paths, and any parent-directory
+  // segment (before or after normalization) can escape the workspace root.
+  if (display.startsWith('//') || /^[\\]{2}/.test(fsPath)) {
+    return { error: 'Network share paths cannot be referenced.' }
+  }
+  const normalised = path.posix.normalize(display)
+  if (display.split('/').includes('..') || normalised.split('/').includes('..')) {
+    return { error: 'A dropped path with parent-directory segments cannot be referenced.' }
+  }
+  const target = kind === 'folder' && !display.endsWith('/') ? `${display}/` : display
+  const text = /\s/u.test(target) ? `@"${target}"` : `@${target}`
+  return { reference: { text, label: path.basename(fsPath) || target, kind } }
+}
+
+/** Remote windows cannot read client-local `file:` paths; reject them explicitly. */
+export function remoteDroppedUriError(remoteName: string | undefined, scheme: string): string | undefined {
+  if (scheme === 'file' && remoteName !== undefined) {
+    return 'A file path from the local machine cannot be read in a remote window. Drop the item from the remote explorer instead.'
+  }
+  return undefined
+}
+
 export function uniqueIdeReferences(references: readonly IdeContextReference[]): IdeContextReference[] {
   const seen = new Set<string>()
   return references.filter(reference => {
@@ -107,17 +153,23 @@ export function replaceTextPreservingIdeContext(text: string, replacement: strin
 
 export function mentionQueryAt(text: string, cursor: number): { start: number; query: string } | undefined {
   const prefix = text.slice(0, cursor)
-  const match = /(?:^|[\s(])@(?:\{([^}]*)|([^\s@{}]*))$/.exec(prefix)
-  if (match === null) return undefined
+  // `@"..."` is a dropped-file literal, not a mention being typed: it must not
+  // open the mention picker (complete or in progress). `@{...}` and bare paths
+  // keep their existing candidate behaviour.
+  const match = /(?:^|[\s(])@(?:\{([^}]*)|"([^"]*)"?|([^\s@{}"]*))$/.exec(prefix)
+  if (match === null || match[2] !== undefined) return undefined
   const at = prefix.lastIndexOf('@')
-  return at < 0 ? undefined : { start: at, query: match[1] ?? match[2] ?? '' }
+  return at < 0 ? undefined : { start: at, query: match[1] ?? match[3] ?? '' }
 }
 
 export function mentionedPaths(text: string): string[] {
   const paths: string[] = []
-  const pattern = /@(?:\{([^}\n]+)\}|([^\s@{}]+))/g
+  // Quoted DSH references come first, so a space never splits them. The bare
+  // branch excludes quotes so an empty `@""` cannot become an empty path.
+  const pattern = /@"([^"\n]+)"|@\{([^}\n]+)\}|@([^\s@{}"]+)/g
   for (const match of text.matchAll(pattern)) {
-    const value = (match[1] ?? match[2] ?? '').trim().replace(/\/$/, '')
+    const raw = match[1] ?? match[2] ?? match[3] ?? ''
+    const value = raw.trim().replace(/\/$/, '')
     if (value !== '' && !paths.includes(value)) paths.push(value)
   }
   return paths

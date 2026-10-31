@@ -63,7 +63,7 @@ import {
   type SessionSummary,
   type SkillDescriptor,
 } from './dsh-client.js'
-import { replaceTextPreservingIdeContext, withIdeContext, type IdeContextReference, type IdeContextSnapshot, type IdeMentionCandidate } from './ide-context.js'
+import { DSH_REFERENCE_SCHEMES, dshReferenceFor, remoteDroppedUriError, replaceTextPreservingIdeContext, withIdeContext, type IdeContextReference, type IdeContextSnapshot, type IdeMentionCandidate } from './ide-context.js'
 import {
   imageLimitsOf,
   rejectImageAttachments,
@@ -3832,6 +3832,17 @@ function ACCOUNT_NOTICE(account: AccountState): string | null {
 const MAX_DRAFT_FILE_BYTES = 32 * 1024 * 1024
 /** Upper bound on staged files per message, mirroring the image batch shape. */
 const MAX_DRAFT_FILES = 8
+/** Base64 characters a 32 MiB attachment can occupy, rounded up with padding. */
+const MAX_ENCODED_ATTACHMENT_BASE64 = Math.ceil(MAX_DRAFT_FILE_BYTES * 4 / 3) + 4
+/** One attachment display name: single line, bounded. */
+const MAX_ATTACHMENT_NAME_CHARS = 256
+
+/** A Webview-provided attachment name is untrusted: single line, bounded. */
+function attachmentDisplayName(value: unknown): string {
+  if (typeof value !== 'string') return 'attachment'
+  const single = value.replace(/[\u0000-\u001F\u007F-\u009F]+/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, MAX_ATTACHMENT_NAME_CHARS)
+  return single === '' ? 'attachment' : single
+}
 
 class DshSurface implements vscode.Disposable {
   private readonly settingsPanel: SettingsPanelManager
@@ -3845,6 +3856,10 @@ class DshSurface implements vscode.Disposable {
   private readonly draftGeneration = new Map<string, number>()
   /** Uploads still in flight, so a send cannot race past an unshown attachment. */
   private readonly pendingUploads = new Map<string, number>()
+  /** One reference-resolution pass at a time; a concurrent drop is refused. */
+  private resolvingReferences = false
+  /** Short-lived stat cache so one multi-file drop does not stat the same URI twice. */
+  private readonly referenceStatCache = new Map<string, { expiresAt: number; type: vscode.FileType }>()
   private ready = false
   private pendingFocus = false
   private pendingPrompt: string | undefined
@@ -4216,6 +4231,150 @@ class DshSurface implements vscode.Disposable {
     await this.addDraftImages(sessionId, incoming)
   }
 
+  /**
+   * Resolve dropped VS Code resources into DSH `@` reference literals.
+   *
+   * The Webview cannot read the host filesystem, so URI parsing, stat and path
+   * grammar all happen here. A line-range drag is additionally pinned as IDE
+   * context; the text reference carries only the path because DSH has no line
+   * grammar.
+   */
+  private async resolveReferences(value: Record<string, unknown>): Promise<void> {
+    const sessionId = typeof value.sessionId === 'string' ? value.sessionId : ''
+    const requestId = typeof value.requestId === 'number' && Number.isSafeInteger(value.requestId) ? value.requestId : undefined
+    if (sessionId === '' || sessionId !== this.controller.state.sessionId || requestId === undefined || !Array.isArray(value.resources)) return
+    const reject = async (errors: string[]): Promise<void> => {
+      await this.webview.postMessage({ type: 'references-resolved', requestId, references: [], pinned: 0, errors: errors.slice(0, 20) })
+    }
+    if (this.resolvingReferences) {
+      // The UI disables the input while one drop resolves; a forged or racing
+      // message must not start a second stat storm.
+      await reject(['A previous drop is still being resolved. Try again.'])
+      return
+    }
+    this.resolvingReferences = true
+    try {
+      const cwd = this.controller.state.cwd
+      const remoteName = typeof vscode.env.remoteName === 'string' ? vscode.env.remoteName : undefined
+      const references: { text: string; label: string; kind: 'file' | 'folder' }[] = []
+      const errors: string[] = []
+      const seen = new Set<string>()
+      let pinned = 0
+      const insideWorkspace = (fsPath: string): boolean => {
+        const relative = path.relative(cwd, fsPath)
+        return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
+      }
+      for (const raw of value.resources.slice(0, 64)) {
+        if (typeof raw !== 'object' || raw === null) continue
+        const record = raw as Record<string, unknown>
+        if (typeof record.uri !== 'string' || record.uri === '' || record.uri.length > 2048) {
+          errors.push('A dropped item could not be read.')
+          continue
+        }
+        if (/^[A-Za-z]:[\\/]/.test(record.uri)) {
+          errors.push('A Windows drive path must be dropped as a file:// URI.')
+          continue
+        }
+        let uri: vscode.Uri
+        try { uri = vscode.Uri.parse(record.uri, true) } catch { errors.push('A dropped item could not be read.'); continue }
+        if (!DSH_REFERENCE_SCHEMES.has(uri.scheme)) {
+          errors.push(uri.scheme.length === 1 ? 'A Windows drive path must be dropped as a file:// URI.' : 'Only files and folders can be referenced.')
+          continue
+        }
+        const authority = typeof uri.authority === 'string' ? uri.authority : ''
+        if (uri.scheme === 'file' && authority !== '') { errors.push('Network share paths cannot be referenced.'); continue }
+        if (/^[\\/]{2}/.test(uri.fsPath) || /^[\\]{2}/.test(uri.fsPath)) { errors.push('Network share paths cannot be referenced.'); continue }
+        if (uri.scheme !== 'file' && (typeof uri.fsPath !== 'string' || !uri.fsPath.startsWith('/') || uri.fsPath.split('/').includes('..'))) {
+          errors.push('The dropped remote path is not valid.')
+          continue
+        }
+        const remoteError = remoteDroppedUriError(remoteName, uri.scheme)
+        if (remoteError !== undefined) { errors.push(remoteError); continue }
+        if (record.source === 'uri-list' && (remoteName !== undefined || uri.scheme !== 'file' || !insideWorkspace(uri.fsPath))) {
+          errors.push('Dragged text paths are only supported for files inside this workspace.')
+          continue
+        }
+        let type: vscode.FileType
+        try { type = await this.droppedUriType(uri) } catch { errors.push('A dropped item could not be read.'); continue }
+        const kind: 'file' | 'folder' = type === vscode.FileType.Directory ? 'folder' : 'file'
+        const built = dshReferenceFor(cwd, uri.fsPath, kind)
+        if (built.reference === undefined) { errors.push(built.error ?? 'A dropped path cannot be referenced.'); continue }
+        const startLine = typeof record.startLine === 'number' && Number.isSafeInteger(record.startLine) && record.startLine >= 0 ? record.startLine : undefined
+        const endLine = typeof record.endLine === 'number' && Number.isSafeInteger(record.endLine) && record.endLine >= 0 ? record.endLine : undefined
+        if (startLine !== undefined) {
+          const selection = { startLine, endLine: endLine ?? startLine }
+          if (await this.editorContext.pinUri(uri, cwd, selection, sessionId)) pinned += 1
+        }
+        if (!seen.has(built.reference.text)) {
+          seen.add(built.reference.text)
+          references.push(built.reference)
+        }
+      }
+      await this.webview.postMessage({ type: 'references-resolved', requestId, references, pinned, errors: errors.slice(0, 20) })
+    } finally {
+      this.resolvingReferences = false
+    }
+  }
+
+  /** Stat one dropped URI through the short cache used by reference resolution. */
+  private async droppedUriType(uri: vscode.Uri): Promise<vscode.FileType> {
+    const authority = typeof uri.authority === 'string' ? uri.authority : ''
+    const key = `${uri.scheme}\u0000${authority}\u0000${uri.fsPath}`
+    const now = Date.now()
+    const cached = this.referenceStatCache.get(key)
+    if (cached !== undefined && cached.expiresAt > now) return cached.type
+    const type = (await vscode.workspace.fs.stat(uri)).type
+    if (this.referenceStatCache.size > 256) this.referenceStatCache.clear()
+    this.referenceStatCache.set(key, { expiresAt: now + 5_000, type })
+    return type
+  }
+
+  /** Common file picker: images become draft images, other files upload. */
+  private async chooseFiles(): Promise<void> {
+    const sessionId = this.controller.state.sessionId
+    if (sessionId === '') return
+    const selected = await vscode.window.showOpenDialog({
+      title: 'Attach files to the DeepSeek prompt',
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: true,
+      openLabel: 'Add',
+    })
+    if (selected === undefined) return
+    const images: DraftImage[] = []
+    const files: { name: string; data: string }[] = []
+    for (const uri of selected.slice(0, MAX_DRAFT_FILES * 2)) {
+      const name = path.basename(uri.fsPath)
+      try {
+        const stat = await vscode.workspace.fs.stat(uri)
+        if (stat.type === vscode.FileType.Directory) continue
+        if (typeof stat.size === 'number' && stat.size > MAX_DRAFT_FILE_BYTES) {
+          await this.webview.postMessage({ type: 'file-upload', sessionId, requestId: 0, name, state: 'error',
+            error: `This file is larger than the ${String(MAX_DRAFT_FILE_BYTES / (1024 * 1024))} MB attachment limit.` })
+          continue
+        }
+        const bytes = Buffer.from(await vscode.workspace.fs.readFile(uri))
+        if (bytes.byteLength > MAX_DRAFT_FILE_BYTES) {
+          await this.webview.postMessage({ type: 'file-upload', sessionId, requestId: 0, name, state: 'error',
+            error: `This file is larger than the ${String(MAX_DRAFT_FILE_BYTES / (1024 * 1024))} MB attachment limit.` })
+          continue
+        }
+        const mediaType = imageMediaType(name)
+        if (mediaType !== undefined && images.length < MAX_DRAFT_FILES) {
+          images.push({ id: randomUUID(), type: 'image', mediaType, data: bytes.toString('base64'), name })
+        } else if (files.length < MAX_DRAFT_FILES) {
+          files.push({ name, data: bytes.toString('base64') })
+        }
+      } catch {
+        await this.webview.postMessage({ type: 'file-upload', sessionId, requestId: 0, name, state: 'error',
+          error: 'This file could not be read.' })
+      }
+    }
+    if (images.length > 0) await this.addDraftImages(sessionId, images)
+    if (files.length > 0) await this.addEncodedFiles(sessionId, files, 0)
+    await this.webview.postMessage({ type: 'attachments-added', sessionId, requestId: 0 })
+  }
+
   private async addDraftImages(sessionId: string, incoming: readonly DraftImage[]): Promise<void> {
     if (incoming.length === 0) return
     // The file dialog and the reads are async, so the open conversation can have
@@ -4243,10 +4402,16 @@ class DshSurface implements vscode.Disposable {
   private async addEncodedImages(sessionId: string, values: unknown): Promise<void> {
     if (sessionId !== this.controller.state.sessionId || !Array.isArray(values)) return
     const incoming: DraftImage[] = []
-    for (const value of values) {
+    let rejected = 0
+    for (const value of values.slice(0, MAX_DRAFT_FILES)) {
+      const candidate = typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined
+      if (candidate === undefined || typeof candidate.data !== 'string'
+        || candidate.data.length > MAX_ENCODED_ATTACHMENT_BASE64) { rejected += 1; continue }
       const image = draftImageFromWebview(value)
-      if (image !== undefined) incoming.push(image)
+      if (image === undefined) { rejected += 1; continue }
+      incoming.push(image)
     }
+    if (rejected > 0) await this.webview.postMessage({ type: 'attachment-error', message: 'Some images could not be attached.' })
     await this.addDraftImages(sessionId, incoming)
   }
 
@@ -4309,8 +4474,11 @@ class DshSurface implements vscode.Disposable {
    * works for anything the webview cannot address as a VS Code resource: OS
    * drags in a remote window, and every drag in a browser-hosted window.
    */
-  private async addEncodedFiles(sessionId: string, values: unknown): Promise<void> {
+  private async addEncodedFiles(sessionId: string, values: unknown, requestId = 0): Promise<void> {
     if (!Array.isArray(values)) return
+    const post = async (name: string, state: 'uploading' | 'ready' | 'error', extra: Record<string, unknown> = {}): Promise<void> => {
+      await this.webview.postMessage({ type: 'file-upload', sessionId, requestId, name, state, ...extra })
+    }
     const generation = this.draftGeneration.get(sessionId) ?? 0
     this.pendingUploads.set(sessionId, (this.pendingUploads.get(sessionId) ?? 0) + 1)
     try {
@@ -4318,15 +4486,31 @@ class DshSurface implements vscode.Disposable {
       // send gate until this session answers, so returning before the finally
       // would disable Send for that conversation until the panel reloads.
       if (sessionId !== this.controller.state.sessionId) return
-      for (const value of values) {
+      // Depth-in-depth: a forged Webview message is not trusted to respect the
+      // composer's own eight-file limit or base64 size policy.
+      for (const value of values.slice(0, MAX_DRAFT_FILES)) {
+        const candidate = typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined
+        if (candidate === undefined || typeof candidate.data !== 'string') {
+          await post(attachmentDisplayName(candidate?.name), 'error', { error: 'This file could not be read.' })
+          continue
+        }
+        if (candidate.data.length > MAX_ENCODED_ATTACHMENT_BASE64) {
+          await post(attachmentDisplayName(candidate.name), 'error',
+            { error: `This file is larger than the ${String(MAX_DRAFT_FILE_BYTES / (1024 * 1024))} MB attachment limit.` })
+          continue
+        }
         const file = encodedFileFromWebview(value)
-        if (file === undefined) continue
+        if (file === undefined) {
+          await post(attachmentDisplayName(candidate.name), 'error', { error: 'This file could not be read.' })
+          continue
+        }
+        await post(file.name, 'uploading')
         if (file.bytes > MAX_DRAFT_FILE_BYTES) {
-          void vscode.window.showWarningMessage(`“${file.name}” is larger than the ${String(MAX_DRAFT_FILE_BYTES / (1024 * 1024))} MB attachment limit.`)
+          await post(file.name, 'error', { error: `This file is larger than the ${String(MAX_DRAFT_FILE_BYTES / (1024 * 1024))} MB attachment limit.` })
           continue
         }
         if (this.draftFilesFor(sessionId).length >= MAX_DRAFT_FILES) {
-          void vscode.window.showWarningMessage(`A message can carry at most ${String(MAX_DRAFT_FILES)} files.`)
+          await post(file.name, 'error', { error: `A message can carry at most ${String(MAX_DRAFT_FILES)} files.` })
           break
         }
         try {
@@ -4334,17 +4518,18 @@ class DshSurface implements vscode.Disposable {
           // A send that completed while this upload was in flight already
           // carried its attachments; this receipt belongs to nobody now.
           if ((this.draftGeneration.get(sessionId) ?? 0) !== generation) return
+          const name = attachmentDisplayName(receipt.file.name === '' ? file.name : receipt.file.name)
           this.draftFilesFor(sessionId).push({
             id: randomUUID(),
             type: 'file',
-            name: receipt.file.name === '' ? file.name : receipt.file.name,
+            name,
             bytes: receipt.file.bytes,
             receiptId: receipt.receiptId,
           })
+          await post(name, 'ready', { id: receipt.receiptId, bytes: receipt.file.bytes })
         } catch (error) {
-          void vscode.window.showWarningMessage(
-            `Could not attach “${file.name}”: ${error instanceof Error ? error.message : String(error)}`,
-          )
+          const detail = diagnosticText(error instanceof Error ? error.message : String(error)).slice(0, 500)
+          await post(file.name, 'error', { error: detail === '' ? 'This file could not be uploaded.' : detail })
         }
       }
     } finally {
@@ -4356,45 +4541,6 @@ class DshSurface implements vscode.Disposable {
       await this.publishDraftAttachments(sessionId)
     }
   }
-  /**
-   * Pin dropped workspace resources as context chips. Their URIs resolve on
-   * whichever host runs this extension, so this also works over Remote SSH.
-   */
-  private async attachResources(sessionId: string, values: unknown): Promise<void> {
-    if (sessionId !== this.controller.state.sessionId || !Array.isArray(values)) return
-    const cwd = this.controller.state.cwd
-    let pinned = 0
-    let unsupported = 0
-    for (const value of values) {
-      const entry = typeof value === 'string' ? { uri: value } : value
-      if (typeof entry !== 'object' || entry === null) continue
-      const record = entry as Record<string, unknown>
-      if (typeof record.uri !== 'string' || record.uri === '') continue
-      let uri: vscode.Uri
-      try {
-        uri = vscode.Uri.parse(record.uri, true)
-      } catch {
-        continue
-      }
-      if (uri.scheme !== 'file' && !uri.scheme.startsWith('vscode-remote') && uri.scheme !== 'vscode-vfs') {
-        unsupported += 1
-        continue
-      }
-      const startLine = typeof record.startLine === 'number' && Number.isSafeInteger(record.startLine) ? record.startLine : undefined
-      const endLine = typeof record.endLine === 'number' && Number.isSafeInteger(record.endLine) ? record.endLine : undefined
-      if (sessionId !== this.controller.state.sessionId) return
-      if (await this.editorContext.pinUri(uri, cwd, startLine === undefined ? undefined : { startLine, endLine: endLine ?? startLine }, sessionId)) {
-        pinned += 1
-      }
-    }
-    if (pinned > 0) return
-    // An untitled tab or an output pane has no project path at all, which is a
-    // different problem from a file that lives outside the workspace.
-    void vscode.window.showWarningMessage(unsupported > 0
-      ? 'Nothing was added: that item has no file in the DeepSeek project.'
-      : 'Nothing was added: those items are outside the DeepSeek project.')
-  }
-
   private async publishDraftAttachments(sessionId: string): Promise<void> {
     await this.publishDraftImages(sessionId)
     await this.webview.postMessage({
@@ -4808,18 +4954,15 @@ class DshSurface implements vscode.Disposable {
           }
           return
         case 'attach-files':
-          if (typeof value.sessionId === 'string') await this.addEncodedFiles(value.sessionId, value.files)
-          return
-        case 'attach-resources':
           if (typeof value.sessionId === 'string') {
-            try { await this.attachResources(value.sessionId, value.uris) }
-            finally {
-              if (typeof value.requestId === 'number' && Number.isSafeInteger(value.requestId)) await this.webview.postMessage({ type: 'context-updated', sessionId: value.sessionId, requestId: value.requestId })
-            }
+            await this.addEncodedFiles(value.sessionId, value.files,
+              typeof value.requestId === 'number' && Number.isSafeInteger(value.requestId) ? value.requestId : undefined)
           }
           return
+        case 'resolve-references': await this.resolveReferences(value); return
+        case 'choose-files': await this.chooseFiles(); return
         case 'attachment-error':
-          if (typeof value.message === 'string') await vscode.window.showWarningMessage(value.message)
+          if (typeof value.message === 'string') await vscode.window.showWarningMessage(diagnosticText(value.message).slice(0, 500))
           return
         case 'choose-workspace': await this.chooseWorkspace(); return
         case 'request-mentions':

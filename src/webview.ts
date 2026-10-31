@@ -66,7 +66,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     #app { width: 100%; height: 100%; min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; position: relative; }
     .drop-overlay { position: absolute; inset: 0; z-index: 40; display: grid; place-items: center; padding: 16px; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); pointer-events: none; }
     .drop-overlay.hidden { display: none; }
-    .drop-card { padding: 12px 16px; border: 1px dashed var(--vscode-focusBorder, #4d6bfe); border-radius: 10px; background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); color: var(--vscode-foreground); font-size: 12px; font-weight: 600; box-shadow: 0 6px 20px var(--vscode-widget-shadow); }
+    .drop-card { max-width: 280px; padding: 12px 16px; border: 1px dashed var(--vscode-focusBorder, #4d6bfe); border-radius: 10px; background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); color: var(--vscode-foreground); text-align: center; box-shadow: 0 6px 20px var(--vscode-widget-shadow); }
+    .drop-card-title { font-size: 12px; font-weight: 600; }
+    .drop-card-desc { margin-top: 4px; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 1.4; }
+    .drop-card.blocked { border-color: var(--vscode-inputValidation-errorBorder, #be1100); }
     .composer.drop-target { outline: 1px dashed var(--vscode-focusBorder, #4d6bfe); outline-offset: -2px; }
     .toolbar { min-width: 0; min-height: 48px; padding: 8px 12px; display: flex; align-items: center; gap: 8px; border-bottom: .5px solid var(--dsh-border); }
     .brand-mark { flex: none; width: 24px; height: 24px; }
@@ -673,6 +676,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .context-chip { flex: 0 0 auto; max-width: 200px; border-color: transparent; }
     .context-chip.pinned { border-color: var(--dsh-border); }
     .attachment-size { flex: 0 0 auto; color: var(--vscode-descriptionForeground); opacity: .8; font-size: 10px; }
+    .attachment-chip.image { align-items: center; }
+    .attachment-thumb { flex: 0 0 auto; width: 64px; height: 64px; object-fit: cover; border-radius: 4px; display: block; }
+    .attachment-chip.uploading, .attachment-chip.upload-error { border-color: var(--vscode-inputValidation-warningBorder, var(--dsh-border)); }
+    .attachment-chip.upload-error { border-color: var(--vscode-inputValidation-errorBorder, #be1100); }
+    .attachment-status { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .attachment-chip.upload-error .attachment-status { color: var(--vscode-errorForeground, #f48771); }
+    .attachment-spinner { flex: none; width: 10px; height: 10px; border: 1.5px solid color-mix(in srgb, var(--vscode-foreground) 30%, transparent); border-top-color: var(--vscode-foreground); border-radius: 50%; animation: attachment-spin .9s linear infinite; }
+    @keyframes attachment-spin { to { transform: rotate(360deg); } }
+    .attachment-retry { flex: none; padding: 0 4px; border: 0; border-radius: 3px; background: transparent; color: var(--vscode-textLink-foreground); font-size: 10px; line-height: 16px; }
+    .attachment-retry:hover { text-decoration: underline; }
+    .attachment-error-text { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 150px; color: var(--vscode-errorForeground, #f48771); font-size: 10px; }
     .context-chip.selection { color: var(--vscode-foreground); border-color: color-mix(in srgb, #4d6bfe 55%, var(--vscode-widget-border)); }
     .context-icon { flex: 0 0 auto; font-size: 11px; }
     .context-open { min-width: 0; display: flex; align-items: center; gap: 4px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: inherit; font-size: 11px; line-height: 18px; text-align: left; }
@@ -785,7 +799,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
 </head>
 <body>
   <div id="app">
-    <div id="dropOverlay" class="drop-overlay hidden"><div class="drop-card">Drop files or folders to add them</div></div>
+    <div id="dropOverlay" class="drop-overlay hidden"><div class="drop-card"><div id="dropTitle" class="drop-card-title">Drag files or images here to add them</div><div id="dropDesc" class="drop-card-desc">Up to 8 files, 32 MB each · folders from the Explorer</div></div></div>
     <header class="toolbar">
       <button id="conversationHome" class="icon-button" title="All conversations" aria-label="All conversations"><svg viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></svg></button>
       <span class="brand-mark deepseek-mark" aria-hidden="true"></span>
@@ -845,7 +859,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         <div id="contextMenu" class="command-menu context-menu hidden" role="dialog" aria-label="Add files">
           <input id="contextSearch" class="context-search" type="search" placeholder="Search project files" aria-label="Search files to add" autocomplete="off" spellcheck="false">
           <div id="contextList" class="context-list" role="listbox" aria-label="Files to include" aria-multiselectable="true"></div>
-          <div class="context-menu-footer"><button id="contextImage" class="context-menu-action" type="button">Attach image…</button><button id="contextDone" class="context-menu-action" type="button">Done</button></div>
+          <div class="context-menu-footer"><button id="contextFiles" class="context-menu-action" type="button">Add files…</button><button id="contextImage" class="context-menu-action" type="button">Attach image…</button><button id="contextDone" class="context-menu-action" type="button">Done</button></div>
         </div>
         <div id="mentionMenu" class="command-menu hidden" role="listbox" aria-label="Files and folders"></div>
         <div id="commandMenu" class="command-menu hidden" role="listbox" aria-label="DeepSeek commands"></div>
@@ -910,8 +924,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
       usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'), usageStats: document.getElementById('usageStats'),
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
-      contextMenu: document.getElementById('contextMenu'), contextSearch: document.getElementById('contextSearch'), contextList: document.getElementById('contextList'), contextImage: document.getElementById('contextImage'), contextDone: document.getElementById('contextDone'),
-      queueDock: document.getElementById('queueDock'), dropOverlay: document.getElementById('dropOverlay'),
+      contextMenu: document.getElementById('contextMenu'), contextSearch: document.getElementById('contextSearch'), contextList: document.getElementById('contextList'), contextFiles: document.getElementById('contextFiles'), contextImage: document.getElementById('contextImage'), contextDone: document.getElementById('contextDone'),
+      queueDock: document.getElementById('queueDock'), dropOverlay: document.getElementById('dropOverlay'), dropTitle: document.getElementById('dropTitle'), dropDesc: document.getElementById('dropDesc'),
       taskPanel: document.getElementById('taskPanel'), taskToggle: document.getElementById('taskToggle'), taskList: document.getElementById('taskList'),
       taskFeatures: document.getElementById('taskFeatures'), taskFeaturesSummary: document.getElementById('taskFeaturesSummary'), refreshTasks: document.getElementById('refreshTasks'), configureTaskServices: document.getElementById('configureTaskServices'), goalPanel: document.getElementById('goalPanel'), schedulePanel: document.getElementById('schedulePanel'),
       accountControl: document.getElementById('accountControl'), accountTrigger: document.getElementById('accountTrigger'), accountMenu: document.getElementById('accountMenu'),
@@ -925,6 +939,21 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const draftFilesBySession = new Map();
     /** Uploads handed to the extension but not yet seen settle, per session. */
     const pendingUploadsBySession = new Map();
+    /** Base64 thumbnails read here for images the Host has not labelled yet. */
+    const imagePreviewsBySession = new Map();
+    /** Local upload cards (uploading/ready/error) so a drop is not invisible. */
+    const uploadCardsBySession = new Map();
+    /** A drop being read in the Webview; Send waits for the intake to finish. */
+    const dropIntakeBySession = new Map();
+    function beginDropIntake(sessionId) {
+      dropIntakeBySession.set(sessionId, (dropIntakeBySession.get(sessionId) || 0) + 1); updateSend();
+    }
+    function endDropIntake(sessionId) {
+      const remaining = (dropIntakeBySession.get(sessionId) || 1) - 1;
+      if (remaining <= 0) dropIntakeBySession.delete(sessionId);
+      else dropIntakeBySession.set(sessionId, remaining);
+      updateSend();
+    }
     let ideContext = { pinned: [] };
     const ideContextBySession = new Map();
     let contextMenuOpen = false;
@@ -3258,10 +3287,85 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (!efforts.length) elements.efforts.append(new Option('Default', ''));
       elements.efforts.title = efforts.length ? 'Reasoning effort' : 'This model has no reasoning effort setting';
     }
+    /** Local upload cards for one conversation (created on first use). */
+    function uploadCardsOf(sessionId) {
+      let cards = uploadCardsBySession.get(sessionId);
+      if (cards === undefined) { cards = []; uploadCardsBySession.set(sessionId, cards); }
+      return cards;
+    }
+    /** A card that is not ready blocks Send, mirroring DSH's upload gate. */
+    function pendingLocalUploads() {
+      const cards = state && state.sessionId ? uploadCardsBySession.get(state.sessionId) : undefined;
+      return Boolean(cards && cards.some(card => card.status !== 'ready'));
+    }
+    function previewBytesOf(dataUrl) {
+      // A base64 data URL carries roughly three bytes per four characters.
+      return Math.floor(String(dataUrl).length * 3 / 4);
+    }
+    function totalPreviewBytes(previews) {
+      let total = 0;
+      for (const value of previews.values()) total += previewBytesOf(value);
+      return total;
+    }
+    function rememberImagePreview(sessionId, name, dataUrl) {
+      let previews = imagePreviewsBySession.get(sessionId);
+      if (previews === undefined) { previews = new Map(); imagePreviewsBySession.set(sessionId, previews); }
+      const key = String(name || 'image');
+      // Re-insert so the newest image is the last entry: Map order is the LRU.
+      previews.delete(key);
+      previews.set(key, dataUrl);
+      while (previews.size > MAX_IMAGE_PREVIEWS || totalPreviewBytes(previews) > MAX_IMAGE_PREVIEW_BYTES) {
+        const oldest = previews.keys().next().value;
+        if (oldest === undefined) break;
+        previews.delete(oldest);
+      }
+    }
+    /** Failed cards are transient local state; a conversation switch drops them. */
+    function clearFailedUploadCards() {
+      for (const cards of uploadCardsBySession.values()) {
+        for (let index = cards.length - 1; index >= 0; index -= 1) if (cards[index].status === 'error') cards.splice(index, 1);
+      }
+    }
+    /** Keep the per-session upload card list bounded; the oldest card goes first. */
+    function pruneUploadCards(sessionId) {
+      const cards = uploadCardsBySession.get(sessionId);
+      if (cards === undefined) return;
+      while (cards.length > MAX_DROP_FILES) cards.shift();
+    }
+    function imagePreviewOf(sessionId, name) {
+      const previews = imagePreviewsBySession.get(sessionId);
+      return previews === undefined ? undefined : previews.get(String(name || 'image'));
+    }
+    /** Drop thumbnails the Host did not stage (for example a rejected image). */
+    function pruneImagePreviews(sessionId) {
+      const previews = imagePreviewsBySession.get(sessionId);
+      if (previews === undefined) return;
+      const names = new Set(array(draftImagesBySession.get(sessionId)).map(image => String((image && image.name) || 'image')));
+      for (const key of [...previews.keys()]) if (!names.has(key)) previews.delete(key);
+    }
+    function retryUploadCard(card) {
+      if (!state || !state.sessionId) return;
+      const sessionId = state.sessionId;
+      card.requestId = ++attachmentRequestId;
+      card.status = 'uploading'; card.error = ''; card.id = undefined;
+      pendingUploadsBySession.set(sessionId, (pendingUploadsBySession.get(sessionId) || 0) + 1);
+      vscode.postMessage({ type: 'attach-files', sessionId, requestId: card.requestId, files: [{ name: card.name, data: card.data }] });
+      renderAttachments();
+    }
     function renderAttachments() {
-      elements.attachments.replaceChildren(); elements.attachments.classList.toggle('hidden', draftImages.length === 0 && draftFiles.length === 0);
+      elements.attachments.replaceChildren();
+      const sessionId = state && state.sessionId;
+      const cards = sessionId ? (uploadCardsBySession.get(sessionId) || []) : [];
+      elements.attachments.classList.toggle('hidden', draftImages.length === 0 && draftFiles.length === 0 && cards.length === 0);
       for (const image of draftImages) {
-        const chip = node('div', 'attachment-chip'); chip.append(node('span', '', '▧'), node('span', 'attachment-name', image.name || 'Image'));
+        const chip = node('div', 'attachment-chip image');
+        const preview = sessionId ? imagePreviewOf(sessionId, image.name) : undefined;
+        if (preview !== undefined) {
+          const thumb = document.createElement('img');
+          thumb.className = 'attachment-thumb'; thumb.src = preview; thumb.alt = String(image.name || 'Image');
+          chip.append(thumb);
+        } else chip.append(node('span', '', '▧'));
+        chip.append(node('span', 'attachment-name', image.name || 'Image'));
         const remove = node('button', 'attachment-remove', '×'); remove.title = 'Remove attachment'; remove.addEventListener('click', () => vscode.postMessage({ type: 'remove-attachment', id: image.id, sessionId: state && state.sessionId }));
         chip.append(remove); elements.attachments.append(chip);
       }
@@ -3269,6 +3373,27 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const chip = node('div', 'attachment-chip');
         chip.append(node('span', '', '📄'), node('span', 'attachment-name', file.name), node('span', 'attachment-size', formatBytes(file.bytes)));
         const remove = node('button', 'attachment-remove', '×'); remove.title = 'Remove attachment'; remove.addEventListener('click', () => vscode.postMessage({ type: 'remove-attachment', id: file.id, sessionId: state && state.sessionId }));
+        chip.append(remove); elements.attachments.append(chip);
+      }
+      for (const card of cards) {
+        const chip = node('div', 'attachment-chip' + (card.status === 'uploading' ? ' uploading' : card.status === 'error' ? ' upload-error' : ''));
+        chip.append(node('span', '', '📄'), node('span', 'attachment-name', card.name), node('span', 'attachment-size', formatBytes(card.bytes)));
+        if (card.status === 'uploading') {
+          const status = node('div', 'attachment-status'); status.append(node('span', 'attachment-spinner'), node('span', '', 'Uploading…')); chip.append(status);
+        } else if (card.status === 'error') {
+          const status = node('div', 'attachment-status'); status.append(node('span', '', 'Upload failed')); chip.append(status);
+          const retry = node('button', 'attachment-retry', 'Retry'); retry.type = 'button'; retry.title = 'Retry uploading ' + card.name;
+          retry.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); retryUploadCard(card); });
+          chip.append(retry);
+          if (card.error) { const detail = node('span', 'attachment-error-text', card.error); detail.title = card.error; chip.append(detail); }
+        }
+        const remove = node('button', 'attachment-remove', '×'); remove.title = 'Remove attachment';
+        remove.addEventListener('click', () => {
+          if (!state) return;
+          const list = uploadCardsOf(state.sessionId); const index = list.indexOf(card);
+          if (index >= 0) list.splice(index, 1);
+          renderAttachments();
+        });
         chip.append(remove); elements.attachments.append(chip);
       }
       updateSend();
@@ -3573,9 +3698,35 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (contextError || contextLoading || !choices.length) elements.contextList.append(node('div', 'context-menu-status', contextError || (contextLoading ? 'Searching project files…' : 'No matching files')));
       if (focusedKey) { const focused = [...elements.contextList.querySelectorAll('.context-option')].find(option => option.dataset.key === focusedKey); if (focused) focused.focus(); }
     }
+    /** Insert Host-resolved @ references at the caret, space separated. */
+    function insertReferenceTexts(references) {
+      const texts = [];
+      for (const raw of array(references)) {
+        const reference = record(raw);
+        if (reference && typeof reference.text === 'string' && reference.text !== '') texts.push(reference.text);
+      }
+      if (texts.length === 0) return;
+      const prompt = elements.prompt;
+      const start = typeof prompt.selectionStart === 'number' ? prompt.selectionStart : prompt.value.length;
+      const end = typeof prompt.selectionEnd === 'number' ? prompt.selectionEnd : start;
+      const before = prompt.value.slice(0, start);
+      const after = prompt.value.slice(end);
+      const leading = before === '' || /[\\s(]$/.test(before) ? '' : ' ';
+      const trailing = after === '' || /^[\\s)]/.test(after) ? '' : ' ';
+      const insertion = leading + texts.join(' ') + trailing;
+      prompt.value = before + insertion + after;
+      const cursor = start + insertion.length;
+      prompt.setSelectionRange(cursor, cursor);
+      if (state && state.sessionId) sessionDrafts.set(state.sessionId, prompt.value);
+      resizePrompt(); prompt.focus();
+    }
     function currentMentionQuery() {
       const cursor = elements.prompt.selectionStart || 0;
       const prefix = elements.prompt.value.slice(0, cursor);
+      // A DSH quoted reference (@"path with spaces") is literal prompt text, not
+      // a search. Reading a fragment of that path as a query opened the wrong
+      // candidate menu with candidates for part of the path.
+      if (/(?:^|[\\s(])@"[^"\\n]*"?$/.exec(prefix)) return undefined;
       const match = /(?:^|[\\s(])@(?:\\{([^}]*)|([^\\s@{}]*))$/.exec(prefix);
       if (!match) return undefined;
       const start = prefix.lastIndexOf('@');
@@ -4683,7 +4834,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // A disconnect (any non-ready phase after ready) drops every buffered
       // terminal view instead of leaving it resident across a reconnect.
       const jobRuntimeLost = current.phase !== 'ready' && renderedChrome.phase === 'ready';
-      if (jobSessionChanged || jobRuntimeLost) resetJobTransients();
+      if (jobSessionChanged || jobRuntimeLost) {
+        resetJobTransients();
+        // Thumbnails are base64 image bytes; they must not outlive their session
+        // or a lost runtime. Failed upload cards keep the original base64 for
+        // Retry, so a disconnect clears them exactly like a conversation switch.
+        imagePreviewsBySession.clear();
+        clearFailedUploadCards();
+        // A session switch re-renders attachments further down once the new
+        // drafts are restored; a lost runtime has no such pass.
+        if (jobRuntimeLost) renderAttachments();
+      }
       const createdConversation = reconcileConversationCreation(current);
       if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
         elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
@@ -4955,7 +5116,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const pendingSend = state && [...pendingDraftSends.values()].some(draft => draft.sessionId === state.sessionId);
       const pendingAttachment = state && [...pendingAttachmentRequests.values()].some(request => request.sessionId === state.sessionId);
       const pendingUpload = state && (pendingUploadsBySession.get(state.sessionId) || 0) > 0;
-      elements.send.disabled = !composerReady() || pendingSend || pendingAttachment || pendingUpload || [...pendingContextRequests.values()].some(sessionId => sessionId === state.sessionId)
+      elements.send.disabled = !composerReady() || pendingSend || pendingAttachment || pendingUpload || pendingLocalUploads()
+        || (dropIntakeBySession.get(state.sessionId) || 0) > 0 || [...pendingContextRequests.values()].some(sessionId => sessionId === state.sessionId)
         || (elements.prompt.value.trim() === '' && draftImages.length === 0 && draftFiles.length === 0);
     }
     function releaseUpload(sessionId) {
@@ -4974,7 +5136,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if ([...pendingContextRequests.values()].some(origin => origin === sessionId)) return false;
       // Enter must honour the same gate the button uses, or a message can leave
       // before its file is staged and the file then rides the NEXT prompt.
-      return (pendingUploadsBySession.get(sessionId) || 0) === 0;
+      return (pendingUploadsBySession.get(sessionId) || 0) === 0 && !pendingLocalUploads() && (dropIntakeBySession.get(sessionId) || 0) === 0;
     }
     function send(mode) {
       const text = elements.prompt.value.trim(); if (!text && !draftImages.length && !draftFiles.length) return false;
@@ -5015,70 +5177,131 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (itemFiles.length) return itemFiles;
       return Array.from(clipboard.files || []).filter(file => String(file.type || '').toLowerCase().startsWith('image/'));
     }
-    // A drop carries three unrelated payloads. VS Code resources arrive as
-    // URIs this extension host can resolve on its own machine, so they become
-    // context references. Anything the OS handed over exists only as bytes in
-    // this webview, so it is read here and staged through the runtime upload.
     const IMAGE_DROP_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
-    // Deliberately excludes the generic text/uri-list: a dragged hyperlink sets
-    // it, and swallowing that would break inserting a URL into the composer.
-    const DROP_URI_TYPES = ['CodeEditors', 'ResourceURLs', 'application/vnd.code.uri-list'];
+    // All the drag formats that can name a workspace resource. A drag often
+    // carries several at once (Explorer sets ResourceURLs plus the internal URI
+    // list), so they are merged rather than read first-hit. text/uri-list is
+    // deliberately absent: a dragged hyperlink sets it, and the generic list is
+    // only offered as a fallback candidate below.
+    const DROP_URI_TYPES = ['CodeEditors', 'ResourceURLs', 'application/vnd.code.uri-list', 'CodeFiles'];
     /** Schemes this extension host can actually resolve to a project path. */
     const RESOURCE_SCHEMES = ['file:', 'vscode-remote:', 'vscode-vfs:'];
     // Mirrors the extension's limit so an oversized file is refused before its
     // bytes cross the webview boundary; the extension still re-checks.
     const MAX_DROP_FILE_BYTES = 32 * 1024 * 1024;
+    // The Host stages at most eight files per message. Reading more than it can
+    // carry would only copy bytes into the Webview for nothing, so the cap is
+    // applied before any file is read.
+    const MAX_DROP_FILES = 8;
+    const MAX_DROP_FILES_MESSAGE = 'You can attach up to 8 files at once.';
+    // Resident thumbnails are bounded like the upload cards: a long session must
+    // not accumulate image data URLs in the Webview forever.
+    const MAX_IMAGE_PREVIEWS = 8;
+    const MAX_IMAGE_PREVIEW_BYTES = 64 * 1024 * 1024;
     function safeJson(text) { if (typeof text !== 'string' || text === '') return undefined; try { return JSON.parse(text); } catch { return undefined; } }
-    function selectionOf(fragment) {
+    /** Parse a line/column selection in VS Code's Uri fragment grammar. */
+    function selectionFromFragment(fragment) {
       const match = /^L?(\\d+)(?:,(\\d+))?(?:-L?(\\d+)(?:,(\\d+))?)?/.exec(String(fragment || ''));
       if (!match) return {};
-      return { startLine: parseInt(match[1], 10), endLine: match[3] ? parseInt(match[3], 10) : parseInt(match[1], 10) };
+      const start = parseInt(match[1], 10);
+      const end = match[3] ? parseInt(match[3], 10) : start;
+      return { startLine: Math.max(0, start), endLine: Math.max(0, end) };
     }
+    /**
+     * A selection may be the ITextEditorSelection object CodeEditors carries
+     * (startLineNumber/endLineNumber) or a #L.. fragment string. The old code
+     * read options.selection.fragment, a field that exists on neither shape.
+     */
+    function selectionOf(value) {
+      if (typeof value === 'string') return selectionFromFragment(value);
+      if (!value || typeof value !== 'object') return {};
+      const start = Number(value.startLineNumber ?? value.startLine);
+      if (!Number.isFinite(start)) return {};
+      const rawEnd = Number(value.endLineNumber ?? value.endLine);
+      const end = Number.isFinite(rawEnd) ? rawEnd : start;
+      return { startLine: Math.max(0, Math.trunc(start)), endLine: Math.max(0, Math.trunc(end)) };
+    }
+    function splitUriSelection(value) {
+      const text = String(value || '').trim();
+      const hash = text.indexOf('#');
+      if (hash < 0) return { uri: text, selection: {} };
+      return { uri: text.slice(0, hash), selection: selectionFromFragment(text.slice(hash + 1)) };
+    }
+    /** CodeFiles carries absolute paths as JSON, not URIs. */
+    function codeFileUri(value) {
+      const text = String(value || '').trim();
+      if (text === '') return '';
+      if (/^[a-z][a-z0-9+.-]*:/i.test(text)) return text;
+      return 'file://' + (text.startsWith('/') ? '' : '/') + encodeURI(text.split(String.fromCharCode(92)).join('/'));
+    }
+    /**
+     * Merge every resource a drag offers, deduplicated by URI. Explorer sets
+     * ResourceURLs and the internal URI list, an editor tab sets CodeEditors,
+     * and some clients set CodeFiles; none of them is a superset of the rest.
+     */
     function droppedResources(dataTransfer, hasOsFiles) {
       const found = [];
-      const seen = new Set();
-      const push = (uri, selection) => {
-        const value = String(uri || '').trim();
-        if (value === '' || seen.has(value)) return;
-        if (!RESOURCE_SCHEMES.some(scheme => value.startsWith(scheme))) return;
-        seen.add(value); found.push({ uri: value, ...(selection || {}) });
+      const byUri = new Map();
+      const push = (value, source, selection) => {
+        const parsed = splitUriSelection(value);
+        const uri = parsed.uri;
+        if (uri === '' || !RESOURCE_SCHEMES.some(scheme => uri.startsWith(scheme))) return;
+        const chosen = Object.keys(selection || {}).length > 0 ? selection : parsed.selection || {};
+        const existing = byUri.get(uri);
+        if (existing !== undefined) {
+          if (existing.startLine === undefined && chosen.startLine !== undefined) Object.assign(existing, chosen);
+          return;
+        }
+        const entry = { uri, source, ...(chosen || {}) };
+        byUri.set(uri, entry); found.push(entry);
       };
       const editors = safeJson(dataTransfer.getData('CodeEditors'));
-      if (Array.isArray(editors)) for (const entry of editors) {
-        if (!entry || typeof entry !== 'object') continue;
-        if (typeof entry.resource === 'string') push(entry.resource, selectionOf(entry.options && entry.options.selection && entry.options.selection.fragment));
+      if (Array.isArray(editors)) for (const raw of editors) {
+        const entry = record(raw);
+        if (entry && typeof entry.resource === 'string') push(entry.resource, 'internal', selectionOf(entry.options && entry.options.selection));
       }
-      if (found.length === 0) {
-        const resources = safeJson(dataTransfer.getData('ResourceURLs'));
-        if (Array.isArray(resources)) for (const value of resources) {
-          if (typeof value !== 'string') continue;
-          const hash = value.indexOf('#');
-          if (hash < 0) push(value);
-          else push(value.slice(0, hash), selectionOf(value.slice(hash + 1)));
-        }
+      const resources = safeJson(dataTransfer.getData('ResourceURLs'));
+      if (Array.isArray(resources)) for (const value of resources) if (typeof value === 'string') push(value, 'internal', {});
+      // The internal URI list is a newline-separated URI list, best for directories
+      // and multi-selection. CodeFiles is a JSON array of absolute paths.
+      const internal = dataTransfer.getData('application/vnd.code.uri-list');
+      if (typeof internal === 'string' && internal !== '') {
+        for (const line of internal.split(/\\r?\\n/)) { const value = line.trim(); if (value === '' || value.startsWith('#')) continue; push(value, 'internal', {}); }
       }
-      if (found.length === 0) {
-        // The generic web URI list also carries file:// entries for an OS
-        // drag, where those paths belong to the client machine rather than this
-        // host. Only the VS Code-internal list is trusted once real files are
-        // in hand; the system files themselves take the upload path instead.
-        const mimes = hasOsFiles
-          ? ['application/vnd.code.uri-list']
-          : ['application/vnd.code.uri-list', 'text/uri-list'];
-        for (const mime of mimes) {
-          const text = dataTransfer.getData(mime);
-          if (typeof text !== 'string' || text === '') continue;
-          for (const line of text.split(/\\r?\\n/)) {
-            const value = line.trim();
-            if (value === '' || value.startsWith('#')) continue;
-            const hash = value.indexOf('#');
-            if (hash < 0) push(value);
-            else push(value.slice(0, hash), selectionOf(value.slice(hash + 1)));
-          }
-          if (found.length > 0) break;
+      const codeFiles = safeJson(dataTransfer.getData('CodeFiles'));
+      if (Array.isArray(codeFiles)) for (const value of codeFiles) if (typeof value === 'string') push(codeFileUri(value), 'internal', {});
+      // The generic web URI list names a client-machine path for an OS drag and
+      // is only a candidate when there are no real files. The Host decides
+      // whether the path is local to its own filesystem.
+      if (!hasOsFiles) {
+        const list = dataTransfer.getData('text/uri-list');
+        if (typeof list === 'string' && list !== '') {
+          for (const line of list.split(/\\r?\\n/)) { const value = line.trim(); if (value === '' || value.startsWith('#')) continue; push(value, 'uri-list', {}); }
         }
       }
       return found;
+    }
+    /** Directory entries exposed by a drag; undefined means the API was silent. */
+    async function fileDirectoryFlags(dataTransfer, files) {
+      const flags = new Array(files.length).fill(undefined);
+      const items = Array.from((dataTransfer && dataTransfer.items) || []).filter(item => item && item.kind === 'file');
+      if (items.length === 0 || items.length !== files.length) return flags;
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
+        try {
+          if (typeof item.webkitGetAsEntry === 'function') {
+            const entry = item.webkitGetAsEntry();
+            if (entry && typeof entry.isDirectory === 'boolean') { flags[index] = entry.isDirectory; continue; }
+          }
+        } catch { /* try the newer handle API */ }
+        if (typeof item.getAsFileSystemHandle === 'function') {
+          try {
+            const handle = await item.getAsFileSystemHandle();
+            if (handle && typeof handle.kind === 'string') { flags[index] = handle.kind === 'directory'; continue; }
+          } catch { /* fall back to the readability heuristic */ }
+        }
+      }
+      return flags;
     }
     function readDroppedFile(file) {
       return new Promise((resolve, reject) => {
@@ -5093,24 +5316,63 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         reader.readAsDataURL(file);
       });
     }
+    /** Register local upload cards before the Host's per-file answers arrive. */
+    function queueUploads(sessionId, entries) {
+      const requestId = ++attachmentRequestId;
+      const cards = uploadCardsOf(sessionId);
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index];
+        cards.push({ key: requestId + ':' + String(index), requestId, name: entry.name, bytes: entry.bytes, data: entry.data, status: 'uploading', error: '', id: undefined });
+      }
+      pruneUploadCards(sessionId);
+      pendingUploadsBySession.set(sessionId, (pendingUploadsBySession.get(sessionId) || 0) + 1);
+      vscode.postMessage({ type: 'attach-files', sessionId, requestId, files: entries.map(entry => ({ name: entry.name, data: entry.data })) });
+      renderAttachments();
+    }
     async function acceptDrop(event) {
       if (homeOpen || pendingConversationCreation) return;
       if (!state || state.phase !== 'ready' || !state.sessionId) {
         vscode.postMessage({ type: 'attachment-error', message: 'Wait for DeepSeek to reconnect before adding files.' });
         return;
       }
+      const sessionId = state.sessionId;
+      beginDropIntake(sessionId);
+      try {
       const dataTransfer = event.dataTransfer;
       if (!dataTransfer) return;
-      const sessionId = state.sessionId;
       const osFiles = Array.from(dataTransfer.files || []);
-      // Resources first: an Explorer drop carries only URIs, while an OS drop
-      // carries bytes and must not be mistaken for a workspace path.
+      // Count and clamp before the first read: a twenty-file drag must not read
+      // nineteen files the Host cannot stage.
+      const acceptedFiles = osFiles.slice(0, MAX_DROP_FILES);
+      if (osFiles.length > MAX_DROP_FILES) {
+        vscode.postMessage({ type: 'attachment-error', message: MAX_DROP_FILES_MESSAGE });
+      }
+      const flags = await fileDirectoryFlags(dataTransfer, osFiles);
       const resources = droppedResources(dataTransfer, osFiles.length > 0);
-      const imageFiles = osFiles.filter(file => IMAGE_DROP_TYPES.includes(String(file.type || '').toLowerCase()));
-      const otherFiles = osFiles.filter(file => !IMAGE_DROP_TYPES.includes(String(file.type || '').toLowerCase()));
+      const oversizedFiles = acceptedFiles.filter(file => Number(file.size) > MAX_DROP_FILE_BYTES);
+      if (oversizedFiles.length > 0) {
+        // Refuse before base64 conversion: the bytes never cross the boundary.
+        vscode.postMessage({
+          type: 'attachment-error',
+          message: '“' + oversizedFiles[0].name + '” is larger than the ' + Math.round(MAX_DROP_FILE_BYTES / (1024 * 1024)) + ' MB attachment limit.',
+        });
+      }
+      const imageFiles = [];
+      const plainFiles = [];
+      const folders = [];
+      for (let index = 0; index < acceptedFiles.length; index += 1) {
+        const file = acceptedFiles[index];
+        if (flags[index] === true) { folders.push(file); continue; }
+        if (Number(file.size) > MAX_DROP_FILE_BYTES) continue;
+        if (IMAGE_DROP_TYPES.includes(String(file.type || '').toLowerCase())) imageFiles.push(file);
+        else plainFiles.push(file);
+      }
       if (resources.length > 0) {
-        const requestId = ++contextChangeId; pendingContextRequests.set(requestId, sessionId); updateSend();
-        vscode.postMessage({ type: 'attach-resources', sessionId, requestId, uris: resources });
+        // Explorer and editor drops become DSH @ references: the Host resolves
+        // and relativizes the paths; the Webview just asks and inserts the text.
+        const requestId = ++contextChangeId;
+        pendingContextRequests.set(requestId, sessionId); updateSend();
+        vscode.postMessage({ type: 'resolve-references', sessionId, requestId, resources });
       }
       if (imageFiles.length > 0) {
         const requestId = ++attachmentRequestId;
@@ -5121,6 +5383,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
             pendingAttachmentRequests.delete(requestId); updateSend();
             vscode.postMessage({ type: 'attachment-error', message: 'Paste a PNG, JPEG, WebP, or GIF image.' });
           } else {
+            for (const image of images) rememberImagePreview(sessionId, image.name, 'data:' + image.mediaType + ';base64,' + image.data);
             vscode.postMessage({ type: 'attach-images', sessionId, requestId, images });
           }
         } catch (error) {
@@ -5128,45 +5391,44 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           vscode.postMessage({ type: 'attachment-error', message: error && error.message || 'The dropped image could not be read.' });
         }
       }
-      if (otherFiles.length > 0) {
-        // A folder arrives as a zero-byte entry with no media type, and its
-        // bytes are unreadable here, so it must go through the Explorer route.
-        const folders = otherFiles.filter(file => file.size === 0 && !file.type);
-        // The extension owns the authoritative limit; this only avoids hauling
-        // an obviously oversized file through the webview boundary first.
-        const oversized = otherFiles.filter(file => !(file.size === 0 && !file.type) && file.size > MAX_DROP_FILE_BYTES);
-        const plain = otherFiles.filter(file => !(file.size === 0 && !file.type) && file.size <= MAX_DROP_FILE_BYTES);
-        if (folders.length > 0) {
-          vscode.postMessage({
-            type: 'attachment-error',
-            message: 'Drop folders from the Explorer so DeepSeek can read them in place.',
-          });
-        }
-        if (oversized.length > 0) {
-          vscode.postMessage({
-            type: 'attachment-error',
-            message: '“' + oversized[0].name + '” is larger than the ' + Math.round(MAX_DROP_FILE_BYTES / (1024 * 1024)) + ' MB attachment limit.',
-          });
-        }
-        if (plain.length > 0) {
-          pendingUploadsBySession.set(sessionId, (pendingUploadsBySession.get(sessionId) || 0) + 1); updateSend();
+      if (plainFiles.length > 0) {
+        const entries = [];
+        for (const file of plainFiles) {
           try {
-            const files = [];
-            for (const file of plain) files.push({ name: file.name || 'attachment', data: await readDroppedFile(file) });
-            if (files.length > 0) vscode.postMessage({ type: 'attach-files', sessionId, files });
-            else { releaseUpload(sessionId); }
-          } catch (error) {
-            releaseUpload(sessionId);
-            vscode.postMessage({ type: 'attachment-error', message: error && error.message || 'The dropped file could not be read.' });
+            entries.push({ name: file.name || 'attachment', data: await readDroppedFile(file), bytes: file.size });
+          } catch {
+            // A zero-byte untyped entry is how a directory reaches the File
+            // list. A real empty file reads successfully above, so it stays a file.
+            if (file.size === 0 && !file.type) folders.push(file);
+            else vscode.postMessage({ type: 'attachment-error', message: 'The dropped file could not be read.' });
           }
         }
+        if (entries.length > 0) queueUploads(sessionId, entries);
       }
+      if (folders.length > 0) {
+        vscode.postMessage({
+          type: 'attachment-error',
+          message: 'Drop folders from the Explorer so DeepSeek can read them in place.',
+        });
+      }
+      } finally { endDropIntake(sessionId); }
     }
     const composer = elements.prompt.parentElement;
     let dropDepth = 0;
+    function dropAllowed() {
+      return Boolean(state) && !homeOpen && !pendingConversationCreation && composerReady();
+    }
+    function updateDropOverlay() {
+      const allowed = dropAllowed();
+      elements.dropTitle.textContent = allowed ? 'Drag files or images here to add them' : 'Files and images cannot be added right now';
+      elements.dropDesc.textContent = allowed ? 'Up to 8 files, 32 MB each · folders from the Explorer' : 'Connect DeepSeek to add files';
+      const card = elements.dropOverlay.querySelector('.drop-card');
+      if (card) card.classList.toggle('blocked', !allowed);
+    }
     function setDropActive(active) {
+      if (active) updateDropOverlay();
       elements.dropOverlay.classList.toggle('hidden', !active);
-      if (composer) composer.classList.toggle('drop-target', active);
+      if (composer) composer.classList.toggle('drop-target', active && dropAllowed());
     }
     // Chromium lowercases the type strings a drag exposes (the HTML standard
     // requires ASCII lowercase), so the ResourceURLs type VS Code sets arrives
@@ -5182,12 +5444,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     }
     document.addEventListener('dragenter', event => {
       if (!dragCarriesPayload(event)) return;
-      event.preventDefault(); if (homeOpen || pendingConversationCreation) return; dropDepth += 1; setDropActive(true);
+      event.preventDefault(); dropDepth += 1; setDropActive(true);
     });
     document.addEventListener('dragover', event => {
       if (!dragCarriesPayload(event)) return;
       event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = homeOpen || pendingConversationCreation ? 'none' : 'copy';
+      if (event.dataTransfer) event.dataTransfer.dropEffect = dropAllowed() ? 'copy' : 'none';
+      if (dropDepth > 0) updateDropOverlay();
     });
     document.addEventListener('dragleave', event => {
       if (!dragCarriesPayload(event)) return;
@@ -5268,6 +5531,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     });
     elements.contextDone.addEventListener('click', () => closeContextMenu(true));
     elements.contextImage.addEventListener('click', () => { closeContextMenu(true); vscode.postMessage({ type: 'attach' }); });
+    elements.contextFiles.addEventListener('click', () => { closeContextMenu(true); if (state && state.sessionId) vscode.postMessage({ type: 'choose-files', sessionId: state.sessionId }); });
     elements.usageTrigger.addEventListener('click', event => {
       event.stopPropagation(); usageOpen = !usageOpen; policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); if (state) renderUsage(state);
     });
@@ -5440,7 +5704,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         }
       }
       if (event.data.type === 'draft-images' && typeof event.data.sessionId === 'string') {
-        const images = event.data.images || []; draftImagesBySession.set(event.data.sessionId, images);
+        const images = array(event.data.images); draftImagesBySession.set(event.data.sessionId, images);
+        // Only staged images keep a local thumbnail; sent or removed ones must
+        // not leave their base64 behind.
+        pruneImagePreviews(event.data.sessionId);
         if (state && event.data.sessionId === state.sessionId) { draftImages = images; renderAttachments(); }
       }
       if (event.data.type === 'draft-files' && typeof event.data.sessionId === 'string') {
@@ -5450,12 +5717,59 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const outstanding = Math.max(0, Number(event.data.uploads) || 0);
         if (outstanding === 0) pendingUploadsBySession.delete(event.data.sessionId);
         else pendingUploadsBySession.set(event.data.sessionId, outstanding);
+        // The Host list is authoritative once a batch settles: a ready card whose
+        // file is staged is replaced by the Host chip, and an upload the Host no
+        // longer reports (for example it was refused after a conversation switch)
+        // becomes a failed card instead of blocking Send forever.
+        const cards = uploadCardsOf(event.data.sessionId);
+        const hostNames = new Set(files.map(file => string(file && file.name)));
+        for (let index = cards.length - 1; index >= 0; index -= 1) {
+          const card = cards[index];
+          if (card.status === 'ready' && hostNames.has(card.name)) cards.splice(index, 1);
+          else if (outstanding === 0 && card.status === 'uploading') {
+            card.status = 'error';
+            card.error = 'The upload was not completed.';
+          }
+        }
         if (state && event.data.sessionId === state.sessionId) { draftFiles = files; renderAttachments(); } else updateSend();
+      }
+      if (event.data.type === 'file-upload' && typeof event.data.sessionId === 'string') {
+        const sessionId = event.data.sessionId;
+        const name = string(event.data.name);
+        const phase = string(event.data.state);
+        const requestId = Number(event.data.requestId);
+        const cards = uploadCardsOf(sessionId);
+        let card;
+        if (Number.isFinite(requestId) && requestId > 0) {
+          card = cards.find(item => item.requestId === requestId && item.name === name && item.status !== 'ready');
+          if (card === undefined) card = cards.find(item => item.name === name && item.status !== 'ready');
+        }
+        if (card !== undefined && phase === 'error') {
+          card.status = 'error'; card.error = string(event.data.error);
+        } else if (card !== undefined && phase === 'ready') {
+          card.status = 'ready'; card.id = string(event.data.id) || undefined;
+          const bytes = Number(event.data.bytes);
+          if (Number.isFinite(bytes) && bytes >= 0) card.bytes = bytes;
+        } else if (card !== undefined && phase === 'uploading') {
+          card.status = 'uploading';
+        } else if (phase === 'error' && string(event.data.error) !== '') {
+          // Picker failures carry no local card: surface the Host's first error.
+          showSessionNotice(string(event.data.error));
+        }
+        if (state && sessionId === state.sessionId) renderAttachments(); else updateSend();
+      }
+      if (event.data.type === 'references-resolved' && typeof event.data.requestId === 'number') {
+        const owner = pendingContextRequests.get(event.data.requestId);
+        if (owner !== undefined) { pendingContextRequests.delete(event.data.requestId); updateSend(); }
+        const errors = array(event.data.errors).filter(item => typeof item === 'string' && item !== '');
+        if (errors.length > 0) showSessionNotice(errors[0]);
+        if (owner !== undefined && state && owner === state.sessionId) insertReferenceTexts(event.data.references);
       }
       if (event.data.type === 'attachments-added' && typeof event.data.requestId === 'number') {
         const pending = pendingAttachmentRequests.get(event.data.requestId);
         if (pending && pending.sessionId === event.data.sessionId) {
           pendingAttachmentRequests.delete(event.data.requestId);
+          pruneImagePreviews(event.data.sessionId);
           updateSend();
         }
       }
