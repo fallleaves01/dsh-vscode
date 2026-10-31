@@ -34,7 +34,7 @@
 
 ## 3. 验证记录
 
-- 全量测试：本轮 jobs/安全修复后 123 个文件、1899 passed / 1 skipped / 0 failed；`tsc --noEmit` 与 `node scripts/build.mjs` 通过。
+- 全量测试：本轮 jobs/隐私修复后 123 个文件、1919 passed / 1 skipped / 0 failed；`tsc --noEmit` 与 `node scripts/build.mjs` 通过。
 - 真实 alpha.2：冷/热会话打开、`session/follow` 成功、prompt 完成、停止/取消、fork（无/有 atSeq）、pin/archive、Agent Teams、live title、translation、permission presets 均通过，0 客户端错误。
 - 真实 rc.3：同一超集请求通过（`activate` 被剥离、旧 `attachmentId` 有效），无严格解码拒绝。
 - 附件：alpha.2 对完整引用（含 `bytes`）成功读取真实 PNG；无 bytes 的旧引用返回 `gateway/input-invalid`，侧栏按单图 "Image unavailable." 处理并记录脱敏诊断，不崩溃。

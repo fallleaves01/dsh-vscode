@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { harness, type Harness } from './webview-harness.js'
+import { chatHtml, harness, type Harness } from './webview-harness.js'
 
 /**
  * DSH 0.2.2-alpha.2's background-jobs menu: Running/Finished groups with a
@@ -240,17 +240,173 @@ describe('background jobs menu', () => {
       chevron.click()
       expect(h.posts.at(-1)).toEqual({ type: 'job-output-close', sessionId: 'session-a', jobId: 'r1' })
       expect(h.document.querySelector('.job-output')).toBeNull()
-      // Reopening resumes from the last received position.
+
+      // Collapsing released the buffer, so output that arrives after the close
+      // is ignored and re-opening starts a new stream without a resume cursor.
+      h.send({ type: 'job-output', sessionId: 'session-a', jobId: 'r1', chunks: [
+        { at: 1, text: 'stale line\n' },
+      ], next: 9, lossy: false })
+      h.document.querySelector<HTMLButtonElement>('.job-chevron')!.click()
+      const reopened = h.posts.at(-1) as Record<string, unknown>
+      expect(reopened.type).toBe('job-output-open')
+      expect(Object.hasOwn(reopened, 'from')).toBe(false)
+      expect(h.document.querySelector('.job-output-pre')!.textContent).toContain('(no output)')
+
+      // A live stream received while open still renders every channel.
       h.send({ type: 'job-output', sessionId: 'session-a', jobId: 'r1', chunks: [
         { at: 1, text: 'first line\n' },
         { at: 2, text: 'second line\n', channel: 'stderr' },
         { at: 3, text: 'log line\n', channel: 'log' },
       ], next: 9, lossy: false })
-      h.document.querySelector<HTMLButtonElement>('.job-chevron')!.click()
-      expect(h.posts.at(-1)).toEqual({ type: 'job-output-open', sessionId: 'session-a', jobId: 'r1', from: 9 })
       expect(h.document.querySelector('.job-output-pre')!.textContent).toContain('first line')
       expect(h.document.querySelectorAll('.job-output-pre .stderr')).toHaveLength(1)
       expect(h.document.querySelectorAll('.job-output-pre .log')).toHaveLength(1)
+    })
+
+    it('statically bounds resident output views and releases them', () => {
+      const html = chatHtml()
+      // The view map lives in the closure, so the cap and the release sites are
+      // asserted on the emitted bundle; the behavioural tests below prove the
+      // buffers are re-opened empty rather than retained.
+      expect(html).toContain('const JOB_OUTPUT_VIEW_LIMIT = 8;')
+      expect(html).toContain('function pruneJobOutputViews()')
+      expect(html).toContain('while (jobOutputViews.size > JOB_OUTPUT_VIEW_LIMIT)')
+      expect(html).toContain('jobOutputViews.delete(oldest);')
+      expect(html).toContain('jobOutputViews.delete(key);')
+      expect(html).toContain('jobOutputViews.clear();')
+      // A re-open after release must omit the cursor, never send NaN (the
+      // comment may mention the risk; the code must not contain the literal).
+      expect(html).not.toMatch(/from:\s*NaN[,}]/)
+    })
+
+    it('releases buffered output on collapse and never resurrects it', async () => {
+      const h = open()
+      await expand(h)
+      h.send({ type: 'job-output', sessionId: 'session-a', jobId: 'r1', chunks: [
+        { at: 1, text: 'secret line\n' },
+      ], next: 2, lossy: false })
+      expect(text(h, '.job-output')).toContain('secret line')
+
+      h.document.querySelector<HTMLButtonElement>('.job-chevron')!.click()
+      expect(h.posts.at(-1)).toEqual({ type: 'job-output-close', sessionId: 'session-a', jobId: 'r1' })
+      h.document.querySelector<HTMLButtonElement>('.job-chevron')!.click()
+      const reopened = h.posts.at(-1) as Record<string, unknown>
+      expect(Object.hasOwn(reopened, 'from')).toBe(false)
+      // The panel starts empty: the previous buffer is gone, not merely hidden.
+      expect(h.document.querySelector('.job-output-pre')!.textContent).toContain('(no output)')
+      expect(text(h, '.job-output')).not.toContain('secret line')
+    })
+
+    it('drops every buffered view when the conversation changes', async () => {
+      const h = open()
+      await expand(h)
+      h.send({ type: 'job-output', sessionId: 'session-a', jobId: 'r1', chunks: [
+        { at: 1, text: 'session-a secret\n' },
+      ], next: 4, lossy: false })
+      expect(text(h, '.job-output')).toContain('session-a secret')
+
+      h.sendState({ sessionId: 'session-b', jobs: [running('r1', { sessionId: 'session-b', outputTotal: 4 })] })
+      await h.settle()
+      expect(h.posts.some(post => post.type === 'job-output-close' && post.sessionId === 'session-a' && post.jobId === 'r1')).toBe(true)
+      // Late frames for the old conversation cannot recreate a view.
+      h.send({ type: 'job-output', sessionId: 'session-a', jobId: 'r1', chunks: [
+        { at: 2, text: 'late frame\n' },
+      ], next: 5, lossy: false })
+      expect(h.document.querySelector('.job-output')).toBeNull()
+
+      // Re-opening in the new conversation starts from scratch.
+      h.document.querySelector<HTMLButtonElement>('.job-chevron')!.click()
+      const reopened = h.posts.at(-1) as Record<string, unknown>
+      expect(reopened.type).toBe('job-output-open')
+      expect(reopened.sessionId).toBe('session-b')
+      expect(Object.hasOwn(reopened, 'from')).toBe(false)
+      expect(h.document.querySelector('.job-output-pre')!.textContent).toContain('(no output)')
+    })
+
+    it('drops buffered views when the runtime is no longer ready', async () => {
+      const h = open()
+      await expand(h)
+      h.send({ type: 'job-output', sessionId: 'session-a', jobId: 'r1', chunks: [
+        { at: 1, text: 'runtime secret\n' },
+      ], next: 3, lossy: false })
+      expect(text(h, '.job-output')).toContain('runtime secret')
+
+      h.sendState({ phase: 'error', jobs: [] })
+      await h.settle()
+      expect(h.document.querySelector('.job-output')).toBeNull()
+      h.send({ type: 'job-output', sessionId: 'session-a', jobId: 'r1', chunks: [
+        { at: 2, text: 'late runtime frame\n' },
+      ], next: 4, lossy: false })
+      expect(h.document.querySelector('.job-output')).toBeNull()
+
+      // Reconnecting and expanding again opens a fresh stream.
+      h.sendState({ phase: 'ready', jobs: [running('r1', { outputTotal: 3 })] })
+      await h.settle()
+      h.document.querySelector<HTMLButtonElement>('.job-chevron')!.click()
+      const reopened = h.posts.at(-1) as Record<string, unknown>
+      expect(reopened.type).toBe('job-output-open')
+      expect(Object.hasOwn(reopened, 'from')).toBe(false)
+      expect(h.document.querySelector('.job-output-pre')!.textContent).toContain('(no output)')
+    })
+
+    it('expands ten rows in sequence with bounded, isolated buffers', async () => {
+      const h = open()
+      const jobs = Array.from({ length: 10 }, (_value, index) => finished('f' + String(index), 'completed', { outputTotal: 1 }))
+      h.sendState({ jobs })
+      await h.settle()
+      menu(h)
+      const chevronOf = (label: string): HTMLButtonElement => {
+        const item = [...h.document.querySelectorAll<HTMLElement>('.job-item')]
+          .find(node => node.textContent!.includes(label))!
+        return item.querySelector<HTMLButtonElement>('.job-chevron')!
+      }
+      const opened: Array<Record<string, unknown>> = []
+      for (let index = 0; index < 10; index += 1) {
+        chevronOf('Command f' + String(index)).click()
+        opened.push(h.posts.at(-1) as Record<string, unknown>)
+        h.send({ type: 'job-output', sessionId: 'session-a', jobId: 'f' + String(index), chunks: [
+          { at: 1, text: 'secret ' + String(index) + '\n' },
+        ], next: 2, lossy: false })
+        expect(text(h, '.job-output')).toContain('secret ' + String(index))
+        chevronOf('Command f' + String(index)).click()
+      }
+      // Every open starts fresh; none carries a stale resume cursor.
+      expect(opened).toHaveLength(10)
+      expect(opened.every(message => message.type === 'job-output-open' && !Object.hasOwn(message, 'from'))).toBe(true)
+
+      // The oldest buffer was released long ago: re-opening f0 shows no output.
+      chevronOf('Command f0').click()
+      expect(h.document.querySelector('.job-output-pre')!.textContent).toContain('(no output)')
+      expect(text(h, '.job-output')).not.toContain('secret 0')
+      h.send({ type: 'job-output', sessionId: 'session-a', jobId: 'f0', chunks: [
+        { at: 2, text: 'fresh 0\n' },
+      ], next: 3, lossy: false })
+      expect(text(h, '.job-output')).toContain('fresh 0')
+      expect(text(h, '.job-output')).not.toContain('secret 0')
+    })
+
+    it('isolates same-id jobs by their owning conversation', async () => {
+      const h = open()
+      h.sendState({ projectJobs: [
+        { id: 'j', sessionId: 'owner-a', sessionTitle: 'Conversation A', kind: 'process', label: 'Command j', status: 'running', startedAt: now() - 1_000, outputTotal: 4 },
+        { id: 'j', sessionId: 'owner-b', sessionTitle: 'Conversation B', kind: 'process', label: 'Command j', status: 'running', startedAt: now() - 1_000, outputTotal: 4 },
+      ] })
+      await h.settle()
+      menu(h)
+      const rows = [...h.document.querySelectorAll<HTMLElement>('.job-row')]
+      expect(rows).toHaveLength(2)
+      const rowA = rows.find(row => row.title === 'Conversation A')!
+      rowA.querySelector<HTMLButtonElement>('.job-chevron')!.click()
+      expect(h.posts.at(-1)).toEqual({ type: 'job-output-open', sessionId: 'owner-a', jobId: 'j' })
+
+      // A frame for the other conversation must not reach this panel.
+      h.send({ type: 'job-output', sessionId: 'owner-b', jobId: 'j', chunks: [{ at: 1, text: 'other output\n' }], next: 1, lossy: false })
+      expect(text(h, '.job-output')).toContain('(no output)')
+      h.send({ type: 'job-output', sessionId: 'owner-a', jobId: 'j', chunks: [{ at: 1, text: 'mine\n' }], next: 1, lossy: false })
+      expect(text(h, '.job-output')).toContain('mine')
+      expect(text(h, '.job-output')).not.toContain('other output')
+      h.document.querySelector<HTMLButtonElement>('.job-chevron')!.click()
+      expect(h.posts.at(-1)).toEqual({ type: 'job-output-close', sessionId: 'owner-a', jobId: 'j' })
     })
 
     it('renders gap and stream-error notices and copies the command line', async () => {

@@ -180,6 +180,7 @@ function testClient() {
     pinSession: vi.fn(async () => ({ pinnedSessionIds: [] })),
     unpinSession: vi.fn(async () => ({ pinnedSessionIds: [] })),
     killJob: vi.fn(async () => ({ outcome: 'requested' as const })),
+    observeJob: vi.fn(() => () => {}),
     cancel: vi.fn(async () => ({ accepted: true as const })),
     interruptSubagent: vi.fn(async () => ({ accepted: true as const })),
     accountState: vi.fn(async () => ({ status: 'signed-out', attempt: null,
@@ -1120,6 +1121,17 @@ describe('host surface wiring', () => {
     const result = h.posts().find(packet => packet.type === 'job-kill-result')!
     expect(result).toMatchObject({ ok: false, jobId: 'missing-job' })
     expect(mocks.error).not.toHaveBeenCalled()
+  })
+  it('rejects a forged job message from another project without opening a stream', async () => {
+    const h = await activated()
+    h.client.observeJob.mockClear()
+    h.client.killJob.mockClear()
+    h.send({ type: 'job-output-open', sessionId: 'other-project', jobId: 'job-x' })
+    h.send({ type: 'kill-job', sessionId: 'other-project', jobId: 'job-x' })
+    await vi.waitFor(() => expect(h.posts().filter(packet => packet.type === 'job-output-error' || packet.type === 'job-kill-result').length).toBe(2))
+    expect(h.client.observeJob).not.toHaveBeenCalled()
+    expect(h.client.killJob).not.toHaveBeenCalled()
+    expect(h.posts().find(packet => packet.type === 'job-kill-result')).toMatchObject({ ok: false })
   })
 })
 })

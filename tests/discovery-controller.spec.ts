@@ -2846,3 +2846,51 @@ describe('background job stop results', () => {
     expect((vscode.window.showErrorMessage as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(0)
   })
 })
+
+describe('archived and cross-project job privacy', () => {
+  const jobsFor = (sessionId: string, jobId: string) => ({
+    type: 'session/jobs', sessionId,
+    jobs: [{ id: jobId, kind: 'bash', label: 'task', status: 'running', startedAt: 1 }],
+  })
+  it('drops archived conversation jobs from the project projection and monitor list', async () => {
+    const h = await harness()
+    h.emit(jobsFor('a', 'job-a'), 'mux')
+    h.emit(jobsFor('b', 'job-b'), 'mux')
+    await vi.waitFor(() => expect(h.controller.state.projectJobs.some(job => job.sessionId === 'b')).toBe(true))
+    h.emit({ type: 'host/archived-sessions-changed', archivedSessionIds: ['b'] }, 'host')
+    await vi.waitFor(() => expect(h.controller.state.projectJobs.every(job => job.sessionId !== 'b')).toBe(true))
+    expect((h.controller as unknown as { jobsBySession: Map<string, unknown> }).jobsBySession.has('b')).toBe(false)
+    const monitored = h.client.monitorJobs.mock.calls.at(-1)![0] as string[]
+    expect(monitored).not.toContain('b')
+  })
+  it('rejects observing or stopping an archived or foreign conversation without RPC', async () => {
+    const h = await harness()
+    h.emit(jobsFor('b', 'job-b'), 'mux')
+    h.emit(jobsFor('other-project', 'job-x'), 'mux')
+    h.emit({ type: 'host/archived-sessions-changed', archivedSessionIds: ['b'] }, 'host')
+    h.client.observeJob.mockClear()
+    h.client.killJob.mockClear()
+    const posted: Record<string, any>[] = []
+    h.controller.openJobOutput('b', 'job-b', 0, message => posted.push(message as Record<string, any>))
+    const stopped = await h.controller.killJob('b', 'job-b')
+    expect(h.client.observeJob).not.toHaveBeenCalled()
+    expect(h.client.killJob).not.toHaveBeenCalled()
+    expect(posted[0]).toMatchObject({ type: 'job-output-error', error: 'This background task is no longer available.' })
+    expect(stopped).toEqual({ ok: false, error: 'This background task is no longer available.' })
+    // A snapshot from another project is not in this window's summaries.
+    const foreign: Record<string, any>[] = []
+    h.controller.openJobOutput('other-project', 'job-x', 0, message => foreign.push(message as Record<string, any>))
+    expect(h.client.observeJob).not.toHaveBeenCalled()
+    expect(foreign[0]).toMatchObject({ type: 'job-output-error' })
+  })
+  it('closes a live observation when its conversation is archived', async () => {
+    const h = await harness()
+    h.emit(jobsFor('b', 'job-b'), 'mux')
+    let cancels = 0
+    h.client.observeJob.mockImplementation(() => () => { cancels += 1 })
+    h.controller.openJobOutput('b', 'job-b', 0, () => {})
+    expect(cancels).toBe(0)
+    h.emit({ type: 'host/archived-sessions-changed', archivedSessionIds: ['b'] }, 'host')
+    await vi.waitFor(() => expect(cancels).toBe(1))
+  })
+})

@@ -4171,6 +4171,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     }
     const JOB_OUTPUT_MAX_CHUNKS = 512;
     const JOB_OUTPUT_MAX_BYTES = 256 * 1024;
+    /**
+     * Defence-in-depth cap on resident terminal buffers. One panel is open at a
+     * time, so this is a backstop against future call sites that retain rows:
+     * the oldest view that is not the expanded one is dropped with its output.
+     */
+    const JOB_OUTPUT_VIEW_LIMIT = 8;
+    function pruneJobOutputViews() {
+      while (jobOutputViews.size > JOB_OUTPUT_VIEW_LIMIT) {
+        let oldest;
+        for (const candidate of jobOutputViews.keys()) {
+          if (candidate !== expandedJobKey) { oldest = candidate; break; }
+        }
+        if (oldest === undefined) break;
+        jobOutputViews.delete(oldest);
+      }
+    }
     function clearJobKillPhase() {
       if (jobKillTimer !== undefined) { clearTimeout(jobKillTimer); jobKillTimer = undefined; }
       jobKillPhase = undefined;
@@ -4197,13 +4213,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       renderJobs();
     }
-    /** Close the open inline output stream, if any (idempotent). */
+    /** Close the open inline output stream and release its buffered terminal output. */
     function collapseJobOutput() {
       const key = expandedJobKey;
       if (key === undefined) return;
       const view = jobOutputViews.get(key);
       if (view !== undefined) {
         vscode.postMessage({ type: 'job-output-close', sessionId: view.sessionId, jobId: view.jobId });
+        // This tree is the only copy of the received output: never keep it
+        // after the row collapses, the menu closes, or the session changes.
+        jobOutputViews.delete(key);
       }
       expandedJobKey = undefined;
     }
@@ -4220,14 +4239,21 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (view === undefined) {
         view = { sessionId: jobOwnerOf(job), jobId: string(job && job.id), chunks: [], bytes: 0, next: undefined, gap: false, lossy: false, error: '' };
         jobOutputViews.set(key, view);
+        pruneJobOutputViews();
       }
-      const from = Number(view.next);
-      vscode.postMessage({ type: 'job-output-open', sessionId: view.sessionId, jobId: view.jobId, ...(Number.isFinite(from) && from >= 0 ? { from } : {}) });
+      // A resume cursor only exists after this view has received output. A
+      // fresh view (always the case after a collapse) opens without one; never
+      // send from: NaN.
+      const next = view.next;
+      const from = typeof next === 'number' && Number.isFinite(next) && next >= 0 ? next : undefined;
+      vscode.postMessage({ type: 'job-output-open', sessionId: view.sessionId, jobId: view.jobId, ...(from === undefined ? {} : { from }) });
       if (jobsOpen) renderJobs();
     }
     function resetJobTransients() {
       clearJobKillPhase();
       collapseJobOutput();
+      // Whatever collapse did not own (defensive) must not outlive the session.
+      jobOutputViews.clear();
       jobStatusOverrides.clear();
       settledJobsOpen = undefined;
       clearedJobIds.clear();
@@ -4653,7 +4679,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       state = current;
       // A different conversation starts with a clean stop/output state; the
       // roster itself is reconciled by renderJobs below.
-      if (renderedChrome.sessionId !== undefined && renderedChrome.sessionId !== current.sessionId) resetJobTransients();
+      const jobSessionChanged = renderedChrome.sessionId !== undefined && renderedChrome.sessionId !== current.sessionId;
+      // A disconnect (any non-ready phase after ready) drops every buffered
+      // terminal view instead of leaving it resident across a reconnect.
+      const jobRuntimeLost = current.phase !== 'ready' && renderedChrome.phase === 'ready';
+      if (jobSessionChanged || jobRuntimeLost) resetJobTransients();
       const createdConversation = reconcileConversationCreation(current);
       if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
         elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';

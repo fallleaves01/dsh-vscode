@@ -1374,6 +1374,8 @@ export class DshChatController implements vscode.Disposable {
     this.archivedSessionIds = new Set(result.archivedSessionIds)
     this.unreadSessionIds.delete(sessionId)
     this.persistUnreadSessions()
+    // Job rows and live output of an archived conversation must disappear here.
+    this.pruneArchivedJobs()
     await this.loadSessions()
   }
 
@@ -1428,7 +1430,7 @@ export class DshChatController implements vscode.Disposable {
   async killJob(sessionId: string, jobId: string): Promise<{ ok: boolean; error?: string }> {
     const key = `${sessionId}\u0000${jobId}`
     if (this.pendingJobKills.has(key)) return { ok: true }
-    if (!this.summaries.some(summary => summary.sessionId === sessionId)) {
+    if (!this.summaries.some(summary => summary.sessionId === sessionId) || this.archivedSessionIds.has(sessionId)) {
       return { ok: false, error: 'This background task is no longer available.' }
     }
     const job = this.jobsBySession.get(sessionId)?.find(item => item.id === jobId)
@@ -1495,11 +1497,13 @@ export class DshChatController implements vscode.Disposable {
     this.closeJobOutput()
     const client = this.client
     const fail = (error: string): void => { post({ type: 'job-output-error', sessionId, jobId, error }) }
-    const known = this.jobsBySession.get(sessionId)?.some(item => item.id === jobId) === true
-      || this.projectJobs().some(item => item.sessionId === sessionId && item.id === jobId)
-    // The Project aggregate shows jobs from every known conversation, so the
-    // selected conversation is not a precondition: a live client and a known
-    // session+job pair are. Unknown pairs still report the unavailable error.
+    // Authorization: the selected conversation, or a conversation this project
+    // lists and has not archived. A job row must also prove the pair is known.
+    const listed = this.summaries.some(item => item.sessionId === sessionId)
+    const authorized = sessionId === this._state.sessionId
+      || (listed && !this.archivedSessionIds.has(sessionId))
+    const known = authorized && (this.jobsBySession.get(sessionId)?.some(item => item.id === jobId) === true
+      || this.projectJobs().some(item => item.sessionId === sessionId && item.id === jobId))
     if (client === undefined || !known) { fail('This background task is no longer available.'); return }
     const tail = new JobOutputTail()
     tail.opened(Number.isSafeInteger(from) && from >= 0 ? from : 0)
@@ -2509,26 +2513,46 @@ export class DshChatController implements vscode.Disposable {
   private monitorJobsForList(): void {
     const client = this.client
     if (client === undefined) return
+    const visible = this.summaries.filter(summary => !this.archivedSessionIds.has(summary.sessionId))
     const first = this.jobsScanExpanded
-      ? this.summaries.map(summary => summary.sessionId)
-      : this.summaries
-        .filter(summary => summary.running || summary.sessionId === this._state.sessionId)
+      ? visible.map(summary => summary.sessionId)
+      : visible.filter(summary => summary.running || summary.sessionId === this._state.sessionId)
         .map(summary => summary.sessionId)
     client.monitorJobs(first)
     if (this.jobsScanExpanded) return
     this.jobsScanExpanded = true
     setTimeout(() => {
       if (this.client !== client) return
-      client.monitorJobs(this.summaries.map(summary => summary.sessionId))
+      client.monitorJobs(visible.map(summary => summary.sessionId))
     }, 1_500)
   }
 
   private projectJobs(): ChatViewState['projectJobs'] {
     const jobs = new Map<string, ChatViewState['projectJobs'][number]>()
-    for (const summary of this.summaries) for (const job of this.jobsBySession.get(summary.sessionId) ?? []) {
-      if (!jobs.has(job.id)) jobs.set(job.id, { ...job, sessionId: summary.sessionId, sessionTitle: sessionTitle(summary) })
+    for (const summary of this.summaries) {
+      if (this.archivedSessionIds.has(summary.sessionId)) continue
+      for (const job of this.jobsBySession.get(summary.sessionId) ?? []) {
+        if (!jobs.has(job.id)) jobs.set(job.id, { ...job, sessionId: summary.sessionId, sessionTitle: sessionTitle(summary) })
+      }
     }
     return [...jobs.values()]
+  }
+
+  /** Archived conversations keep no job state and no inline output observation. */
+  private pruneArchivedJobs(): void {
+    let changed = false
+    for (const id of [...this.jobsBySession.keys()]) {
+      if (!this.archivedSessionIds.has(id)) continue
+      this.jobsBySession.delete(id); changed = true
+    }
+    for (const id of [...this.jobErrors.keys()]) {
+      if (!this.archivedSessionIds.has(id)) continue
+      this.jobErrors.delete(id); changed = true
+    }
+    const observer = this.jobOutput
+    if (observer !== undefined && this.archivedSessionIds.has(observer.sessionId)) this.closeJobOutput()
+    if (changed) this.publishSessionItems()
+    else this.monitorJobsForList()
   }
 
   private markRead(sessionId: string, deferPublish = false): void {
@@ -3201,6 +3225,7 @@ export class DshChatController implements vscode.Disposable {
         this.sessionAttention.delete(sessionId)
         this.jobsBySession.delete(sessionId)
         this.jobErrors.delete(sessionId)
+        if (this.jobOutput?.sessionId === sessionId) this.closeJobOutput()
         // Nothing will consume a command held for a conversation that is gone.
         if (this.queuedCommands.delete(sessionId)) this.publishQueuedCommands(sessionId)
         if (sessionId === this._state.sessionId) {
@@ -3236,6 +3261,7 @@ export class DshChatController implements vscode.Disposable {
       this.archivedSessionIds = new Set(archived)
       for (const id of archived) this.unreadSessionIds.delete(id)
       this.persistUnreadSessions()
+      this.pruneArchivedJobs()
       void this.loadSessions().catch(error => { this.report(error) })
       return
     }
