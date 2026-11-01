@@ -1278,6 +1278,64 @@ describe('host surface wiring', () => {
       expect(mocks.fsStat).not.toHaveBeenCalled()
     })
 
+    it('times out a stalled stat, reports and frees the single-flight guard', async () => {
+      const h = await activated()
+      const stalled = Promise.withResolvers<{ type: number }>()
+      mocks.fsStat.mockReturnValueOnce(stalled.promise)
+      send(h, [{ uri: '/workspace/src/a.ts', source: 'internal' }], 1)
+      await vi.waitFor(() => expect(last(h, 1)).toBeDefined(), { timeout: 4_000 })
+      expect(last(h, 1).errors.join(' ')).toContain('took too long to read')
+      stalled.resolve({ type: 1 })
+      // The guard was reset, so a fresh drop resolves normally.
+      mocks.fsStat.mockResolvedValue({ type: 1 })
+      send(h, [{ uri: '/workspace/src/b.ts', source: 'internal' }], 2)
+      await vi.waitFor(() => expect(last(h, 2)?.references?.[0]?.text).toBe('@src/b.ts'))
+    })
+
+    it('times out a stalled selection pin without losing the path reference', async () => {
+      const h = await activated()
+      const stalled = Promise.withResolvers<{ type: number }>()
+      // First stat (reference resolution) resolves; the pin path stat stalls.
+      mocks.fsStat.mockResolvedValueOnce({ type: 1 }).mockReturnValueOnce(stalled.promise)
+      send(h, [{ uri: '/workspace/src/a.ts', source: 'internal', startLine: 2, endLine: 3 }], 1)
+      await vi.waitFor(() => expect(last(h, 1)?.references?.length).toBe(1), { timeout: 4_000 })
+      expect(last(h, 1).errors.join(' ')).toContain('selection took too long')
+      expect(last(h, 1).references[0].text).toBe('@src/a.ts')
+      stalled.resolve({ type: 1 })
+    })
+
+    it('stops a batch that exceeds the overall resolve budget', async () => {
+      vi.useFakeTimers()
+      try {
+        const h = await activated()
+        mocks.fsStat.mockImplementation(() => new Promise<{ type: number }>(() => {}))
+        const resources = Array.from({ length: 64 }, (_value, index) => ({ uri: `/workspace/src/${String(index)}.ts`, source: 'internal' }))
+        send(h, resources, 1)
+        for (let round = 0; round < 3; round++) await vi.advanceTimersByTimeAsync(3_000)
+        for (let flush = 0; flush < 8; flush++) await Promise.resolve()
+        expect(last(h, 1)).toBeDefined()
+        expect(last(h, 1).errors.join(' ')).toContain('took too long to resolve')
+        // The whole 64-item batch was not attempted after the budget expired.
+        expect(mocks.fsStat.mock.calls.length).toBeLessThan(64)
+      } finally { vi.useRealTimers() }
+    })
+
+    it('drops a late resolution after the conversation changes', async () => {
+      const h = await activated()
+      const stalled = Promise.withResolvers<{ type: number }>()
+      mocks.fsStat.mockReturnValueOnce(stalled.promise)
+      send(h, [{ uri: '/workspace/src/a.ts', source: 'internal' }], 1)
+      h.send({ type: 'select-session', sessionId: 'b' })
+      await vi.waitFor(() => expect(h.mergedState().sessionId).toBe('b'))
+      stalled.resolve({ type: 1 })
+      await new Promise(resolve => setTimeout(resolve, 30))
+      expect(last(h, 1)).toBeUndefined()
+      mocks.fsStat.mockResolvedValue({ type: 1 })
+      h.send({ type: 'resolve-references', sessionId: 'b', requestId: 2,
+        resources: [{ uri: '/workspace/src/b.ts', source: 'internal' }] })
+      await vi.waitFor(() => expect(last(h, 2)?.references?.[0]?.text).toBe('@src/b.ts'))
+    })
+
     it('refuses a second concurrent resolution and caches duplicate stats', async () => {
       const h = await activated()
       const pending = Promise.withResolvers<{ type: number }>()

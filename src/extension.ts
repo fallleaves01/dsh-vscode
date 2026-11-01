@@ -3861,6 +3861,23 @@ function attachmentDisplayName(value: unknown): string {
   return single === '' ? 'attachment' : single
 }
 
+/** One filesystem stat or pin action may not stall a drop for longer than this. */
+const REFERENCE_ACTION_TIMEOUT_MS = 3_000
+/** Whole reference batch budget, kept below the Webview's ten-second wait. */
+const REFERENCE_RESOLVE_BUDGET_MS = 8_000
+
+/** Bound one promise with a timer that is always cleared. */
+function withReferenceTimeout<T>(work: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+    timer.unref?.()
+    work.then(
+      value => { clearTimeout(timer); resolve(value) },
+      error => { clearTimeout(timer); reject(error) },
+    )
+  })
+}
+
 class DshSurface implements vscode.Disposable {
   private readonly settingsPanel: SettingsPanelManager
   private readonly disposables: vscode.Disposable[]
@@ -3875,6 +3892,10 @@ class DshSurface implements vscode.Disposable {
   private readonly pendingUploads = new Map<string, number>()
   /** One reference-resolution pass at a time; a concurrent drop is refused. */
   private resolvingReferences = false
+  /** Bumped on session switch or runtime loss so a late resolve cannot land. */
+  private referenceResolveGeneration = 0
+  private referenceSessionId = ''
+  private referencesRuntimeLive = true
   /** Draft bytes are released when their conversation is archived or the runtime goes away. */
   private draftsRuntimeLive = true
   /** Native warning cooldown for webview-reported attachment errors. */
@@ -3943,11 +3964,26 @@ class DshSurface implements vscode.Disposable {
     })
     this.disposables = [
       this.settingsPanel,
-      controller.onDidChangeState(state => { this.reconcileDrafts(state); this.queueState(state) }),
+      controller.onDidChangeState(state => { this.noteReferenceState(state); this.reconcileDrafts(state); this.queueState(state) }),
       controller.registerDraftReset(sessionIds => { this.clearDraftsFor(sessionIds) }),
       editorContext.onDidChange(state => { void webview.postMessage({ type: 'ide-context', state }) }),
       webview.onDidReceiveMessage(message => { this.acceptMessage(message) }),
     ]
+  }
+
+  /**
+   * Invalidate any in-flight reference resolution on a conversation switch or
+   * runtime loss; the old pass must not publish into the new context, and the
+   * one-at-a-time guard must not stay stuck if that pass never settles.
+   */
+  private noteReferenceState(state: ChatViewState): void {
+    const runtimeLive = state.runtimeConnection !== null
+    if (state.sessionId !== this.referenceSessionId || (this.referencesRuntimeLive && !runtimeLive)) {
+      this.referenceResolveGeneration += 1
+      this.resolvingReferences = false
+    }
+    this.referenceSessionId = state.sessionId
+    this.referencesRuntimeLive = runtimeLive
   }
 
   /** Archived conversations lose their drafts; tell the Webview so no stale chip remains. */
@@ -4316,6 +4352,8 @@ class DshSurface implements vscode.Disposable {
       return
     }
     this.resolvingReferences = true
+    const generation = this.referenceResolveGeneration
+    const deadline = Date.now() + REFERENCE_RESOLVE_BUDGET_MS
     try {
       const cwd = this.controller.state.cwd
       const remoteName = typeof vscode.env.remoteName === 'string' ? vscode.env.remoteName : undefined
@@ -4328,6 +4366,11 @@ class DshSurface implements vscode.Disposable {
         return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
       }
       for (const raw of value.resources.slice(0, 64)) {
+        if (generation !== this.referenceResolveGeneration) return
+        if (Date.now() > deadline) {
+          errors.push('The drop took too long to resolve. Try again.')
+          break
+        }
         if (typeof raw !== 'object' || raw === null) continue
         const record = raw as Record<string, unknown>
         if (typeof record.uri !== 'string' || record.uri === '' || record.uri.length > 2048) {
@@ -4365,7 +4408,15 @@ class DshSurface implements vscode.Disposable {
           continue
         }
         let type: vscode.FileType
-        try { type = await this.droppedUriType(uri) } catch { errors.push('A dropped item could not be read.'); continue }
+        try {
+          const remaining = Math.max(1, Math.min(REFERENCE_ACTION_TIMEOUT_MS, deadline - Date.now()))
+          type = await withReferenceTimeout(this.droppedUriType(uri), remaining, 'A dropped item took too long to read.')
+        } catch (error) {
+          if (generation !== this.referenceResolveGeneration) return
+          errors.push(diagnosticText(error instanceof Error ? error.message : String(error)).slice(0, 500) || 'A dropped item could not be read.')
+          continue
+        }
+        if (generation !== this.referenceResolveGeneration) return
         const kind: 'file' | 'folder' = type === vscode.FileType.Directory ? 'folder' : 'file'
         const built = dshReferenceFor(cwd, uri.fsPath, kind)
         if (built.reference === undefined) { errors.push(built.error ?? 'A dropped path cannot be referenced.'); continue }
@@ -4373,16 +4424,26 @@ class DshSurface implements vscode.Disposable {
         const endLine = typeof record.endLine === 'number' && Number.isSafeInteger(record.endLine) && record.endLine >= 0 ? record.endLine : undefined
         if (startLine !== undefined) {
           const selection = { startLine, endLine: endLine ?? startLine }
-          if (await this.editorContext.pinUri(uri, cwd, selection, sessionId)) pinned += 1
+          try {
+            const remaining = Math.max(1, Math.min(REFERENCE_ACTION_TIMEOUT_MS, deadline - Date.now()))
+            if (await withReferenceTimeout(this.editorContext.pinUri(uri, cwd, selection, sessionId),
+              remaining, 'A dropped selection took too long to pin.')) pinned += 1
+          } catch (error) {
+            if (generation !== this.referenceResolveGeneration) return
+            errors.push(diagnosticText(error instanceof Error ? error.message : String(error)).slice(0, 500) || 'A dropped selection could not be pinned.')
+          }
         }
+        if (generation !== this.referenceResolveGeneration) return
         if (!seen.has(built.reference.text)) {
           seen.add(built.reference.text)
           references.push(built.reference)
         }
       }
+      if (generation !== this.referenceResolveGeneration) return
       await this.webview.postMessage({ type: 'references-resolved', requestId, references, pinned, errors: errors.slice(0, 20) })
     } finally {
-      this.resolvingReferences = false
+      // A newer generation already reset the guard; this pass must not reopen it.
+      if (generation === this.referenceResolveGeneration) this.resolvingReferences = false
     }
   }
 
