@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-alpha.2.5**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-alpha.2.6**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -87,6 +87,10 @@ pnpm run package
 `artifacts/dsh-sidebar-<version>.vsix`。其他设置包括
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
+
+### 升级到 0.2.2-alpha.2.6
+
+0.2.2-alpha.2.6 保留 **DeepSeek needs your input** 问题卡片中已输入的自定义回答。Webview 在约 8 秒无状态更新后会请求一次 full state；快照中的同一问题会变成新对象，旧的身份比较因此重建卡片并丢弃文本。现在 tail 卡片只在内容变化时重建；若问题内容确实变化而必须重建，会恢复草稿文本、已选选项、焦点与光标位置。刷新后提交仍会发送恢复后的答案。
 
 ### 升级到 0.2.2-alpha.2.5
 

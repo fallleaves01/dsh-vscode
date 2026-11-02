@@ -9,6 +9,23 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-alpha.2.6] - 2026-11-02
+
+### Fixed
+
+- Typed custom answers in a **DeepSeek needs your input** question card were
+  discarded roughly every eight seconds. The Webview asks for a full state
+  snapshot after five seconds without a state update; the snapshot carries a
+  new object for the same question, and the tail rebuilt its card whenever the
+  question object identity changed. Tail cards now compare stable content and
+  rebuild only on an actual change. A legitimate rebuild restores the custom
+  answer, selected options, focus and caret from a per-request draft, and
+  Submit sends the restored answer. Drafts are cleared when the question is
+  answered or replaced by a different request.
+- Focus and caret restoration covers custom text answers; radio and checkbox
+  selection is restored without moving focus. Question item lookup no longer
+  depends on `CSS.escape`, so ids with quotes cannot break the selector.
+
 ## [0.2.2-alpha.2.5] - 2026-11-02
 
 ### Fixed

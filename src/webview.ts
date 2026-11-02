@@ -1122,7 +1122,104 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let renderedSessionId;
     let renderedStatusKey = '';
     let renderedHistoryKey = '';
-    let renderedTail = {};
+    /**
+     * Content key of the tail cards, not their object identities.
+     *
+     * A full-state resync delivers deep-equal content as fresh objects, and the
+     * Host answers the resync watchdog this way; identity comparison rebuilt the
+     * ask-question card on every answer, replacing its custom-answer input
+     * and erasing a half-typed answer. The key is a deterministic serialization
+     * so an unchanged request keeps its DOM.
+     */
+    let renderedTailKey = '';
+    /**
+     * Unsent answers to ask-question cards, keyed by session + request + question.
+     *
+     * This is the fallback for the rebuilds that are legitimate (a changed
+     * request, a queued card, a session switch): the draft restores the text and
+     * the checked options into the new DOM. A different rpcId never reads an
+     * older request's draft, and a resolved or submitted request drops its
+     * entries.
+     */
+    const questionDrafts = new Map();
+    const MAX_QUESTION_DRAFTS = 64;
+    /** Deterministic JSON: object construction order cannot change the key. */
+    function stableSerialize(value) {
+      if (value === undefined) return 'undefined';
+      if (value === null || typeof value !== 'object') {
+        try { return JSON.stringify(value); } catch { return String(value); }
+      }
+      if (Array.isArray(value)) return '[' + value.map(stableSerialize).join(',') + ']';
+      const keys = Object.keys(value).sort();
+      return '{' + keys.map(key => JSON.stringify(key) + ':' + stableSerialize(value[key])).join(',') + '}';
+    }
+    function tailContentKey(current) {
+      return [current.queue, current.changedFiles, current.approval, current.question].map(stableSerialize).join('|');
+    }
+    // NUL cannot appear in a Host id, so it cannot collide; it is built without
+    // a backslash because the whole script is a template literal.
+    const QUESTION_DRAFT_SEPARATOR = String.fromCharCode(0);
+    function questionDraftKey(sessionId, rpcId, questionId) {
+      return String(sessionId) + QUESTION_DRAFT_SEPARATOR + String(rpcId) + QUESTION_DRAFT_SEPARATOR + String(questionId);
+    }
+    function saveQuestionDraft(sessionId, rpcId, questionId, custom, selected) {
+      const key = questionDraftKey(sessionId, rpcId, questionId);
+      questionDrafts.delete(key);
+      questionDrafts.set(key, { custom, selected });
+      while (questionDrafts.size > MAX_QUESTION_DRAFTS) {
+        const oldest = questionDrafts.keys().next().value;
+        if (oldest === undefined) break;
+        questionDrafts.delete(oldest);
+      }
+    }
+    function questionDraftFor(sessionId, rpcId, questionId) {
+      return questionDrafts.get(questionDraftKey(sessionId, rpcId, questionId));
+    }
+    /** Keep only the request currently on screen for this session. */
+    function pruneQuestionDrafts(sessionId, rpcId) {
+      const sessionPrefix = String(sessionId) + QUESTION_DRAFT_SEPARATOR;
+      const keep = questionDraftKey(sessionId, rpcId, '');
+      for (const key of [...questionDrafts.keys()]) {
+        if (!key.startsWith(sessionPrefix) || key.startsWith(keep)) continue;
+        questionDrafts.delete(key);
+      }
+    }
+    function clearQuestionDrafts(sessionId) {
+      if (sessionId === undefined) { questionDrafts.clear(); return; }
+      const prefix = String(sessionId) + QUESTION_DRAFT_SEPARATOR;
+      for (const key of [...questionDrafts.keys()]) if (key.startsWith(prefix)) questionDrafts.delete(key);
+    }
+    /** Find one question item by its exact id; ids are Host text, not selectors. */
+    function questionItem(root, questionId) {
+      for (const item of root.querySelectorAll('[data-question-id]')) {
+        if (item.getAttribute('data-question-id') === questionId) return item;
+      }
+      return null;
+    }
+    /** Caret position inside the question card, for rebuilds that replace it. */
+    function captureTailFocus() {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLInputElement) || !active.classList.contains('custom-answer')) return undefined;
+      if (!elements.conversationTail.contains(active)) return undefined;
+      const item = active.closest('[data-question-id]');
+      if (item === null) return undefined;
+      return {
+        questionId: item.getAttribute('data-question-id') || '',
+        start: typeof active.selectionStart === 'number' ? active.selectionStart : undefined,
+        end: typeof active.selectionEnd === 'number' ? active.selectionEnd : undefined,
+      };
+    }
+    function restoreTailFocus(focus) {
+      if (focus === undefined) return;
+      const item = questionItem(elements.conversationTail, focus.questionId);
+      if (item === null) return;
+      const input = item.querySelector('.custom-answer');
+      if (!(input instanceof HTMLInputElement)) return;
+      input.focus();
+      if (focus.start !== undefined) {
+        try { input.setSelectionRange(focus.start, focus.end === undefined ? focus.start : focus.end); } catch { /* not a text input */ }
+      }
+    }
     let renderedChrome = {};
     /** Archived session ids of the last render; a change releases local state. */
     let renderedArchivedKey;
@@ -3309,20 +3406,36 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       reject.addEventListener('click', () => vscode.postMessage({ type: 'approval', rpcId: approval.rpcId, approvalId: approval.approvalId, outcome: 'rejected' }));
       actions.append(allow, reject); box.append(actions); return box;
     }
-    function renderQuestions(request) {
+    /**
+     * The ask-question card, with its unsent answer restored.
+     *
+     * The draft is read per session + rpcId + question id: a rebuild caused by a
+     * changing request or a queued card keeps what the user typed, while a new
+     * request never sees an older one's text.
+     */
+    function renderQuestions(request, sessionId) {
+      pruneQuestionDrafts(sessionId, request.rpcId);
       const box = node('form', 'interaction question'); box.append(node('div', 'interaction-title', 'DeepSeek needs your input'));
       for (const question of request.questions) {
         const item = node('div', 'question-item'); item.dataset.questionId = question.id;
         item.append(node('div', 'question-label', question.header || question.question));
         if (question.header) item.append(node('div', 'question-detail', question.question));
         if (question.detail) item.append(node('div', 'question-detail', question.detail));
+        const draft = questionDraftFor(sessionId, request.rpcId, question.id);
+        const selectedNow = () => Array.from(item.querySelectorAll('input[type=radio]:checked,input[type=checkbox]:checked')).map(input => input.value);
+        const customNow = () => { const field = item.querySelector('[data-custom=true]'); return field instanceof HTMLInputElement ? field.value : ''; };
+        const remember = () => saveQuestionDraft(sessionId, request.rpcId, question.id, customNow(), selectedNow());
         for (const option of question.options || []) {
           const label = node('label', 'option');
           const input = document.createElement('input'); input.type = question.multiSelect ? 'checkbox' : 'radio'; input.name = 'question-' + question.id; input.value = option.label;
+          if (draft !== undefined && draft.selected.includes(option.label)) input.checked = true;
+          input.addEventListener('change', remember);
           const copy = node('span', '', option.label); if (option.description) copy.append(node('span', 'option-description', option.description));
           label.append(input, copy); item.append(label);
         }
         const custom = document.createElement('input'); custom.className = 'custom-answer'; custom.placeholder = question.options && question.options.length ? 'Other answer (optional)' : 'Type your answer'; custom.dataset.custom = 'true';
+        if (draft !== undefined) custom.value = draft.custom;
+        custom.addEventListener('input', remember);
         item.append(custom); box.append(item);
       }
       const submit = node('button', 'primary', 'Submit'); submit.type = 'submit';
@@ -3330,13 +3443,18 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       box.addEventListener('submit', event => {
         event.preventDefault(); const answers = []; let valid = true;
         for (const question of request.questions) {
-          const item = box.querySelector('[data-question-id="' + CSS.escape(question.id) + '"]');
+          const item = questionItem(box, question.id);
           const selected = Array.from(item.querySelectorAll('input[type=radio]:checked,input[type=checkbox]:checked')).map(input => input.value);
           const custom = item.querySelector('[data-custom=true]').value.trim();
           if (!selected.length && !custom) { item.classList.add('error-text'); valid = false; } else item.classList.remove('error-text');
           answers.push({ id: question.id, selected, ...(custom ? { custom } : {}) });
         }
-        if (valid) vscode.postMessage({ type: 'question', rpcId: request.rpcId, answers });
+        if (valid) {
+          // The request ends with this answer: nothing of it may be restored
+          // if a late duplicate of the same request arrives.
+          vscode.postMessage({ type: 'question', rpcId: request.rpcId, answers });
+          clearQuestionDrafts(sessionId);
+        }
       });
       return box;
     }
@@ -4835,7 +4953,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         draftImages = draftImagesBySession.get(current.sessionId) || [];
         draftFiles = draftFilesBySession.get(current.sessionId) || []; renderAttachments();
         historyAnchor = undefined; conversationScroller.reset();
-        renderedHistoryKey = ''; renderedTail = {}; toolOpenIntent.clear();
+        renderedHistoryKey = ''; renderedTailKey = ''; toolOpenIntent.clear();
         for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
         loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear(); deferredOutputViews.clear(); pendingMessageAppends.clear();
       }
@@ -4856,7 +4974,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         renderedMessages.clear(); thinkingTiming.clear(); syncThinkingTicker();
         // The bodies are gone with the messages, so nothing may keep translating.
         cotReset();
-        renderedHistoryKey = ''; renderedTail = {};
+        renderedHistoryKey = ''; renderedTailKey = ''; clearQuestionDrafts();
         // The turn clock is gone with the tail, and a dead runtime must not keep
         // ticking it.
         renderedLiveKey = ''; liveStatusNode = undefined; syncLiveStatusTicker();
@@ -4878,9 +4996,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       reconcileMessages(array(current.messages), current);
 
-      if (renderedTail.queue !== current.queue || renderedTail.changedFiles !== current.changedFiles || renderedTail.approval !== current.approval || renderedTail.question !== current.question) {
+      const tailKey = tailContentKey(current);
+      if (tailKey !== renderedTailKey) {
         if (sessionAction && sessionAction.kind === 'changes') closeSessionActions(false);
-        renderedTail = { queue: current.queue, changedFiles: current.changedFiles, approval: current.approval, question: current.question };
+        renderedTailKey = tailKey;
+        // A rebuild replaces the question card and with it the custom-answer
+        // input. The draft keeps the text, and the caret is restored when the
+        // user was typing in it; an unchanged request never reaches this branch.
+        const tailFocus = captureTailFocus();
         elements.conversationTail.replaceChildren();
         // The turn clock is not one of these cards but it lives in the same slot,
         // and the user must not lose the one signal that a turn is still alive
@@ -4889,7 +5012,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         for (const item of current.queue || []) if (item.placement === 'steering') elements.conversationTail.append(renderPendingSteering(item));
         if (current.changedFiles && current.changedFiles.length) elements.conversationTail.append(renderChangedFiles(current.changedFiles));
         if (current.approval) elements.conversationTail.append(renderApproval(current.approval));
-        if (current.question) elements.conversationTail.append(renderQuestions(current.question));
+        if (current.question) elements.conversationTail.append(renderQuestions(current.question, current.sessionId));
+        else clearQuestionDrafts(current.sessionId);
+        restoreTailFocus(tailFocus);
       }
       // The turn clock is its own slot: it ticks once a second, and rebuilding
       // the changed-files and approval cards on every tick would be absurd.
