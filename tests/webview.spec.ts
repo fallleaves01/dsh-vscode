@@ -254,6 +254,20 @@ describe('chat webview', () => {
     expect(html).toContain('const MAX_DROP_FILES = 8;')
     expect(html).toContain('You can attach up to 8 files at once.')
     expect(html).toContain('const MAX_IMAGE_PREVIEW_BYTES = 64 * 1024 * 1024;')
+    // The overlay is visual only: a pointer-events target would eat the drop.
+    expect(html).toContain('.drop-overlay {')
+    expect(html).toContain('pointer-events: none;')
+    // Data-transfer fallbacks: content sniffing, items.getAsFile and gesture reset.
+    expect(html).toContain('function resourceUriInList(text)')
+    expect(html).toContain("getData('text/uri-list')")
+    expect(html).toContain('getAsFile()')
+    expect(html).toContain("addEventListener('dragend'")
+    expect(html).toContain("window.addEventListener('blur'")
+    expect(html).toContain("document.addEventListener('visibilitychange'")
+    // Low-noise diagnostics for Developer: Open Webview Developer Tools.
+    expect(html).toContain("console.info('[dsh-drop]'")
+    // The Host context-menu fallback must insert resolved references too.
+    expect(html).toContain("event.data.type === 'insert-references'")
     // An OS drop never yields a path inside a webview, so bytes are the only
     // transport this side can offer.
     expect(html).not.toContain('getPathForFile')
@@ -270,7 +284,7 @@ describe('chat webview', () => {
     // uri-list candidate instead.
     expect(html).toContain('function droppedResources(dataTransfer, hasOsFiles)')
     expect(html).toContain('droppedResources(dataTransfer, osFiles.length > 0)')
-    expect(html).toContain('if (!hasOsFiles) {')
+    expect(html).toContain('if (hasOsFiles && !isRemoteResourceUri(value)) continue;')
     expect(html).toContain("push(value, 'uri-list', {})")
   })
 

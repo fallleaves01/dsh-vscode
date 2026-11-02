@@ -3,7 +3,7 @@
   "displayName": "DSH Sidebar",
   "description": "A project-aware VS Code chat sidebar powered by the official DeepSeek Harness runtime.",
   "icon": "media/deepseek.png",
-  "version": "0.2.2-alpha.2.2",
+  "version": "0.2.2-alpha.2.3",
   "private": true,
   "publisher": "fallleaves01",
   "license": "MIT",
@@ -41,6 +41,7 @@
     "onView:deepseekHarness.chat",
     "onCommand:deepseekHarness.openChat",
     "onCommand:deepseekHarness.openInEditor",
+    "onCommand:deepseekHarness.addToChat",
     "onCommand:deepseekHarness.addSelection",
     "onCommand:deepseekHarness.fixWithDeepSeek",
     "onCommand:deepseekHarness.sendProblem",
@@ -177,6 +178,10 @@
       {
         "command": "deepseekHarness.configureTaskServices",
         "title": "DeepSeek Harness: Configure Task Services"
+      },
+      {
+        "command": "deepseekHarness.addToChat",
+        "title": "DeepSeek Harness: Add to Chat"
       }
     ],
     "keybindings": [
@@ -204,6 +209,13 @@
       }
     ],
     "menus": {
+      "explorer/context": [
+        {
+          "command": "deepseekHarness.addToChat",
+          "when": "resourceScheme == file || resourceScheme == vscode-remote || resourceScheme == vscode-vfs",
+          "group": "navigation@99"
+        }
+      ],
       "editor/context": [
         {
           "command": "deepseekHarness.addSelection",

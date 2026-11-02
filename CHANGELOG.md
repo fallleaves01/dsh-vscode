@@ -9,6 +9,32 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-alpha.2.3] - 2026-11-02
+
+### Fixed
+
+- Adding files from the Explorer or an editor tab to the sidebar composer.
+  VS Code's workbench consumes drag operations that start inside the
+  workbench for view docking before they can reach a sidebar WebviewView, so
+  the Webview listener could never receive them. The Explorer context menu now
+  offers **DeepSeek Harness: Add to Chat**, which resolves the selected files
+  and folders through the same scheme, authority, stat, remote-path and
+  reference-grammar checks as typed references, and inserts the resulting
+  `@` references at the composer caret; multi-selection is supported.
+- Operating-system file drops are more reliable: the Webview accepts a
+  `text/uri-list` fallback and `DataTransferItem` files, stops the drop overlay
+  from capturing the pointer, resets the drag gesture on drop, drag end,
+  window blur and hidden visibility, and records a bounded `[dsh-drop]`
+  diagnostic line in the Webview console for troubleshooting. The runtime
+  still refuses a drop while it is not ready instead of failing silently.
+
+### Changed
+
+- The README, its Chinese translation and the Marketplace README now describe
+  the Explorer context-menu command and the `+` picker for workspace resources,
+  and keep operating-system file drops as the upload path; they no longer
+  promise Explorer or editor-tab drag and drop inside the sidebar.
+
 ## [0.2.2-alpha.2.2] - 2026-11-02
 
 ### Fixed

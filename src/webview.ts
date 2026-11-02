@@ -5319,6 +5319,30 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (/^[a-z][a-z0-9+.-]*:/i.test(text)) return text;
       return 'file://' + (text.startsWith('/') ? '' : '/') + encodeURI(text.split(String.fromCharCode(92)).join('/'));
     }
+    function isFileishUri(value) {
+      const text = String(value || '');
+      return RESOURCE_SCHEMES.some(scheme => text.startsWith(scheme));
+    }
+    function isRemoteResourceUri(value) {
+      const text = String(value || '');
+      return text.startsWith('vscode-remote:') || text.startsWith('vscode-vfs:');
+    }
+    /** Split a uri-list payload: comments dropped, CR/LF (and CRLF) accepted. */
+    function uriListEntries(text) {
+      const entries = [];
+      if (typeof text !== 'string' || text === '') return entries;
+      for (const line of text.split(/\\r\\n?|\\n/)) {
+        const value = line.trim();
+        if (value === '' || value.startsWith('#')) continue;
+        entries.push(value);
+      }
+      return entries;
+    }
+    /** True when a uri-list payload names at least one workspace resource. */
+    function resourceUriInList(text) {
+      for (const value of uriListEntries(text)) if (isFileishUri(value)) return true;
+      return false;
+    }
     /**
      * Merge every resource a drag offers, deduplicated by URI. Explorer sets
      * ResourceURLs and the internal URI list, an editor tab sets CodeEditors,
@@ -5350,19 +5374,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // The internal URI list is a newline-separated URI list, best for directories
       // and multi-selection. CodeFiles is a JSON array of absolute paths.
       const internal = dataTransfer.getData('application/vnd.code.uri-list');
-      if (typeof internal === 'string' && internal !== '') {
-        for (const line of internal.split(/\\r?\\n/)) { const value = line.trim(); if (value === '' || value.startsWith('#')) continue; push(value, 'internal', {}); }
-      }
+      for (const value of uriListEntries(internal)) push(value, 'internal', {});
       const codeFiles = safeJson(dataTransfer.getData('CodeFiles'));
       if (Array.isArray(codeFiles)) for (const value of codeFiles) if (typeof value === 'string') push(codeFileUri(value), 'internal', {});
-      // The generic web URI list names a client-machine path for an OS drag and
-      // is only a candidate when there are no real files. The Host decides
-      // whether the path is local to its own filesystem.
-      if (!hasOsFiles) {
-        const list = dataTransfer.getData('text/uri-list');
-        if (typeof list === 'string' && list !== '') {
-          for (const line of list.split(/\\r?\\n/)) { const value = line.trim(); if (value === '' || value.startsWith('#')) continue; push(value, 'uri-list', {}); }
-        }
+      // The generic web URI list names client-machine paths for an OS drag. With
+      // real files in hand only remote workspace spellings are accepted, so a
+      // local file:// path cannot be mistaken for a resource on this host.
+      for (const value of uriListEntries(dataTransfer.getData('text/uri-list'))) {
+        if (hasOsFiles && !isRemoteResourceUri(value)) continue;
+        push(value, 'uri-list', {});
       }
       return found;
     }
@@ -5425,7 +5445,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       try {
       const dataTransfer = event.dataTransfer;
       if (!dataTransfer) return;
-      const osFiles = Array.from(dataTransfer.files || []);
+      let osFiles = Array.from(dataTransfer.files || []);
+      if (osFiles.length === 0 && dataTransfer.items) {
+        // Some remote/webview hosts expose the payload only through items; the
+        // same File objects still carry the bytes the upload path needs.
+        for (const item of Array.from(dataTransfer.items)) {
+          if (!item || item.kind !== 'file' || typeof item.getAsFile !== 'function') continue;
+          try { const file = item.getAsFile(); if (file) osFiles.push(file); } catch { /* skip this item */ }
+        }
+      }
       // Count and clamp before the first read: a twenty-file drag must not read
       // nineteen files the Host cannot stage.
       const acceptedFiles = osFiles.slice(0, MAX_DROP_FILES);
@@ -5520,12 +5548,60 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     // handled at all. Compare without case, which also accepts the Files
     // spelling the platform uses for a drag from the file manager.
     const DROP_URI_TYPES_LOWER = DROP_URI_TYPES.map(type => type.toLowerCase());
+    /** Read a data-transfer format without letting protected-mode throw. */
+    function transferData(dataTransfer, format) {
+      try { return dataTransfer.getData(format) || ''; } catch { return ''; }
+    }
+    function transferHasFiles(dataTransfer) {
+      try { if (dataTransfer.files && dataTransfer.files.length > 0) return true; } catch { /* ignore */ }
+      try {
+        return Array.from(dataTransfer.items || []).some(item => item && item.kind === 'file');
+      } catch { return false; }
+    }
+    /**
+     * Whether a drag is a file/resource drag worth handling. Besides the
+     * documented types this sniffs the uri-list payload: some remote and
+     * Electron hosts expose only text/uri-list (or a generic
+     * application/vnd.code.* kind), and giving up on the type alone made the
+     * Explorer drop silently do nothing.
+     */
     function dragCarriesPayload(event) {
-      const types = Array.from((event.dataTransfer && event.dataTransfer.types) || [])
-        .map(type => String(type).toLowerCase());
-      return types.some(type => DROP_URI_TYPES_LOWER.includes(type) || type === 'files');
+      const dataTransfer = event && event.dataTransfer;
+      if (!dataTransfer) return false;
+      const types = Array.from(dataTransfer.types || []).map(type => String(type).toLowerCase());
+      if (types.some(type => DROP_URI_TYPES_LOWER.includes(type) || type === 'files')) return true;
+      if (transferHasFiles(dataTransfer)) return true;
+      if (resourceUriInList(transferData(dataTransfer, 'text/uri-list'))) return true;
+      // A generic application/vnd.code.* kind only counts when it actually
+      // carries a workspace URI we can read.
+      for (const type of types) {
+        if (!type.startsWith('application/vnd.code.')) continue;
+        if (resourceUriInList(transferData(dataTransfer, type))) return true;
+      }
+      return false;
+    }
+    let dropDiagnosticArmed = false;
+    /** Low-noise diagnostics for Developer: Open Webview Developer Tools. */
+    function reportDropDiagnostic(phase, event) {
+      try {
+        const dataTransfer = event && event.dataTransfer;
+        const types = Array.from((dataTransfer && dataTransfer.types) || []).map(type => String(type));
+        const files = dataTransfer && dataTransfer.files ? dataTransfer.files.length : 0;
+        const items = dataTransfer && dataTransfer.items ? dataTransfer.items.length : 0;
+        const target = event && event.target instanceof Element
+          ? event.target.tagName.toLowerCase() + (event.target.id ? '#' + event.target.id : '')
+          : '';
+        const uriList = transferData(dataTransfer, 'text/uri-list').slice(0, 120);
+        console.info('[dsh-drop]', { phase, types, files, items, target, uriList });
+      } catch { /* diagnostics must never break the drag */ }
+    }
+    function resetDropGesture() {
+      dropDepth = 0;
+      dropDiagnosticArmed = false;
+      setDropActive(false);
     }
     document.addEventListener('dragenter', event => {
+      if (!dropDiagnosticArmed) { reportDropDiagnostic('dragenter', event); dropDiagnosticArmed = true; }
       if (!dragCarriesPayload(event)) return;
       event.preventDefault(); dropDepth += 1; setDropActive(true);
     });
@@ -5533,22 +5609,36 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (!dragCarriesPayload(event)) return;
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = dropAllowed() ? 'copy' : 'none';
-      if (dropDepth > 0) updateDropOverlay();
+      // Some hosts deliver dragover but not dragenter; claim the gesture anyway.
+      if (dropDepth === 0) { dropDepth = 1; setDropActive(true); }
+      else updateDropOverlay();
     });
     document.addEventListener('dragleave', event => {
-      if (!dragCarriesPayload(event)) return;
+      if (!dragCarriesPayload(event) && dropDepth === 0) return;
       event.preventDefault();
       // A drag that leaves the window may never deliver every matching
       // dragleave, so a null relatedTarget ends the gesture outright.
-      if (event.relatedTarget === null) dropDepth = 0;
-      else dropDepth = Math.max(0, dropDepth - 1);
-      if (dropDepth === 0) setDropActive(false);
+      if (event.relatedTarget === null) resetDropGesture();
+      else {
+        dropDepth = Math.max(0, dropDepth - 1);
+        if (dropDepth === 0) setDropActive(false);
+      }
     });
     document.addEventListener('drop', event => {
-      if (!dragCarriesPayload(event)) return;
-      event.preventDefault(); dropDepth = 0; setDropActive(false);
-      void acceptDrop(event);
+      const payload = dragCarriesPayload(event);
+      reportDropDiagnostic('drop', event);
+      dropDepth = 0; dropDiagnosticArmed = false; setDropActive(false);
+      if (!payload) return;
+      event.preventDefault();
+      // The overlay is already hidden and acceptDrop owns the intake gate; a
+      // rejected drop must never leave either behind for the next gesture.
+      void acceptDrop(event).catch(() => {
+        try { vscode.postMessage({ type: 'attachment-error', message: 'The dropped items could not be added.' }); } catch { /* ignore */ }
+      });
     });
+    document.addEventListener('dragend', () => resetDropGesture());
+    window.addEventListener('blur', () => resetDropGesture());
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') resetDropGesture(); });
     elements.prompt.addEventListener('input', () => { closeContextMenu(false); if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); commandIndex = 0; mentionIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); requestMentions(); });
     elements.prompt.addEventListener('click', () => { closeContextMenu(false); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); requestMentions(); });
     elements.prompt.addEventListener('paste', event => {
@@ -5841,6 +5931,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           showSessionNotice(string(event.data.error));
         }
         if (state && sessionId === state.sessionId) renderAttachments(); else updateSend();
+      }
+      if (event.data.type === 'insert-references') {
+        // Explorer context-menu fallback from the Host: the native drag never
+        // reached the Webview, so the Host resolves the references and asks for
+        // the same caret insertion the drop path performs.
+        const texts = array(event.data.texts).filter(text => typeof text === 'string' && text !== '');
+        const errors = array(event.data.errors).filter(error => typeof error === 'string' && error !== '');
+        if (errors.length > 0) showSessionNotice(errors[0]);
+        if (texts.length > 0) insertReferenceTexts(texts.map(text => ({ text })));
       }
       if (event.data.type === 'references-resolved' && typeof event.data.requestId === 'number') {
         const requestId = event.data.requestId;

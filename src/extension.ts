@@ -4356,96 +4356,139 @@ class DshSurface implements vscode.Disposable {
     const generation = this.referenceResolveGeneration
     const deadline = Date.now() + REFERENCE_RESOLVE_BUDGET_MS
     try {
-      const cwd = this.controller.state.cwd
-      const remoteName = typeof vscode.env.remoteName === 'string' ? vscode.env.remoteName : undefined
-      const references: { text: string; label: string; kind: 'file' | 'folder' }[] = []
-      const errors: string[] = []
-      const seen = new Set<string>()
-      let pinned = 0
-      const insideWorkspace = (fsPath: string): boolean => {
-        const relative = path.relative(cwd, fsPath)
-        return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
-      }
-      for (const raw of value.resources.slice(0, 64)) {
-        if (generation !== this.referenceResolveGeneration) return
-        if (Date.now() > deadline) {
-          errors.push('The drop took too long to resolve. Try again.')
-          break
-        }
-        if (typeof raw !== 'object' || raw === null) continue
-        const record = raw as Record<string, unknown>
-        if (typeof record.uri !== 'string' || record.uri === '' || record.uri.length > 2048) {
-          errors.push('A dropped item could not be read.')
-          continue
-        }
-        if (/^[A-Za-z]:[\\/]/.test(record.uri)) {
-          errors.push('A Windows drive path must be dropped as a file:// URI.')
-          continue
-        }
-        let uri: vscode.Uri
-        try { uri = vscode.Uri.parse(record.uri, true) } catch { errors.push('A dropped item could not be read.'); continue }
-        if (!DSH_REFERENCE_SCHEMES.has(uri.scheme)) {
-          errors.push(uri.scheme.length === 1 ? 'A Windows drive path must be dropped as a file:// URI.' : 'Only files and folders can be referenced.')
-          continue
-        }
-        const authority = typeof uri.authority === 'string' ? uri.authority : ''
-        if (uri.scheme === 'file' && authority !== '') { errors.push('Network share paths cannot be referenced.'); continue }
-        if (/^[\\/]{2}/.test(uri.fsPath) || /^[\\]{2}/.test(uri.fsPath)) { errors.push('Network share paths cannot be referenced.'); continue }
-        if (uri.scheme !== 'file' && (typeof uri.fsPath !== 'string' || !uri.fsPath.startsWith('/') || uri.fsPath.split('/').includes('..'))) {
-          errors.push('The dropped remote path is not valid.')
-          continue
-        }
-        const remoteError = remoteDroppedUriError(remoteName, uri.scheme)
-        if (remoteError !== undefined) { errors.push(remoteError); continue }
-        if (record.source === 'uri-list' && (remoteName !== undefined || uri.scheme !== 'file' || !insideWorkspace(uri.fsPath))) {
-          errors.push('Dragged text paths are only supported for files inside this workspace.')
-          continue
-        }
-        if (uri.scheme !== 'file' && !this.workspaceAuthorities().has(authority)) {
-          // A forged remote/virtual authority would make the provider perform a
-          // network request before any containment check; only this window's
-          // workspace folders may be stat-ed.
-          errors.push('Only workspace files can be referenced.')
-          continue
-        }
-        let type: vscode.FileType
-        try {
-          const remaining = Math.max(1, Math.min(REFERENCE_ACTION_TIMEOUT_MS, deadline - Date.now()))
-          type = await withReferenceTimeout(this.droppedUriType(uri), remaining, 'A dropped item took too long to read.')
-        } catch (error) {
-          if (generation !== this.referenceResolveGeneration) return
-          errors.push(diagnosticText(error instanceof Error ? error.message : String(error)).slice(0, 500) || 'A dropped item could not be read.')
-          continue
-        }
-        if (generation !== this.referenceResolveGeneration) return
-        const kind: 'file' | 'folder' = type === vscode.FileType.Directory ? 'folder' : 'file'
-        const built = dshReferenceFor(cwd, uri.fsPath, kind)
-        if (built.reference === undefined) { errors.push(built.error ?? 'A dropped path cannot be referenced.'); continue }
-        const startLine = typeof record.startLine === 'number' && Number.isSafeInteger(record.startLine) && record.startLine >= 0 ? record.startLine : undefined
-        const endLine = typeof record.endLine === 'number' && Number.isSafeInteger(record.endLine) && record.endLine >= 0 ? record.endLine : undefined
-        if (startLine !== undefined) {
-          const selection = { startLine, endLine: endLine ?? startLine }
-          try {
-            const remaining = Math.max(1, Math.min(REFERENCE_ACTION_TIMEOUT_MS, deadline - Date.now()))
-            if (await withReferenceTimeout(this.editorContext.pinUri(uri, cwd, selection, sessionId),
-              remaining, 'A dropped selection took too long to pin.')) pinned += 1
-          } catch (error) {
-            if (generation !== this.referenceResolveGeneration) return
-            errors.push(diagnosticText(error instanceof Error ? error.message : String(error)).slice(0, 500) || 'A dropped selection could not be pinned.')
-          }
-        }
-        if (generation !== this.referenceResolveGeneration) return
-        if (!seen.has(built.reference.text)) {
-          seen.add(built.reference.text)
-          references.push(built.reference)
-        }
-      }
-      if (generation !== this.referenceResolveGeneration) return
+      const resolved = await this.resolveReferenceEntries(sessionId, value.resources, generation, deadline)
+      if (resolved === undefined || generation !== this.referenceResolveGeneration) return
+      const { references, pinned, errors } = resolved
       await this.webview.postMessage({ type: 'references-resolved', requestId, references, pinned, errors: errors.slice(0, 20) })
     } finally {
       // A newer generation already reset the guard; this pass must not reopen it.
       if (generation === this.referenceResolveGeneration) this.resolvingReferences = false
     }
+  }
+
+  /** Insert Explorer/editor resources into the composer as DSH `@` references. */
+  async insertExplorerReferences(resources: readonly unknown[]): Promise<{ ok: boolean; texts: string[]; errors: string[] }> {
+    const sessionId = this.controller.state.sessionId
+    if (!this.ready || sessionId === '') {
+      return { ok: false, texts: [], errors: ['Open a DeepSeek conversation first.'] }
+    }
+    if (this.resolvingReferences) {
+      return { ok: false, texts: [], errors: ['A previous drop is still being resolved. Try again.'] }
+    }
+    this.resolvingReferences = true
+    const generation = this.referenceResolveGeneration
+    const deadline = Date.now() + REFERENCE_RESOLVE_BUDGET_MS
+    try {
+      const resolved = await this.resolveReferenceEntries(sessionId, resources, generation, deadline)
+      if (resolved === undefined || generation !== this.referenceResolveGeneration) {
+        return { ok: false, texts: [], errors: ['The conversation changed. Try again.'] }
+      }
+      const texts = resolved.references.map(reference => reference.text)
+      await this.webview.postMessage({ type: 'insert-references', texts, errors: resolved.errors.slice(0, 20) })
+      return { ok: true, texts, errors: resolved.errors }
+    } finally {
+      if (generation === this.referenceResolveGeneration) this.resolvingReferences = false
+    }
+  }
+
+  /** Open the existing generic file picker from a command. */
+  openFilePicker(): void {
+    void this.chooseFiles()
+  }
+
+  /**
+   * Validate and turn dropped resources into DSH reference literals.
+   *
+   * Shared by the Webview drop path and the Explorer command so both enforce the
+   * same scheme/authority/stat/size/bidi policy.
+   */
+  private async resolveReferenceEntries(sessionId: string, resources: readonly unknown[], generation: number,
+    deadline: number): Promise<{ references: { text: string; label: string; kind: 'file' | 'folder' }[]; pinned: number; errors: string[] } | undefined> {
+    const cwd = this.controller.state.cwd
+    const remoteName = typeof vscode.env.remoteName === 'string' ? vscode.env.remoteName : undefined
+    const references: { text: string; label: string; kind: 'file' | 'folder' }[] = []
+    const errors: string[] = []
+    const seen = new Set<string>()
+    let pinned = 0
+    const insideWorkspace = (fsPath: string): boolean => {
+      const relative = path.relative(cwd, fsPath)
+      return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
+    }
+    for (const raw of resources.slice(0, 64)) {
+      if (generation !== this.referenceResolveGeneration) return
+      if (Date.now() > deadline) {
+        errors.push('The drop took too long to resolve. Try again.')
+        break
+      }
+      if (typeof raw !== 'object' || raw === null) continue
+      const record = raw as Record<string, unknown>
+      if (typeof record.uri !== 'string' || record.uri === '' || record.uri.length > 2048) {
+        errors.push('A dropped item could not be read.')
+        continue
+      }
+      if (/^[A-Za-z]:[\\/]/.test(record.uri)) {
+        errors.push('A Windows drive path must be dropped as a file:// URI.')
+        continue
+      }
+      let uri: vscode.Uri
+      try { uri = vscode.Uri.parse(record.uri, true) } catch { errors.push('A dropped item could not be read.'); continue }
+      if (!DSH_REFERENCE_SCHEMES.has(uri.scheme)) {
+        errors.push(uri.scheme.length === 1 ? 'A Windows drive path must be dropped as a file:// URI.' : 'Only files and folders can be referenced.')
+        continue
+      }
+      const authority = typeof uri.authority === 'string' ? uri.authority : ''
+      if (uri.scheme === 'file' && authority !== '') { errors.push('Network share paths cannot be referenced.'); continue }
+      if (/^[\\/]{2}/.test(uri.fsPath) || /^[\\]{2}/.test(uri.fsPath)) { errors.push('Network share paths cannot be referenced.'); continue }
+      if (uri.scheme !== 'file' && (typeof uri.fsPath !== 'string' || !uri.fsPath.startsWith('/') || uri.fsPath.split('/').includes('..'))) {
+        errors.push('The dropped remote path is not valid.')
+        continue
+      }
+      const remoteError = remoteDroppedUriError(remoteName, uri.scheme)
+      if (remoteError !== undefined) { errors.push(remoteError); continue }
+      if (record.source === 'uri-list' && (remoteName !== undefined || uri.scheme !== 'file' || !insideWorkspace(uri.fsPath))) {
+        errors.push('Dragged text paths are only supported for files inside this workspace.')
+        continue
+      }
+      if (uri.scheme !== 'file' && !this.workspaceAuthorities().has(authority)) {
+        // A forged remote/virtual authority would make the provider perform a
+        // network request before any containment check; only this window's
+        // workspace folders may be stat-ed.
+        errors.push('Only workspace files can be referenced.')
+        continue
+      }
+      let type: vscode.FileType
+      try {
+        const remaining = Math.max(1, Math.min(REFERENCE_ACTION_TIMEOUT_MS, deadline - Date.now()))
+        type = await withReferenceTimeout(this.droppedUriType(uri), remaining, 'A dropped item took too long to read.')
+      } catch (error) {
+        if (generation !== this.referenceResolveGeneration) return
+        errors.push(diagnosticText(error instanceof Error ? error.message : String(error)).slice(0, 500) || 'A dropped item could not be read.')
+        continue
+      }
+      if (generation !== this.referenceResolveGeneration) return
+      const kind: 'file' | 'folder' = type === vscode.FileType.Directory ? 'folder' : 'file'
+      const built = dshReferenceFor(cwd, uri.fsPath, kind)
+      if (built.reference === undefined) { errors.push(built.error ?? 'A dropped path cannot be referenced.'); continue }
+      const startLine = typeof record.startLine === 'number' && Number.isSafeInteger(record.startLine) && record.startLine >= 0 ? record.startLine : undefined
+      const endLine = typeof record.endLine === 'number' && Number.isSafeInteger(record.endLine) && record.endLine >= 0 ? record.endLine : undefined
+      if (startLine !== undefined) {
+        const selection = { startLine, endLine: endLine ?? startLine }
+        try {
+          const remaining = Math.max(1, Math.min(REFERENCE_ACTION_TIMEOUT_MS, deadline - Date.now()))
+          if (await withReferenceTimeout(this.editorContext.pinUri(uri, cwd, selection, sessionId),
+            remaining, 'A dropped selection took too long to pin.')) pinned += 1
+        } catch (error) {
+          if (generation !== this.referenceResolveGeneration) return
+          errors.push(diagnosticText(error instanceof Error ? error.message : String(error)).slice(0, 500) || 'A dropped selection could not be pinned.')
+        }
+      }
+      if (generation !== this.referenceResolveGeneration) return
+      if (!seen.has(built.reference.text)) {
+        seen.add(built.reference.text)
+        references.push(built.reference)
+      }
+    }
+    return { references, pinned, errors }
   }
 
   /** Authorities of this window's workspace folders, for remote/virtual drops. */
@@ -5366,6 +5409,22 @@ function encodedFileFromWebview(value: unknown): { name: string; data: string; b
   return { name, data: encoded.data, bytes: encoded.bytes }
 }
 
+/** Explorer multi-select passes (uri, selectedUris); build the resource list once. */
+function explorerResources(args: readonly unknown[]): { uri: string; source: 'internal' }[] {
+  const uris: unknown[] = []
+  const selected = args[1]
+  if (Array.isArray(selected) && selected.length > 0) uris.push(...selected)
+  else if (args[0] !== undefined) uris.push(args[0])
+  const resources: { uri: string; source: 'internal' }[] = []
+  for (const value of uris.slice(0, 64)) {
+    if (typeof value !== 'object' || value === null) continue
+    const candidate = value as { scheme?: unknown; fsPath?: unknown; toString?: unknown }
+    if (typeof candidate.scheme !== 'string' || typeof candidate.fsPath !== 'string' || typeof candidate.toString !== 'function') continue
+    resources.push({ uri: (candidate.toString as (skipEncoding?: boolean) => string)(true), source: 'internal' })
+  }
+  return resources
+}
+
 class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private surface: DshSurface | undefined
   private pendingPrompt: string | undefined
@@ -5403,6 +5462,24 @@ class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 
   dispose(): void {
     this.surface?.dispose()
+  }
+
+  /** Relay Explorer resources into the chat composer; false when the view is not ready. */
+  async addExplorerReferences(resources: readonly unknown[]): Promise<{ ok: boolean; texts: string[]; errors: string[] }> {
+    const surface = this.surface
+    if (surface === undefined) return { ok: false, texts: [], errors: ['Open the DeepSeek chat to add files.'] }
+    const result = await surface.insertExplorerReferences(resources)
+    if (result.ok) this.focusPrompt()
+    return result
+  }
+
+  /** Open the shared file picker, or report that the chat is not ready. */
+  openFilePicker(): boolean {
+    const surface = this.surface
+    if (surface === undefined) return false
+    surface.openFilePicker()
+    this.focusPrompt()
+    return true
   }
 
   focusPrompt(): void {
@@ -5701,6 +5778,48 @@ export function activate(context: vscode.ExtensionContext): void {
         if (choice === 'Show Output') output.show(true)
       })
     })
+  }))
+  /**
+   * Deliver Explorer resources to whichever chat surface is open: the sidebar
+   * view provider when it is resolved, otherwise the newest editor panel.
+   */
+  const addResourcesToChat = async (resources: readonly unknown[]): Promise<{ ok: boolean; texts: string[]; errors: string[] }> => {
+    let result = await provider.addExplorerReferences(resources)
+    for (const entry of [...panels].reverse()) {
+      result = await entry.surface.insertExplorerReferences(resources)
+      if (result.ok) {
+        entry.surface.focusPrompt()
+        return result
+      }
+    }
+    return result
+  }
+
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.addToChat', async (...args: unknown[]) => {
+    const resources = explorerResources(args)
+    if (resources.length === 0) {
+      // Command Palette (no URI): reuse the generic picker.
+      await vscode.commands.executeCommand('workbench.view.extension.deepseekHarness')
+      await vscode.commands.executeCommand('deepseekHarness.chat.focus')
+      let opened = provider.openFilePicker()
+      if (!opened) {
+        const entry = [...panels].at(-1)
+        if (entry !== undefined) { entry.surface.openFilePicker(); opened = true }
+      }
+      if (!opened) void vscode.window.showInformationMessage('Open the DeepSeek chat to add files.')
+      return
+    }
+    const result = await addResourcesToChat(resources)
+    if (result.ok) {
+      // Nothing was insertable (for example a local path in a remote window):
+      // say why instead of leaving the command silent.
+      if (result.texts.length === 0 && result.errors.length > 0) void vscode.window.showInformationMessage(result.errors[0]!)
+      return
+    }
+    await vscode.commands.executeCommand('workbench.view.extension.deepseekHarness')
+    await vscode.commands.executeCommand('deepseekHarness.chat.focus')
+    provider.focusPrompt()
+    void vscode.window.showInformationMessage(result.errors[0] ?? 'Open the DeepSeek chat to add files.')
   }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.addSelection', async () => {
     if (!editorContext.pinSelection()) {

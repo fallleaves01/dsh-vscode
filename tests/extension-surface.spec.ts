@@ -8,6 +8,7 @@
  * tests/collaboration-state.spec.ts; this file exists so deleting the
  * `showWarningMessage` call from the host cannot leave the suite green.
  */
+import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { env } from 'vscode'
 import type { DshFrame, SessionModels, SkillDescriptor } from '../src/dsh-client.js'
@@ -1475,4 +1476,62 @@ describe('host surface wiring', () => {
     })
   })
 })
+  describe('explorer add to chat command', () => {
+    const uri = (fsPath: string) => ({ scheme: 'file', fsPath, toString: () => fsPath })
+    const command = () => mocks.commands.get('deepseekHarness.addToChat')!
+    beforeEach(() => {
+      mocks.fsStat.mockReset()
+      mocks.fsStat.mockResolvedValue({ type: 1 })
+      mocks.openDialog.mockReset()
+      mocks.info.mockReset()
+    })
+
+    it('contributes the command and an Explorer context menu for remote-capable schemes', () => {
+      const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+        activationEvents: string[]
+        contributes: { commands: { command: string }[]; menus: Record<string, { command: string; when?: string }[]> }
+      }
+      expect(pkg.contributes.commands.some(item => item.command === 'deepseekHarness.addToChat')).toBe(true)
+      expect(pkg.activationEvents).toContain('onCommand:deepseekHarness.addToChat')
+      const menu = (pkg.contributes.menus['explorer/context'] ?? []).find(item => item.command === 'deepseekHarness.addToChat')
+      expect(menu?.when).toContain('resourceScheme == file')
+      expect(menu?.when).toContain('vscode-remote')
+      expect(menu?.when).toContain('vscode-vfs')
+    })
+
+    it('inserts a single file, multiple files and a folder as references', async () => {
+      const h = await activated()
+      await command()(uri('/workspace/src/a.ts'))
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'insert-references')).toBe(true))
+      expect(h.posts().filter(packet => packet.type === 'insert-references').at(-1)!.texts).toEqual(['@src/a.ts'])
+      await command()(uri('/workspace/a.ts'), [uri('/workspace/a.ts'), uri('/workspace/b.ts')])
+      await vi.waitFor(() => expect((h.posts().filter(packet => packet.type === 'insert-references').at(-1)!.texts as string[]).length).toBe(2))
+      mocks.fsStat.mockResolvedValueOnce({ type: 2 })
+      await command()(uri('/workspace/docs'))
+      await vi.waitFor(() => expect(h.posts().filter(packet => packet.type === 'insert-references').at(-1)!.texts).toEqual(['@docs/']))
+    })
+
+    it('rejects a local file from a remote window through the shared policy', async () => {
+      const h = await activated()
+      const envMock = vscode.env as { remoteName?: string }
+      const before = envMock.remoteName
+      envMock.remoteName = 'ssh-remote'
+      try {
+        await command()(uri('/workspace/src/a.ts'))
+        await vi.waitFor(() => expect(mocks.info).toHaveBeenCalled())
+        expect(String(mocks.info.mock.calls.at(-1)![0])).toContain('remote window')
+        const inserted = h.posts().filter(packet => packet.type === 'insert-references').at(-1)
+        expect(inserted?.texts).toEqual([])
+        expect(String((inserted?.errors as string[])[0])).toContain('remote window')
+      } finally { envMock.remoteName = before }
+    })
+
+    it('delegates an argument-less invocation to the shared file picker', async () => {
+      mocks.openDialog.mockResolvedValue(undefined)
+      await activated()
+      await command()()
+      await vi.waitFor(() => expect(mocks.openDialog).toHaveBeenCalledTimes(1))
+    })
+  })
+
 })

@@ -11,7 +11,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
-The current source version is **0.2.2-alpha.2.2**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.2.2-alpha.2.3**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md)
 
@@ -33,7 +33,7 @@ The current source version is **0.2.2-alpha.2.2**. See [CHANGELOG.md](CHANGELOG.
 - **Conversation actions.** Pin or unpin, rename, fork, archive or restore, and copy the session ID from the conversation menu. Branching a completed turn forks at that turn's own boundary, so later stopped or failed work is not copied.
 - **Independent subagent details.** Click a subagent name in its tool card to enter the child conversation, or use the trailing arrow to open independent details. Inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer. External executions appear as informational rows without a local transcript.
 - **Background tasks and task services.** Inspect bounded process output, Goal status and round limits, Schedule reminders and delivery history, and Workflow phases and job logs when the runtime exposes these services. Search conversation message bodies when history search is enabled.
-- **Explicit file context.** Use `+` to search and add files or folders, remove each reference with `×`, or use typed `@` references and **Add Selection to Chat**. The current editor and selected lines are optional suggestions. Drop resources from the Explorer or an editor tab to reference them, drop operating-system files to upload them, or paste images; see [Dragging files into the composer](#dragging-files-into-the-composer).
+- **Explicit file context.** Use `+` to search and add files or folders, remove each reference with `×`, or use typed `@` references and **Add Selection to Chat**. The current editor and selected lines are optional suggestions. Select resources in the Explorer and run **DeepSeek Harness: Add to Chat** from the context menu, or drop operating-system files onto the composer to upload them; see [Adding files to the composer](#adding-files-to-the-composer).
 - **Conversation controls and queues.** Select agent composition, Permission and Plan modes, Model, and Reasoning Effort. Queue follow-up messages, steer an active task, and inspect or remove held slash commands.
 - **Compact change review.** Expand the file-count and line-count summary, or open Review in VS Code's Diff Editor. Keep/Revert actions retain per-turn snapshots and are bound to their originating conversation and project; confirmation rechecks the target before a revert.
 - **DeepSeek authentication.** Configure an API key or use browser account sign-in, inspect account state and balance, and sign out. Remote sign-in uses VS Code port forwarding.
@@ -114,6 +114,10 @@ For a full local check run `pnpm run check`; `./build.sh` writes
 `reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
 `startupTimeout` and `searchBaseUrl`.
 
+### Upgrading to 0.2.2-alpha.2.3
+
+0.2.2-alpha.2.3 adds the **DeepSeek Harness: Add to Chat** Explorer context command for files and folders; VS Code reserves in-workbench drag operations for view docking, so Explorer and editor-tab drags cannot reach a sidebar webview. Operating-system file drops remain supported and recover cleanly after cancelled or repeated drags. Install this build on the Remote SSH host as well, then reload the window.
+
 ### Upgrading to 0.2.2-alpha.2.2
 
 0.2.2-alpha.2.2 fixes activation in VS Code 1.144 Remote SSH windows: the remote extension host exposes `navigator` as a throwing getter, and zod read it while the MCP SDK built schemas during module load, aborting activation before the sidebar or drag and drop could start. Install this build on the Remote SSH host (not only on the local window) and reload the window afterwards.
@@ -154,13 +158,13 @@ Expanding a row observes that job with `job/follow` while the panel is open and 
 
 **Stop** uses the two-press DSH interaction. The first press arms the row for three seconds; the second press enters a disabled **Stopping…** state until the `job/list` roster converges. A rejected stop shows **Stop failed** with the runtime's reason inline for four seconds, and a row that is no longer running clears the phase. Escape closes the menu and returns focus to the jobs trigger. Kill requests are deduplicated while in flight.
 
-### Dragging files into the composer
+### Adding files to the composer
 
-Drag files or folders from the Explorer or an editor tab into the composer, and DeepSeek Harness handles the resulting `@` references:
+VS Code reserves drag operations that start inside the workbench (the Explorer or an editor tab) for view docking: the workbench handles them before they reach a sidebar WebviewView, so a composer drop cannot receive them. Add those resources explicitly instead:
 
-- A drop from the Explorer or an editor tab inserts a DSH reference into the prompt. Paths inside the project are relative, paths outside stay absolute, a folder ends with `/`, and a path containing whitespace is written as `@"path with spaces"`. The reference is prompt text only: the sidebar does not copy, upload, or read the file contents. An editor-tab drop also carries its selected line range as separate IDE context.
-- A drop from the operating system is different. A VS Code webview runs in a sandbox and cannot read the operating-system file path, so the sidebar follows the DSH browser behavior and uploads the bytes. Non-image files are written to the runtime attachment library on the machine running DSH, below `<DSH_HOME>/attachments/v1`; the runtime keeps them on disk and does not remove them automatically when the conversation is removed. Images are sent as inline message data. In a remote window, drop items from the remote Explorer to reference them; files from the local desktop are uploaded by the extension host.
-- A drop of operating-system files accepts at most eight files (images included), and each file must be no larger than 32 MiB. Explorer and editor references are path-only and are not subject to this byte limit. Wait for uploads to finish before sending. An upload shows `Uploading…`, then a ready attachment or `Upload failed` with **Retry**; remove any attachment with `×`. Dropping an operating-system folder is refused; drop the folder from the Explorer instead, where it becomes an in-place reference.
+- Select one or more files or folders in the Explorer, open the context menu, and choose **DeepSeek Harness: Add to Chat**. The selection becomes DSH references in the prompt: paths inside the project are relative, paths outside stay absolute, a folder ends with `/`, and a path containing whitespace is written as `@"path with spaces"`. The reference is prompt text only: the sidebar does not copy, upload, or read the file contents. Use **Add Selection to Chat** for an editor selection; its line range is carried as separate IDE context.
+- Dragging files from the operating system into the composer is supported. A VS Code webview runs in a sandbox and cannot read the operating-system file path, so the sidebar follows the DSH browser behavior and uploads the bytes. Non-image files are written to the runtime attachment library on the machine running DSH, below `<DSH_HOME>/attachments/v1`; the runtime keeps them on disk and does not remove them automatically when the conversation is removed. Images are sent as inline message data.
+- A drop of operating-system files accepts at most eight files (images included), and each file must be no larger than 32 MiB. Wait for uploads to finish before sending. An upload shows `Uploading…`, then a ready attachment or `Upload failed` with **Retry**; remove any attachment with `×`. Dropping an operating-system folder is refused; add the folder through the Explorer context command instead, where it becomes an in-place reference.
 - The composer's **+** menu offers **Add files…**, a general file picker that sends images inline and uploads other files, and **Attach image…**.
 - References expose the original path to the model; an upload copies the bytes and persists them in the runtime attachment library. DSH Desktop can use its native host-path bridge to turn an external drop into a reference; VS Code has no such bridge, so operating-system files are always uploaded here.
 

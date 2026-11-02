@@ -127,6 +127,46 @@ describe('webview drag and drop', () => {
       expect(first(h, 'resolve-references')!.resources).toEqual([{ uri: 'file:///workspace/a.ts', source: 'internal', startLine: 12, endLine: 12 }])
     })
 
+    it('splits a text/uri-list Explorer payload (CR/LF, comments) and shows the overlay', async () => {
+      const h = open()
+      const uriList = '# Explorer selection\r\nfile:///workspace/a.ts\rfile:///workspace/b.ts\nfile:///workspace/c.ts'
+      const enter = fireDrag('dragenter', { types: ['text/uri-list'], data: { 'text/uri-list': uriList } })
+      expect(enter.defaultPrevented).toBe(true)
+      expect(h.document.getElementById('dropOverlay')!.classList.contains('hidden')).toBe(false)
+      drop({ types: ['text/uri-list'], data: { 'text/uri-list': uriList } })
+      await vi.waitFor(() => expect(first(h, 'resolve-references')).toBeDefined())
+      expect(first(h, 'resolve-references')!.resources).toEqual([
+        { uri: 'file:///workspace/a.ts', source: 'uri-list' },
+        { uri: 'file:///workspace/b.ts', source: 'uri-list' },
+        { uri: 'file:///workspace/c.ts', source: 'uri-list' },
+      ])
+    })
+
+    it('accepts a resource application/vnd.code.* kind only when it carries a workspace URI', async () => {
+      const h = open()
+      const tree = fireDrag('dragenter', { types: ['application/vnd.code.tree.explorer'], data: { 'application/vnd.code.tree.explorer': 'file:///workspace/a.ts' } })
+      expect(tree.defaultPrevented).toBe(true)
+      const other = fireDrag('dragenter', { types: ['application/vnd.code.symbols'], data: { 'application/vnd.code.symbols': '{"symbol":"x"}' } })
+      expect(other.defaultPrevented).toBe(false)
+      expect(h.document.getElementById('dropOverlay')!.classList.contains('hidden')).toBe(false)
+    })
+
+    it('merges CodeFiles, ResourceURLs and the internal URI list without duplicates', async () => {
+      const h = open()
+      drop({
+        types: ['resourceurls', 'codefiles', 'application/vnd.code.uri-list'],
+        data: {
+          ResourceURLs: JSON.stringify(['file:///workspace/a.ts', 'file:///workspace/b.ts']),
+          CodeFiles: JSON.stringify(['/workspace/c.ts', '/workspace/d.ts']),
+          'application/vnd.code.uri-list': 'file:///workspace/b.ts\rfile:///workspace/c.ts',
+        },
+      })
+      await vi.waitFor(() => expect(first(h, 'resolve-references')).toBeDefined())
+      expect((first(h, 'resolve-references')!.resources as Array<{ uri: string }>).map(item => item.uri)).toEqual([
+        'file:///workspace/a.ts', 'file:///workspace/b.ts', 'file:///workspace/c.ts', 'file:///workspace/d.ts',
+      ])
+    })
+
     it('offers the generic uri-list as a uri-list candidate only without OS files', async () => {
       const h = open()
       drop({
@@ -416,6 +456,52 @@ describe('webview drag and drop', () => {
       expect(h.document.querySelector('.attachment-chip.upload-error')).not.toBeNull()
       expect(h.document.getElementById('attachments')!.textContent).toContain('The upload was not completed.')
       expect(h.document.querySelector('.attachment-retry')).not.toBeNull()
+    })
+
+    it('uploads from dataTransfer.items.getAsFile when files is empty', async () => {
+      const h = open()
+      const file = new File([new Uint8Array([1, 2])], 'via-items.bin', { type: 'application/octet-stream' })
+      const event = drop({ types: ['Files'], files: [], items: [{ kind: 'file', getAsFile: () => file, webkitGetAsEntry: () => ({ isDirectory: false }) }] })
+      expect(event.defaultPrevented).toBe(true)
+      await vi.waitFor(() => expect(first(h, 'attach-files')).toBeDefined())
+      expect((first(h, 'attach-files')!.files as Array<{ name: string }>)[0]!.name).toBe('via-items.bin')
+      expect(h.document.querySelectorAll('.attachment-chip.uploading')).toHaveLength(1)
+    })
+
+    it('handles two consecutive OS drops without leaving the overlay stuck', async () => {
+      const h = open()
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([1])], 'one.bin', { type: 'application/octet-stream' })])
+      await vi.waitFor(() => expect(all(h, 'attach-files')).toHaveLength(1))
+      expect(h.document.getElementById('dropOverlay')!.classList.contains('hidden')).toBe(true)
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([2])], 'two.bin', { type: 'application/octet-stream' })])
+      await vi.waitFor(() => expect(all(h, 'attach-files')).toHaveLength(2))
+      expect(h.document.getElementById('dropOverlay')!.classList.contains('hidden')).toBe(true)
+      expect(h.document.querySelectorAll('.attachment-chip.uploading')).toHaveLength(2)
+    })
+
+    it('resets the overlay when a drag is abandoned', async () => {
+      const h = open()
+      fireDrag('dragenter', { types: ['Files'], files: [new File([new Uint8Array([1])], 'x.bin', { type: 'application/octet-stream' })] })
+      expect(h.document.getElementById('dropOverlay')!.classList.contains('hidden')).toBe(false)
+      // dragend and window blur both clear a gesture whose drop never arrives.
+      document.dispatchEvent(new Event('dragend'))
+      expect(h.document.getElementById('dropOverlay')!.classList.contains('hidden')).toBe(true)
+      fireDrag('dragenter', { types: ['Files'] })
+      expect(h.document.getElementById('dropOverlay')!.classList.contains('hidden')).toBe(false)
+      window.dispatchEvent(new Event('blur'))
+      expect(h.document.getElementById('dropOverlay')!.classList.contains('hidden')).toBe(true)
+      // A dragleave with no relatedTarget ends the gesture too.
+      fireDrag('dragenter', { types: ['Files'] })
+      fireDrag('dragleave', { types: ['Files'] }, null)
+      expect(h.document.getElementById('dropOverlay')!.classList.contains('hidden')).toBe(true)
+    })
+
+    it('shows the overlay from dragover alone when dragenter was missed', async () => {
+      const h = open()
+      const over = fireDrag('dragover', { types: ['files'], files: [new File([new Uint8Array([1])], 'x.bin', { type: 'application/octet-stream' })] })
+      expect(over.defaultPrevented).toBe(true)
+      expect(h.document.getElementById('dropOverlay')!.classList.contains('hidden')).toBe(false)
+      expect((over as unknown as { dataTransfer: { dropEffect: string } }).dataTransfer.dropEffect).toBe('copy')
     })
 
     it('removes a ready card the Host did not publish once the batch settles', async () => {
@@ -717,6 +803,22 @@ describe('webview drag and drop', () => {
   })
 
   describe('composer affordances', () => {
+    it('logs low-noise drop diagnostics without changing behaviour', () => {
+      const h = open()
+      const spy = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+      try {
+        fireDrag('dragenter', { types: ['Files'], files: [new File([new Uint8Array([1])], 'diag.bin', { type: 'application/octet-stream' })], data: { 'text/uri-list': 'file:///workspace/diag.bin' } })
+        const enter = spy.mock.calls.find(call => call[0] === '[dsh-drop]')
+        expect(enter).toBeDefined()
+        expect(enter![1]).toMatchObject({ phase: 'dragenter', files: 1, items: 0 })
+        expect(JSON.stringify(enter![1])).toContain('file:///workspace/diag.bin')
+        drop({ types: ['Files'], files: [] })
+        expect(spy.mock.calls.some(call => call[0] === '[dsh-drop]' && (call[1] as { phase?: string }).phase === 'drop')).toBe(true)
+      } finally {
+        spy.mockRestore()
+      }
+    })
+
     it('adds a general Add files… picker that posts choose-files', () => {
       const h = open()
       h.click('#attach')
@@ -724,6 +826,31 @@ describe('webview drag and drop', () => {
       h.click('#contextFiles')
       expect(first(h, 'choose-files')).toEqual({ type: 'choose-files', sessionId: 'session-a' })
       expect(h.document.getElementById('contextMenu')!.classList.contains('hidden')).toBe(true)
+    })
+
+    it('inserts Host-resolved references at the caret from insert-references', async () => {
+      const h = open()
+      await h.settle()
+      const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+      prompt.value = 'read the files here'
+      prompt.setSelectionRange('read the '.length, 'read the '.length)
+      h.send({ type: 'insert-references', texts: ['@a.ts', '@"b c.ts"'], errors: [] })
+      // Inserted at the caret, space separated, with one space before the tail.
+      expect(prompt.value).toBe('read the @a.ts @"b c.ts" files here')
+      expect(prompt.selectionStart).toBe('read the @a.ts @"b c.ts" '.length)
+      expect(h.document.activeElement).toBe(prompt)
+    })
+
+    it('shows only the first insert-references error and leaves text alone when empty', () => {
+      const h = open()
+      const prompt = h.document.getElementById('prompt') as HTMLTextAreaElement
+      prompt.value = 'unchanged'
+      h.send({ type: 'insert-references', texts: [], errors: ['first failure', 'second failure'] })
+      expect(h.document.getElementById('sessionNotice')!.textContent).toContain('first failure')
+      expect(h.document.getElementById('sessionNotice')!.textContent).not.toContain('second failure')
+      expect(prompt.value).toBe('unchanged')
+      h.send({ type: 'insert-references', texts: [], errors: [] })
+      expect(prompt.value).toBe('unchanged')
     })
 
     it('explains what can be dropped and shows a blocked state when it cannot', async () => {
