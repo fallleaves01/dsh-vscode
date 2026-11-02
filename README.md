@@ -11,7 +11,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
-The current source version is **0.2.2-alpha.2.4**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.2.2-alpha.2.5**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md)
 
@@ -113,6 +113,10 @@ For a full local check run `pnpm run check`; `./build.sh` writes
 `artifacts/dsh-sidebar-<version>.vsix`. Other settings include
 `reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
 `startupTimeout` and `searchBaseUrl`.
+
+### Upgrading to 0.2.2-alpha.2.5
+
+0.2.2-alpha.2.5 fixes **DeepSeek Harness: Add to Chat** in Remote SSH windows. VS Code can deliver an Explorer resource to the command as a `file:` URI whose path is still on the remote host; the command now restores the remote scheme from the workspace folder (or accepts an in-workspace remote path directly) and resolves the reference normally. A genuinely client-local path is rejected with instructions to use the remote Explorer or **+ → Upload from this computer…**. The DeepSeek Harness output channel records one diagnostic line when this recovery runs.
 
 ### Upgrading to 0.2.2-alpha.2.4
 

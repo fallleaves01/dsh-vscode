@@ -9,6 +9,25 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-alpha.2.5] - 2026-11-02
+
+### Fixed
+
+- **DeepSeek Harness: Add to Chat** in a Remote SSH window. VS Code can
+  deliver an Explorer resource to the command as a `file:` URI whose path
+  still belongs to the remote host; the command previously rejected every
+  `file:` URI with "A file path from the local machine cannot be read in a
+  remote window." The command now restores the remote scheme from a workspace
+  folder and resolves the reference through the existing scheme, authority,
+  containment and grammar checks; a remote path inside the project is also
+  accepted directly as a defensive fallback. A genuinely client-local path is
+  rejected with instructions to select the resource in the remote Explorer or
+  to use **+ → Upload from this computer…**.
+- The command records one `[webview] add-to-chat:` diagnostic line with
+  resource schemes and the number of recovered resources, so a remaining
+  delivery mismatch can be identified from the DeepSeek Harness output
+  channel without exposing full paths.
+
 ## [0.2.2-alpha.2.4] - 2026-11-02
 
 ### Fixed

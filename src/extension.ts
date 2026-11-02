@@ -4455,7 +4455,15 @@ class DshSurface implements vscode.Disposable {
         continue
       }
       const remoteError = remoteDroppedUriError(remoteName, uri.scheme)
-      if (remoteError !== undefined) { errors.push(remoteError); continue }
+      if (remoteError !== undefined) {
+        // Some VS Code Explorer command deliveries hand a remote resource over
+        // as a file: URI whose fsPath is still the remote host path (see
+        // recoverRemoteExplorerResources). In a remote extension host, file:
+        // addresses the remote filesystem, so an in-project path stays valid and
+        // is stat-ed here like any other resource; a genuinely client-side path
+        // is still refused, now with the two working entry points named.
+        if (!insideWorkspace(uri.fsPath)) { errors.push(REMOTE_LOCAL_PATH_MESSAGE); continue }
+      }
       if (record.source === 'uri-list' && (remoteName !== undefined || uri.scheme !== 'file' || !insideWorkspace(uri.fsPath))) {
         errors.push('Dragged text paths are only supported for files inside this workspace.')
         continue
@@ -5442,6 +5450,121 @@ function encodedFileFromWebview(value: unknown): { name: string; data: string; b
   return { name, data: encoded.data, bytes: encoded.bytes }
 }
 
+/**
+ * The actionable refusal for a client-side path in a remote window.
+ *
+ * Both working entry points are named: the remote Explorer is where a remote
+ * resource must be selected, and the local file picker is where a client file
+ * must be uploaded from. Keeping one constant makes the command prompt and the
+ * resolution fallback say the same thing.
+ */
+const REMOTE_LOCAL_PATH_MESSAGE = 'This is a local path and cannot be read in a Remote SSH window. Select the file in the remote Explorer, or use + → Upload from this computer… for local files.'
+
+/** Containment test shared by reference resolution and Explorer-command recovery. */
+function pathInside(root: string, fsPath: string): boolean {
+  if (root === '' || fsPath === '') return false
+  const relative = path.relative(root, fsPath)
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
+}
+
+/** Lower-case scheme of a normalized resource URI; '' when it cannot be parsed. */
+function resourceUriScheme(uri: string): string {
+  try { return vscode.Uri.parse(uri, true).scheme } catch { return '' }
+}
+
+/**
+ * Shape of the Explorer command arguments for the diagnostic line: counts and
+ * kinds only. Paths and URI content never reach the log.
+ */
+function describeExplorerCommandArgs(args: readonly unknown[]): string {
+  const hasScheme = (value: unknown): boolean => (
+    typeof value === 'object' && value !== null && typeof (value as { scheme?: unknown }).scheme === 'string'
+  )
+  const selected = args[1]
+  if (Array.isArray(selected) && selected.length > 0) {
+    return `args=${String(args.length)},selected=array,selectedCount=${String(selected.length)},schemeArgs=${String(selected.filter(hasScheme).length)},firstScheme=${String(hasScheme(args[0]))}`
+  }
+  return `args=${String(args.length)},selected=none,schemeArgs=${String(hasScheme(args[0]) ? 1 : 0)}`
+}
+
+/**
+ * Re-spell a file: URI onto a remote workspace folder that contains it.
+ *
+ * The folder keeps its own scheme and authority (for example
+ * vscode-remote://ssh-remote+host), so the recovered URI can pass the ordinary
+ * authority and stat checks; only the path changes. The equal-path case maps to
+ * the folder itself (a command invoked on the workspace root).
+ */
+function remapFileOntoRemoteFolder(
+  uri: vscode.Uri,
+  folders: readonly vscode.WorkspaceFolder[],
+): vscode.Uri | undefined {
+  const candidate = typeof uri.fsPath === 'string' ? uri.fsPath : ''
+  if (candidate === '') return undefined
+  for (const folder of folders) {
+    const root = typeof folder.uri.fsPath === 'string' ? folder.uri.fsPath : ''
+    if (root === '') continue
+    const relative = path.relative(root, candidate)
+    if (relative !== '' && (relative.startsWith('..') || path.isAbsolute(relative))) continue
+    // Mirrors the remote filesystem's own separator: the extension host runs on
+    // the remote machine, so path.sep there is the remote host's separator.
+    const segments = relative === '' ? [] : relative.split(path.sep).filter(segment => segment !== '')
+    const folderPath = folder.uri.path.replace(/\/+$/u, '')
+    const nextPath = segments.length === 0 ? folderPath : `${folderPath}/${segments.join('/')}`
+    try { return folder.uri.with({ path: nextPath }) } catch { return undefined }
+  }
+  return undefined
+}
+
+/**
+ * Recover the remote scheme of Explorer command arguments before resolution.
+ *
+ * Some VS Code Explorer command deliveries hand a remote resource over as a
+ * `file:` URI whose fsPath is still the remote host path. When this window has a
+ * remote name, a file: path under a remote workspace folder is re-spelled onto
+ * that folder's scheme and authority, and then goes through the unchanged
+ * scheme/authority/stat checks in resolveReferenceEntries.
+ *
+ * A file: path that no remote folder contains is not dropped immediately: on a
+ * remote extension host file: addresses the remote filesystem, so an in-project
+ * path stays valid and is handled by the resolveReferenceEntries fallback. Only
+ * a path outside the project cwd is certainly client-side; it is counted as
+ * rejected and never stat-ed.
+ */
+function recoverRemoteExplorerResources(
+  resources: readonly { uri: string; source: 'internal' }[],
+  remoteName: string | undefined,
+  cwd: string,
+): { resources: { uri: string; source: 'internal' }[]; recovered: number; rejected: number; schemes: string[] } {
+  const schemes = resources.map(resource => resourceUriScheme(resource.uri))
+  if (remoteName === undefined) return { resources: [...resources], recovered: 0, rejected: 0, schemes }
+  const remoteFolders = (vscode.workspace.workspaceFolders ?? []).filter(folder => (
+    typeof folder.uri.scheme === 'string' && folder.uri.scheme !== 'file'
+  ))
+  const kept: { uri: string; source: 'internal' }[] = []
+  let recovered = 0
+  let rejected = 0
+  for (const resource of resources) {
+    if (resourceUriScheme(resource.uri) !== 'file') { kept.push(resource); continue }
+    let parsed: vscode.Uri | undefined
+    try { parsed = vscode.Uri.parse(resource.uri, true) } catch { parsed = undefined }
+    const remapped = parsed === undefined ? undefined : remapFileOntoRemoteFolder(parsed, remoteFolders)
+    if (remapped !== undefined) {
+      recovered += 1
+      kept.push({ uri: remapped.toString(true), source: resource.source })
+      continue
+    }
+    if (parsed !== undefined && pathInside(cwd, parsed.fsPath)) {
+      // In-project path on the remote extension host: the fallback in
+      // resolveReferenceEntries owns it and still applies the stat/grammar policy.
+      kept.push(resource)
+      continue
+    }
+    rejected += 1
+  }
+  return { resources: kept, recovered, rejected, schemes }
+}
+
 /** Explorer multi-select passes (uri, selectedUris); build the resource list once. */
 function explorerResources(args: readonly unknown[]): { uri: string; source: 'internal' }[] {
   const uris: unknown[] = []
@@ -5829,8 +5952,8 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.addToChat', async (...args: unknown[]) => {
-    const resources = explorerResources(args)
-    if (resources.length === 0) {
+    const rawResources = explorerResources(args)
+    if (rawResources.length === 0) {
       // Command Palette (no URI): reuse the generic picker.
       await vscode.commands.executeCommand('workbench.view.extension.deepseekHarness')
       await vscode.commands.executeCommand('deepseekHarness.chat.focus')
@@ -5842,6 +5965,20 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!opened) void vscode.window.showInformationMessage('Open the DeepSeek chat to add files.')
       return
     }
+    const remoteName = typeof vscode.env.remoteName === 'string' ? vscode.env.remoteName : undefined
+    const recovery = recoverRemoteExplorerResources(rawResources, remoteName, controller.cwd)
+    if (remoteName !== undefined && recovery.schemes.includes('file')) {
+      // One low-noise line: the schemes (not the URIs) and how many were
+      // recovered tell whether the command saw a downgraded remote resource.
+      output.appendLine(`[webview] add-to-chat: remote=${safeLogId(remoteName)}, resource schemes=${recovery.schemes.join(',') || 'none'}, recovered=${String(recovery.recovered)}, ${describeExplorerCommandArgs(args)}`)
+    }
+    if (recovery.rejected > 0) {
+      // Client-side paths can never be read by the remote extension host. Name
+      // both working entry points instead of only refusing.
+      void vscode.window.showInformationMessage(REMOTE_LOCAL_PATH_MESSAGE)
+    }
+    if (recovery.resources.length === 0) return
+    const resources = recovery.resources
     const result = await addResourcesToChat(resources)
     if (result.ok) {
       // Nothing was insertable (for example a local path in a remote window):

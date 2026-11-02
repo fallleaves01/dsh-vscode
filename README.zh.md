@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-alpha.2.4**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-alpha.2.5**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -87,6 +87,10 @@ pnpm run package
 `artifacts/dsh-sidebar-<version>.vsix`。其他设置包括
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
+
+### 升级到 0.2.2-alpha.2.5
+
+0.2.2-alpha.2.5 修复 Remote SSH 窗口中的 **DeepSeek Harness: Add to Chat**：VS Code 可能把 Explorer 资源以 `file:` URI 投递给命令，而路径仍在远端主机；命令现在会按 workspace folder 恢复远端 scheme（或直接接受 workspace 内的远端路径）并正常解析引用。真正的客户端本地路径仍会被拒绝，并提示使用远端 Explorer 或 **+ → Upload from this computer…**。发生恢复时，DeepSeek Harness 输出通道会记录一行诊断日志。
 
 ### 升级到 0.2.2-alpha.2.4
 

@@ -1212,7 +1212,7 @@ describe('host surface wiring', () => {
       expect(resolved(h).references[0].text).toBe('@"my file.txt"')
     })
 
-    it('rejects unsafe paths and a remote window local file drop', async () => {
+    it('rejects unsafe paths and keeps client paths out of a remote window', async () => {
       const h = await activated()
       resolve(h, [{ uri: '/workspace/bad\u0007.txt', source: 'internal' }])
       await vi.waitFor(() => expect(resolved(h)).toBeDefined())
@@ -1222,10 +1222,21 @@ describe('host surface wiring', () => {
       const before = env.remoteName
       env.remoteName = 'ssh-remote'
       try {
+        // A drag payload can name a client-machine path. Even though the path
+        // looks in-project, the uri-list source keeps it a client path.
         resolve(h, [{ uri: '/workspace/src/a.ts', source: 'uri-list' }], 2)
         await vi.waitFor(() => expect(resolved(h).requestId).toBe(2))
         expect(resolved(h).references).toEqual([])
-        expect(resolved(h).errors[0]).toContain('remote window')
+        expect(String(resolved(h).errors[0])).toContain('Dragged text paths')
+        // An internal resource outside the project is refused with the two
+        // working entry points, and it is never stat-ed.
+        const statCalls = mocks.fsStat.mock.calls.length
+        resolve(h, [{ uri: '/elsewhere/b.ts', source: 'internal' }], 3)
+        await vi.waitFor(() => expect(resolved(h).requestId).toBe(3))
+        expect(resolved(h).references).toEqual([])
+        expect(String(resolved(h).errors[0])).toContain('remote Explorer')
+        expect(String(resolved(h).errors[0])).toContain('Upload from this computer')
+        expect(mocks.fsStat.mock.calls.length).toBe(statCalls)
       } finally { env.remoteName = before }
     })
 
@@ -1516,7 +1527,33 @@ describe('host surface wiring', () => {
 })
   describe('explorer add to chat command', () => {
     const uri = (fsPath: string) => ({ scheme: 'file', fsPath, toString: () => fsPath })
+    /** A remote resource as the Explorer should have delivered it. */
+    const remoteUri = (authority: string, resourcePath: string) => ({
+      scheme: 'vscode-remote', authority, path: resourcePath, fsPath: resourcePath,
+      toString: () => `vscode-remote://${authority}${resourcePath}`,
+    })
+    /** A remote workspace folder URI: `with({path})` keeps scheme and authority. */
+    const remoteFolderUri = (authority: string, folderPath: string) => ({
+      ...remoteUri(authority, folderPath),
+      with: (components: { path?: string }) => remoteUri(authority, components.path ?? folderPath),
+    })
+    const remoteFolder = (authority: string, folderPath: string) => ({ uri: remoteFolderUri(authority, folderPath), name: 'project', index: 0 })
+    /** The default local workspace folder: keeps activation cwd and sessions stable. */
+    const fileFolder = () => ({ uri: uri('/workspace'), name: 'workspace', index: 0 })
     const command = () => mocks.commands.get('deepseekHarness.addToChat')!
+    const envMock = vscode.env as { remoteName?: string }
+    const defaultFolders = vscode.workspace.workspaceFolders
+    const setRemote = (name: string | undefined): void => { envMock.remoteName = name }
+    const setFolders = (folders: unknown[]): void => {
+      ;(vscode.workspace as unknown as { workspaceFolders: unknown[] }).workspaceFolders = folders
+    }
+    const recoveryLine = (): string | undefined => mocks.output.find(line => line.startsWith('[webview] add-to-chat: '))
+    const insertedTexts = (h: { posts(): Array<Record<string, any>> }): unknown =>
+      h.posts().filter(packet => packet.type === 'insert-references').at(-1)?.texts
+    afterEach(() => {
+      setRemote(undefined)
+      setFolders(defaultFolders as unknown[])
+    })
     beforeEach(() => {
       mocks.fsStat.mockReset()
       mocks.fsStat.mockResolvedValue({ type: 1 })
@@ -1547,21 +1584,99 @@ describe('host surface wiring', () => {
       mocks.fsStat.mockResolvedValueOnce({ type: 2 })
       await command()(uri('/workspace/docs'))
       await vi.waitFor(() => expect(h.posts().filter(packet => packet.type === 'insert-references').at(-1)!.texts).toEqual(['@docs/']))
+      // A local window never emits the remote-recovery diagnostic line.
+      expect(recoveryLine()).toBeUndefined()
     })
 
-    it('rejects a local file from a remote window through the shared policy', async () => {
+    it('accepts an in-project file URI in a remote window through the resolution fallback', async () => {
       const h = await activated()
-      const envMock = vscode.env as { remoteName?: string }
-      const before = envMock.remoteName
-      envMock.remoteName = 'ssh-remote'
-      try {
-        await command()(uri('/workspace/src/a.ts'))
-        await vi.waitFor(() => expect(mocks.info).toHaveBeenCalled())
-        expect(String(mocks.info.mock.calls.at(-1)![0])).toContain('remote window')
-        const inserted = h.posts().filter(packet => packet.type === 'insert-references').at(-1)
-        expect(inserted?.texts).toEqual([])
-        expect(String((inserted?.errors as string[])[0])).toContain('remote window')
-      } finally { envMock.remoteName = before }
+      setRemote('ssh-remote')
+      mocks.output.length = 0
+      await command()(uri('/workspace/src/a.ts'))
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'insert-references')).toBe(true))
+      expect(insertedTexts(h)).toEqual(['@src/a.ts'])
+      // The line records the downgraded scheme and the recovery count only.
+      expect(recoveryLine()).toContain('remote=ssh-remote')
+      expect(recoveryLine()).toContain('resource schemes=file')
+      expect(recoveryLine()).toContain('recovered=0')
+      expect(recoveryLine()).not.toContain('/workspace')
+    })
+
+    it('restores the remote scheme for a remote workspace file argument', async () => {
+      // The local folder stays first so the activation cwd and the session list
+      // stay stable; the remote folder contributes the scheme to restore.
+      setFolders([fileFolder(), remoteFolder('ssh-remote+host', '/workspace')])
+      setRemote('ssh-remote')
+      const h = await activated()
+      mocks.output.length = 0
+      mocks.fsStat.mockClear()
+      await command()(uri('/workspace/src/a.ts'))
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'insert-references')).toBe(true))
+      expect(insertedTexts(h)).toEqual(['@src/a.ts'])
+      expect(recoveryLine()).toContain('remote=ssh-remote')
+      expect(recoveryLine()).toContain('resource schemes=file')
+      expect(recoveryLine()).toContain('recovered=1')
+      expect(recoveryLine()).not.toContain('/workspace')
+      // The stat targets the recovered remote URI, not a local file.
+      expect(mocks.fsStat).toHaveBeenCalledWith(expect.objectContaining({
+        scheme: 'vscode-remote',
+        authority: 'ssh-remote+host',
+        fsPath: '/workspace/src/a.ts',
+      }))
+    })
+
+    it('maps a file URI onto the matching root of a multi-root remote workspace', async () => {
+      setFolders([fileFolder(), remoteFolder('ssh-remote+host', '/weka/project'), remoteFolder('ssh-remote+host', '/weka/other')])
+      setRemote('ssh-remote')
+      const h = await activated()
+      mocks.output.length = 0
+      await command()(uri('/weka/other/src/b.ts'))
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'insert-references')).toBe(true))
+      // The second root is outside the DSH cwd, so its reference stays absolute.
+      expect(insertedTexts(h)).toEqual(['@/weka/other/src/b.ts'])
+      expect(recoveryLine()).toContain('recovered=1')
+    })
+
+    it('maps the workspace root itself onto its remote folder', async () => {
+      setFolders([fileFolder(), remoteFolder('ssh-remote+host', '/workspace')])
+      setRemote('ssh-remote')
+      const h = await activated()
+      mocks.output.length = 0
+      mocks.fsStat.mockResolvedValue({ type: 2 })
+      await command()(uri('/workspace'))
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'insert-references')).toBe(true))
+      expect(insertedTexts(h)).toEqual(['@/workspace/'])
+      expect(recoveryLine()).toContain('recovered=1')
+    })
+
+    it('refuses a client path outside the project and names both fallback entry points', async () => {
+      setFolders([fileFolder(), remoteFolder('ssh-remote+host', '/weka/project')])
+      setRemote('ssh-remote')
+      const h = await activated()
+      mocks.output.length = 0
+      mocks.fsStat.mockClear()
+      mocks.info.mockClear()
+      await command()(uri('/Users/local/secret.txt'))
+      await vi.waitFor(() => expect(mocks.info).toHaveBeenCalled())
+      const message = String(mocks.info.mock.calls.at(-1)![0])
+      expect(message).toContain('remote Explorer')
+      expect(message).toContain('Upload from this computer')
+      // Safe rejection: nothing is inserted and the client path is never stat-ed.
+      expect(h.posts().filter(packet => packet.type === 'insert-references')).toEqual([])
+      expect(mocks.fsStat).not.toHaveBeenCalled()
+      expect(recoveryLine()).toContain('recovered=0')
+      expect(recoveryLine()).not.toContain('/Users')
+    })
+
+    it('passes an unmodified vscode-remote URI through without a recovery line', async () => {
+      setFolders([fileFolder(), remoteFolder('ssh-remote+host', '/workspace')])
+      setRemote('ssh-remote')
+      const h = await activated()
+      mocks.output.length = 0
+      await command()(remoteUri('ssh-remote+host', '/workspace/src/a.ts'))
+      await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'insert-references')).toBe(true))
+      expect(insertedTexts(h)).toEqual(['@src/a.ts'])
+      expect(recoveryLine()).toBeUndefined()
     })
 
     it('delegates an argument-less invocation to the shared file picker', async () => {
