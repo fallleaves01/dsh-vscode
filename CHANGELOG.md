@@ -9,6 +9,40 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-alpha.2.4] - 2026-11-02
+
+### Fixed
+
+- Operating-system file drops into the sidebar. VS Code's Webview preload
+  forwards every unguarded `dragover` to the workbench, whose WebviewView
+  drag handler then sets the iframe to `pointer-events: none`; the composer
+  received `dragenter` and `dragover` but never `drop`. The Webview now
+  handles every drag phase in the capture phase, prevents the unguarded
+  `dragover` from reaching the preload, and keeps the iframe hit-testable.
+  This also fixes re-dropping a file after removing it: the earlier failure
+  was the same platform block, not attachment state.
+- Directory detection, file reads and image reads have explicit timeouts, so
+  a stuck `getAsFileSystemHandle` or `FileReader` can no longer leave the
+  drop intake open. Refused drops now report a reason instead of failing
+  silently.
+
+### Added
+
+- **Upload from this computer…** in the composer **+** menu. The Webview
+  opens the local file dialog and uploads the selected bytes through the same
+  attachment path as an operating-system drop; this works in Remote SSH
+  windows, where the picker runs on the local desktop.
+- A Shift hint in the **+** menu for platform-suppressed external drags, and
+  Webview `error` / `unhandledrejection` reporting to the **DeepSeek
+  Harness** output channel for diagnosis.
+
+### Changed
+
+- The README, its Chinese translation and the Marketplace README describe the
+  local-file picker and the Shift workaround, and clarify that Explorer and
+  editor-tab drags into a sidebar webview are reserved by VS Code for view
+  docking.
+
 ## [0.2.2-alpha.2.3] - 2026-11-02
 
 ### Fixed

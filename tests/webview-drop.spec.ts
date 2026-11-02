@@ -53,17 +53,24 @@ function transfer(payload: DragPayload): Record<string, unknown> {
     getData: (format: string) => payload.data?.[format] ?? '',
   }
 }
-function fireDrag(type: string, payload: DragPayload, relatedTarget: EventTarget | null = null): Event {
+function fireDrag(type: string, payload: DragPayload, relatedTarget: EventTarget | null = null, target: EventTarget = document): Event {
   const event = new Event(type, { bubbles: true, cancelable: true }) as Event & { dataTransfer: unknown; relatedTarget: unknown }
   Object.defineProperty(event, 'dataTransfer', { value: transfer(payload) })
   Object.defineProperty(event, 'relatedTarget', { value: relatedTarget })
-  document.dispatchEvent(event)
+  target.dispatchEvent(event)
   return event
 }
-const drop = (payload: DragPayload): Event => fireDrag('drop', payload)
+const drop = (payload: DragPayload, target: EventTarget = document): Event => fireDrag('drop', payload, null, target)
 /** One OS file plus the matching item metadata a real drag would expose. */
 function osDrop(items: DragItem[], files: File[], extra: Partial<DragPayload> = {}): Event {
   return drop({ types: ['Files', ...(extra.types ?? [])], data: extra.data, files, items })
+}
+/** Drive the hidden local picker: give it the selected File objects and fire change. */
+function selectLocalFiles(h: Harness, files: File[]): HTMLInputElement {
+  const input = h.document.getElementById('localFiles') as HTMLInputElement
+  Object.defineProperty(input, 'files', { configurable: true, value: files })
+  input.dispatchEvent(new Event('change', { bubbles: true }))
+  return input
 }
 
 describe('webview drag and drop', () => {
@@ -587,6 +594,312 @@ describe('webview drag and drop', () => {
     })
   })
 
+  describe('drop resilience', () => {
+    it('uploads the same file again after it was removed, three times in a row', async () => {
+      const h = open()
+      const sameFile = () => new File([new Uint8Array([1, 2, 3])], 'same.bin', { type: 'application/octet-stream' })
+      for (let round = 1; round <= 3; round += 1) {
+        osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [sameFile()])
+        await vi.waitFor(() => expect(all(h, 'attach-files')).toHaveLength(round))
+        const request = all(h, 'attach-files')[round - 1]!
+        h.send({ type: 'file-upload', sessionId: 'session-a', requestId: request.requestId, name: 'same.bin', state: 'ready', id: 'receipt-' + String(round), bytes: 3 })
+        h.send({ type: 'draft-files', sessionId: 'session-a', files: [{ id: 'draft-' + String(round), name: 'same.bin', bytes: 3 }], uploads: 0 })
+        await new Promise(resolve => setTimeout(resolve, 0))
+        expect(h.document.querySelectorAll('.attachment-chip')).toHaveLength(1)
+        // Removing the chip is a Host round trip; the Webview must not keep a
+        // local gate that swallows the next drop of the very same file.
+        h.click('.attachment-chip .attachment-remove')
+        expect(all(h, 'remove-attachment')).toHaveLength(round)
+        h.send({ type: 'draft-files', sessionId: 'session-a', files: [], uploads: 0 })
+        await new Promise(resolve => setTimeout(resolve, 0))
+        expect(h.document.querySelectorAll('.attachment-chip')).toHaveLength(0)
+      }
+      // Every drop is a fresh upload request, never a reuse of the last one.
+      const requestIds = all(h, 'attach-files').map(request => request.requestId)
+      expect(new Set(requestIds).size).toBe(3)
+      h.enter('send after three drops')
+      await vi.waitFor(() => expect(first(h, 'send')).toBeDefined())
+    })
+
+    it('continues after 500 ms when getAsFileSystemHandle never settles', async () => {
+      vi.useFakeTimers()
+      try {
+        const h = open()
+        const file = new File([new Uint8Array([7, 7])], 'pending-handle.bin', { type: 'application/octet-stream' })
+        // The Entry API is unavailable here, so the directory probe falls back to
+        // a handle promise this host never settles.
+        drop({ types: ['Files'], files: [file], items: [{ kind: 'file', getAsFileSystemHandle: () => new Promise(() => {}) }] })
+        await vi.advanceTimersByTimeAsync(600)
+        expect(all(h, 'attach-files')).toHaveLength(1)
+        expect((first(h, 'attach-files')!.files as Array<{ name: string }>)[0]!.name).toBe('pending-handle.bin')
+        expect(all(h, 'attachment-error')).toEqual([])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('reports a timed-out read instead of hanging the drop intake', async () => {
+      vi.useFakeTimers()
+      class NeverFileReader {
+        result: unknown = null
+        listeners: Array<() => void> = []
+        addEventListener(): void {}
+        abort(): void {}
+        readAsDataURL(): void {}
+      }
+      vi.stubGlobal('FileReader', NeverFileReader)
+      try {
+        const h = open()
+        osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([1])], 'stuck.bin', { type: 'application/octet-stream' })])
+        await vi.advanceTimersByTimeAsync(10_100)
+        expect(first(h, 'attachment-error')).toBeDefined()
+        expect(String(first(h, 'attachment-error')!.message)).toBe('The dropped file could not be read.')
+        expect(all(h, 'attach-files')).toEqual([])
+        // The intake and its send gate were released with the error.
+        h.enter('after the timeout')
+        await vi.advanceTimersByTimeAsync(10)
+        expect(first(h, 'send')).toBeDefined()
+      } finally {
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+      }
+    })
+
+    it('claims the drag at capture on window and document before any bubble handler', () => {
+      const h = open()
+      const file = (): File => new File([new Uint8Array([1])], 'capture.bin', { type: 'application/octet-stream' })
+      // The Webview preload only forwards a dragenter the content did not
+      // prevent, and its own handler is a bubble listener; the capture handler
+      // must run first for both event targets.
+      const onDocument = fireDrag('dragenter', { types: ['Files'], files: [file()] })
+      expect(onDocument.defaultPrevented).toBe(true)
+      const onWindow = fireDrag('dragenter', { types: ['Files'], files: [file()] }, null, window)
+      expect(onWindow.defaultPrevented).toBe(true)
+      // A file carried only by items is claimed the same way.
+      const itemsOnly = fireDrag('dragenter', { types: [], files: [], items: [{ kind: 'file', getAsFile: () => file() }] })
+      expect(itemsOnly.defaultPrevented).toBe(true)
+      // A plain text drag is not a file drop: the composer leaves it alone.
+      const text = fireDrag('dragenter', { types: ['text/plain'], data: { 'text/plain': 'hello' } })
+      expect(text.defaultPrevented).toBe(false)
+      expect(h.document.getElementById('dropOverlay')!.classList.contains('hidden')).toBe(false)
+    })
+
+    it('accepts a drop whose types omit Files when the transfer still carries files', async () => {
+      const h = open()
+      const enter = fireDrag('dragenter', { types: [], files: [new File([new Uint8Array([1])], 'untyped.bin', { type: 'application/octet-stream' })] })
+      expect(enter.defaultPrevented).toBe(true)
+      // The same guarantee for a payload exposed only through items.
+      const itemEnter = fireDrag('dragenter', { types: [], files: [], items: [{ kind: 'file', getAsFile: () => new File([new Uint8Array([1])], 'items.bin', { type: 'application/octet-stream' }) }] })
+      expect(itemEnter.defaultPrevented).toBe(true)
+      const event = drop({ types: [], files: [new File([new Uint8Array([2])], 'untyped.bin', { type: 'application/octet-stream' })] })
+      expect(event.defaultPrevented).toBe(true)
+      await vi.waitFor(() => expect(first(h, 'attach-files')).toBeDefined())
+      expect((first(h, 'attach-files')!.files as Array<{ name: string }>)[0]!.name).toBe('untyped.bin')
+
+      // The same guarantee through items only: no Files type, no FileList.
+      const viaItems = new File([new Uint8Array([3])], 'typed-by-item.bin', { type: 'application/octet-stream' })
+      const itemDrop = drop({ types: [], files: [], items: [{ kind: 'file', getAsFile: () => viaItems, webkitGetAsEntry: () => ({ isDirectory: false }) }] })
+      expect(itemDrop.defaultPrevented).toBe(true)
+      await vi.waitFor(() => expect(all(h, 'attach-files')).toHaveLength(2))
+      expect((all(h, 'attach-files')[1]!.files as Array<{ name: string }>)[0]!.name).toBe('typed-by-item.bin')
+    })
+
+    it('handles a drop that an inner element stops propagating', async () => {
+      const h = open()
+      const prompt = h.document.getElementById('prompt')!
+      const blocker = (event: Event): void => { event.stopPropagation() }
+      prompt.addEventListener('drop', blocker)
+      try {
+        const event = drop({ types: ['Files'], files: [new File([new Uint8Array([5])], 'shielded.bin', { type: 'application/octet-stream' })] }, prompt)
+        expect(event.defaultPrevented).toBe(true)
+        await vi.waitFor(() => expect(first(h, 'attach-files')).toBeDefined())
+        expect((first(h, 'attach-files')!.files as Array<{ name: string }>)[0]!.name).toBe('shielded.bin')
+      } finally {
+        prompt.removeEventListener('drop', blocker)
+      }
+    })
+
+    it('reports a refused drop while the directory view is open', async () => {
+      const h = open()
+      h.click('#conversationHome')
+      h.posts.length = 0
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([1])], 'refused.bin', { type: 'application/octet-stream' })])
+      await vi.waitFor(() => expect(first(h, 'attachment-error')).toBeDefined())
+      expect(String(first(h, 'attachment-error')!.message)).toBe('Open a conversation before adding files.')
+      expect(all(h, 'attach-files')).toEqual([])
+    })
+
+    it('reports a refused drop while a new conversation is being created', async () => {
+      const h = open()
+      h.click('#newSession')
+      expect(first(h, 'create-conversation')).toBeDefined()
+      h.posts.length = 0
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([1])], 'refused.bin', { type: 'application/octet-stream' })])
+      await vi.waitFor(() => expect(first(h, 'attachment-error')).toBeDefined())
+      expect(String(first(h, 'attachment-error')!.message)).toBe('Wait for the conversation to open before adding files.')
+      expect(all(h, 'attach-files')).toEqual([])
+    })
+
+    it('logs acceptDrop entry and completion for an accepted drop', async () => {
+      const h = open()
+      const spy = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+      try {
+        osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([1])], 'logged.bin', { type: 'application/octet-stream' })])
+        await vi.waitFor(() => expect(first(h, 'attach-files')).toBeDefined())
+        const phases = spy.mock.calls
+          .filter(call => call[0] === '[dsh-drop]')
+          .map(call => (call[1] as { phase?: string }).phase)
+        expect(phases).toContain('acceptDrop:enter')
+        expect(phases).toContain('acceptDrop:done')
+      } finally {
+        spy.mockRestore()
+      }
+    })
+  })
+
+  describe('local file picker fallback', () => {
+    it('opens the hidden input from the + menu and explains the drag guard', () => {
+      const h = open()
+      h.click('#attach')
+      expect(h.document.getElementById('contextMenu')!.classList.contains('hidden')).toBe(false)
+      expect(h.document.querySelector('.context-menu-hint')!.textContent).toContain('Hold Shift while dragging files')
+      const input = h.document.getElementById('localFiles') as HTMLInputElement
+      const spy = vi.spyOn(input, 'click').mockImplementation(() => undefined)
+      try {
+        h.click('#contextUpload')
+        expect(spy).toHaveBeenCalledTimes(1)
+        expect(h.document.getElementById('contextMenu')!.classList.contains('hidden')).toBe(true)
+      } finally {
+        spy.mockRestore()
+      }
+    })
+
+    it('uploads a picked file through the same card path', async () => {
+      const h = open()
+      const input = selectLocalFiles(h, [new File([new Uint8Array([1, 2])], 'picked.bin', { type: 'application/octet-stream' })])
+      await vi.waitFor(() => expect(first(h, 'attach-files')).toBeDefined())
+      expect((first(h, 'attach-files')!.files as Array<{ name: string }>)[0]!.name).toBe('picked.bin')
+      expect(h.document.querySelectorAll('.attachment-chip.uploading')).toHaveLength(1)
+      // Cleared so the same file can be picked again: the change event fires.
+      expect(input.value).toBe('')
+      // The Host answers exactly as it does for a drop: a ready chip.
+      const requestId = first(h, 'attach-files')!.requestId as number
+      h.send({ type: 'file-upload', sessionId: 'session-a', requestId, name: 'picked.bin', state: 'ready', id: 'receipt-1', bytes: 2 })
+      h.send({ type: 'draft-files', sessionId: 'session-a', files: [{ id: 'draft-1', name: 'picked.bin', bytes: 2 }], uploads: 0 })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(h.document.querySelectorAll('.attachment-chip.uploading')).toHaveLength(0)
+      expect(h.document.getElementById('attachments')!.textContent).toContain('picked.bin')
+    })
+
+    it('routes a picked image through the inline image path', async () => {
+      const h = open()
+      selectLocalFiles(h, [new File([new Uint8Array([137, 80, 78, 71])], 'picked.png', { type: 'image/png' })])
+      await vi.waitFor(() => expect(first(h, 'attach-images')).toBeDefined())
+      expect(all(h, 'attach-files')).toEqual([])
+      const requestId = first(h, 'attach-images')!.requestId as number
+      h.send({ type: 'draft-images', sessionId: 'session-a', images: [{ id: 'img-1', name: 'picked.png' }] })
+      h.send({ type: 'attachments-added', sessionId: 'session-a', requestId })
+      expect(h.document.querySelector('.attachment-thumb')).not.toBeNull()
+    })
+
+    it('uploads the same file again after it was removed', async () => {
+      const h = open()
+      const picked = (): File => new File([new Uint8Array([3, 4])], 'same-picked.bin', { type: 'application/octet-stream' })
+      selectLocalFiles(h, [picked()])
+      await vi.waitFor(() => expect(all(h, 'attach-files')).toHaveLength(1))
+      const request = all(h, 'attach-files')[0]!
+      h.send({ type: 'file-upload', sessionId: 'session-a', requestId: request.requestId, name: 'same-picked.bin', state: 'ready', id: 'receipt-1', bytes: 2 })
+      h.send({ type: 'draft-files', sessionId: 'session-a', files: [{ id: 'draft-1', name: 'same-picked.bin', bytes: 2 }], uploads: 0 })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      h.click('.attachment-chip .attachment-remove')
+      h.send({ type: 'draft-files', sessionId: 'session-a', files: [], uploads: 0 })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(h.document.querySelectorAll('.attachment-chip')).toHaveLength(0)
+      selectLocalFiles(h, [picked()])
+      await vi.waitFor(() => expect(all(h, 'attach-files')).toHaveLength(2))
+      // A fresh request id: the second pick is a new upload, not a replay.
+      expect(new Set(all(h, 'attach-files').map(item => item.requestId)).size).toBe(2)
+    })
+
+    it('applies the drop caps and the size preflight to a picked batch', async () => {
+      const h = open()
+      const huge = { name: 'huge.bin', size: 33 * 1024 * 1024, type: 'application/octet-stream' } as unknown as File
+      const files = Array.from({ length: 10 }, (_value, index) => new File([new Uint8Array([index])], 'pick' + String(index) + '.bin', { type: 'application/octet-stream' }))
+      selectLocalFiles(h, [huge, ...files])
+      await vi.waitFor(() => expect(first(h, 'attach-files')).toBeDefined())
+      // The over-limit file never crosses the boundary; the rest keeps the
+      // shared eight-file cap.
+      const names = (first(h, 'attach-files')!.files as Array<{ name: string }>).map(file => file.name)
+      expect(names).toEqual(['pick0.bin', 'pick1.bin', 'pick2.bin', 'pick3.bin', 'pick4.bin', 'pick5.bin', 'pick6.bin'])
+      const messages = all(h, 'attachment-error').map(item => String(item.message))
+      expect(messages).toContain('You can attach up to 8 files at once.')
+      expect(messages.some(message => message.includes('larger than the 32 MB attachment limit'))).toBe(true)
+    })
+
+    it('refuses a picker selection while the runtime is not ready', async () => {
+      const h = harness()
+      live.push(h)
+      h.sendState({ phase: 'loading' })
+      h.posts.length = 0
+      selectLocalFiles(h, [new File([new Uint8Array([1])], 'early.bin', { type: 'application/octet-stream' })])
+      await vi.waitFor(() => expect(first(h, 'attachment-error')).toBeDefined())
+      expect(String(first(h, 'attachment-error')!.message)).toBe('Wait for DeepSeek to reconnect before adding files.')
+      expect(all(h, 'attach-files')).toEqual([])
+    })
+
+    it('treats an empty picker selection as a no-op', () => {
+      const h = open()
+      selectLocalFiles(h, [])
+      expect(h.posts).toEqual([])
+    })
+  })
+
+  describe('webview error reporting', () => {
+    it('posts a bounded failure report with source and line', () => {
+      const h = open()
+      h.posts.length = 0
+      const event = new Event('error') as Event & { message?: string; filename?: string; lineno?: number; error?: Error }
+      Object.defineProperty(event, 'message', { value: 'x'.repeat(5_000) })
+      Object.defineProperty(event, 'filename', { value: 'vscode-webview://webview/index.html' })
+      Object.defineProperty(event, 'lineno', { value: 42 })
+      Object.defineProperty(event, 'error', { value: new Error('render boom') })
+      window.dispatchEvent(event)
+      const report = first(h, 'webview-error')!
+      expect(report).toBeDefined()
+      // The whole text stays inside 2 KB, and the source/line survive so the
+      // Host log can point at the failing code path.
+      expect(String(report.message).length).toBeLessThanOrEqual(2048)
+      expect(report.message).not.toContain('undefined')
+      expect(report.source).toBe('vscode-webview://webview/index.html')
+      expect(report.line).toBe(42)
+      expect(String(report.message).length + String(report.stack ?? '').length).toBeLessThanOrEqual(2048)
+    })
+
+    it('keeps a short message and its stack inside the 2 KB budget', () => {
+      const h = open()
+      h.posts.length = 0
+      const event = new Event('error') as Event & { message?: string; error?: Error }
+      Object.defineProperty(event, 'message', { value: 'render failed: boom' })
+      Object.defineProperty(event, 'error', { value: new Error('render failed: boom') })
+      window.dispatchEvent(event)
+      const report = first(h, 'webview-error')!
+      expect(report.message).toBe('render failed: boom')
+      expect(String(report.stack)).toContain('Error: render failed: boom')
+      expect(String(report.message).length + String(report.stack).length).toBeLessThanOrEqual(2048)
+    })
+
+    it('reports an unhandled rejection instead of leaving it silent', () => {
+      const h = open()
+      h.posts.length = 0
+      const event = new Event('unhandledrejection') as Event & { reason?: unknown }
+      Object.defineProperty(event, 'reason', { value: new Error('state resync failed') })
+      window.dispatchEvent(event)
+      const report = first(h, 'webview-error')!
+      expect(report.message).toBe('state resync failed')
+      expect(String(report.stack)).toContain('Error: state resync failed')
+    })
+  })
+
   describe('images', () => {
     it('routes an OS image to the image path and shows a local thumbnail', async () => {
       const h = open()
@@ -867,7 +1180,14 @@ describe('webview drag and drop', () => {
       fireDrag('dragenter', { types: ['Files'] })
       expect(h.document.getElementById('dropTitle')!.textContent).toBe('Files and images cannot be added right now')
       const over = fireDrag('dragover', { types: ['Files'] })
-      expect((over as unknown as { dataTransfer: { dropEffect: string } }).dataTransfer.dropEffect).toBe('none')
+      // The drop is still requested: refusing at drop time is visible, while a
+      // suppressed drop (dropEffect none) looks exactly like a broken Webview.
+      expect((over as unknown as { dataTransfer: { dropEffect: string } }).dataTransfer.dropEffect).toBe('copy')
+      osDrop([{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }) }], [new File([new Uint8Array([1])], 'late.bin', { type: 'application/octet-stream' })])
+      await vi.waitFor(() => expect(first(h, 'attachment-error')).toBeDefined())
+      expect(String(first(h, 'attachment-error')!.message)).toBe('Wait for DeepSeek to reconnect before adding files.')
+      expect(all(h, 'attach-files')).toEqual([])
+      expect(h.document.getElementById('dropOverlay')!.classList.contains('hidden')).toBe(true)
     })
 
     it('surfaces a picker upload failure through the toast, not a native dialog', () => {

@@ -927,11 +927,11 @@ describe('host surface wiring', () => {
       mocks.output.length = 0
       const canary = 'https://x/?token=CANARY\n[fake] Authorization: Bearer BEARERCANARY sk-CANARY1234567890 /Users/canary-user/file'
       h.send({ type: 'webview-error', message: `boom ${canary}` })
-      await vi.waitFor(() => expect(loggedLine('[webview] boom')).toBeDefined())
+      await vi.waitFor(() => expect(loggedLine('[webview] error: boom')).toBeDefined())
       // The renderer's own failure report uses the same channel.
       h.send({ type: 'webview-error', message: `render failed: ${canary}` })
-      await vi.waitFor(() => expect(loggedLine('[webview] render failed:')).toBeDefined())
-      for (const line of [loggedLine('[webview] boom'), loggedLine('[webview] render failed:')]) {
+      await vi.waitFor(() => expect(loggedLine('[webview] error: render failed:')).toBeDefined())
+      for (const line of [loggedLine('[webview] error: boom'), loggedLine('[webview] error: render failed:')]) {
         expect(line).toBeDefined()
         expect(line).toContain('[redacted]')
         expect(line).not.toContain('CANARY')
@@ -942,10 +942,48 @@ describe('host surface wiring', () => {
       expect(mocks.output.some(entry => entry.startsWith('[fake]'))).toBe(false)
     })
 
+    it('records source, line and stack for a Webview failure and throttles repeats', async () => {
+      const h = await activated()
+      mocks.output.length = 0
+      mocks.warning.mockClear(); mocks.info.mockClear(); mocks.error.mockClear()
+      const clock = vi.spyOn(Date, 'now')
+      try {
+        clock.mockReturnValue(1_000)
+        h.send({
+          type: 'webview-error',
+          message: 'render failed: boom',
+          stack: 'Error: boom at render (webview.js:2:3)',
+          source: 'vscode-webview://x/index.html',
+          line: 42,
+        })
+        await vi.waitFor(() => expect(mocks.output.some(line => line.startsWith('[webview] error: render failed: boom'))).toBe(true))
+        const first = mocks.output.find(line => line.startsWith('[webview] error: render failed: boom'))!
+        expect(first).toContain('vscode-webview://x/index.html:42')
+        expect(first).toContain('at render')
+        // The identical failure inside ten seconds is recorded once.
+        h.send({ type: 'webview-error', message: 'render failed: boom', stack: 'Error: boom' })
+        await Promise.resolve()
+        expect(mocks.output.filter(line => line.startsWith('[webview] error: render failed: boom'))).toHaveLength(1)
+        // Another message is an independent throttle key.
+        h.send({ type: 'webview-error', message: 'unhandled rejection: other' })
+        await vi.waitFor(() => expect(mocks.output.some(line => line.startsWith('[webview] error: unhandled rejection: other'))).toBe(true))
+        // Once the interval passes, the repeats are recorded again.
+        clock.mockReturnValue(12_000)
+        h.send({ type: 'webview-error', message: 'render failed: boom' })
+        await vi.waitFor(() => expect(mocks.output.filter(line => line.startsWith('[webview] error: render failed: boom'))).toHaveLength(2))
+      } finally {
+        clock.mockRestore()
+      }
+      // Diagnostic evidence only: the Webview failure never becomes a toast.
+      expect(mocks.warning).not.toHaveBeenCalled()
+      expect(mocks.info).not.toHaveBeenCalled()
+      expect(mocks.error).not.toHaveBeenCalled()
+    })
+
     it('bounds one diagnostic line and marks the truncation', async () => {
       const h = await activated()
       mocks.output.length = 0
-      h.send({ type: 'webview-error', message: 'x'.repeat(600) })
+      h.send({ type: 'webview-error', message: 'x'.repeat(5_000) })
       await vi.waitFor(() => expect(loggedLine('[webview] ')).toBeDefined())
       const line = loggedLine('[webview] ')!
       expect(line.length).toBeLessThanOrEqual(301)

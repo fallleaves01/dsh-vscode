@@ -124,10 +124,15 @@ describe('new conversations use the full chat composer', () => {
     expect(h.posts.at(-1)).toMatchObject({ type: 'send', sessionId: 'other', text: 'Other project message' })
   })
 
-  it('does not create or attach anything when a resource is dropped on the directory', async () => {
+  it('reports a dropped resource on the directory instead of creating or attaching it', async () => {
     const h = open(); await h.settle(); h.click('#conversationHome'); h.posts.length = 0
     h.drop({ types: ['resourceurls'], data: { resourceurls: '["file:///workspace/src/app.ts"]' } })
-    expect(h.posts).toEqual([])
+    // The directory view refuses the drop visibly; it must never create a
+    // conversation or attach anything from that gesture.
+    expect(h.posts.length).toBeGreaterThan(0)
+    expect(h.posts.every(post => post.type === 'attachment-error')).toBe(true)
+    expect(h.posts.some(post => post.type === 'create-conversation')).toBe(false)
+    expect(h.posts.some(post => post.type === 'attach-files' || post.type === 'resolve-references')).toBe(false)
   })
 
   it('keeps directory switching usable while creating and ignores the abandoned receipt', async () => {

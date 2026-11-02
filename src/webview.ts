@@ -702,10 +702,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .context-option-name, .context-option-path { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .context-option-path { color: var(--dsh-muted); font-size: 10px; line-height: 15px; }
     .context-menu-footer { flex: none; display: flex; align-items: center; gap: 6px; border-top: .5px solid var(--dsh-border); padding-top: 4px; }
-    .context-menu-action { border: 0; border-radius: 5px; padding: 3px 7px; background: transparent; font-size: 11px; line-height: 18px; color: var(--dsh-muted); }
+    .context-menu-action { border: 0; border-radius: 5px; padding: 3px 7px; background: transparent; font-size: 11px; line-height: 18px; color: var(--dsh-muted); white-space: nowrap; }
     .context-menu-action:hover { color: var(--vscode-foreground); background: var(--dsh-hover); }
     .context-menu-action:last-child { margin-left: auto; }
     .context-menu-status { padding: 6px 8px; font-size: 11px; color: var(--dsh-muted); }
+    .context-menu-hint { flex: none; overflow: hidden; padding: 4px 2px 0; border-top: .5px solid var(--dsh-border); color: var(--dsh-muted); font-size: 10px; line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; }
+    /* The file picker runs in the Webview (the local machine even in Remote SSH);
+       the input itself stays out of the layout and out of the tab order. */
+    .local-file-input { display: none; }
     .context-name, .attachment-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .context-remove, .attachment-remove { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; }
     .context-remove:hover, .attachment-remove:hover { background: var(--vscode-toolbar-hoverBackground); }
@@ -856,10 +860,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         <div id="modeChips" class="mode-chips hidden" aria-label="Active collaboration modes"></div>
         <div id="contextChips" class="context-chips hidden" aria-label="Editor context"></div>
         <div id="attachments" class="attachments hidden"></div>
+        <input id="localFiles" class="local-file-input" type="file" multiple aria-hidden="true" tabindex="-1">
         <div id="contextMenu" class="command-menu context-menu hidden" role="dialog" aria-label="Add files">
           <input id="contextSearch" class="context-search" type="search" placeholder="Search project files" aria-label="Search files to add" autocomplete="off" spellcheck="false">
           <div id="contextList" class="context-list" role="listbox" aria-label="Files to include" aria-multiselectable="true"></div>
-          <div class="context-menu-footer"><button id="contextFiles" class="context-menu-action" type="button">Add files…</button><button id="contextImage" class="context-menu-action" type="button">Attach image…</button><button id="contextDone" class="context-menu-action" type="button">Done</button></div>
+          <div class="context-menu-hint" role="note" title="Hold Shift while dragging files from outside VS Code if the window blocks the drop.">Hold Shift while dragging files from outside VS Code if the window blocks the drop.</div>
+          <div class="context-menu-footer"><button id="contextFiles" class="context-menu-action" type="button">Add files…</button><button id="contextImage" class="context-menu-action" type="button">Attach image…</button><button id="contextUpload" class="context-menu-action" type="button">Upload from this computer…</button><button id="contextDone" class="context-menu-action" type="button">Done</button></div>
         </div>
         <div id="mentionMenu" class="command-menu hidden" role="listbox" aria-label="Files and folders"></div>
         <div id="commandMenu" class="command-menu hidden" role="listbox" aria-label="DeepSeek commands"></div>
@@ -898,15 +904,63 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
   ${markdownAssets.settings ? '<script nonce="' + token + '" src="' + escapeHtml(markdownAssets.settings.toString(true)) + '"></script>' : ''}
   <script nonce="${token}">
     const vscode = acquireVsCodeApi();
-    const settingsModal = window.dshSettingsPage ? window.dshSettingsPage.createSettingsModal(document, vscode) : undefined;
-    window.addEventListener('unload', () => { if (settingsModal) settingsModal.dispose(); });
+    /** Cap for one Webview failure report; the Host log line is capped again. */
+    const WEBVIEW_ERROR_MAX_CHARS = 2048;
+    function boundedWebviewErrorText(value, budget) {
+      const text = typeof value === 'string' ? value : String(value === undefined || value === null ? '' : value);
+      if (budget <= 0 || text === '') return '';
+      return text.length <= budget ? text : text.slice(0, budget - 1) + '…';
+    }
+    /**
+     * Report one Webview failure to the Host log. The payload carries only
+     * message/stack/source/line: never attachment contents, and the total text
+     * stays bounded so a runaway error cannot flood the channel. It must never
+     * throw itself — it is the last line of defence during initialization.
+     */
+    function reportWebviewError(payload) {
+      try {
+        const message = boundedWebviewErrorText(payload && payload.message !== undefined && payload.message !== '' ? payload.message : 'Unknown webview error', WEBVIEW_ERROR_MAX_CHARS);
+        const remaining = WEBVIEW_ERROR_MAX_CHARS - message.length;
+        const stack = payload && typeof payload.stack === 'string' ? boundedWebviewErrorText(payload.stack, remaining) : '';
+        const source = payload && typeof payload.source === 'string' ? boundedWebviewErrorText(payload.source, 200) : '';
+        const line = payload && Number.isFinite(payload.line) && payload.line > 0 ? Math.trunc(payload.line) : undefined;
+        vscode.postMessage({
+          type: 'webview-error',
+          message,
+          ...(stack === '' ? {} : { stack }),
+          ...(source === '' ? {} : { source }),
+          ...(line === undefined ? {} : { line }),
+        });
+      } catch { /* the reporter must never break the page it reports on */ }
+    }
+    // Registered before the settings modal and the view elements exist: a
+    // throwing setup has to reach the Host log, not only the Webview console.
+    // The 8 s resync loop is exactly the failure this instrumentation exists to
+    // explain, so these two listeners stay first in the script.
     window.addEventListener('error', event => {
-      vscode.postMessage({ type: 'webview-error', message: event.message || 'Unknown webview error' });
+      const target = event && event.target;
+      const resourceSource = target && target !== window && typeof target.src === 'string' && target.src !== '' ? target.src : '';
+      reportWebviewError({
+        message: event && typeof event.message === 'string' && event.message !== '' ? event.message
+          : resourceSource !== '' ? 'Failed to load ' + resourceSource : 'Unknown webview error',
+        ...(event && event.error instanceof Error && event.error.stack ? { stack: event.error.stack } : {}),
+        ...(event && typeof event.filename === 'string' && event.filename !== '' ? { source: event.filename } : {}),
+        ...(event && Number.isFinite(event.lineno) && event.lineno > 0 ? { line: event.lineno } : {}),
+      });
     });
     window.addEventListener('unhandledrejection', event => {
-      const reason = event.reason instanceof Error ? event.reason.message : String(event.reason || 'Unknown promise rejection');
-      vscode.postMessage({ type: 'webview-error', message: reason });
+      const reason = event && event.reason;
+      const message = reason instanceof Error && reason.message ? reason.message
+        : String(reason === undefined || reason === null ? 'Unknown promise rejection' : reason);
+      reportWebviewError({
+        message,
+        ...(reason instanceof Error && reason.stack ? { stack: reason.stack } : {}),
+        ...(event && typeof event.filename === 'string' && event.filename !== '' ? { source: event.filename } : {}),
+        ...(event && Number.isFinite(event.lineno) && event.lineno > 0 ? { line: event.lineno } : {}),
+      });
     });
+    const settingsModal = window.dshSettingsPage ? window.dshSettingsPage.createSettingsModal(document, vscode) : undefined;
+    window.addEventListener('unload', () => { if (settingsModal) settingsModal.dispose(); });
     const elements = {
       runtimeIndicator: document.getElementById('runtimeIndicator'),
       runtimeConnection: document.getElementById('runtimeConnection'),
@@ -924,7 +978,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
       usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'), usageStats: document.getElementById('usageStats'),
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
-      contextMenu: document.getElementById('contextMenu'), contextSearch: document.getElementById('contextSearch'), contextList: document.getElementById('contextList'), contextFiles: document.getElementById('contextFiles'), contextImage: document.getElementById('contextImage'), contextDone: document.getElementById('contextDone'),
+      contextMenu: document.getElementById('contextMenu'), contextSearch: document.getElementById('contextSearch'), contextList: document.getElementById('contextList'), contextFiles: document.getElementById('contextFiles'), contextImage: document.getElementById('contextImage'), contextUpload: document.getElementById('contextUpload'), contextDone: document.getElementById('contextDone'), localFiles: document.getElementById('localFiles'),
       queueDock: document.getElementById('queueDock'), dropOverlay: document.getElementById('dropOverlay'), dropTitle: document.getElementById('dropTitle'), dropDesc: document.getElementById('dropDesc'),
       taskPanel: document.getElementById('taskPanel'), taskToggle: document.getElementById('taskToggle'), taskList: document.getElementById('taskList'),
       taskFeatures: document.getElementById('taskFeatures'), taskFeaturesSummary: document.getElementById('taskFeaturesSummary'), refreshTasks: document.getElementById('refreshTasks'), configureTaskServices: document.getElementById('configureTaskServices'), goalPanel: document.getElementById('goalPanel'), schedulePanel: document.getElementById('schedulePanel'),
@@ -5232,17 +5286,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function clipboardImage(file, index) {
       const mediaType = String(file.type || '').toLowerCase();
       if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mediaType)) return Promise.resolve(null);
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.addEventListener('load', () => {
-          const result = typeof reader.result === 'string' ? reader.result : '';
-          const separator = result.indexOf(',');
-          if (separator < 0) { reject(new Error('The pasted image could not be read.')); return; }
-          resolve({ mediaType, data: result.slice(separator + 1), name: file.name || ('pasted-image-' + String(index + 1)) });
-        });
-        reader.addEventListener('error', () => reject(new Error('The pasted image could not be read.')));
-        reader.readAsDataURL(file);
-      });
+      // The same reader deadline as a dropped file: a paste whose reader never
+      // loads must not keep pendingAttachmentRequests (and Send) closed.
+      return readFileAsBase64(file, DROP_FILE_READ_TIMEOUT_MS, 'The pasted image could not be read.')
+        .then(data => ({ mediaType, data, name: file.name || ('pasted-image-' + String(index + 1)) }));
     }
     function clipboardImageFiles(event) {
       const clipboard = event.clipboardData;
@@ -5271,6 +5318,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     // applied before any file is read.
     const MAX_DROP_FILES = 8;
     const MAX_DROP_FILES_MESSAGE = 'You can attach up to 8 files at once.';
+    // A directory probe is a courtesy, not a requirement: one pending
+    // getAsFileSystemHandle() must never hold the drop intake (and with it the
+    // Send gate) open forever. The whole probe shares one deadline.
+    const DROP_DIRECTORY_PROBE_TIMEOUT_MS = 500;
+    // A FileReader that never fires load/error would hang acceptDrop the same
+    // way, leaving an invisible upload and a closed Send gate behind.
+    const DROP_FILE_READ_TIMEOUT_MS = 10_000;
+    // One hover diagnostic line per this interval; a drag fires dragover at
+    // pointer rate and the console must stay readable.
+    const DROP_DIAGNOSTIC_INTERVAL_MS = 500;
     // Resident thumbnails are bounded like the upload cards: a long session must
     // not accumulate image data URLs in the Webview forever.
     const MAX_IMAGE_PREVIEWS = 8;
@@ -5386,40 +5443,99 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       return found;
     }
-    /** Directory entries exposed by a drag; undefined means the API was silent. */
+    /**
+     * Settle a promise at most once. A late resolution or rejection is ignored:
+     * the timeout path is the one the caller waits for, and the abandoned
+     * promise must not raise an unhandled rejection.
+     */
+    function settleWithin(promise, timeoutMs, fallback) {
+      return new Promise(resolve => {
+        const timer = setTimeout(() => resolve(fallback), timeoutMs);
+        Promise.resolve(promise).then(
+          value => { clearTimeout(timer); resolve(value); },
+          () => { clearTimeout(timer); resolve(fallback); },
+        );
+      });
+    }
+    function safeFileList(dataTransfer) {
+      try { return Array.from((dataTransfer && dataTransfer.files) || []); } catch { return []; }
+    }
+    function safeItemFiles(dataTransfer) {
+      const files = [];
+      try {
+        for (const item of Array.from((dataTransfer && dataTransfer.items) || [])) {
+          if (!item || item.kind !== 'file' || typeof item.getAsFile !== 'function') continue;
+          try { const file = item.getAsFile(); if (file) files.push(file); } catch { /* skip this item */ }
+        }
+      } catch { /* the item list is not readable in this host */ }
+      return files;
+    }
+    /**
+     * Directory entries exposed by a drag; undefined means the API was silent.
+     *
+     * The synchronous Entry API is authoritative when it answers. The newer
+     * getAsFileSystemHandle() fallback is time-boxed: in some hosts its promise
+     * stays pending for the life of the drag, and awaiting it unconditionally
+     * hung the whole drop. A silent result is fine — the readability heuristic
+     * downstream still separates empty files from directories.
+     */
     async function fileDirectoryFlags(dataTransfer, files) {
       const flags = new Array(files.length).fill(undefined);
-      const items = Array.from((dataTransfer && dataTransfer.items) || []).filter(item => item && item.kind === 'file');
-      if (items.length === 0 || items.length !== files.length) return flags;
-      for (let index = 0; index < items.length; index += 1) {
-        const item = items[index];
-        try {
-          if (typeof item.webkitGetAsEntry === 'function') {
-            const entry = item.webkitGetAsEntry();
-            if (entry && typeof entry.isDirectory === 'boolean') { flags[index] = entry.isDirectory; continue; }
-          }
-        } catch { /* try the newer handle API */ }
-        if (typeof item.getAsFileSystemHandle === 'function') {
+      try {
+        const items = Array.from((dataTransfer && dataTransfer.items) || []).filter(item => item && item.kind === 'file');
+        if (items.length === 0 || items.length !== files.length) return flags;
+        const deadline = Date.now() + DROP_DIRECTORY_PROBE_TIMEOUT_MS;
+        for (let index = 0; index < items.length; index += 1) {
+          const item = items[index];
           try {
-            const handle = await item.getAsFileSystemHandle();
-            if (handle && typeof handle.kind === 'string') { flags[index] = handle.kind === 'directory'; continue; }
-          } catch { /* fall back to the readability heuristic */ }
+            if (typeof item.webkitGetAsEntry === 'function') {
+              const entry = item.webkitGetAsEntry();
+              if (entry && typeof entry.isDirectory === 'boolean') { flags[index] = entry.isDirectory; continue; }
+            }
+          } catch { /* try the newer handle API */ }
+          if (typeof item.getAsFileSystemHandle !== 'function') continue;
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) break;
+          let pending;
+          try { pending = item.getAsFileSystemHandle(); } catch { continue; }
+          const handle = await settleWithin(pending, remaining, null);
+          if (handle && typeof handle.kind === 'string') { flags[index] = handle.kind === 'directory'; continue; }
         }
-      }
+      } catch { /* flags stay undefined: the readability heuristic decides */ }
       return flags;
     }
-    function readDroppedFile(file) {
+    /**
+     * Read a File as base64. A reader that never fires load or error is
+     * abandoned at the deadline so the drop intake can settle and report it.
+     */
+    function readFileAsBase64(file, timeoutMs, errorMessage) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
+        let settled = false;
+        let timer;
+        const fail = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          try { reader.abort(); } catch { /* the read is already over */ }
+          reject(new Error(errorMessage));
+        };
         reader.addEventListener('load', () => {
+          if (settled) return;
           const result = typeof reader.result === 'string' ? reader.result : '';
           const separator = result.indexOf(',');
-          if (separator < 0) { reject(new Error('The dropped file could not be read.')); return; }
+          if (separator < 0) { fail(); return; }
+          settled = true;
+          clearTimeout(timer);
           resolve(result.slice(separator + 1));
         });
-        reader.addEventListener('error', () => reject(new Error('The dropped file could not be read.')));
-        reader.readAsDataURL(file);
+        reader.addEventListener('error', fail);
+        timer = setTimeout(fail, timeoutMs);
+        try { reader.readAsDataURL(file); } catch { fail(); }
       });
+    }
+    function readDroppedFile(file) {
+      return readFileAsBase64(file, DROP_FILE_READ_TIMEOUT_MS, 'The dropped file could not be read.');
     }
     /** Register local upload cards before the Host's per-file answers arrive. */
     function queueUploads(sessionId, entries) {
@@ -5434,34 +5550,43 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       vscode.postMessage({ type: 'attach-files', sessionId, requestId, files: entries.map(entry => ({ name: entry.name, data: entry.data })) });
       renderAttachments();
     }
-    async function acceptDrop(event) {
-      if (homeOpen || pendingConversationCreation) return;
+    /**
+     * Shared entry gate for the two Webview intake paths (OS drop and the local
+     * file picker). Returns the owning session, or undefined after an explicit
+     * refusal; the caller owns the matching endDropIntake call.
+     */
+    function beginAttachmentIntake(event, source) {
+      if (homeOpen || pendingConversationCreation) {
+        // A refused intake must say why: a silent return looked like a broken
+        // drag-and-drop implementation.
+        reportDropDiagnostic('acceptDrop:skip', event, { reason: homeOpen ? 'home' : 'creating', source });
+        vscode.postMessage({
+          type: 'attachment-error',
+          message: homeOpen ? 'Open a conversation before adding files.' : 'Wait for the conversation to open before adding files.',
+        });
+        return undefined;
+      }
       if (!state || state.phase !== 'ready' || !state.sessionId) {
+        reportDropDiagnostic('acceptDrop:skip', event, { reason: 'runtime', source });
         vscode.postMessage({ type: 'attachment-error', message: 'Wait for DeepSeek to reconnect before adding files.' });
-        return;
+        return undefined;
       }
-      const sessionId = state.sessionId;
-      beginDropIntake(sessionId);
-      try {
-      const dataTransfer = event.dataTransfer;
-      if (!dataTransfer) return;
-      let osFiles = Array.from(dataTransfer.files || []);
-      if (osFiles.length === 0 && dataTransfer.items) {
-        // Some remote/webview hosts expose the payload only through items; the
-        // same File objects still carry the bytes the upload path needs.
-        for (const item of Array.from(dataTransfer.items)) {
-          if (!item || item.kind !== 'file' || typeof item.getAsFile !== 'function') continue;
-          try { const file = item.getAsFile(); if (file) osFiles.push(file); } catch { /* skip this item */ }
-        }
-      }
+      beginDropIntake(state.sessionId);
+      return state.sessionId;
+    }
+    /**
+     * Stage one accepted batch behind the shared caps, image inline path and
+     * upload cards. Both the drop path and the local picker call this, so their
+     * 8-file/32 MB limits, cards, retries and removals can never drift apart.
+     * The flags array comes from the drag entry API; the picker has none (files only).
+     */
+    async function acceptFileBatch(sessionId, osFiles, resources, flags) {
       // Count and clamp before the first read: a twenty-file drag must not read
       // nineteen files the Host cannot stage.
       const acceptedFiles = osFiles.slice(0, MAX_DROP_FILES);
       if (osFiles.length > MAX_DROP_FILES) {
         vscode.postMessage({ type: 'attachment-error', message: MAX_DROP_FILES_MESSAGE });
       }
-      const flags = await fileDirectoryFlags(dataTransfer, osFiles);
-      const resources = droppedResources(dataTransfer, osFiles.length > 0);
       const oversizedFiles = acceptedFiles.filter(file => Number(file.size) > MAX_DROP_FILE_BYTES);
       if (oversizedFiles.length > 0) {
         // Refuse before base64 conversion: the bytes never cross the boundary.
@@ -5475,7 +5600,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const folders = [];
       for (let index = 0; index < acceptedFiles.length; index += 1) {
         const file = acceptedFiles[index];
-        if (flags[index] === true) { folders.push(file); continue; }
+        if (flags !== undefined && flags[index] === true) { folders.push(file); continue; }
         if (Number(file.size) > MAX_DROP_FILE_BYTES) continue;
         if (IMAGE_DROP_TYPES.includes(String(file.type || '').toLowerCase())) imageFiles.push(file);
         else plainFiles.push(file);
@@ -5522,6 +5647,56 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           message: 'Drop folders from the Explorer so DeepSeek can read them in place.',
         });
       }
+      return { files: acceptedFiles.length, resources: resources.length, images: imageFiles.length, plain: plainFiles.length, folders: folders.length };
+    }
+    async function acceptDrop(event) {
+      reportDropDiagnostic('acceptDrop:enter', event);
+      const sessionId = beginAttachmentIntake(event, 'drop');
+      if (sessionId === undefined) return;
+      try {
+        const dataTransfer = dropTransfer(event);
+        if (!dataTransfer) { reportDropDiagnostic('acceptDrop:skip', event, { reason: 'no-transfer' }); return; }
+        let osFiles = safeFileList(dataTransfer);
+        if (osFiles.length === 0) {
+          // Some remote/webview hosts expose the payload only through items; the
+          // same File objects still carry the bytes the upload path needs.
+          osFiles = safeItemFiles(dataTransfer);
+        }
+        // Snapshot every transfer field before the first await: the drag data
+        // store is cleared as soon as the drop dispatch returns, and the Host
+        // would then see no resources at all.
+        let resources = [];
+        try { resources = droppedResources(dataTransfer, osFiles.length > 0); } catch { resources = []; }
+        // The probe is time-boxed inside; it can never stall this intake.
+        const flags = await fileDirectoryFlags(dataTransfer, osFiles);
+        const summary = await acceptFileBatch(sessionId, osFiles, resources, flags);
+        reportDropDiagnostic('acceptDrop:done', event, summary);
+      } catch (error) {
+        // Every unexpected failure must be visible and must still release the
+        // intake: neither a silent toast nor a stuck Send gate is acceptable.
+        reportDropDiagnostic('acceptDrop:error', event, { message: error instanceof Error ? error.message : String(error) });
+        try { vscode.postMessage({ type: 'attachment-error', message: 'The dropped items could not be added.' }); } catch { /* the view may be gone */ }
+      } finally { endDropIntake(sessionId); }
+    }
+    /**
+     * Bytes chosen in the Webview's own file picker. In a Remote SSH window the
+     * picker runs on the client machine, so this is the reliable entry point
+     * when the platform suppresses an OS drag; the bytes reach the runtime
+     * through the same attach-files message as a drop.
+     */
+    async function acceptSelectedFiles(fileList) {
+      const files = Array.from(fileList || []);
+      // Cancelling the dialog is a no-op: it must not open the intake gate.
+      if (files.length === 0) return;
+      reportDropDiagnostic('picker:enter', undefined, { files: files.length });
+      const sessionId = beginAttachmentIntake(undefined, 'picker');
+      if (sessionId === undefined) return;
+      try {
+        const summary = await acceptFileBatch(sessionId, files, [], undefined);
+        reportDropDiagnostic('picker:done', undefined, summary);
+      } catch (error) {
+        reportDropDiagnostic('picker:error', undefined, { message: error instanceof Error ? error.message : String(error) });
+        try { vscode.postMessage({ type: 'attachment-error', message: 'The selected files could not be added.' }); } catch { /* the view may be gone */ }
       } finally { endDropIntake(sessionId); }
     }
     const composer = elements.prompt.parentElement;
@@ -5548,11 +5723,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     // handled at all. Compare without case, which also accepts the Files
     // spelling the platform uses for a drag from the file manager.
     const DROP_URI_TYPES_LOWER = DROP_URI_TYPES.map(type => type.toLowerCase());
+    function dropTransfer(event) {
+      try { return event && event.dataTransfer; } catch { return undefined; }
+    }
     /** Read a data-transfer format without letting protected-mode throw. */
     function transferData(dataTransfer, format) {
       try { return dataTransfer.getData(format) || ''; } catch { return ''; }
     }
     function transferHasFiles(dataTransfer) {
+      if (!dataTransfer) return false;
       try { if (dataTransfer.files && dataTransfer.files.length > 0) return true; } catch { /* ignore */ }
       try {
         return Array.from(dataTransfer.items || []).some(item => item && item.kind === 'file');
@@ -5566,7 +5745,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
      * Explorer drop silently do nothing.
      */
     function dragCarriesPayload(event) {
-      const dataTransfer = event && event.dataTransfer;
+      const dataTransfer = dropTransfer(event);
       if (!dataTransfer) return false;
       const types = Array.from(dataTransfer.types || []).map(type => String(type).toLowerCase());
       if (types.some(type => DROP_URI_TYPES_LOWER.includes(type) || type === 'files')) return true;
@@ -5581,64 +5760,143 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return false;
     }
     let dropDiagnosticArmed = false;
-    /** Low-noise diagnostics for Developer: Open Webview Developer Tools. */
-    function reportDropDiagnostic(phase, event) {
+    let lastDragOverDiagnosticAt = 0;
+    /**
+     * Low-noise diagnostics for Developer: Open Webview Developer Tools.
+     *
+     * The phases are deliberately explicit: a user report can then distinguish
+     * "the Webview never saw the drag" (no line at all) from "the drop arrived
+     * but was refused" (acceptDrop:skip with a reason) without instrumenting
+     * the build.
+     */
+    function reportDropDiagnostic(phase, event, extra) {
       try {
-        const dataTransfer = event && event.dataTransfer;
+        const dataTransfer = dropTransfer(event);
         const types = Array.from((dataTransfer && dataTransfer.types) || []).map(type => String(type));
-        const files = dataTransfer && dataTransfer.files ? dataTransfer.files.length : 0;
-        const items = dataTransfer && dataTransfer.items ? dataTransfer.items.length : 0;
+        let files = 0;
+        let items = 0;
+        try { files = dataTransfer && dataTransfer.files ? dataTransfer.files.length : 0; } catch { /* protected mode */ }
+        try { items = dataTransfer && dataTransfer.items ? dataTransfer.items.length : 0; } catch { /* protected mode */ }
         const target = event && event.target instanceof Element
           ? event.target.tagName.toLowerCase() + (event.target.id ? '#' + event.target.id : '')
           : '';
         const uriList = transferData(dataTransfer, 'text/uri-list').slice(0, 120);
-        console.info('[dsh-drop]', { phase, types, files, items, target, uriList });
+        console.info('[dsh-drop]', { phase, types, files, items, target, uriList, ...(extra || {}) });
       } catch { /* diagnostics must never break the drag */ }
     }
     function resetDropGesture() {
       dropDepth = 0;
       dropDiagnosticArmed = false;
+      lastDragOverDiagnosticAt = 0;
       setDropActive(false);
     }
-    document.addEventListener('dragenter', event => {
-      if (!dropDiagnosticArmed) { reportDropDiagnostic('dragenter', event); dropDiagnosticArmed = true; }
-      if (!dragCarriesPayload(event)) return;
-      event.preventDefault(); dropDepth += 1; setDropActive(true);
-    });
-    document.addEventListener('dragover', event => {
-      if (!dragCarriesPayload(event)) return;
-      event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = dropAllowed() ? 'copy' : 'none';
-      // Some hosts deliver dragover but not dragenter; claim the gesture anyway.
-      if (dropDepth === 0) { dropDepth = 1; setDropActive(true); }
-      else updateDropOverlay();
-    });
-    document.addEventListener('dragleave', event => {
-      if (!dragCarriesPayload(event) && dropDepth === 0) return;
-      event.preventDefault();
-      // A drag that leaves the window may never deliver every matching
-      // dragleave, so a null relatedTarget ends the gesture outright.
-      if (event.relatedTarget === null) resetDropGesture();
-      else {
-        dropDepth = Math.max(0, dropDepth - 1);
-        if (dropDepth === 0) setDropActive(false);
+    /**
+     * One handler body for every drag phase. The same phase is registered on
+     * window and document, in both capture and bubble, so a listener an
+     * intermediate element installs (or a stopPropagation from one) cannot
+     * hide the gesture; the WeakSet makes those registrations idempotent.
+     */
+    const handledDragEvents = new WeakSet();
+    function handleDragPhase(phase, event) {
+      try {
+        if (!event || handledDragEvents.has(event)) return;
+        handledDragEvents.add(event);
+        const dataTransfer = dropTransfer(event);
+        if (phase === 'dragenter') {
+          if (!dropDiagnosticArmed) { reportDropDiagnostic('dragenter', event); dropDiagnosticArmed = true; }
+          if (!dragCarriesPayload(event)) return;
+          // The Webview preload forwards dragenter to the Host only when it was
+          // not default-prevented; the Host then sets the iframe pointer-events
+          // to none and the drop never arrives. This capture listener runs
+          // before the preload's bubble listener, so this preventDefault is the
+          // signal that keeps the iframe hit-testable.
+          event.preventDefault();
+          dropDepth += 1; setDropActive(true);
+          return;
+        }
+        if (phase === 'dragover' || phase === 'drag') {
+          if (!dragCarriesPayload(event)) return;
+          event.preventDefault();
+          // Second Host block path: its dragover handler has no
+          // defaultPrevented guard and unconditionally forwards a synthetic
+          // 'drag' to the workbench window, whose WebviewViewPane drag handler
+          // again sets pointer-events to none. Stopping propagation here keeps
+          // that self-block from ending the gesture; this composer already
+          // handled the event above, so nothing of ours is blocked.
+          event.stopPropagation();
+          // Ask for the drop even when the composer refuses it: a suppressed
+          // drop is indistinguishable from a broken one, while a delivered drop
+          // can be refused with a visible reason.
+          if (dataTransfer) { try { dataTransfer.dropEffect = 'copy'; } catch { /* read-only in some hosts */ } }
+          if (phase === 'dragover') {
+            // Some hosts deliver dragover but not dragenter; claim the gesture anyway.
+            if (dropDepth === 0) { dropDepth = 1; setDropActive(true); } else updateDropOverlay();
+            const now = Date.now();
+            if (now - lastDragOverDiagnosticAt >= DROP_DIAGNOSTIC_INTERVAL_MS) {
+              lastDragOverDiagnosticAt = now;
+              reportDropDiagnostic('dragover', event);
+            }
+          }
+          return;
+        }
+        if (phase === 'dragleave') {
+          if (!dragCarriesPayload(event) && dropDepth === 0) return;
+          event.preventDefault();
+          // A drag that leaves the window may never deliver every matching
+          // dragleave, so a null relatedTarget ends the gesture outright.
+          if (event.relatedTarget === null) resetDropGesture();
+          else {
+            dropDepth = Math.max(0, dropDepth - 1);
+            if (dropDepth === 0) setDropActive(false);
+          }
+          return;
+        }
+        if (phase === 'dragend') { resetDropGesture(); return; }
+        if (phase !== 'drop') return;
+        // A drop that carries files is handled even when the type list does not
+        // name them: some hosts expose the payload only through files/items.
+        const payload = dragCarriesPayload(event) || transferHasFiles(dataTransfer);
+        reportDropDiagnostic('drop', event, { accepted: payload });
+        resetDropGesture();
+        if (!payload) return;
+        // preventDefault first: an unhandled drop navigates the Webview away or
+        // opens the dropped file, and the gesture must never escape unhandled.
+        // Propagation is deliberately left alone: no later listener can veto the
+        // drop, and the capture registration above already owned the event.
+        event.preventDefault();
+        // The overlay is already hidden and acceptDrop owns the intake gate; a
+        // rejected drop must never leave either behind for the next gesture.
+        void acceptDrop(event).catch(error => {
+          reportDropDiagnostic('drop:error', event, { message: error instanceof Error ? error.message : String(error) });
+          try { vscode.postMessage({ type: 'attachment-error', message: 'The dropped items could not be added.' }); } catch { /* ignore */ }
+        });
+      } catch { /* a drag listener must never break the composer */ }
+    }
+    const DROP_EVENT_PHASES = ['dragenter', 'dragover', 'drag', 'dragleave', 'drop', 'dragend'];
+    let dropListenersBound = false;
+    /**
+     * Bind every phase to both targets, in capture and bubble. Capture on
+     * window runs before any element-level listener and before the Webview
+     * preload's bubble handlers; the remaining registrations are fallbacks, and
+     * the handler processes each event exactly once. The call is synchronous
+     * script initialization, never an async or first-frame callback.
+     */
+    function bindDropListeners() {
+      if (dropListenersBound) return;
+      dropListenersBound = true;
+      for (const target of [window, document]) {
+        for (const capture of [true, false]) {
+          for (const phase of DROP_EVENT_PHASES) {
+            target.addEventListener(phase, event => handleDragPhase(phase, event), { capture });
+          }
+        }
       }
-    });
-    document.addEventListener('drop', event => {
-      const payload = dragCarriesPayload(event);
-      reportDropDiagnostic('drop', event);
-      dropDepth = 0; dropDiagnosticArmed = false; setDropActive(false);
-      if (!payload) return;
-      event.preventDefault();
-      // The overlay is already hidden and acceptDrop owns the intake gate; a
-      // rejected drop must never leave either behind for the next gesture.
-      void acceptDrop(event).catch(() => {
-        try { vscode.postMessage({ type: 'attachment-error', message: 'The dropped items could not be added.' }); } catch { /* ignore */ }
-      });
-    });
-    document.addEventListener('dragend', () => resetDropGesture());
-    window.addEventListener('blur', () => resetDropGesture());
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') resetDropGesture(); });
+      // A gesture can be abandoned without a single further drag event: window
+      // focus loss and a hidden document both strand the overlay otherwise.
+      window.addEventListener('blur', () => resetDropGesture());
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') resetDropGesture(); });
+    }
+    bindDropListeners();
     elements.prompt.addEventListener('input', () => { closeContextMenu(false); if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); commandIndex = 0; mentionIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); requestMentions(); });
     elements.prompt.addEventListener('click', () => { closeContextMenu(false); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); requestMentions(); });
     elements.prompt.addEventListener('paste', event => {
@@ -5705,6 +5963,20 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     elements.contextDone.addEventListener('click', () => closeContextMenu(true));
     elements.contextImage.addEventListener('click', () => { closeContextMenu(true); vscode.postMessage({ type: 'attach' }); });
     elements.contextFiles.addEventListener('click', () => { closeContextMenu(true); if (state && state.sessionId) vscode.postMessage({ type: 'choose-files', sessionId: state.sessionId }); });
+    // The local picker is the fallback when the platform owns the drag gesture:
+    // its File objects come from the client machine (even in a Remote SSH
+    // window) and take the same attach-files path as an OS drop.
+    elements.contextUpload.addEventListener('click', () => {
+      closeContextMenu(false);
+      elements.localFiles.click();
+    });
+    elements.localFiles.addEventListener('change', () => {
+      const selected = Array.from(elements.localFiles.files || []);
+      // Clear before reading so choosing the same file again fires a change event;
+      // the File objects already hold their bytes.
+      elements.localFiles.value = '';
+      void acceptSelectedFiles(selected);
+    });
     elements.usageTrigger.addEventListener('click', event => {
       event.stopPropagation(); usageOpen = !usageOpen; policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); if (state) renderUsage(state);
     });

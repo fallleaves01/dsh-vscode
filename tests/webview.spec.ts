@@ -261,11 +261,46 @@ describe('chat webview', () => {
     expect(html).toContain('function resourceUriInList(text)')
     expect(html).toContain("getData('text/uri-list')")
     expect(html).toContain('getAsFile()')
-    expect(html).toContain("addEventListener('dragend'")
+    // Every drag phase is bound on window and document, in capture and bubble,
+    // so a listener an inner element installs cannot hide the gesture. The
+    // capture registration is synchronous script initialization.
+    expect(html).toContain('function bindDropListeners()')
+    expect(html).toContain("const DROP_EVENT_PHASES = ['dragenter', 'dragover', 'drag', 'dragleave', 'drop', 'dragend'];")
+    expect(html).toContain('for (const target of [window, document])')
+    expect(html).toContain('for (const capture of [true, false])')
+    expect(html).toContain('target.addEventListener(phase, event => handleDragPhase(phase, event), { capture })')
+    expect(html).toContain('\n    bindDropListeners();\n')
+    expect(html).toContain('event.stopPropagation()')
     expect(html).toContain("window.addEventListener('blur'")
     expect(html).toContain("document.addEventListener('visibilitychange'")
+    // The Webview preload only forwards a drag the content did not prevent, and
+    // the preload's dragenter handler is a bubble listener; the capture handler
+    // must preventDefault before it. The drop itself is never stopPropagation'd,
+    // so no inner listener can veto a delivered drop.
+    const dragSource = html.slice(html.indexOf('function handleDragPhase(phase, event)'), html.indexOf('const DROP_EVENT_PHASES'))
+    expect(dragSource).toContain("if (phase === 'dragenter')")
+    expect(dragSource).toContain('event.preventDefault()')
+    const dropSource = dragSource.slice(dragSource.indexOf("if (phase !== 'drop') return;"))
+    expect(dropSource).toContain('event.preventDefault()')
+    expect(dropSource).not.toContain('event.stopPropagation()')
+    expect(dropSource.indexOf('event.preventDefault()')).toBeLessThan(dropSource.indexOf('void acceptDrop(event)'))
+    // The drop asks for the payload even when the composer will refuse it: a
+    // suppressed drop is indistinguishable from a broken one.
+    expect(html).toContain("dataTransfer.dropEffect = 'copy'")
+    // A pending directory handle or a FileReader that never settles must not
+    // hang the drop intake (and with it the Send gate).
+    expect(html).toContain('function settleWithin(promise, timeoutMs, fallback)')
+    expect(html).toContain('const DROP_DIRECTORY_PROBE_TIMEOUT_MS = 500;')
+    expect(html).toContain('const DROP_FILE_READ_TIMEOUT_MS = 10_000;')
+    expect(html).toContain('function readFileAsBase64(file, timeoutMs, errorMessage)')
+    // A refused drop reports why instead of returning silently.
+    expect(html).toContain("'Open a conversation before adding files.'")
+    expect(html).toContain("'Wait for the conversation to open before adding files.'")
     // Low-noise diagnostics for Developer: Open Webview Developer Tools.
     expect(html).toContain("console.info('[dsh-drop]'")
+    expect(html).toContain("'acceptDrop:enter'")
+    expect(html).toContain("'acceptDrop:skip'")
+    expect(html).toContain("'acceptDrop:done'")
     // The Host context-menu fallback must insert resolved references too.
     expect(html).toContain("event.data.type === 'insert-references'")
     // An OS drop never yields a path inside a webview, so bytes are the only
@@ -286,6 +321,52 @@ describe('chat webview', () => {
     expect(html).toContain('droppedResources(dataTransfer, osFiles.length > 0)')
     expect(html).toContain('if (hasOsFiles && !isRemoteResourceUri(value)) continue;')
     expect(html).toContain("push(value, 'uri-list', {})")
+  })
+
+  it('offers a local file picker that reuses the drop intake and a Shift hint', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const html = chatHtml(webview, mark)
+
+    // The fallback entry point must exist in the + menu next to the existing
+    // Host pickers, with its own hidden input.
+    expect(html).toContain('id="contextUpload"')
+    expect(html).toContain('Upload from this computer…')
+    expect(html).toContain('id="localFiles" class="local-file-input" type="file" multiple')
+    // The platform drag guard is explained where the user configures files.
+    expect(html).toContain('Hold Shift while dragging files from outside VS Code if the window blocks the drop.')
+    expect(html).toContain('context-menu-hint')
+    // One intake function for both paths: caps, cards and retry semantics cannot drift.
+    expect(html).toContain('function beginAttachmentIntake(event, source)')
+    expect(html).toContain('async function acceptFileBatch(sessionId, osFiles, resources, flags)')
+    expect(html).toContain('async function acceptSelectedFiles(fileList)')
+    expect(html).toContain('const summary = await acceptFileBatch(sessionId, osFiles, resources, flags)')
+    expect(html).toContain('const summary = await acceptFileBatch(sessionId, files, [], undefined)')
+    // Cancelling the dialog is a no-op and the picker clears its value so the
+    // same file can be chosen again.
+    expect(html).toContain('if (files.length === 0) return;')
+    expect(html).toContain('elements.localFiles.value = \'\';')
+    expect(html).toContain('elements.localFiles.click();')
+    expect(html).toContain("elements.localFiles.addEventListener('change'")
+  })
+
+  it('registers early Webview failure reporting with a bounded payload', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const html = chatHtml(webview, mark)
+
+    expect(html).toContain('const WEBVIEW_ERROR_MAX_CHARS = 2048;')
+    expect(html).toContain('function reportWebviewError(payload)')
+    expect(html).toContain("type: 'webview-error'")
+    expect(html).toContain('boundedWebviewErrorText(payload.stack, remaining)')
+    expect(html).toContain("window.addEventListener('unhandledrejection'")
+    // The reporters are installed before the settings modal and view setup: a
+    // throwing initialization must reach the Host log, which is the only way to
+    // explain the 8 s resync loop.
+    const errorAt = html.indexOf("window.addEventListener('error'")
+    expect(errorAt).toBeGreaterThan(0)
+    expect(errorAt).toBeLessThan(html.indexOf('window.dshSettingsPage'))
+    expect(errorAt).toBeLessThan(html.indexOf('const elements = {'))
   })
 
   it('arms a job stop before it kills, and keeps a rejected stop inline', () => {

@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-alpha.2.3**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-alpha.2.4**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -32,7 +32,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 - **会话操作。** 可在会话菜单中置顶/取消置顶、重命名、分叉、归档/恢复和复制会话 ID。分叉已完成轮次时使用该轮自身的边界，后续停止或失败内容不会被复制。
 - **独立子代理详情。** 点击工具调用卡片中的子代理名称进入子会话，或点击右侧箭头在主会话旁打开独立详情，查看实时状态、完整记录、工具输出、耗时和 token 用量。支持审批、回答问题和停止；父代理允许继续时可发送 Queue 或 Steer 消息，单次执行的子代理输入区为只读。外部执行按官方方式显示为信息行，没有本地会话记录。
 - **后台任务与任务服务。** 查看有长度限制的进程输出、Goal 状态与轮次上限、Schedule 提醒与投递历史，以及 Workflow 阶段和任务日志。功能取决于 runtime 提供的服务；启用历史搜索后可搜索消息正文。
-- **显式文件上下文。** 点击 `+` 搜索并添加文件或目录，用 `×` 逐项移除；也可输入 `@` 引用或执行 **Add Selection to Chat**。当前编辑文件和选区是可选建议。可在 Explorer 中选中资源后从右键菜单执行 **DeepSeek Harness: Add to Chat**，或把操作系统文件拖入输入框以上传；参见[将文件添加到输入框](#将文件添加到输入框)。
+- **显式文件上下文。** 点击 `+` 搜索并添加工作区文件或目录，用 `×` 逐项移除；也可输入 `@` 引用或执行 **Add Selection to Chat**。当前编辑文件和选区是可选建议。可在 Explorer 中选中资源后从右键菜单执行 **DeepSeek Harness: Add to Chat**；可用 **Upload from this computer…** 上传本机文件；也可把操作系统文件拖入输入框（若 VS Code 拦截拖放，请按住 Shift）。参见[将文件添加到输入框](#将文件添加到输入框)。
 - **会话控制与队列。** 选择代理组合、Permission、Plan、模型和推理强度；排队发送后续消息，向运行中的任务发送 Steer，并检查或删除等待执行的斜杠命令。
 - **紧凑的变更审阅。** 默认折叠显示文件数与增删行数；展开查看文件，或通过 Review 打开 VS Code Diff Editor。Keep/Revert 保留逐回合快照，并校验来源会话和项目；确认回退后再次检查目标。
 - **DeepSeek 认证。** 配置 API key 或使用浏览器登录，查看账户状态与余额并退出。远程登录通过 VS Code 端口转发完成。
@@ -88,6 +88,10 @@ pnpm run package
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
 
+### 升级到 0.2.2-alpha.2.4
+
+0.2.2-alpha.2.4 修复操作系统文件拖入侧栏：VS Code 的 Webview 预加载脚本会把未拦截的 `dragover` 转发给工作台，使 iframe 在第一次移动后被设为 `pointer-events: none`；输入框现在在捕获阶段处理拖拽，保持 iframe 可命中。**+** 菜单新增 **Upload from this computer…**（本地文件对话框，包括 Remote SSH 窗口的本地桌面）以及平台拦截时的 Shift 提示。Webview 运行时错误现在写入 **DeepSeek Harness** 输出通道。请同时把这个版本安装到 Remote SSH 的远程宿主，然后重新加载窗口。
+
 ### 升级到 0.2.2-alpha.2.3
 
 0.2.2-alpha.2.3 新增 Explorer 右键命令 **DeepSeek Harness: Add to Chat**，用于文件与目录：VS Code 把工作台内部的拖拽保留给视图停靠处理，Explorer/编辑器标签拖拽无法到达侧栏 webview。操作系统文件拖入仍受支持，并在取消或连续拖拽后正常复位。请同时把这个版本安装到 Remote SSH 的远程宿主，然后重新加载窗口。
@@ -129,10 +133,11 @@ pnpm run package
 
 VS Code 会把从工作台内部（Explorer 或编辑器标签）开始的拖拽保留给视图停靠/分割处理，这些事件在到达侧栏 WebviewView 之前就被工作台接管，因此输入框接收不到 Explorer/编辑器拖入。请改用显式入口：
 
-- 在 Explorer 中选中一个或多个文件/目录，打开右键菜单，选择 **DeepSeek Harness: Add to Chat**。选中项会成为提示词中的 DSH 引用：项目内路径为相对路径，项目外保留绝对路径；目录以 `/` 结尾；含空白的路径写成 `@"path with spaces"`。引用只是提示词文本，侧栏不会复制、上传或读取文件内容。编辑器选区仍使用 **Add Selection to Chat**，其行范围作为独立 IDE 上下文携带。
-- 从操作系统文件管理器拖入输入框受支持。VS Code webview 运行在沙箱中，无法取得操作系统文件路径，因此侧栏遵循 DSH 浏览器行为上传字节。非图片文件写入运行 DSH 的机器上的运行时附件库 `<DSH_HOME>/attachments/v1`，运行时把文件保留在磁盘上，不会随会话删除而自动清理；图片作为消息内联数据发送。
-- 一次拖入的操作系统文件最多 8 个（含图片），单文件不超过 32 MiB。请等待上传完成再发送。上传显示 `Uploading…`，随后变为就绪附件，或显示 `Upload failed` 并提供 **Retry**；可用 `×` 移除。从操作系统拖入目录会被拒绝；请改用 Explorer 右键命令添加该目录，以在原位置建立引用。
-- 输入框的 **+** 菜单提供 **Add files…**（通用文件选择器：图片内联发送，其他文件上传）与 **Attach image…**。
+- 在 Explorer 中选中一个或多个文件/目录，打开右键菜单，选择 **DeepSeek Harness: Add to Chat**。选中项会成为提示词中的 DSH 引用：项目内路径为相对路径，项目外保留绝对路径；目录以 `/` 结尾；含空白的路径写成 `@"path with spaces"`。引用只是提示词文本，侧栏不会复制、上传或读取文件内容。编辑器选区仍使用 **Add Selection to Chat**，其行范围作为独立 IDE 上下文携带。输入框 **+** 菜单的 **Add files…** 用于同样的工作区路径。
+- 使用 **+** 菜单中的 **Upload from this computer…** 打开本地文件对话框。这是添加工作区外文件的最可靠方式，也适用于 Remote SSH 窗口的本地桌面文件：Webview 在本地读取选中的字节，扩展再上传到 runtime。
+- 从操作系统文件管理器拖入输入框受支持。VS Code 的 Webview 拖拽守卫可能在第一次 `dragover` 后关闭 iframe 的命中，因此若拖放没有反应，请按住 **Shift** 再拖一次。VS Code webview 运行在沙箱中，无法取得操作系统文件路径，因此侧栏遵循 DSH 浏览器行为上传字节：非图片文件写入运行 DSH 的机器上的运行时附件库 `<DSH_HOME>/attachments/v1`，运行时把文件保留在磁盘上，不会随会话删除而自动清理；图片作为消息内联数据发送。
+- 一次拖入或本机选择最多 8 个文件（含图片），单文件不超过 32 MiB。请等待上传完成再发送。上传显示 `Uploading…`，随后变为就绪附件，或显示 `Upload failed` 并提供 **Retry**；可用 `×` 移除。操作系统目录不能通过拖入或文件对话框添加；请改用 Explorer 右键命令添加该目录，以在原位置建立引用。
+- **+** 菜单还提供 **Attach image…**，仅用于选择图片。
 - 引用会把原路径暴露给模型；上传会复制字节并持久化到运行时附件库。DSH Desktop 可通过原生宿主路径桥接（native host-path bridge）把外部拖入变成引用；VS Code 没有该 bridge，因此本扩展中的操作系统文件一律上传。
 
 ### 多窗口共享运行时

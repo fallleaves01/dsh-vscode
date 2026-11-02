@@ -3704,6 +3704,15 @@ const STOPPING_ACKNOWLEDGEMENT_MS = 6_000
 const DIAGNOSTIC_TEXT_LIMIT = 300
 
 /**
+ * One Webview failure text is logged at most once per this window.
+ *
+ * A render failure repeats on every state delivery, and the 8 s resync-loop
+ * investigation needs a readable channel rather than a flood: the first
+ * occurrence keeps the full context, the repeats stay silent for this interval.
+ */
+const WEBVIEW_ERROR_LOG_INTERVAL_MS = 10_000
+
+/**
  * One safe OutputChannel line: redacted, single-line and bounded.
  *
  * Webview messages, runtime failures and provider errors are untrusted text.
@@ -3931,6 +3940,8 @@ class DshSurface implements vscode.Disposable {
   private stalledDeliveries = 0
   /** When the user was last warned that the view stopped receiving state. */
   private stallWarnedAt = 0
+  /** Redacted failure text -> when it was last logged; throttles a repeating error. */
+  private readonly webviewErrorLoggedAt = new Map<string, number>()
 
   /** Wrapped below: every line this surface writes is Webview/transport text. */
   private readonly output: Pick<vscode.OutputChannel, 'appendLine' | 'show'>
@@ -4759,6 +4770,28 @@ class DshSurface implements vscode.Disposable {
     await this.webview.postMessage({ type: 'draft-sent', sessionId, requestId })
   }
 
+  /**
+   * Record one Webview failure in the output channel. This is diagnostic
+   * evidence, never a notification: no toast, no modal. The text is redacted
+   * and bounded by the channel wrapper; identical failures are throttled so a
+   * render error that repeats on every state delivery stays readable.
+   */
+  private logWebviewError(message: unknown, stack: unknown, source: unknown, line: unknown): void {
+    const text = typeof message === 'string' && message !== '' ? message : 'Unknown error'
+    const key = diagnosticText(text)
+    const now = Date.now()
+    const previous = this.webviewErrorLoggedAt.get(key)
+    if (previous !== undefined && now - previous < WEBVIEW_ERROR_LOG_INTERVAL_MS) return
+    if (this.webviewErrorLoggedAt.size >= 64) this.webviewErrorLoggedAt.clear()
+    this.webviewErrorLoggedAt.set(key, now)
+    const lineNumber = typeof line === 'number' && Number.isFinite(line) && line > 0 ? Math.trunc(line) : undefined
+    const location = typeof source === 'string' && source !== ''
+      ? ` (${source}${lineNumber === undefined ? '' : ':' + String(lineNumber)})`
+      : lineNumber === undefined ? '' : ` (line ${String(lineNumber)})`
+    const detail = typeof stack === 'string' && stack !== '' ? ` | ${stack}` : ''
+    this.output.appendLine(`[webview] error: ${text}${location}${detail}`)
+  }
+
   private acceptMessage(message: unknown): void {
     if (typeof message !== 'object' || message === null || !('type' in message)) return
     const value = message as Record<string, unknown>
@@ -4776,7 +4809,7 @@ class DshSurface implements vscode.Disposable {
     const run = async (): Promise<void> => {
       switch (value.type) {
         case 'webview-error':
-          this.output.appendLine(`[webview] ${diagnosticText(typeof value.message === 'string' ? value.message : 'Unknown error')}`)
+          this.logWebviewError(value.message, value.stack, value.source, value.line)
           return
         case 'resync':
           this.output.appendLine(`[webview] requested a state resynchronization after ${typeof value.staleMs === 'number' ? String(value.staleMs) : '?'} ms without state`)
