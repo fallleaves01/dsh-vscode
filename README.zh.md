@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-alpha.2.1**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-alpha.2.2**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -87,6 +87,10 @@ pnpm run package
 `artifacts/dsh-sidebar-<version>.vsix`。其他设置包括
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
+
+### 升级到 0.2.2-alpha.2.2
+
+0.2.2-alpha.2.2 修复 VS Code 1.144 Remote SSH 窗口中的扩展激活：远程扩展宿主把 `navigator` 暴露为 throwing getter，而 MCP SDK 在模块加载期构建 zod schema 时会读取它，导致扩展激活中止、侧栏和拖放功能都未初始化。请把这个版本安装到 Remote SSH 的**远程宿主**（只装本地窗口无效），然后重新加载窗口。
 
 ### 升级到 0.2.2-alpha.2.1
 

@@ -9,6 +9,19 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-alpha.2.2] - 2026-11-02
+
+### Fixed
+
+- VS Code 1.144 Remote SSH could not activate the extension. The remote
+  extension host exposes `navigator` as a throwing getter; zod 4.6.7 read
+  `navigator.userAgent` while the MCP SDK built its schemas during module
+  load, so activation aborted with `PendingMigrationError` and the sidebar,
+  including composer drag and drop, never initialized. A first-import
+  bootstrap now selects zod's `jitless` mode before any schema is created,
+  which avoids that getter. Install this build on the Remote SSH host, not
+  only on the local window, and reload the window afterwards.
+
 ## [0.2.2-alpha.2.1] - 2026-11-02
 
 ### Added

@@ -1,3 +1,4 @@
+import './zod-runtime.js'
 import { randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
