@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-alpha.2**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-alpha.2.1**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -87,6 +87,10 @@ pnpm run package
 `artifacts/dsh-sidebar-<version>.vsix`。其他设置包括
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
+
+### 升级到 0.2.2-alpha.2.1
+
+0.2.2-alpha.2.1 增加输入框拖放：从 Explorer 或编辑器标签拖入会插入 DSH `@` 引用，操作系统文件则通过 runtime 附件库上传，并显示上传状态、**Retry** 与移除控件。该版本同时加固引用解析与上传清理（六项审计修复），并为挂起的引用解析设置超时，避免后续拖入被永久阻塞。它仍跟随 DeepSeek Harness `0.2.2-alpha.2`；更新后重新加载 VS Code 窗口即可。
 
 ### 升级到 0.2.2-alpha.2
 

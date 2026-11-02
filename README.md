@@ -11,7 +11,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
-The current source version is **0.2.2-alpha.2**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.2.2-alpha.2.1**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md)
 
@@ -113,6 +113,10 @@ For a full local check run `pnpm run check`; `./build.sh` writes
 `artifacts/dsh-sidebar-<version>.vsix`. Other settings include
 `reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
 `startupTimeout` and `searchBaseUrl`.
+
+### Upgrading to 0.2.2-alpha.2.1
+
+0.2.2-alpha.2.1 adds composer drag and drop: Explorer and editor-tab drops insert DSH `@` references, while operating-system files upload through the runtime attachment library with upload state, **Retry** and removal controls. It also hardens reference resolution and upload cleanup (six audit findings) and bounds a stalled reference resolution so later drops are never blocked. It still tracks DeepSeek Harness `0.2.2-alpha.2`; reload the VS Code window after updating.
 
 ### Upgrading to 0.2.2-alpha.2
 

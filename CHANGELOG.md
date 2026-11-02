@@ -9,6 +9,8 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-alpha.2.1] - 2026-11-02
+
 ### Added
 
 - Composer drag and drop. Resources dropped from the Explorer or an editor tab
