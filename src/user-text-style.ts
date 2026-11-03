@@ -8,4 +8,9 @@ export const userTextCss = `
 .secret-toggle:hover { color: var(--vscode-foreground); }
 .secret-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; border-radius: 2px; }
 .secret-toggle svg { width: 1em; height: 1em; }
+.quote-preview { display: inline-flex; align-items: baseline; gap: 4px; box-sizing: border-box; max-width: min(80%, 300px); margin: 0; padding: 0; vertical-align: baseline; color: var(--vscode-textLink-foreground, #4d6bfe); font-size: inherit; line-height: inherit; }
+.quote-preview-mark { flex: none; display: inline-flex; align-self: center; width: 1em; height: 1em; }
+.quote-preview-text { min-width: 0; padding: 0; border: none; outline: none; background: none; color: inherit; font: inherit; line-height: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quote-mark { width: 1em; height: 1em; fill: currentColor; stroke: none; }
+.quote-mark path { fill: currentColor; stroke: none; }
 `

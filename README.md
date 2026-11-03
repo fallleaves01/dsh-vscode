@@ -11,7 +11,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
-The current source version is **0.2.2-alpha.2.6**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.2.2-alpha.2.7**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md)
 
@@ -34,6 +34,7 @@ The current source version is **0.2.2-alpha.2.6**. See [CHANGELOG.md](CHANGELOG.
 - **Independent subagent details.** Click a subagent name in its tool card to enter the child conversation, or use the trailing arrow to open independent details. Inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer. External executions appear as informational rows without a local transcript.
 - **Background tasks and task services.** Inspect bounded process output, Goal status and round limits, Schedule reminders and delivery history, and Workflow phases and job logs when the runtime exposes these services. Search conversation message bodies when history search is enabled.
 - **Explicit file context.** Use `+` to search and add workspace files or folders, remove each reference with `×`, or use typed `@` references and **Add Selection to Chat**. The current editor and selected lines are optional suggestions. Select resources in the Explorer and run **DeepSeek Harness: Add to Chat** from the context menu; use **Upload from this computer…** for local files; or drop operating-system files onto the composer (hold Shift if VS Code suppresses the drop). See [Adding files to the composer](#adding-files-to-the-composer).
+- **Quoted message text.** Select text in a user message or a completed reply, then choose **Quote text** to add it to the composer as a link-like quote chip. Sending emits the same Markdown blockquote DSH Web uses; quotes can be removed with `×` and cannot be combined with slash commands. See [Quoting message text](#quoting-message-text).
 - **Conversation controls and queues.** Select agent composition, Permission and Plan modes, Model, and Reasoning Effort. Queue follow-up messages, steer an active task, and inspect or remove held slash commands.
 - **Compact change review.** Expand the file-count and line-count summary, or open Review in VS Code's Diff Editor. Keep/Revert actions retain per-turn snapshots and are bound to their originating conversation and project; confirmation rechecks the target before a revert.
 - **DeepSeek authentication.** Configure an API key or use browser account sign-in, inspect account state and balance, and sign out. Remote sign-in uses VS Code port forwarding.
@@ -114,6 +115,10 @@ For a full local check run `pnpm run check`; `./build.sh` writes
 `reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
 `startupTimeout` and `searchBaseUrl`.
 
+### Upgrading to 0.2.2-alpha.2.7
+
+0.2.2-alpha.2.7 adds quoted message text. Select text in one user message or one completed assistant reply, then choose the floating **Quote text** action; the excerpt becomes a link-like chip above the composer. Sending serializes each quote as the same Markdown blockquote DSH Web uses, and the transcript renders it back as a quote preview. The selected text stays within one message body, quotes can be removed with `×`, a quote-only message is allowed, and a slash command cannot be combined with quotes. Each quote is limited to 100,000 characters; credential masks remain in the chip, tooltip and transcript. This is a composer adaptation: quotes are kept before the typed prompt rather than inserted at the caret inside a rich editor.
+
 ### Upgrading to 0.2.2-alpha.2.6
 
 0.2.2-alpha.2.6 keeps the custom answer you type into a **DeepSeek needs your input** question card. The Webview requests a full state snapshot after about eight seconds without an update; the snapshot carries a new object for the same question, and the previous identity comparison rebuilt the card and discarded the text. Tail cards now rebuild only when their content changes; if a legitimate change does rebuild the question, its draft text, selected options, focus and caret are restored. Submitting after such a refresh sends the restored answer.
@@ -180,6 +185,16 @@ VS Code reserves drag operations that start inside the workbench (the Explorer o
 - A drop or local-file selection accepts at most eight files (images included), and each file must be no larger than 32 MiB. Wait for uploads to finish before sending. An upload shows `Uploading…`, then a ready attachment or `Upload failed` with **Retry**; remove any attachment with `×`. An operating-system folder cannot be dropped or selected; add the folder through the Explorer context command instead, where it becomes an in-place reference.
 - The composer's **+** menu also offers **Attach image…** for image-only selection.
 - References expose the original path to the model; an upload copies the bytes and persists them in the runtime attachment library. DSH Desktop can use its native host-path bridge to turn an external drop into a reference; VS Code has no such bridge, so operating-system files are always uploaded here.
+
+### Quoting message text
+
+Select text within one user message or one completed assistant reply. A floating **Quote text** action appears above the selection; choosing it adds the excerpt to the composer as a link-like quote chip. The selection must stay within one message body: streaming, failed, deferred, tool and notice rows, selections that cross messages, and read-only child sessions do not offer the action.
+
+- Quotes appear above the textarea in insertion order. Hover a chip for the full excerpt; remove it with `×`. The chip truncates long excerpts but keeps the whole selected text for the send.
+- On send, each quote becomes a Markdown blockquote with one `> ` prefix per line, in insertion order, followed by one blank line and the typed prompt. This is the model-visible form DSH Web uses; the transcript renders the same blockquote as the same link-like quote. Without a quote, the sent text is exactly the trimmed prompt as before.
+- A quote-only message is allowed. If the typed prompt would route as a slash command or skill (`/compact`, `/plan`, `/permission …`), the send is refused while quotes are present, because the blockquote would change the first token the runtime routes; remove the quote to run the command.
+- The sidebar keeps each quote as a chip before the typed text rather than as an inline node placed at the caret as DSH Web does; the model-visible Markdown is the same. A chip has no editor undo. Recognized credentials stay masked in the chip, its tooltip and the transcript quote; the send carries the selected text itself.
+- A selection longer than 100,000 characters is refused.
 
 ### Shared runtime across windows
 

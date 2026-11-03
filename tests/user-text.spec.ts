@@ -48,3 +48,68 @@ describe('official user message credential masks', () => {
     expect(performance.now() - started).toBeLessThan(3000)
   })
 })
+
+describe('user message blockquotes', () => {
+  // Synthetic fixture; it cannot authenticate to any service.
+  const key = 'sk-' + 'A1'.repeat(16)
+  it('renders a blockquote as one decoded quote preview without the markers', () => {
+    const node = renderUserText('> quoted')
+    expect(node.querySelectorAll('.quote-preview')).toHaveLength(1)
+    expect(node.querySelector('[data-quote-preview-text]')?.textContent).toBe('quoted')
+    expect(node.textContent).toBe('quoted')
+    expect(node.textContent).not.toContain('>')
+    expect(node.querySelector('.quote-preview-mark svg')).not.toBeNull()
+  })
+  it('decodes every line of a multiline quote', () => {
+    const node = renderUserText('> line one\n> line two')
+    expect(node.querySelector('[data-quote-preview-text]')?.textContent).toBe('line one\nline two')
+  })
+  it('shows the blank lines around a quote as single spaces', () => {
+    const node = renderUserText('before\n\n> quoted\n\nafter')
+    expect(node.textContent).toBe('before quoted after')
+  })
+  it('separates two adjacent quotes with one space', () => {
+    const node = renderUserText('> one\n\n> two')
+    expect(node.querySelectorAll('.quote-preview')).toHaveLength(2)
+    expect(node.textContent).toBe('one two')
+  })
+  it('keeps ordinary text in order around the quote', () => {
+    const node = renderUserText('before\n\n> quoted\n\nafter')
+    const text = node.textContent ?? ''
+    expect(text.indexOf('before')).toBeLessThan(text.indexOf('quoted'))
+    expect(text.indexOf('quoted')).toBeLessThan(text.indexOf('after'))
+  })
+  it('leaves an indented marker of four spaces as literal text', () => {
+    const node = renderUserText('    > code')
+    expect(node.querySelector('.quote-preview')).toBeNull()
+    expect(node.textContent).toBe('    > code')
+  })
+  it('recognizes blockquote lines inside a code fence, matching the documented DSH limit', () => {
+    const node = renderUserText('```\n> inside\n```')
+    expect(node.querySelectorAll('.quote-preview')).toHaveLength(1)
+    expect(node.querySelector('[data-quote-preview-text]')?.textContent).toBe('inside')
+  })
+  it('masks a credential inside the quote and keeps it out of every attribute', () => {
+    const node = renderUserText('> use ' + key)
+    const preview = node.querySelector('.quote-preview')!
+    expect(preview.querySelector('.secret-toggle')).not.toBeNull()
+    expect(preview.querySelector('.quote-preview-text')?.textContent).not.toContain(key)
+    expect(node.outerHTML).not.toContain(key)
+    for (const element of node.querySelectorAll('*')) {
+      for (const attribute of element.attributes) expect(attribute.value).not.toContain(key)
+    }
+    preview.querySelector<HTMLButtonElement>('.secret-toggle')!.click()
+    expect(preview.textContent).toContain(key)
+  })
+  it('renders quote content as text only, never as markup', () => {
+    const node = renderUserText('> <img src=x onerror=alert(1)> **plain**')
+    expect(node.querySelector('img, a, strong, script')).toBeNull()
+    expect(node.querySelector('[data-quote-preview-text]')?.textContent).toContain('<img src=x onerror=alert(1)>')
+  })
+  it('keeps the no-quote path byte-identical', () => {
+    const text = 'ordinary **text** <b>literal</b>\nsecond line'
+    const node = renderUserText(text)
+    expect(node.querySelector('.quote-preview')).toBeNull()
+    expect(node.textContent).toBe(text)
+  })
+})

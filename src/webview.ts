@@ -296,6 +296,18 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .jump-latest:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground)); }
     .jump-latest[hidden] { display: none; }
     .jump-latest svg { width: 13px; height: 13px; }
+    /**
+     * The transcript selection action. It is positioned inside the conversation
+     * pane, above the selected text, and dismissed by any gesture that makes the
+     * selection no longer the subject (Escape, outside pointer, scroll, a new
+     * conversation). The [hidden] attribute wins over the inline-flex display
+     * because the element carries that attribute in the HTML.
+     */
+    .quote-selection { position: absolute; z-index: 6; display: inline-flex; align-items: center; gap: 4px; padding: 4px 9px; border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, #8886)); border-radius: 999px; background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); color: var(--vscode-foreground); box-shadow: 0 2px 8px var(--vscode-widget-shadow); font-family: var(--vscode-font-family); font-size: 11px; line-height: 18px; white-space: nowrap; cursor: pointer; }
+    .quote-selection:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .quote-selection:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+    .quote-selection[hidden] { display: none; }
+    .quote-selection .quote-mark { width: 13px; height: 13px; }
     .conversation { width: 100%; min-width: 0; max-width: 748px; margin: 0 auto; padding: 16px 14px 30px; overflow: hidden; }
     .conversation-slot, .messages { display: contents; }
     .history-loader { display: flex; justify-content: center; padding: 1px 0 9px; }
@@ -672,6 +684,18 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .policy-section-label { padding: 7px 8px 3px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
     .context-chips { display: flex; flex-wrap: nowrap; gap: 5px; padding: 4px 10px 0; overflow-x: auto; font-size: 11px; line-height: 18px; }
     .attachments { display: flex; flex-wrap: wrap; gap: 5px; padding: 6px 10px 0; font-size: 11px; line-height: 18px; }
+    /**
+     * The composer's quoted-text dock: one removable chip per quote, in
+     * insertion order, directly above the textarea. The text is single-line and
+     * ellipsized; the full (credential-masked) value stays in the chip tooltip.
+     */
+    .quotes { display: flex; flex-direction: column; gap: 4px; padding: 6px 10px 0; max-height: min(160px, 30vh); overflow-y: auto; }
+    .quote-chip { min-width: 0; display: flex; align-items: center; gap: 6px; padding: 1px 4px; color: var(--vscode-textLink-foreground, #4d6bfe); font-size: 11px; line-height: 18px; }
+    .quote-chip-mark { flex: none; display: inline-flex; align-items: center; width: 13px; height: 13px; }
+    .quote-chip .quote-mark { width: 13px; height: 13px; }
+    .quote-chip-text { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .quote-chip-remove { flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; color: var(--dsh-muted); background: transparent; }
+    .quote-chip-remove:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .context-chip, .attachment-chip { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 4px; padding: 1px 4px; border: .5px solid var(--dsh-border); border-radius: 5px; color: var(--dsh-muted); background: transparent; }
     .context-chip { flex: 0 0 auto; max-width: 200px; border-color: transparent; }
     .context-chip.pinned { border-color: var(--dsh-border); }
@@ -841,6 +865,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     <div id="conversationPane" class="conversation-pane">
       <main id="scroll" class="scroll" tabindex="0" aria-label="Conversation"><div id="conversation" class="conversation"><div id="conversationStatus" class="conversation-slot"></div><div id="conversationHistory" class="conversation-slot"></div><div id="messages" class="messages"></div><div id="conversationTail" class="conversation-slot"></div></div></main>
       <button id="jumpLatest" class="jump-latest" type="button" aria-label="Jump to latest" aria-controls="scroll" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14m-5-5 5 5 5-5"/></svg>Jump to latest</button>
+      <button id="quoteSelection" class="quote-selection" type="button" aria-label="Quote text" title="Quote text" hidden><svg class="quote-mark" viewBox="0 0 16 16" aria-hidden="true"><g transform="translate(6.8 2.4)"><path d="M2.8125 0.583008L3.2002 1.16602C2.43912 1.6713 1.88491 2.41238 1.60547 3.25684H2.98926V6.70605H0V4.52148C1.96593e-05 2.70313 0.9109 1.00575 2.42578 0L2.8125 0.583008Z" fill="currentColor"/><path d="M7.50781 0.583008L7.89551 1.16602C7.13443 1.6713 6.58022 2.41238 6.30078 3.25684H7.68457V6.70605H4.69531V4.52148C4.69533 2.70313 5.60621 1.00575 7.12109 0L7.50781 0.583008Z" fill="currentColor"/></g></svg>Quote text</button>
     </div>
     <footer id="composerFooter" class="composer-wrap">
       <p id="conversationCreationError" class="home-error hidden" role="alert"></p>
@@ -874,6 +899,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           <div id="modelList" class="model-list" role="listbox" aria-label="Models"></div>
         </div>
         <div id="policyMenu" class="command-menu policy-menu hidden" role="menu" aria-label="Conversation settings"></div>
+        <div id="quotes" class="quotes hidden" role="group" aria-label="Quoted text"></div>
         <textarea id="prompt" rows="3" placeholder="Ask DeepSeek about this project" aria-label="Message DeepSeek"></textarea>
         <div class="composer-row">
           <button id="attach" class="icon-button" title="Add files or images" aria-label="Add files or images" aria-haspopup="dialog" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
@@ -978,6 +1004,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
       usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'), usageStats: document.getElementById('usageStats'),
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
+      quotes: document.getElementById('quotes'), quoteSelection: document.getElementById('quoteSelection'),
       contextMenu: document.getElementById('contextMenu'), contextSearch: document.getElementById('contextSearch'), contextList: document.getElementById('contextList'), contextFiles: document.getElementById('contextFiles'), contextImage: document.getElementById('contextImage'), contextUpload: document.getElementById('contextUpload'), contextDone: document.getElementById('contextDone'), localFiles: document.getElementById('localFiles'),
       queueDock: document.getElementById('queueDock'), dropOverlay: document.getElementById('dropOverlay'), dropTitle: document.getElementById('dropTitle'), dropDesc: document.getElementById('dropDesc'),
       taskPanel: document.getElementById('taskPanel'), taskToggle: document.getElementById('taskToggle'), taskList: document.getElementById('taskList'),
@@ -1240,6 +1267,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const sessionDrafts = new Map();
     const pendingDraftSends = new Map();
     let draftSendRequestId = 0;
+    /**
+     * Quoted text held by the composer, in insertion order; the transcript
+     * renders the decoded form. A quote is stored as semantic text without the
+     * blockquote markers, so it survives a session switch and a rejected send.
+     */
+    let draftQuotes = [];
+    /** Per-conversation quote drafts, mirroring the textarea drafts. */
+    const draftQuotesBySession = new Map();
+    /** Monotonic id, so removing one chip never depends on its array position. */
+    let quoteId = 0;
+    /** The transcript selection the floating "Quote text" button would quote. */
+    let quoteSelection;
+    /** A pointer is dragging a transcript selection; the action waits for release. */
+    let quotePointerSelecting = false;
+    /** One quote can never exceed this many characters; an oversized selection is refused. */
+    const MAX_QUOTE_CHARS = 100000;
     const pendingAttachmentRequests = new Map();
     let attachmentRequestId = 0;
     const renderedMessages = new Map();
@@ -1406,6 +1449,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function openDirectory() {
       if (pendingConversationCreation) return;
       if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
+      hideQuoteSelection();
       closeSessionMenu(false); closeContextMenu(false); closeModelMenu(false);
       policyMenuOpen = false; elements.policyMenu.classList.add('hidden');
       homeOpen = true;
@@ -1436,6 +1480,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         if (pendingConversationCreation) { pendingConversationCreation = undefined; creationError(''); }
         if (archived) { closeSessionActions(false); vscode.postMessage({ type: 'unarchive-session', sessionId: session.id }); return; }
         if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
+        hideQuoteSelection();
         closeSessionMenu(false); homeOpen = false;
         // The header confirms the intent immediately; the target's transcript
         // still comes from the Host, never from a local guess.
@@ -1645,6 +1690,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function startNewConversation() {
       if (!state || state.phase !== 'ready' || pendingConversationCreation) return;
       if (state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
+      hideQuoteSelection();
       closeSessionMenu(false); closeContextMenu(false); closeModelMenu(false);
       policyMenuOpen = false; elements.policyMenu.classList.add('hidden');
       pendingConversationCreation = { requestId: conversationRequestScope + '-' + (++conversationCreationId), cwd: state.cwd, originSessionId: state.sessionId };
@@ -3169,6 +3215,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           : (window.dshMarkdown && typeof window.dshMarkdown.renderUserText === 'function'
             ? window.dshMarkdown.renderUserText(message.text) : node('div', '', 'Message renderer unavailable.'));
         body.classList.add('message-body');
+        // The transcript is a quote source only where the text is settled and
+        // writable: user messages and completed replies. Streaming, failed,
+        // deferred and tool rows keep no marker, so a selection there never
+        // offers the quote action.
+        if (message.role === 'user'
+          || (message.role === 'assistant' && message.streaming !== true && message.failed !== true && message.deferredBody !== true)) body.dataset.quoteSource = 'true';
         if (message.deferredBody === true) attachDeferredOutput(message, body, renderAssistantPage, false, 'Show full response' + (message.bodyLength ? ' · ' + String(message.bodyLength) + ' characters' : ''));
         else appendImages(body, message.images);
         item.append(body);
@@ -4082,7 +4134,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const requestId = ++draftSendRequestId;
       pendingDraftSends.set(requestId, { sessionId, text, scrollVersion: conversationScroller.intentVersion });
       vscode.postMessage({ type: 'send', sessionId, requestId, text, mode: 'queue' });
-      elements.prompt.value = ''; sessionDrafts.set(sessionId, ''); commandIndex = 0; resetPrompt();
+      // A command picked from the menu is its own message: the quoted text
+      // chips stay in the composer, ready for the next ordinary prompt.
+      elements.prompt.value = ''; sessionDrafts.set(sessionId, ''); commandIndex = 0; resetPrompt(); hideQuoteSelection();
     }
     function pickCandidate(candidate) {
       if (candidate.kind === 'permission') {
@@ -4949,7 +5003,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         // The catalog is runtime-wide, but the menu belongs to the conversation
         // the user was in; leaving it open carries a filter across the switch.
         closeModelMenu(false);
-        elements.prompt.value = sessionDrafts.get(current.sessionId) || ''; resizePrompt();
+        elements.prompt.value = sessionDrafts.get(current.sessionId) || '';
+        loadQuoteDraft(current.sessionId); hideQuoteSelection();
+        resizePrompt();
         draftImages = draftImagesBySession.get(current.sessionId) || [];
         draftFiles = draftFilesBySession.get(current.sessionId) || []; renderAttachments();
         historyAnchor = undefined; conversationScroller.reset();
@@ -4995,6 +5051,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         }
       }
       reconcileMessages(array(current.messages), current);
+      // A rebuilt transcript can detach the selected node; an action anchored to
+      // a node that is no longer mounted must not stay on screen.
+      validateQuoteSelection();
 
       const tailKey = tailContentKey(current);
       if (tailKey !== renderedTailKey) {
@@ -5176,6 +5235,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedChrome.translation !== current.translation) cotApplyCapability();
       syncSubagentToolLinks();
       const enabled = composerReady() && Boolean(current.sessionId);
+      if (!enabled) hideQuoteSelection();
       elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true || Boolean(pendingConversationCreation); elements.newSession.disabled = current.phase !== 'ready'; elements.policyTrigger.disabled = current.phase !== 'ready' || Boolean(pendingConversationCreation);
       if (!enabled) closeContextMenu(false);
       // The conversation list is the way out of a conversation that will not
@@ -5359,6 +5419,205 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.heldNotice.append(retry, diagnose);
     }
     /**
+     * The Markdown blockquote one quote contributes.
+     *
+     * The formatter lives in the shared Markdown bundle (src/quote-text.mts),
+     * so the composer cannot serialize a quote differently from the transcript
+     * that decodes it. The inline script cannot import it, so it is read off
+     * the dshMarkdown namespace; the fallback only runs when a harness has no
+     * namespace and is kept byte-identical to that formatter.
+     */
+    function quoteBlockOf(text) {
+      const format = window.dshMarkdown && window.dshMarkdown.formatQuoteText;
+      if (typeof format === 'function') return format(text);
+      return String(text === undefined || text === null ? '' : text).replace(/\\r\\n?/g, '\\n').split('\\n').map(line => '> ' + line).join('\\n');
+    }
+    /**
+     * The text a send carries: quotes in insertion order, one blank line
+     * between them, then the trimmed prompt. Without quotes this is exactly the
+     * trimmed prompt the composer always sent.
+     */
+    function composeComposerText(prose, quotes) {
+      const text = String(prose === undefined || prose === null ? '' : prose).trim();
+      if (quotes.length === 0) return text;
+      const serialize = window.dshMarkdown && window.dshMarkdown.serializeQuotePrompt;
+      if (typeof serialize === 'function') return serialize(quotes.map(quote => quote.text), text);
+      const quoted = quotes.map(quote => quoteBlockOf(quote.text)).join('\\n\\n');
+      return text === '' ? quoted : quoted + '\\n\\n' + text;
+    }
+    /** Credential-masked projection for a chip attribute; '' when unavailable. */
+    function maskedQuoteText(text) {
+      const mask = window.dshMarkdown && window.dshMarkdown.maskUserText;
+      return typeof mask === 'function' ? mask(text) : '';
+    }
+    /** DSH's filled quote glyph, used by the chip, the action and the transcript. */
+    function quoteMarkNode() {
+      return icon([
+        { tag: 'path', attrs: { d: 'M2.8125 0.583008L3.2002 1.16602C2.43912 1.6713 1.88491 2.41238 1.60547 3.25684H2.98926V6.70605H0V4.52148C1.96593e-05 2.70313 0.9109 1.00575 2.42578 0L2.8125 0.583008Z', transform: 'translate(6.8 2.4)' }, fill: 'currentColor', stroke: false },
+        { tag: 'path', attrs: { d: 'M7.50781 0.583008L7.89551 1.16602C7.13443 1.6713 6.58022 2.41238 6.30078 3.25684H7.68457V6.70605H4.69531V4.52148C4.69533 2.70313 5.60621 1.00575 7.12109 0L7.50781 0.583008Z', transform: 'translate(6.8 2.4)' }, fill: 'currentColor', stroke: false },
+      ], true);
+    }
+    /** Persist one conversation's quotes; mirrors the textarea draft lifetime. */
+    function saveQuoteDraft(sessionId) {
+      if (!sessionId) return;
+      draftQuotesBySession.set(sessionId, draftQuotes.slice());
+    }
+    function loadQuoteDraft(sessionId) {
+      draftQuotes = (draftQuotesBySession.get(sessionId) || []).slice();
+      renderQuotes();
+    }
+    /**
+     * Add one quote to the current conversation.
+     *
+     * Returns false when the composer cannot take it, so the caller can keep
+     * the selection and the action visible (the DSH behavior: a refused insert
+     * is correctable, not a dead end). The text is the decoded selection; it is
+     * stored without the blockquote markers and serialized only at send time.
+     */
+    function insertQuoteText(text) {
+      if (!state || !state.sessionId || !composerReady() || elements.prompt.disabled) {
+        showSessionNotice('The composer is not ready for quoted text.'); return false;
+      }
+      const normalized = String(text === undefined || text === null ? '' : text).replace(/\\r\\n?/g, '\\n').trim();
+      if (normalized === '') { showSessionNotice('Select text in a message to quote it.'); return false; }
+      if (normalized.length > MAX_QUOTE_CHARS) {
+        showSessionNotice('The selected text is too long to quote.'); return false;
+      }
+      draftQuotes.push({ id: ++quoteId, text: normalized });
+      saveQuoteDraft(state.sessionId); renderQuotes(); showSessionNotice('Quote added');
+      return true;
+    }
+    function removeQuote(id) {
+      const index = draftQuotes.findIndex(quote => quote.id === id);
+      if (index < 0) return;
+      draftQuotes.splice(index, 1);
+      if (state && state.sessionId) saveQuoteDraft(state.sessionId);
+      renderQuotes();
+      const removes = elements.quotes.querySelectorAll('.quote-chip-remove');
+      const next = removes[Math.min(index, removes.length - 1)];
+      if (next) next.focus();
+      else if (!elements.prompt.disabled) elements.prompt.focus();
+    }
+    /**
+     * Draw the quote dock.
+     *
+     * The visible chip text is the masked projection and the tooltip carries
+     * the full masked text, so neither an attribute nor the chip itself can
+     * show a raw credential. The stored text (what a send carries) is the text
+     * the user selected; the transcript only ever exposes the masked form
+     * unless they explicitly revealed it.
+     */
+    function renderQuotes() {
+      const dock = elements.quotes;
+      if (!dock) return;
+      dock.replaceChildren();
+      dock.classList.toggle('hidden', draftQuotes.length === 0);
+      for (const quote of draftQuotes) {
+        const masked = maskedQuoteText(quote.text);
+        const shown = masked === '' ? quote.text : masked;
+        const chip = node('div', 'quote-chip'); chip.dataset.quoteId = String(quote.id);
+        const mark = node('span', 'quote-chip-mark'); mark.setAttribute('aria-hidden', 'true'); mark.append(quoteMarkNode());
+        const text = node('span', 'quote-chip-text', shown.length > 200 ? shown.slice(0, 200) + '…' : shown);
+        if (masked !== '') text.title = masked;
+        const remove = node('button', 'quote-chip-remove', '×');
+        remove.type = 'button'; remove.title = 'Remove quote';
+        const snippet = (masked === '' ? '' : masked.replace(/\\s+/g, ' ')).slice(0, 60);
+        remove.setAttribute('aria-label', snippet === '' ? 'Remove quote' : 'Remove quote: ' + snippet);
+        remove.addEventListener('click', () => removeQuote(quote.id));
+        chip.append(mark, text, remove); dock.append(chip);
+      }
+      updateSend();
+    }
+    /** The quote-source body a DOM node belongs to, or null. */
+    function quoteSourceOf(target) {
+      const element = target && target.nodeType === 1 ? target : (target && target.parentElement);
+      return element ? element.closest('[data-quote-source="true"]') : null;
+    }
+    /**
+     * The selection a quote action may act on.
+     *
+     * Mirrors the DSH qualification: one noncollapsed range whose endpoints
+     * belong to the same quote source inside the transcript, nonblank visible
+     * text, and a writable composer. A selection across two messages, over a
+     * tool row or over the tail cards is not a quote.
+     */
+    function quoteSelectionTarget() {
+      if (!composerReady() || elements.prompt.disabled) return undefined;
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return undefined;
+      const range = selection.getRangeAt(0);
+      const source = quoteSourceOf(range.startContainer);
+      if (source === null || source !== quoteSourceOf(range.endContainer)) return undefined;
+      if (!elements.messages.contains(source)) return undefined;
+      const value = selection.toString().replace(/\\r\\n?/g, '\\n').trim();
+      if (value === '') return undefined;
+      return { text: value, source, range };
+    }
+    function hideQuoteSelection() {
+      quoteSelection = undefined;
+      if (elements.quoteSelection) elements.quoteSelection.hidden = true;
+    }
+    /**
+     * Place the action above the selected text (below it when there is no room
+     * above), clamped into the conversation pane. jsdom has no Range geometry
+     * at all; the action then stays visible without coordinates so the
+     * interaction remains testable without a layout engine.
+     */
+    function positionQuoteSelection(range) {
+      const button = elements.quoteSelection;
+      if (typeof range.getBoundingClientRect !== 'function') return;
+      const pane = elements.conversationPane.getBoundingClientRect();
+      const view = elements.scroll.getBoundingClientRect();
+      const rect = range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return;
+      const visibleTop = Math.max(pane.top, view.top);
+      const visibleBottom = Math.min(pane.bottom, view.bottom);
+      if (rect.bottom < visibleTop || rect.top > visibleBottom) { hideQuoteSelection(); return; }
+      const width = button.offsetWidth, height = button.offsetHeight;
+      let left = rect.left + rect.width / 2 - pane.left - width / 2;
+      left = Math.max(4, Math.min(Math.max(4, pane.width - width - 4), left));
+      let top = rect.top - pane.top - height - 8;
+      if (top < 4) top = rect.bottom - pane.top + 8;
+      top = Math.max(4, Math.min(Math.max(4, pane.height - height - 4), top));
+      button.style.left = left + 'px'; button.style.top = top + 'px';
+    }
+    function updateQuoteSelection() {
+      try {
+        const target = quoteSelectionTarget();
+        if (!target) { hideQuoteSelection(); return; }
+        quoteSelection = target;
+        elements.quoteSelection.hidden = false;
+        positionQuoteSelection(target.range);
+      } catch { hideQuoteSelection() }
+    }
+    /** Hide an action whose selected node was replaced by a newer render. */
+    function validateQuoteSelection() {
+      if (quoteSelection && (!quoteSelection.source || !quoteSelection.source.isConnected)) hideQuoteSelection();
+    }
+    /**
+     * The Host-routed slash token at the start of the prompt, or '' for
+     * ordinary text.
+     *
+     * Blocks the one send shape quoting must not carry: a blockquote placed in
+     * front of a command or skill line changes the first token the Host routes
+     * on, so the command would silently become a prompt. The catalog test is
+     * the same one the Host router applies; a whole-line /permission preset is
+     * matched because the Host recognizes that form before routing. Unknown
+     * slash text such as /etc/passwd stays ordinary prompt text.
+     */
+    function composerCommandToken(prose) {
+      const normalized = String(prose === undefined || prose === null ? '' : prose).trim();
+      if (normalized === '' || normalized.charAt(0) !== '/') return '';
+      if (/^\\/permission\\s+\\S+\\s*$/.test(normalized)) return '/permission';
+      const token = normalized.split(/\\s/, 1)[0] || '';
+      const name = /^\\/([a-z0-9-]+)$/.exec(token);
+      if (name === null) return '';
+      const commands = array(state && state.commands), skills = array(state && state.skills);
+      const known = commands.some(command => command && command.name === name[1])
+        || skills.some(skill => skill && skill.name === name[1]);
+      return known ? token : '';
+    }
+    /**
      * Whether the composer may submit at all. The button and Enter must agree:
      * an unroutable conversation disables typing, so it must also refuse to
      * send a draft that was typed before it became unroutable.
@@ -5374,7 +5633,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const pendingUpload = state && (pendingUploadsBySession.get(state.sessionId) || 0) > 0;
       elements.send.disabled = !composerReady() || pendingSend || pendingAttachment || pendingUpload || pendingLocalUploads()
         || (dropIntakeBySession.get(state.sessionId) || 0) > 0 || [...pendingContextRequests.values()].some(sessionId => sessionId === state.sessionId)
-        || (elements.prompt.value.trim() === '' && draftImages.length === 0 && draftFiles.length === 0);
+        || (elements.prompt.value.trim() === '' && draftImages.length === 0 && draftFiles.length === 0 && draftQuotes.length === 0);
     }
     function releaseUpload(sessionId) {
       const remaining = (pendingUploadsBySession.get(sessionId) || 1) - 1;
@@ -5395,17 +5654,31 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       return (pendingUploadsBySession.get(sessionId) || 0) === 0 && !pendingLocalUploads() && (dropIntakeBySession.get(sessionId) || 0) === 0;
     }
     function send(mode) {
-      const text = elements.prompt.value.trim(); if (!text && !draftImages.length && !draftFiles.length) return false;
+      const prose = elements.prompt.value;
+      const quotes = draftQuotes.slice();
+      const text = composeComposerText(prose, quotes);
+      if (!text && !draftImages.length && !draftFiles.length) return false;
       if (!canSend()) return false;
+      // A blockquote in front of a command/skill line would change the first
+      // token the Host routes on, silently turning the command into a prompt.
+      // Quoting stays available; only this send is refused, and the chips stay.
+      const command = quotes.length > 0 ? composerCommandToken(prose) : '';
+      if (command !== '') { showSessionNotice('Remove the quoted text to run ' + command + '.'); return false; }
       const sessionId = state.sessionId;
       const requestId = ++draftSendRequestId;
-      pendingDraftSends.set(requestId, { sessionId, text, scrollVersion: conversationScroller.intentVersion });
+      // The prompt text and quotes keep the draft's own shape: a rejected send
+      // restores the textarea text and the chips, never the serialized
+      // blockquote, so a retry cannot quote the quote.
+      pendingDraftSends.set(requestId, { sessionId, text, promptText: prose, quotes, scrollVersion: conversationScroller.intentVersion });
       // Show it as queued from this keystroke, not from the runtime's answer.
       if ((mode || 'queue') === 'queue') {
         pendingQueueSends.set(requestId, { sessionId, text, preview: text.length > 200 ? text.slice(0, 200) + '…' : text });
         renderQueue(true);
       }
-      vscode.postMessage({ type: 'send', sessionId, requestId, text, mode: mode || 'queue' }); elements.prompt.value = ''; sessionDrafts.set(sessionId, ''); commandIndex = 0; resetPrompt();
+      vscode.postMessage({ type: 'send', sessionId, requestId, text, mode: mode || 'queue' });
+      elements.prompt.value = ''; sessionDrafts.set(sessionId, '');
+      draftQuotes = []; draftQuotesBySession.set(sessionId, []); renderQuotes();
+      commandIndex = 0; resetPrompt();
       return true;
     }
     function clipboardImage(file, index) {
@@ -6114,6 +6387,53 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const button = target instanceof Element ? target.closest('.code-copy') : null;
       if (button) copyCodeBlock(button);
     });
+    // The transcript selection action. selectionchange is the primary signal;
+    // pointer and key release are fallbacks for environments that report the
+    // final range only after the gesture ends.
+    document.addEventListener('selectionchange', () => { if (!quotePointerSelecting) updateQuoteSelection(); });
+    elements.messages.addEventListener('mouseup', () => { quotePointerSelecting = false; updateQuoteSelection(); });
+    elements.scroll.addEventListener('keyup', event => {
+      // Escape is a dismissal, not the end of a keyboard selection gesture:
+      // re-evaluating on its keyup would immediately reveal the action again
+      // while the browser selection is still intact, cancelling the dismissal.
+      if (event.key === 'Escape') return;
+      updateQuoteSelection();
+    });
+    elements.scroll.addEventListener('scroll', () => hideQuoteSelection(), { passive: true });
+    window.addEventListener('blur', () => hideQuoteSelection());
+    window.addEventListener('resize', () => hideQuoteSelection());
+    document.addEventListener('pointerdown', event => {
+      const target = event.target;
+      if (target instanceof Node && elements.quoteSelection.contains(target)) return;
+      quotePointerSelecting = target instanceof Node && elements.messages.contains(target);
+      hideQuoteSelection();
+    }, true);
+    document.addEventListener('pointerup', () => {
+      if (!quotePointerSelecting) return;
+      quotePointerSelecting = false; updateQuoteSelection();
+    }, true);
+    document.addEventListener('mousedown', event => {
+      const target = event.target;
+      // The action itself prevents the default to keep the selection alive.
+      if (target instanceof Node && elements.quoteSelection.contains(target)) return;
+      if (target instanceof Node && elements.messages.contains(target)) quotePointerSelecting = true;
+      hideQuoteSelection();
+    }, true);
+    elements.quoteSelection.addEventListener('pointerdown', event => event.preventDefault());
+    elements.quoteSelection.addEventListener('mousedown', event => event.preventDefault());
+    elements.quoteSelection.addEventListener('click', () => {
+      // Re-read the selection at click time: the cached target is only an
+      // optimization, and a selection that collapsed in between is not quoted.
+      const target = quoteSelectionTarget();
+      if (!target) { hideQuoteSelection(); return; }
+      if (!insertQuoteText(target.text)) return;
+      const selection = window.getSelection();
+      if (selection) selection.removeAllRanges();
+      hideQuoteSelection();
+      const cursor = elements.prompt.value.length;
+      elements.prompt.focus();
+      try { elements.prompt.setSelectionRange(cursor, cursor) } catch { /* not a text input */ }
+    });
     elements.accountTrigger.addEventListener('click', event => {
       event.stopPropagation();
       accountOpen = !accountOpen;
@@ -6205,6 +6525,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     });
     elements.efforts.addEventListener('change', () => { if (!elements.models.value) return; const selected = JSON.parse(elements.models.value); const model = (state.models || []).find(item => item.provider === selected.provider && item.model === selected.model); if (model) vscode.postMessage({ type: 'select-model', selection: selectionFor(model, elements.efforts.value) }); });
     document.addEventListener('click', event => {
+      // The quote action is deliberately not dismissed here. A transcript
+      // selection ends with a click on the selected text, and that same click
+      // must not hide the action the selection just revealed; an external
+      // press is dismissed earlier, by the document pointerdown capture.
       if (sessionAction && !elements.sessionActions.contains(event.target) && !sessionAction.anchor.contains(event.target)) closeSessionActions(false);
       if (contextMenuOpen && !elements.contextMenu.contains(event.target) && !elements.attach.contains(event.target)) closeContextMenu(false);
       if (policyMenuOpen && !elements.policyMenu.contains(event.target) && !elements.policyTrigger.contains(event.target)) {
@@ -6221,6 +6545,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (sessionMenuOpen && !elements.sessionControl.contains(event.target) && !elements.sessionActions.contains(event.target)) closeSessionMenu(false);
     });
     document.addEventListener('keydown', event => {
+      // Escape dismisses the action but leaves the browser selection alone, so
+      // the user can still copy what they selected.
+      if (event.key === 'Escape') hideQuoteSelection();
       if (event.key === 'Escape' && sessionAction) {
         event.preventDefault(); closeSessionActions(true);
       } else if (event.key === 'Escape' && contextMenuOpen) {
@@ -6374,12 +6701,21 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         // queued. Only the projection's own rows describe a queue.
         if (pendingQueueSends.delete(event.data.requestId)) renderQueue(true);
         if (event.data.type === 'restore-draft') {
-          // The runtime never took it, so the composer holds it again.
+          // The runtime never took it, so the composer holds it again. The
+          // textarea gets the prompt the user typed, not the serialized
+          // blockquote, and the chips come back as chips: a retry must not
+          // quote the blockquote markers, which would double the quote nesting.
           const existing = sessionDrafts.get(pending.sessionId) || '';
-          const restored = existing === '' || existing === pending.text ? pending.text : pending.text + '\\n' + existing;
+          const pendingText = typeof pending.promptText === 'string' ? pending.promptText : pending.text;
+          const restored = existing === '' || existing === pendingText ? pendingText : pendingText + (pendingText === '' ? '' : '\\n') + existing;
+          const addedQuotes = draftQuotesBySession.get(pending.sessionId) || [];
+          const restoredQuotes = [...(Array.isArray(pending.quotes) ? pending.quotes : []), ...addedQuotes];
           sessionDrafts.set(pending.sessionId, restored);
+          draftQuotesBySession.set(pending.sessionId, restoredQuotes);
           if (state && state.sessionId === pending.sessionId) {
-            elements.prompt.value = restored; resizePrompt(); requestMentions(); renderCommandMenu();
+            elements.prompt.value = restored;
+            draftQuotes = restoredQuotes.slice(); renderQuotes(); hideQuoteSelection();
+            resizePrompt(); requestMentions(); renderCommandMenu();
           }
         }
         updateSend();
@@ -6404,7 +6740,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (event.data.type === 'focus-prompt' && !pendingConversationCreation) { homeOpen = false; if (state) render(state); elements.prompt.focus(); }
       if (event.data.type === 'set-prompt' && typeof event.data.text === 'string') {
         homeOpen = false; if (state) render(state);
-        elements.prompt.value = event.data.text; if (state && state.sessionId) sessionDrafts.set(state.sessionId, event.data.text); resizePrompt(); requestMentions(); renderCommandMenu(); elements.prompt.focus();
+        elements.prompt.value = event.data.text;
+        // Programmatic text carries no quote semantics (the DSH setDraft rule for
+        // a plain string), so this conversation's chips are dropped.
+        if (state && state.sessionId) { sessionDrafts.set(state.sessionId, event.data.text); draftQuotes = []; draftQuotesBySession.set(state.sessionId, []); renderQuotes(); }
+        hideQuoteSelection();
+        resizePrompt(); requestMentions(); renderCommandMenu(); elements.prompt.focus();
         const cursor = elements.prompt.value.length; elements.prompt.setSelectionRange(cursor, cursor);
       }
     });

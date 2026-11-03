@@ -343,4 +343,5 @@ export function scanMarkdownStream(state: MarkdownScanState, text: string): void
   }
   state.scanOffset = text.length
 }
-export { renderUserText } from './user-text.mjs'
+export { formatQuoteText, messageQuoteRanges, quoteTextOf, serializeQuotePrompt } from './quote-text.mjs'
+export { maskUserText, renderUserText } from './user-text.mjs'

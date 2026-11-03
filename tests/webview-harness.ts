@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { expect, vi } from 'vitest'
 import { marked } from 'marked'
-import { renderUserText } from '../src/user-text.mjs'
+import { maskUserText, renderUserText } from '../src/user-text.mjs'
+import { formatQuoteText, messageQuoteRanges, quoteTextOf, serializeQuotePrompt } from '../src/quote-text.mjs'
 import { createSettingsModal } from '../src/settings-modal.mjs'
 import { createSubagentLinks } from '../src/subagent-links.mjs'
 import type * as vscode from 'vscode'
@@ -22,6 +23,12 @@ export interface Harness {
   sendState(overrides?: Record<string, unknown>): void
   send(message: Record<string, unknown>): void
   click(selector: string): void
+  /** Select the text of one element, or one character range of its text. */
+  selectText(selector: string, start?: number, end?: number): void
+  /** Select from the first text of one element to the last text of another. */
+  selectAcross(fromSelector: string, toSelector: string): void
+  /** Drop the current selection, as a click elsewhere would. */
+  clearSelection(): void
   /** Flush one render frame: `scheduleRender` defers the DOM to a frame. */
   settle(): Promise<void>
   document: Document
@@ -62,7 +69,12 @@ export function harness(): Harness {
   // it — the alternative was a suite that could not see a formatting regression.
   globals.dshMarkdown = {
     createSubagentLinks,
+    maskUserText,
     renderUserText,
+    formatQuoteText,
+    messageQuoteRanges,
+    quoteTextOf,
+    serializeQuotePrompt,
     renderMarkdown(text: string) {
       const root = document.createElement('div')
       root.className = 'markdown'
@@ -145,9 +157,58 @@ export function harness(): Harness {
     element.dispatchEvent(new Event('click', { bubbles: true }))
   }
 
+  const textNodesOf = (element: Element): Text[] => {
+    const nodes: Text[] = []
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) nodes.push(node as Text)
+    return nodes
+  }
+  const locate = (nodes: Text[], offset: number): { node: Text; offset: number } => {
+    let remaining = Math.max(0, offset)
+    for (let index = 0; index < nodes.length; index += 1) {
+      const node = nodes[index]!
+      const length = node.nodeValue?.length ?? 0
+      if (remaining <= length) return { node, offset: remaining }
+      remaining -= length
+    }
+    const last = nodes[nodes.length - 1]
+    if (last === undefined) throw new Error('The element has no text to select')
+    return { node: last, offset: last.nodeValue?.length ?? 0 }
+  }
+  const selectDomRange = (start: { node: Text; offset: number }, end: { node: Text; offset: number }) => {
+    const range = document.createRange()
+    range.setStart(start.node, start.offset)
+    range.setEnd(end.node, end.offset)
+    const selection = window.getSelection()
+    if (selection === null) throw new Error('The document has no selection')
+    selection.removeAllRanges()
+    selection.addRange(range)
+    document.dispatchEvent(new Event('selectionchange'))
+  }
+  const requireElement = (selector: string): Element => {
+    const element = document.querySelector(selector)
+    if (element === null) throw new Error(`No element matches ${selector}`)
+    return element
+  }
+  const selectText = (selector: string, start = 0, end?: number) => {
+    const nodes = textNodesOf(requireElement(selector))
+    const total = nodes.reduce((sum, node) => sum + (node.nodeValue?.length ?? 0), 0)
+    selectDomRange(locate(nodes, start), locate(nodes, end === undefined ? total : end))
+  }
+  const selectAcross = (fromSelector: string, toSelector: string) => {
+    const from = textNodesOf(requireElement(fromSelector))
+    const to = textNodesOf(requireElement(toSelector))
+    selectDomRange(locate(from, 0), locate(to, to.reduce((sum, node) => sum + (node.nodeValue?.length ?? 0), 0)))
+  }
+  const clearSelection = () => {
+    window.getSelection()?.removeAllRanges()
+    document.dispatchEvent(new Event('selectionchange'))
+  }
+
   return {
-    posts, drop, enter, sendState, send, click, settle, document,
+    posts, drop, enter, sendState, send, click, selectText, selectAcross, clearSelection, settle, document,
     dispose() {
+      window.getSelection()?.removeAllRanges()
       window.dispatchEvent(new Event('pagehide'))
       for (const spy of spies) spy.mockRestore()
       delete globals.acquireVsCodeApi

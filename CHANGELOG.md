@@ -9,6 +9,37 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-alpha.2.7] - 2026-11-03
+
+### Added
+
+- Quoted message text. Selecting text in one user message or one completed
+  assistant reply shows a floating **Quote text** action; the excerpt joins the
+  composer as a link-like chip above the textarea. Quotes can be removed with
+  `×`, hover exposes the full excerpt, a quote-only message can be sent, and a
+  slash command cannot be combined with a quote.
+- Sending serializes quotes as ordinary Markdown blockquotes, with one `> `
+  prefix per line and one blank line before the typed prompt, matching DSH Web;
+  a transcript user message renders the same blockquote back as a link-like
+  quote preview. Without a quote, the sent text is byte-identical to the
+  previous trimmed prompt.
+- `src/quote-text.mts` is the shared DSH-compatible formatter and recognizer;
+  the composer and the transcript use it through the Markdown bundle, so
+  serialization and recognition cannot drift apart.
+- Selection eligibility mirrors DSH: one noncollapsed range inside one settled
+  message body, a writable composer, and no streaming, failed, deferred, tool,
+  notice, cross-message or read-only selection. The action dismisses on
+  Escape, outside press, scroll, blur, session change or transcript rerender.
+
+### Fixed
+
+- Credential masks apply inside transcript quote previews and composer chips,
+  including their tooltips and accessible labels; the DSH rule order would
+  otherwise expose a quoted credential.
+- A native click at the end of a mouse drag no longer hides the action the
+  same gesture just revealed, and Escape remains dismissed when its keyup
+  follows.
+
 ## [0.2.2-alpha.2.6] - 2026-11-02
 
 ### Fixed
