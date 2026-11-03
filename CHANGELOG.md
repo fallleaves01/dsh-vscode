@@ -9,7 +9,7 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
-## [0.2.2-alpha.2.9] - 2026-11-04
+## [0.2.2-alpha.3.1] - 2026-11-04
 
 ### Fixed
 

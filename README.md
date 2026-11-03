@@ -11,7 +11,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
-The current source version is **0.2.2-alpha.2.9**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.2.2-alpha.3.1**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md)
 
@@ -115,9 +115,9 @@ For a full local check run `pnpm run check`; `./build.sh` writes
 `reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
 `startupTimeout` and `searchBaseUrl`.
 
-### Upgrading to 0.2.2-alpha.2.9
+### Upgrading to 0.2.2-alpha.3.1
 
-0.2.2-alpha.2.9 adds DeepSeek Harness `0.2.2-alpha.3` compatibility. Alpha.3 batches `session/control` projection updates into `{ seq, changes: [{ key, val }] }` instead of one `{ key, value, seq }` frame per change; the previous parser rejected the new frame with `Invalid control update.`, and because `session/control` is a shared non-optional carrier, that rejection aborted all event streams with **DSH sent an invalid event stream frame. Reconnect to refresh its snapshot.** The parser now accepts both alpha.2 and alpha.3 shapes, validates a batch before applying it, applies each key with the existing snapshot floor, per-key sequence, prototype, inbox and subagent-catalogue rules, and diagnoses then ignores an unrecognized projection shape instead of aborting the carrier. DSH `0.2.2-alpha.2` remains supported. Reload the VS Code window after updating.
+0.2.2-alpha.3.1 adds DeepSeek Harness `0.2.2-alpha.3` compatibility. Alpha.3 batches `session/control` projection updates into `{ seq, changes: [{ key, val }] }` instead of one `{ key, value, seq }` frame per change; the previous parser rejected the new frame with `Invalid control update.`, and because `session/control` is a shared non-optional carrier, that rejection aborted all event streams with **DSH sent an invalid event stream frame. Reconnect to refresh its snapshot.** The parser now accepts both alpha.2 and alpha.3 shapes, validates a batch before applying it, applies each key with the existing snapshot floor, per-key sequence, prototype, inbox and subagent-catalogue rules, and diagnoses then ignores an unrecognized projection shape instead of aborting the carrier. DSH `0.2.2-alpha.2` remains supported. Reload the VS Code window after updating.
 
 ### Upgrading to 0.2.2-alpha.2.8
 

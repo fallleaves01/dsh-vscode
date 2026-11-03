@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-alpha.2.9**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-alpha.3.1**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -89,9 +89,9 @@ pnpm run package
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
 
-### 升级到 0.2.2-alpha.2.9
+### 升级到 0.2.2-alpha.3.1
 
-0.2.2-alpha.2.9 增加对 DeepSeek Harness `0.2.2-alpha.3` 的兼容。alpha.3 把 `session/control` 的投影更新从每键一帧的 `{ key, value, seq }` 改为按事件批量的 `{ seq, changes: [{ key, val }] }`；旧解析器以 `Invalid control update.` 拒绝新帧，而 `session/control` 是共享的非 optional 载体，因此该拒绝会中止所有事件流并显示 **DSH sent an invalid event stream frame. Reconnect to refresh its snapshot.**。解析器现在同时接受 alpha.2 与 alpha.3 形状，先校验整个批次再应用，逐键沿用快照 floor、每键序号、原型键过滤、inbox 与 subagent catalogue 规则；无法识别的投影形状记录诊断后忽略，不再中止载体。仍支持 DSH `0.2.2-alpha.2`。更新后请重新加载 VS Code 窗口。
+0.2.2-alpha.3.1 增加对 DeepSeek Harness `0.2.2-alpha.3` 的兼容。alpha.3 把 `session/control` 的投影更新从每键一帧的 `{ key, value, seq }` 改为按事件批量的 `{ seq, changes: [{ key, val }] }`；旧解析器以 `Invalid control update.` 拒绝新帧，而 `session/control` 是共享的非 optional 载体，因此该拒绝会中止所有事件流并显示 **DSH sent an invalid event stream frame. Reconnect to refresh its snapshot.**。解析器现在同时接受 alpha.2 与 alpha.3 形状，先校验整个批次再应用，逐键沿用快照 floor、每键序号、原型键过滤、inbox 与 subagent catalogue 规则；无法识别的投影形状记录诊断后忽略，不再中止载体。仍支持 DSH `0.2.2-alpha.2`。更新后请重新加载 VS Code 窗口。
 
 ### 升级到 0.2.2-alpha.2.8
 
