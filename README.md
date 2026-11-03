@@ -11,7 +11,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
-The current source version is **0.2.2-alpha.2.7**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.2.2-alpha.2.8**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md)
 
@@ -114,6 +114,10 @@ For a full local check run `pnpm run check`; `./build.sh` writes
 `artifacts/dsh-sidebar-<version>.vsix`. Other settings include
 `reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
 `startupTimeout` and `searchBaseUrl`.
+
+### Upgrading to 0.2.2-alpha.2.8
+
+0.2.2-alpha.2.8 fixes reopening a very large conversation. The sidebar previously asked `session/follow` for a 100-message snapshot; when that snapshot exceeded the 8 MiB frame limit, the oversized frame was dropped without a protocol error and the conversation failed after an eight-second timeout, which repeated failures could turn into a runtime restart. The first snapshot now uses 30 messages and falls back to 12, 4 and 1 when a frame is still too large; an exhausted fallback reports an explicit oversized-snapshot error instead of a timeout. Older-history pages use the same page budgets, and frame sizes are measured in UTF-8 bytes. A normal conversation therefore starts with a shorter first page and loads older messages through the existing history control.
 
 ### Upgrading to 0.2.2-alpha.2.7
 

@@ -9,6 +9,30 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-alpha.2.8] - 2026-11-03
+
+### Fixed
+
+- Reopening a very large conversation could fail with "The conversation
+  snapshot timed out: DSH did not send it in time." The sidebar requested a
+  100-message `session/follow` snapshot; a page of 736 events reached about
+  9.19 MB and exceeded the 8 MiB frame limit, which the feed dropped without
+  surfacing a protocol error, so the open waited out its eight-second deadline.
+  The first snapshot now requests 30 messages and falls back to 12, 4 and 1
+  when the frame is still too large; an exhausted fallback returns an explicit
+  oversized-snapshot error instead of a timeout, and a failed open no longer
+  escalates to a runtime reconnect by itself.
+- Frame size accounting uses UTF-8 bytes rather than UTF-16 code units, so a
+  conversation containing multi-byte text is refused by the same limit the
+  transport applies instead of passing the old check and arriving oversized.
+- Older-history pages use the same 30/12/4/1 page budgets and retry only when
+  the carrier reports that its response exceeded the byte limit; other failures
+  are reported unchanged. The final fallback names the oversized history page
+  explicitly.
+- An oversized live `session/follow` frame is reported as an explicit stream
+  failure instead of being silently discarded; the carrier itself is not
+  aborted.
+
 ## [0.2.2-alpha.2.7] - 2026-11-03
 
 ### Added

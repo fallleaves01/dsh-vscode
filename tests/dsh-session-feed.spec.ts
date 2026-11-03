@@ -2,7 +2,10 @@ import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DshFrame } from '../src/dsh-client.js'
 import type { DshConnection } from '../src/dsh-connection.js'
-import { DshSessionFeed, FOLLOW_SNAPSHOT_TIMEOUT_MS } from '../src/dsh-session-feed.js'
+import { DshConnectionError } from '../src/dsh-connection.js'
+import {
+  DshSessionFeed, FOLLOW_PAGE_BUDGETS, FOLLOW_SNAPSHOT_TIMEOUT_MS, HISTORY_PAGE_BUDGETS, MAX_FRAME_BYTES, frameBytes,
+} from '../src/dsh-session-feed.js'
 
 const feeds: DshSessionFeed[] = []
 afterEach(() => {
@@ -65,7 +68,7 @@ function harness(options: { eventsReady?: unknown } = {}) {
     if (id === undefined) throw new Error(`The ${endpoint} baseline is not open.`)
     receive(id, value)
   }
-  return { feed, socket, outgoing, frames, errors, diagnostics, push, terminate }
+  return { feed, connection, socket, outgoing, frames, errors, diagnostics, push, receive, terminate }
 }
 
 describe('$events top-level frame tolerance', () => {
@@ -258,6 +261,19 @@ function newestFollowStream(h: ReturnType<typeof harness>): string {
   return opened.streamId
 }
 
+/** The `maxMessages` budgets of every `session/follow` open, in send order. */
+function followBudgets(h: ReturnType<typeof harness>): number[] {
+  return h.outgoing
+    .filter(message => message.type === 'open' && message.endpoint === 'session/follow')
+    .map(message => (message.payload as { args: { request: { maxMessages: number } } }).args.request.maxMessages)
+}
+
+/** A structurally valid snapshot whose single wire frame exceeds the size limit. */
+const oversizedSnapshot = (id: string) => ({
+  ...snapshot(id),
+  records: [{ filler: 'x'.repeat(MAX_FRAME_BYTES) }],
+})
+
 describe('follow snapshot wait', () => {
   it('asks the runtime to activate the cold session, as alpha2 requires', async () => {
     const h = harness()
@@ -266,7 +282,7 @@ describe('follow snapshot wait', () => {
     const opened = h.outgoing.filter(message => message.type === 'open' && message.endpoint === 'session/follow').at(-1)!
     // A superset field: rc.2/rc.3 strip it and promote automatically, alpha2
     // reads it, and omitting it would leave alpha2 on passive observation.
-    expect(opened.payload).toMatchObject({ args: { request: { activate: true, maxMessages: 100, assistantStream: true } } })
+    expect(opened.payload).toMatchObject({ args: { request: { activate: true, maxMessages: 30, assistantStream: true } } })
     // Settle the opener so disposal cannot surface it as an unhandled rejection.
     h.push('session/follow', snapshot('a', 1))
     await pending
@@ -356,6 +372,187 @@ describe('follow snapshot wait', () => {
   })
 })
 
+describe('follow snapshot page budgets', () => {
+  const SNAPSHOT_TOO_LARGE = 'The conversation snapshot is larger than the 8 MiB frame limit. Open the conversation again; if it keeps failing, reconnect the runtime.'
+
+  it('pins the page budgets', () => {
+    expect([...FOLLOW_PAGE_BUDGETS]).toEqual([30, 12, 4, 1])
+    expect([...HISTORY_PAGE_BUDGETS]).toEqual([30, 12, 4, 1])
+  })
+
+  it('retries a snapshot over the frame limit with the next budget and accepts the smaller one', async () => {
+    const h = harness()
+    await h.feed.start()
+    const pending = h.feed.open('a')
+    h.push('session/follow', oversizedSnapshot('a'))
+
+    // The first stream was cancelled and the snapshot asked for again with a
+    // narrower page instead of being dropped.
+    expect(followBudgets(h)).toEqual([30, 12])
+    const firstStream = h.outgoing.find(message => message.type === 'open' && message.endpoint === 'session/follow')!.streamId
+    expect(h.outgoing).toContainEqual({ type: 'cancel', streamId: firstStream })
+    // The diagnostic carries sizes and budgets, never frame content.
+    expect(h.diagnostics).toHaveLength(1)
+    expect(h.diagnostics[0]).toContain('retrying with maxMessages 12')
+    expect(h.diagnostics[0]).not.toContain('xxxxxxxx')
+
+    h.push('session/follow', snapshot('a', 1, { title: 'Small page' }))
+    const opening = await pending
+    expect(opening.asOfSeq).toBe(1)
+    expect(opening.projections).toMatchObject({ title: 'Small page' })
+    opening.activate()
+    h.push('session/follow', { type: 'event', event: { seq: 2, time: 20, type: 'turn/end', data: { turn: 1 } } })
+    expect(h.frames.some(frame => frame.payload.type === 'session/event')).toBe(true)
+    expect(h.errors).toEqual([])
+  })
+
+  it('fails with an actionable error when every budget is over the frame limit', async () => {
+    vi.useFakeTimers()
+    const h = harness()
+    await h.feed.start()
+    const pending = h.feed.open('a')
+    const failure = pending.catch((error: unknown) => error as Error)
+    for (let index = 0; index < FOLLOW_PAGE_BUDGETS.length; index += 1) h.push('session/follow', oversizedSnapshot('a'))
+
+    const error = await failure
+    expect(error.message).toBe(SNAPSHOT_TOO_LARGE)
+    // Never the generic timeout text: the runtime answered, the frame did not fit.
+    expect(error.message).not.toContain('timed out')
+    // One conversation failed, not the runtime.
+    expect(h.errors).toEqual([])
+    expect(h.terminate).not.toHaveBeenCalled()
+    expect(h.socket.readyState).toBe(1)
+    expect(h.feed.handledSessionIds).not.toContain('a')
+    expect(followBudgets(h)).toEqual([...FOLLOW_PAGE_BUDGETS])
+    expect(h.diagnostics.at(-1)).toContain('even at maxMessages 1')
+
+    // The eight-second deadline belonged to the failed open and was cleared with
+    // it, so it cannot fire a second, generic timeout afterwards.
+    await vi.advanceTimersByTimeAsync(FOLLOW_SNAPSHOT_TIMEOUT_MS * 2)
+    expect(h.errors).toEqual([])
+
+    // The failed session is not poisoned: opening it again starts over.
+    const second = h.feed.open('a')
+    h.push('session/follow', snapshot('a', 2))
+    const opening = await second
+    expect(opening.asOfSeq).toBe(2)
+    expect(h.feed.handledSessionIds).toContain('a')
+    expect(h.errors).toEqual([])
+  })
+
+  it('walks the budget list one step at a time', async () => {
+    const h = harness()
+    await h.feed.start()
+    const pending = h.feed.open('a')
+    h.push('session/follow', oversizedSnapshot('a'))
+    h.push('session/follow', oversizedSnapshot('a'))
+    expect(followBudgets(h)).toEqual([30, 12, 4])
+
+    h.push('session/follow', snapshot('a', 3, { title: 'Third try' }))
+    const opening = await pending
+    expect(opening.asOfSeq).toBe(3)
+    expect(opening.projections).toMatchObject({ title: 'Third try' })
+    expect(h.errors).toEqual([])
+  })
+
+  it('ignores a late frame from the cancelled stream while the retry is pending', async () => {
+    const h = harness()
+    await h.feed.start()
+    const pending = h.feed.open('a')
+    h.push('session/follow', oversizedSnapshot('a'))
+
+    const opens = h.outgoing.filter(message => message.type === 'open' && message.endpoint === 'session/follow')
+    expect(opens).toHaveLength(2)
+    const stale = opens[0]!.streamId as string
+    // A frame already queued for the cancelled stream must neither resolve this
+    // open nor move its cursor.
+    h.receive(stale, snapshot('a', 7, { title: 'stale' }))
+    expect(h.feed.handledSessionIds).toContain('a')
+
+    h.push('session/follow', snapshot('a', 1, { title: 'fresh' }))
+    const opening = await pending
+    expect(opening.asOfSeq).toBe(1)
+    expect(opening.projections).toMatchObject({ title: 'fresh' })
+    expect(h.errors).toEqual([])
+  })
+
+  it('keeps the original snapshot deadline across a retry', async () => {
+    vi.useFakeTimers()
+    const h = harness()
+    await h.feed.start()
+    const pending = h.feed.open('a')
+    const failure = pending.catch((error: unknown) => error as Error)
+    await vi.advanceTimersByTimeAsync(1_000)
+    h.push('session/follow', oversizedSnapshot('a'))
+    expect(followBudgets(h)).toEqual([30, 12])
+
+    await vi.advanceTimersByTimeAsync(FOLLOW_SNAPSHOT_TIMEOUT_MS - 1_001)
+    expect(await Promise.race([failure.then(() => 'settled'), Promise.resolve('pending')])).toBe('pending')
+    await vi.advanceTimersByTimeAsync(1)
+    const timeout = await failure
+    expect(timeout.message).toContain('timed out')
+    expect(h.errors).toEqual([])
+    expect(h.feed.handledSessionIds).not.toContain('a')
+  })
+})
+
+describe('history page budget fallback', () => {
+  const OVERSIZED = () => new DshConnectionError('invalid-response', 'DSH session/page returned a response larger than 8388608 bytes.')
+  const PAGE_TOO_LARGE = 'The older history is larger than the 8 MiB frame limit. Open the conversation again; if it keeps failing, reconnect the runtime.'
+
+  async function openConversation(h: ReturnType<typeof harness>): Promise<void> {
+    const opening = h.feed.open('a')
+    h.push('session/follow', snapshot('a', 5))
+    await opening
+  }
+
+  const requestedBudgets = (call: ReturnType<typeof vi.mocked<DshConnection['call']>>): number[] =>
+    call.mock.calls.map(([, args]) => (args as { request: { maxMessages: number } }).request.maxMessages)
+
+  it('asks for the largest history budget first', async () => {
+    const h = harness()
+    await h.feed.start()
+    await openConversation(h)
+    const call = vi.mocked(h.connection.call)
+    call.mockResolvedValueOnce({ records: [], hasMore: false })
+    await expect(h.feed.page('a', 5)).resolves.toEqual({ events: [], hasMore: false })
+    expect(requestedBudgets(call)).toEqual([30])
+  })
+
+  it('retries an oversized page with the next budget and returns the smaller page', async () => {
+    const h = harness()
+    await h.feed.start()
+    await openConversation(h)
+    const call = vi.mocked(h.connection.call)
+    call.mockRejectedValueOnce(OVERSIZED())
+    call.mockResolvedValueOnce({ records: [], hasMore: true })
+    await expect(h.feed.page('a', 5)).resolves.toEqual({ events: [], hasMore: true })
+    expect(requestedBudgets(call)).toEqual([30, 12])
+  })
+
+  it('reports a dedicated error when every history budget is oversized', async () => {
+    const h = harness()
+    await h.feed.start()
+    await openConversation(h)
+    const call = vi.mocked(h.connection.call)
+    call.mockRejectedValue(OVERSIZED())
+    await expect(h.feed.page('a', 5)).rejects.toThrow(PAGE_TOO_LARGE)
+    expect(requestedBudgets(call)).toEqual([...HISTORY_PAGE_BUDGETS])
+    // The failure belongs to this caller; it must not tear down the feed.
+    expect(h.errors).toEqual([])
+  })
+
+  it('rethrows any other failure unchanged instead of lowering the budget', async () => {
+    const h = harness()
+    await h.feed.start()
+    await openConversation(h)
+    const call = vi.mocked(h.connection.call)
+    call.mockRejectedValueOnce(new DshConnectionError('gateway/bad-request', 'History is unavailable.'))
+    await expect(h.feed.page('a', 5)).rejects.toThrow('History is unavailable.')
+    expect(requestedBudgets(call)).toEqual([30])
+  })
+})
+
 describe('workspace pinned sessions', () => {
   const pinnedFrame = (ids: string[]) => ({ channel: 'host', rpcId: '', payload: { type: 'host/pinned-sessions-changed', pinnedSessionIds: ids } })
 
@@ -434,18 +631,42 @@ describe('runtime data bounds and prototype safety', () => {
     expect(h.frames).toContainEqual({ channel: 'host', rpcId: '', payload: { type: 'host/models-changed' } })
   })
 
-  it('applies the frame cap to the follow stream and keeps it alive', async () => {
+  it('fails an opened follow visibly when a live frame exceeds the frame limit', async () => {
     const h = harness()
     await h.feed.start()
     const opening = h.feed.open('a')
     h.push('session/follow', snapshot('a', 1))
     ;(await opening).activate()
-    h.push('session/follow', { type: 'event', event: { type: 'user/message', seq: 2, time: 2, data: { content: 'x'.repeat(9 * 1024 * 1024) } } })
-    expect(h.diagnostics.filter(line => line.includes('session/follow: ignored a frame larger than')).length).toBe(1)
+    const streamId = newestFollowStream(h)
+    h.push('session/follow', { type: 'event', event: { type: 'user/message', seq: 2, time: 2, data: { content: 'x'.repeat(MAX_FRAME_BYTES) } } })
+
+    // No longer silently dropped: the follow ends with one explicit failure that
+    // the sidebar can show, instead of a transcript that merely stops moving.
+    expect(h.errors).toHaveLength(1)
+    expect(h.errors[0]?.message).toBe('The conversation stopped updating: DSH sent a frame larger than the 8 MiB frame limit. Open the conversation again; if it keeps failing, reconnect the runtime.')
+    expect((h.feed as unknown as { follow: unknown }).follow).toBeUndefined()
+    expect(h.outgoing).toContainEqual({ type: 'cancel', streamId })
+    // A conversation-scoped failure must not abort the shared carrier.
+    expect(h.terminate).not.toHaveBeenCalled()
+    expect(h.socket.readyState).toBe(1)
+    h.push('$events', { type: 'emit', event: 'llm/models-updated', args: [] })
+    expect(h.frames).toContainEqual({ channel: 'host', rpcId: '', payload: { type: 'host/models-changed' } })
+  })
+
+  it('measures frame size in UTF-8 bytes rather than UTF-16 code units', () => {
+    const frame = { text: '中文' }
+    expect(frameBytes(frame)).toBe(Buffer.byteLength(JSON.stringify(frame), 'utf8'))
+    expect(frameBytes(frame)).toBeGreaterThan(JSON.stringify(frame).length)
+  })
+
+  it('refuses a frame that is only oversized once multi-byte text is encoded', async () => {
+    const h = harness()
+    await h.feed.start()
+    // Three million CJK code points: under the cap as a JS string length, over
+    // it as UTF-8, which is the size the transport actually carries.
+    h.push('$events', { type: 'emit', event: 'future/huge', args: ['中'.repeat(3_000_000)] })
+    expect(h.diagnostics.filter(line => line.includes('ignored a frame larger than'))).toHaveLength(1)
     expect(h.errors).toEqual([])
-    // A later, valid frame still reaches the projector.
-    h.push('session/follow', { type: 'event', event: { type: 'turn/end', seq: 2, time: 3, data: { turn: 1 } } })
-    expect(h.frames.some(frame => frame.payload.type === 'session/event')).toBe(true)
   })
 
   it('bounds per-session projection state', async () => {

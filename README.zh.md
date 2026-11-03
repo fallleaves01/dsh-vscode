@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-alpha.2.7**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-alpha.2.8**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -88,6 +88,10 @@ pnpm run package
 `artifacts/dsh-sidebar-<version>.vsix`。其他设置包括
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
+
+### 升级到 0.2.2-alpha.2.8
+
+0.2.2-alpha.2.8 修复重新打开超大会话的问题。侧栏此前向 `session/follow` 请求 100 条消息的快照；当快照超过 8 MiB 帧上限时，超限帧被静默丢弃，会话在八秒后以超时失败，连续失败还可能触发 runtime 重启。首个快照现在使用 30 条消息，并在仍超限时依次降为 12、4、1；全部预算用尽时返回明确的快照过大错误，而不是超时。历史分页使用同一组预算，帧大小按 UTF-8 字节计算。因此普通会话的首屏历史变短，旧消息通过现有的历史分页控件加载。
 
 ### 升级到 0.2.2-alpha.2.7
 

@@ -1,4 +1,4 @@
-import type { DshConnection } from './dsh-connection.js'
+import { DshConnectionError, type DshConnection } from './dsh-connection.js'
 import type { DshFrame, HistoryEntry, RpcReceipt, SessionSummary, SessionProjectionRead } from './dsh-client.js'
 import { decodeHistory } from './dsh-history.js'
 import { DshStreams, wireRecord } from './dsh-streams.js'
@@ -27,6 +27,39 @@ export const FOLLOW_SNAPSHOT_TIMEOUT_MS = 8_000
 export const SESSION_STATE_LIMIT = 20_000
 /** One frame larger than this is refused before it reaches any parser. */
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024
+
+/**
+ * UTF-8 size of one frame as its wire JSON encodes it.
+ *
+ * `String.length` counts UTF-16 code units, which understates multi-byte text:
+ * a conversation carrying CJK content could pass a cap measured that way and
+ * then be refused by the transport. One measurement, shared by every size
+ * decision, keeps the frame budget and the diagnostics consistent.
+ */
+export function frameBytes(frame: unknown): number {
+  try {
+    const json = JSON.stringify(frame)
+    return json === undefined ? 0 : Buffer.byteLength(json, 'utf8')
+  } catch {
+    // A frame that cannot be encoded cannot be parsed either; treat it as over
+    // the limit so every caller refuses it instead of reaching a parser.
+    return MAX_FRAME_BYTES + 1
+  }
+}
+
+/**
+ * Message budgets tried for the first `session/follow` snapshot, largest first.
+ *
+ * A full page is the useful default, but one page of a long conversation can
+ * exceed `MAX_FRAME_BYTES`, and DSH answers that with a single oversized frame
+ * rather than an error. Each smaller budget is a complete, valid request
+ * (DSH's `maxMessages` is a message count, not an event count), so a narrower
+ * page can carry the same session's snapshot within one frame.
+ */
+export const FOLLOW_PAGE_BUDGETS = [30, 12, 4, 1] as const
+/** Message budgets tried for one older-history page, largest first. */
+export const HISTORY_PAGE_BUDGETS = [30, 12, 4, 1] as const
+
 const UNSAFE_PROJECTION_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
 const safeProjectionKey = (key: string): boolean => !UNSAFE_PROJECTION_KEYS.has(key)
@@ -83,6 +116,35 @@ function rememberProjectionValue(map: Map<string, Projection>, key: string, valu
  * recovery actions: open the conversation again, or reconnect the runtime.
  */
 const FOLLOW_SNAPSHOT_TIMEOUT_MESSAGE = 'The conversation snapshot timed out: DSH did not send it in time. Open the conversation again; if it keeps timing out, reconnect the runtime.'
+
+/**
+ * Actionable failure text for a snapshot that is still too large at the
+ * smallest page budget.
+ *
+ * The runtime answered: the snapshot exists, but the single frame that carries
+ * it exceeds the transport limit. This is therefore not a timeout and must not
+ * borrow the timeout wording, which would send the user looking for a stalled
+ * runtime. Opening again retries from the largest budget; reconnecting asks the
+ * runtime for a fresh projection.
+ */
+const FOLLOW_SNAPSHOT_TOO_LARGE_MESSAGE = 'The conversation snapshot is larger than the 8 MiB frame limit. Open the conversation again; if it keeps failing, reconnect the runtime.'
+
+/** The same transport limit, reached on one older-history page after every budget was tried. */
+const HISTORY_PAGE_TOO_LARGE_MESSAGE = 'The older history is larger than the 8 MiB frame limit. Open the conversation again; if it keeps failing, reconnect the runtime.'
+
+/** A live frame that exceeds the limit cannot be parsed, so the follow ends visibly. */
+const FOLLOW_LIVE_FRAME_TOO_LARGE_MESSAGE = 'The conversation stopped updating: DSH sent a frame larger than the 8 MiB frame limit. Open the conversation again; if it keeps failing, reconnect the runtime.'
+
+/**
+ * Whether a failed RPC is DSH's own refusal of an oversized response.
+ *
+ * Only this exact code and wording may lower a page budget: every other failure
+ * is a real error that a smaller page would either repeat or hide, so it stays
+ * the caller's to report unchanged.
+ */
+function oversizedResponse(error: unknown): boolean {
+  return error instanceof DshConnectionError && error.code === 'invalid-response' && error.message.includes('larger than')
+}
 
 /**
  * Safe label for an untrusted wire `type`.
@@ -378,7 +440,8 @@ export class DshSessionFeed {
     this.closeFollow()
     const address = sessionAddress(sessionId, parentSessionId)
     return new Promise((resolve, reject) => {
-      const state: Follow = { sessionId, address, cursor: -1, lastSeq: -1, active: false, pending: [], committedMessages: new Set(), cancel: () => {}, reject }
+      let cancelStream: () => void = () => {}
+      const state: Follow = { sessionId, address, cursor: -1, lastSeq: -1, active: false, pending: [], committedMessages: new Set(), cancel: () => cancelStream(), reject }
       this.follow = state
       this.subscribeJobs(sessionId)
       const assistant = new DshAssistantStream(
@@ -386,6 +449,7 @@ export class DshSessionFeed {
         entry => this.mux({ type: 'session/event', sessionId, event: entry.event }),
       )
       let opened = false
+      let budgetIndex = 0
       const timer = setTimeout(() => {
         // A superseded open must never touch its successor: the follow identity
         // is the only state this timer may close. Closing through closeFollow
@@ -395,62 +459,94 @@ export class DshSessionFeed {
         this.closeFollow(new Error(FOLLOW_SNAPSHOT_TIMEOUT_MESSAGE))
       }, FOLLOW_SNAPSHOT_TIMEOUT_MS)
       state.reject = error => { clearTimeout(timer); reject(error) }
-      // `activate` is a superset field: rc.2/rc.3 decode requests non-strictly and
-      // strip it (they promoted the session automatically anyway), while alpha2
-      // only activates a cold session when it is present. DSH's own Web client
-      // always sends it.
-      state.cancel = this.streams.open('session/follow', { request: { address, maxMessages: 100, assistantStream: true, activate: true } }, raw => {
-        if (this.follow !== state) return
-        if (!wireRecord(raw)) throw new Error('Invalid session frame.')
-        if (this.oversizedFrame(raw, 'session/follow')) return
-        if (!opened) {
-          if (raw.type !== 'snapshot' || !Number.isSafeInteger(raw.cursor) || !wireRecord(raw.header)
-            || raw.header.id !== sessionId || !wireRecord(raw.projections) || !wireRecord(raw.projections.values)
-            || raw.projections.asOfSeq !== raw.cursor || typeof raw.hasMore !== 'boolean') throw new Error('Invalid session snapshot.')
-          state.cursor = state.lastSeq = raw.cursor as number
-          const events = decodeHistory(raw.records)
-          const latest = events.at(-1)?.event.seq
-          if (latest !== undefined && latest > state.cursor) throw new Error('History exceeds snapshot cursor.')
-          for (const entry of events) this.acceptQueuedMessage(state, entry)
-          this.installProjections(sessionId, state.cursor, raw.projections.values)
-          assistant.open(raw.assistantStream, state.cursor, events)
-          opened = true
-          clearTimeout(timer)
-          resolve({ events, hasMore: raw.hasMore, asOfSeq: state.cursor, projections: this.projectionValues(sessionId), isCurrent: () => this.follow === state, activate: () => {
-            if (this.follow !== state || state.active) return
-            state.active = true
-            rememberSet(this.requestSessions, sessionId)
-            this.mux({ type: 'session/queue', sessionId, items: this.queueItems(sessionId) })
-            this.mux({ type: 'session/jobs', sessionId, jobs: this.jobs.get(sessionId) ?? [] })
-            for (const [key, projection] of this.projections.get(sessionId) ?? []) {
-              this.mux({ type: 'session/projection', sessionId, key, value: projection.value })
-            }
-            for (const frame of state.pending.splice(0)) this.emit(frame)
-            this.presentQuestions()
-          } })
-        } else {
-          if (raw.type === 'assistant-stream') { assistant.frame(raw.frame, state.lastSeq); return }
-          if (raw.type !== 'event') throw new Error('Unexpected session snapshot.')
-          const entry = decodeHistory([raw])[0]
-          if (entry === undefined || entry.event.seq !== state.lastSeq + 1) throw new Error('Non-contiguous DSH session events.')
-          state.lastSeq = entry.event.seq
-          this.acceptQueuedMessage(state, entry)
-          assistant.durable(entry)
-        }
-      // A conversation-scoped subscription must not take the runtime feed with it:
-      // a conversation archived elsewhere, or a subagent whose parent is gone,
-      // fails this stream alone. Its code is what the sidebar explains.
-      }, (error, cause) => {
-        // Before the snapshot the open is still pending, so the failure is the
-        // opener's to report. After it, this stream was the only thing updating the
-        // transcript: closing it silently left the sidebar showing a conversation
-        // that had stopped moving, with no notice and no way back. A carrier abort
-        // is reported once, by the carrier itself.
-        if (!opened) { state.reject(error); return }
-        if (this.follow !== state) return
-        this.closeFollow(error)
-        if (cause === 'stream') this.error(error)
-      }, true)
+      /** Reject one open whose snapshot does not fit even the smallest page budget. */
+      const failSnapshotOversized = (bytes: number, budget: number): void => {
+        this.diagnostic(`session/follow: snapshot is ${String(bytes)} bytes even at maxMessages ${String(budget)} (frame limit ${String(MAX_FRAME_BYTES)} bytes)`)
+        this.closeFollow(new Error(FOLLOW_SNAPSHOT_TOO_LARGE_MESSAGE))
+      }
+
+      /**
+       * Open `session/follow` with the current page budget.
+       *
+       * `activate` is a superset field: rc.2/rc.3 decode requests non-strictly and
+       * strip it (they promoted the session automatically anyway), while alpha2
+       * only activates a cold session when it is present. DSH's own Web client
+       * always sends it.
+       */
+      const subscribe = (): void => {
+        const budget = FOLLOW_PAGE_BUDGETS[budgetIndex] ?? 1
+        cancelStream = this.streams.open('session/follow', { request: { address, maxMessages: budget, assistantStream: true, activate: true } }, raw => {
+          if (this.follow !== state) return
+          if (!wireRecord(raw)) throw new Error('Invalid session frame.')
+          const bytes = frameBytes(raw)
+          if (bytes > MAX_FRAME_BYTES) {
+            if (opened) throw new Error(FOLLOW_LIVE_FRAME_TOO_LARGE_MESSAGE)
+            // A snapshot is the one frame that cannot be split: DSH sends the whole
+            // page in a single item, so the only useful retry is a narrower page.
+            // The open's own snapshot deadline keeps running across the retry, so a
+            // runtime that stalls after it still fails at eight seconds.
+            const next = budgetIndex + 1
+            const nextBudget = FOLLOW_PAGE_BUDGETS[next]
+            if (nextBudget === undefined) { failSnapshotOversized(bytes, budget); return }
+            this.diagnostic(`session/follow: snapshot is ${String(bytes)} bytes at maxMessages ${String(budget)} (frame limit ${String(MAX_FRAME_BYTES)} bytes); retrying with maxMessages ${String(nextBudget)}`)
+            // Cancel first: a frame already queued for this stream must never be
+            // parsed as if it belonged to the retry. The follow identity check at
+            // the top of this handler guards the remaining window.
+            cancelStream()
+            budgetIndex = next
+            subscribe()
+            return
+          }
+          if (!opened) {
+            if (raw.type !== 'snapshot' || !Number.isSafeInteger(raw.cursor) || !wireRecord(raw.header)
+              || raw.header.id !== sessionId || !wireRecord(raw.projections) || !wireRecord(raw.projections.values)
+              || raw.projections.asOfSeq !== raw.cursor || typeof raw.hasMore !== 'boolean') throw new Error('Invalid session snapshot.')
+            state.cursor = state.lastSeq = raw.cursor as number
+            const events = decodeHistory(raw.records)
+            const latest = events.at(-1)?.event.seq
+            if (latest !== undefined && latest > state.cursor) throw new Error('History exceeds snapshot cursor.')
+            for (const entry of events) this.acceptQueuedMessage(state, entry)
+            this.installProjections(sessionId, state.cursor, raw.projections.values)
+            assistant.open(raw.assistantStream, state.cursor, events)
+            opened = true
+            clearTimeout(timer)
+            resolve({ events, hasMore: raw.hasMore, asOfSeq: state.cursor, projections: this.projectionValues(sessionId), isCurrent: () => this.follow === state, activate: () => {
+              if (this.follow !== state || state.active) return
+              state.active = true
+              rememberSet(this.requestSessions, sessionId)
+              this.mux({ type: 'session/queue', sessionId, items: this.queueItems(sessionId) })
+              this.mux({ type: 'session/jobs', sessionId, jobs: this.jobs.get(sessionId) ?? [] })
+              for (const [key, projection] of this.projections.get(sessionId) ?? []) {
+                this.mux({ type: 'session/projection', sessionId, key, value: projection.value })
+              }
+              for (const frame of state.pending.splice(0)) this.emit(frame)
+              this.presentQuestions()
+            } })
+          } else {
+            if (raw.type === 'assistant-stream') { assistant.frame(raw.frame, state.lastSeq); return }
+            if (raw.type !== 'event') throw new Error('Unexpected session snapshot.')
+            const entry = decodeHistory([raw])[0]
+            if (entry === undefined || entry.event.seq !== state.lastSeq + 1) throw new Error('Non-contiguous DSH session events.')
+            state.lastSeq = entry.event.seq
+            this.acceptQueuedMessage(state, entry)
+            assistant.durable(entry)
+          }
+        // A conversation-scoped subscription must not take the runtime feed with it:
+        // a conversation archived elsewhere, or a subagent whose parent is gone,
+        // fails this stream alone. Its code is what the sidebar explains.
+        }, (error, cause) => {
+          // Before the snapshot the open is still pending, so the failure is the
+          // opener's to report. After it, this stream was the only thing updating the
+          // transcript: closing it silently left the sidebar showing a conversation
+          // that had stopped moving, with no notice and no way back. A carrier abort
+          // is reported once, by the carrier itself.
+          if (!opened) { state.reject(error); return }
+          if (this.follow !== state) return
+          this.closeFollow(error)
+          if (cause === 'stream') this.error(error)
+        }, true)
+      }
+      subscribe()
     })
   }
 
@@ -460,12 +556,33 @@ export class DshSessionFeed {
     // `throughSeq` is the snapshot cursor on purpose: 0.2.0 rejects a value past
     // the session's cursor with `gateway/bad-request`, so paging must walk
     // backwards from a real one.
-    const result = await this.connection.call<{ records: unknown; hasMore: boolean }>('session/page', {
-      request: { address: state.address, throughSeq: state.cursor, beforeSeq, maxMessages: 100 },
-    })
-    if (this.follow !== state) throw new Error('The conversation changed while loading history.')
-    if (typeof result.hasMore !== 'boolean') throw new Error('Invalid history page.')
-    return { events: decodeHistory(result.records), hasMore: result.hasMore }
+    for (let index = 0; index < HISTORY_PAGE_BUDGETS.length; index += 1) {
+      const budget = HISTORY_PAGE_BUDGETS[index] ?? 1
+      let result: { records: unknown; hasMore: boolean }
+      try {
+        result = await this.connection.call<{ records: unknown; hasMore: boolean }>('session/page', {
+          request: { address: state.address, throughSeq: state.cursor, beforeSeq, maxMessages: budget },
+        })
+      } catch (error) {
+        // The carrier refuses a response over its budget with `invalid-response`.
+        // A smaller page is the one retry that can fit; every other failure is a
+        // real error the caller already knows how to explain.
+        if (!oversizedResponse(error)) throw error
+        const nextBudget = HISTORY_PAGE_BUDGETS[index + 1]
+        if (nextBudget === undefined) {
+          this.diagnostic(`session/page: history page is still over ${String(MAX_FRAME_BYTES)} bytes at maxMessages ${String(budget)}`)
+          throw new Error(HISTORY_PAGE_TOO_LARGE_MESSAGE)
+        }
+        if (this.follow !== state) throw new Error('The conversation changed while loading history.')
+        this.diagnostic(`session/page: history page is over ${String(MAX_FRAME_BYTES)} bytes at maxMessages ${String(budget)}; retrying with maxMessages ${String(nextBudget)}`)
+        continue
+      }
+      if (this.follow !== state) throw new Error('The conversation changed while loading history.')
+      if (typeof result.hasMore !== 'boolean') throw new Error('Invalid history page.')
+      return { events: decodeHistory(result.records), hasMore: result.hasMore }
+    }
+    // Unreachable: the last budget either returns or throws above.
+    throw new Error(HISTORY_PAGE_TOO_LARGE_MESSAGE)
   }
 
   async respond(id: string, value: unknown): Promise<RpcReceipt> {
@@ -509,8 +626,7 @@ export class DshSessionFeed {
 
   /** Refuse one frame over the size budget, naming the endpoint once. */
   private oversizedFrame(frame: Record<string, unknown>, endpoint: string): boolean {
-    let size = 0
-    try { size = JSON.stringify(frame).length } catch { size = MAX_FRAME_BYTES + 1 }
+    const size = frameBytes(frame)
     if (size <= MAX_FRAME_BYTES) return false
     if (!this.reportedOversized.has(endpoint)) {
       this.reportedOversized.add(endpoint)

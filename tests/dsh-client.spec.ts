@@ -474,7 +474,7 @@ describe('DSH 0.1.2 chat transport', () => {
     for (const frame of h.frames.filter(f => f.payload.type === 'session/event')) projector.apply(frame.payload.event as any)
     expect(projector.messages()[0]?.text).toBe('hello world')
     await h.client.history('s', 5)
-    expect(h.requests.at(-1)).toEqual({ endpoint: 'session/page', args: { request: { address: { kind: 'session', sessionId: 's' }, throughSeq: 5, beforeSeq: 5, maxMessages: 100 } } })
+    expect(h.requests.at(-1)).toEqual({ endpoint: 'session/page', args: { request: { address: { kind: 'session', sessionId: 's' }, throughSeq: 5, beforeSeq: 5, maxMessages: 30 } } })
   })
 
   it('opts into 0.1.5 streaming, buffers the live baseline and settlement, and keeps history cursors durable', async () => {
