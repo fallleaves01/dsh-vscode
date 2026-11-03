@@ -11,6 +11,8 @@ interface UnknownFrameBudget { readonly types: Set<string>; overflow: boolean }
 
 /** Distinct unknown frame types reported per stream before the diagnostic is capped. */
 const UNKNOWN_FRAME_TYPE_LIMIT = 16
+/** Distinct unrecognized `session/control` projection shapes reported before the diagnostic is capped. */
+const UNKNOWN_PROJECTION_SHAPE_LIMIT = 8
 
 /**
  * How long one conversation may wait for its `session/follow` snapshot.
@@ -160,6 +162,21 @@ function frameTypeLabel(value: unknown): string {
   return printable.length > 64 ? `${printable.slice(0, 64)}…` : printable
 }
 
+/**
+ * Safe label for one unrecognized projection frame's wire shape.
+ *
+ * Only key names identify the shape; values are never included. Key names come
+ * from the runtime, so control characters are masked and each name and the whole
+ * label are length-capped.
+ */
+function projectionShapeLabel(frame: Record<string, unknown>): string {
+  const keys = Object.keys(frame)
+    .map(key => key.replace(/[^\x20-\x7e]/gu, '?').slice(0, 24))
+    .sort()
+  const label = keys.join(',')
+  return label.length > 96 ? `${label.slice(0, 96)}…` : label
+}
+
 /** Durable address of one conversation, as DSH's `SessionAddress` union defines it. */
 type SessionAddress =
   | { kind: 'session'; sessionId: string }
@@ -254,6 +271,9 @@ export class DshSessionFeed {
   private readonly ignoredFrameTypes = new Map<string, UnknownFrameBudget>()
   private readonly reportedOversized = new Set<string>()
   private readonly reportedPendingOverflow = new Set<string>()
+  /** Unrecognized `session/control` projection shapes already reported. */
+  private readonly reportedProjectionShapes = new Set<string>()
+  private projectionShapesCapped = false
 
   constructor(private readonly connection: DshConnection, private readonly emit: (frame: DshFrame) => void,
     private readonly error: (error: Error) => void,
@@ -797,19 +817,88 @@ export class DshSessionFeed {
     } else if (frame.type === 'jobs' && Array.isArray(frame.jobs)) {
       remember(this.jobs, id, frame.jobs)
       this.publishJobs(id, frame.jobs)
-    } else if (frame.type === 'projection' && typeof frame.key === 'string' && Number.isSafeInteger(frame.seq)) {
-      if ((frame.seq as number) < (this.projectionFloors.get(id) ?? -1)) return
-      if (!safeProjectionKey(frame.key)) return
-      const map = this.projections.get(id) ?? new Map<string, Projection>()
-      if ((map.get(frame.key)?.seq ?? -1) > (frame.seq as number)) return
-      rememberProjectionValue(map, frame.key, { seq: frame.seq as number, value: frame.value })
-      remember(this.projections, id, map)
-      // DSH 0.1.7 delivers the message queue as the `inbox` projection.
-      if (frame.key === 'inbox') this.applyInbox(id, frame.value)
-      if (frame.key === 'subagentCatalog') this.trackCatalog(id, frame.value)
-      // Replayed from the newest cached value on activation, never from stale buffered values.
-      if (this.follow?.sessionId !== id || this.follow.active) this.mux({ type: 'session/projection', sessionId: id, key: frame.key, value: frame.value })
+    } else if (frame.type === 'projection') {
+      // A projection this client cannot parse is diagnosed and dropped rather
+      // than thrown: `session/control` is the shared, non-optional carrier, so a
+      // throw here aborted every other stream with it.
+      this.applyProjectionFrame(id, frame)
     } else throw new Error('Invalid control update.')
+  }
+
+  /**
+   * Apply one incremental `session/control` projection frame.
+   *
+   * DSH alpha.2 sent one key per frame (`{ key, value, seq }`); alpha.3 batches
+   * every key changed at one sequence into `changes: [{ key, val }]`. Both
+   * shapes converge on {@link applyProjectionChange}, so the floor, the per-key
+   * sequence check, the inbox and catalogue side effects and the muxed frame are
+   * identical whichever runtime produced the frame.
+   *
+   * A frame matching neither shape is reported once per distinct key layout and
+   * ignored; it must not abort the shared control carrier.
+   */
+  private applyProjectionFrame(sessionId: string, frame: Record<string, unknown>): void {
+    const seq = frame.seq
+    if (!Number.isSafeInteger(seq)) { this.ignoreProjectionShape(frame); return }
+    if (typeof frame.key === 'string') {
+      this.applyProjectionChange(sessionId, seq as number, frame.key, frame.value)
+      return
+    }
+    const changes = frame.changes
+    if (!Array.isArray(changes)) { this.ignoreProjectionShape(frame); return }
+    // Validate the whole batch before applying any of it: half a batch would
+    // leave the projection map at a sequence the runtime never sent as a whole.
+    const batch: Array<{ key: string; value: unknown }> = []
+    for (const change of changes) {
+      if (!wireRecord(change) || typeof change.key !== 'string' || !('val' in change)) {
+        this.ignoreProjectionShape(frame)
+        return
+      }
+      batch.push({ key: change.key, value: change.val })
+    }
+    for (const change of batch) this.applyProjectionChange(sessionId, seq as number, change.key, change.value)
+  }
+
+  /**
+   * Apply one projection key at one sequence number.
+   *
+   * The floor is the snapshot's sequence: anything older than the snapshot would
+   * move visible state backwards. The per-key map sequence makes a late frame
+   * for one key ineffective even when the frame as a whole is new enough.
+   */
+  private applyProjectionChange(sessionId: string, seq: number, key: string, value: unknown): void {
+    if (seq < (this.projectionFloors.get(sessionId) ?? -1)) return
+    if (!safeProjectionKey(key)) return
+    const map = this.projections.get(sessionId) ?? new Map<string, Projection>()
+    if ((map.get(key)?.seq ?? -1) > seq) return
+    rememberProjectionValue(map, key, { seq, value })
+    remember(this.projections, sessionId, map)
+    // DSH 0.1.7 delivers the message queue as the `inbox` projection.
+    if (key === 'inbox') this.applyInbox(sessionId, value)
+    if (key === 'subagentCatalog') this.trackCatalog(sessionId, value)
+    // Replayed from the newest cached value on activation, never from stale buffered values.
+    if (this.follow?.sessionId !== sessionId || this.follow.active) this.mux({ type: 'session/projection', sessionId, key, value })
+  }
+
+  /**
+   * Report one unrecognized `session/control` projection shape, at most once per
+   * distinct wire key layout and with a bounded total.
+   *
+   * The label carries key names only — never values — so runtime text cannot
+   * forge a log line, and a runtime that keeps inventing shapes cannot flood the
+   * log or grow this state without bound.
+   */
+  private ignoreProjectionShape(frame: Record<string, unknown>): void {
+    const label = projectionShapeLabel(frame)
+    if (this.reportedProjectionShapes.has(label)) return
+    if (this.reportedProjectionShapes.size >= UNKNOWN_PROJECTION_SHAPE_LIMIT) {
+      if (this.projectionShapesCapped) return
+      this.projectionShapesCapped = true
+      this.diagnostic(`session/control: further unrecognized projection shapes are suppressed (after ${String(UNKNOWN_PROJECTION_SHAPE_LIMIT)})`)
+      return
+    }
+    this.reportedProjectionShapes.add(label)
+    this.diagnostic(`session/control: ignored an unrecognized projection frame (keys: ${label})`)
   }
 
   private queueItems(sessionId: string): unknown[] {

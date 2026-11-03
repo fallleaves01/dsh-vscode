@@ -172,7 +172,8 @@ describe('$events top-level frame tolerance', () => {
 
   it.each([
     ['session/control baseline without projections', 'session/control', { type: 'baseline', value: {} }],
-    ['session/control projection without seq', 'session/control', { type: 'projection', sessionId: 's', key: 'todos' }],
+    // Unrecognized projection shapes no longer abort the shared control
+    // carrier; `session/control projection frame compatibility` covers them.
     ['session/control update without session', 'session/control', { type: 'jobs' }],
     ['session/control queue with a wrong payload', 'session/control', { type: 'queue', sessionId: 's', items: 'rows' }],
     ['workspace/follow invalid baseline', 'workspace/follow', { type: 'baseline', value: { archivedSessionIds: [1] } }],
@@ -231,6 +232,136 @@ describe('session/control top-level frame tolerance', () => {
       '$events: further unknown frame types are suppressed for this connection (after 16)',
     ])
     expect(h.diagnostics.at(-1)).toBe('session/control: ignored unknown frame type "future/control-frame"')
+  })
+})
+
+describe('session/control projection frame compatibility', () => {
+  it('applies an alpha.3 changes frame with several keys at one sequence', async () => {
+    const h = harness()
+    await h.feed.start()
+    const opening = h.feed.open('s')
+    h.push('session/follow', snapshot('s', 1))
+    ;(await opening).activate()
+
+    h.push('session/control', { type: 'projection', sessionId: 's', seq: 5, changes: [
+      { key: 'todos', val: [{ content: 'x', status: 'pending' }] },
+      { key: 'inbox', val: { 'next-turn': [{ id: 'm1', placement: 'queued' }], 'next-step': [] } },
+    ] })
+
+    expect(h.errors).toEqual([])
+    expect(h.feed.projectionValues('s')).toMatchObject({
+      todos: [{ content: 'x', status: 'pending' }],
+      inbox: { 'next-turn': [{ id: 'm1', placement: 'queued' }], 'next-step': [] },
+    })
+    // Every key of the batch is forwarded to the Webview at its shared sequence.
+    expect(h.frames).toContainEqual({ channel: 'mux', rpcId: '', payload: {
+      type: 'session/projection', sessionId: 's', key: 'todos', value: [{ content: 'x', status: 'pending' }],
+    } })
+    expect(h.frames).toContainEqual({ channel: 'mux', rpcId: '', payload: {
+      type: 'session/projection', sessionId: 's', key: 'inbox', value: { 'next-turn': [{ id: 'm1', placement: 'queued' }], 'next-step': [] },
+    } })
+    // The inbox projection still drives the queue dock.
+    expect(h.frames).toContainEqual({ channel: 'mux', rpcId: '', payload: {
+      type: 'session/queue', sessionId: 's',
+      items: [{ id: 'm1', placement: 'queued', message: { id: 'm1', placement: 'queued' } }],
+    } })
+  })
+
+  it('keeps the alpha.2 single-key projection frame working', async () => {
+    const h = harness()
+    await h.feed.start()
+    h.push('session/control', { type: 'projection', sessionId: 's', seq: 7, key: 'todos', value: ['alpha2'] })
+
+    expect(h.errors).toEqual([])
+    expect(h.feed.projectionValues('s')).toEqual({ todos: ['alpha2'] })
+    expect(h.frames).toContainEqual({ channel: 'mux', rpcId: '', payload: {
+      type: 'session/projection', sessionId: 's', key: 'todos', value: ['alpha2'],
+    } })
+  })
+
+  it('filters prototype keys inside an alpha.3 changes batch', async () => {
+    const h = harness()
+    await h.feed.start()
+    h.push('session/control', { type: 'projection', sessionId: 's', seq: 4, changes: [
+      { key: '__proto__', val: { polluted: true } },
+      { key: 'constructor', val: { polluted: true } },
+      { key: 'title', val: 'kept' },
+    ] })
+
+    expect((Object.prototype as any).polluted).toBeUndefined()
+    expect(h.feed.projectionValues('s')).toEqual({ title: 'kept' })
+    expect(h.errors).toEqual([])
+    // Neither unsafe key reached the Webview.
+    expect(h.frames.filter(frame => frame.payload.type === 'session/projection')).toEqual([
+      { channel: 'mux', rpcId: '', payload: { type: 'session/projection', sessionId: 's', key: 'title', value: 'kept' } },
+    ])
+  })
+
+  it('keeps the snapshot floor across both projection shapes', async () => {
+    const h = harness()
+    await h.feed.start()
+    const opening = h.feed.open('s')
+    h.push('session/follow', snapshot('s', 10, { title: 'snapshot' }))
+    await opening
+    h.push('session/control', { type: 'projection', sessionId: 's', seq: 9, changes: [{ key: 'title', val: 'too-old' }] })
+    h.push('session/control', { type: 'projection', sessionId: 's', seq: 9, key: 'title', value: 'too-old' })
+
+    expect(h.feed.projectionValues('s')).toMatchObject({ title: 'snapshot' })
+    expect(h.errors).toEqual([])
+  })
+
+  it('keeps the per-key sequence when the two shapes interleave', async () => {
+    const h = harness()
+    await h.feed.start()
+    h.push('session/control', { type: 'projection', sessionId: 's', seq: 5, changes: [{ key: 'todos', val: ['alpha3'] }] })
+    // An older alpha.2 frame for the same key must not roll that key back.
+    h.push('session/control', { type: 'projection', sessionId: 's', seq: 4, key: 'todos', value: ['stale'] })
+    expect(h.feed.projectionValues('s').todos).toEqual(['alpha3'])
+    // A newer alpha.2 frame still applies.
+    h.push('session/control', { type: 'projection', sessionId: 's', seq: 6, key: 'todos', value: ['alpha2-newer'] })
+    expect(h.feed.projectionValues('s').todos).toEqual(['alpha2-newer'])
+    expect(h.errors).toEqual([])
+  })
+
+  it.each([
+    ['a missing sequence', { type: 'projection', sessionId: 's', key: 'todos', value: [] }],
+    ['neither a key nor changes', { type: 'projection', sessionId: 's', seq: 3 }],
+    ['a non-array changes', { type: 'projection', sessionId: 's', seq: 3, changes: 'todos' }],
+    ['a change without a key', { type: 'projection', sessionId: 's', seq: 3, changes: [{ val: [] }] }],
+    ['a change without val', { type: 'projection', sessionId: 's', seq: 3, changes: [{ key: 'todos' }] }],
+    ['a non-record change', { type: 'projection', sessionId: 's', seq: 3, changes: [7] }],
+  ])('ignores %s without aborting the control carrier', async (_case, frame) => {
+    const h = harness()
+    await h.feed.start()
+    h.push('session/control', frame)
+
+    // A shared, non-optional carrier must survive a frame this client cannot read.
+    expect(h.errors).toEqual([])
+    expect(h.terminate).not.toHaveBeenCalled()
+    expect(h.socket.readyState).toBe(1)
+    expect(h.diagnostics).toHaveLength(1)
+    expect(h.diagnostics[0]).toContain('ignored an unrecognized projection frame')
+
+    // The same carrier keeps serving later legal frames, in the new shape.
+    h.push('session/control', { type: 'projection', sessionId: 's', seq: 4, changes: [{ key: 'todos', val: ['after'] }] })
+    expect(h.feed.projectionValues('s')).toEqual({ todos: ['after'] })
+    expect(h.errors).toEqual([])
+  })
+
+  it('caps the unrecognized projection shape diagnostics', async () => {
+    const h = harness()
+    await h.feed.start()
+    for (let index = 0; index < 8; index += 1) {
+      h.push('session/control', { type: 'projection', sessionId: 's', [`extra-${String(index)}`]: index })
+    }
+    h.push('session/control', { type: 'projection', sessionId: 's', 'extra-overflow': 1 })
+    h.push('session/control', { type: 'projection', sessionId: 's', 'extra-overflow-2': 2 })
+
+    expect(h.errors).toEqual([])
+    expect(h.terminate).not.toHaveBeenCalled()
+    expect(h.diagnostics).toHaveLength(9)
+    expect(h.diagnostics.slice(0, 8).every(line => line.includes('ignored an unrecognized projection frame'))).toBe(true)
+    expect(h.diagnostics[8]).toBe('session/control: further unrecognized projection shapes are suppressed (after 8)')
   })
 })
 

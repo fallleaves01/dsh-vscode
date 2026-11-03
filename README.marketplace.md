@@ -6,7 +6,7 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, quoted message text, and native change review. This source version is **0.2.2-alpha.2.8**.
+DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, quoted message text, and native change review. This source version is **0.2.2-alpha.2.9**.
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
@@ -39,7 +39,7 @@ DSH Sidebar runs the official DeepSeek Harness CLI on your machine. Install it f
 npm install -g @deepseek-ai/dsh
 ```
 
-Install DSH on the extension host; for Remote SSH, install it on the remote host. You need VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`. DeepSeek Harness `0.1.2-rc.1` or newer is required; history search and Schedule need `0.2.0-rc.2` or newer, and the experimental bundles are verified against `0.2.2-alpha.2` (`0.2.1-rc.2` and `0.2.1-rc.3` remain supported). The alpha CLI requires Node.js 24.9 or newer.
+Install DSH on the extension host; for Remote SSH, install it on the remote host. You need VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`. DeepSeek Harness `0.1.2-rc.1` or newer is required; history search and Schedule need `0.2.0-rc.2` or newer, the conversation event-stream client is verified against `0.2.2-alpha.2` and `0.2.2-alpha.3`, and the experimental bundles are verified against `0.2.2-alpha.2` (`0.2.1-rc.2` and `0.2.1-rc.3` remain supported). DSH alpha.3 changed the reminder wire format, so Schedule currently requires a runtime through `0.2.2-alpha.2`. The alpha CLI requires Node.js 24.9 or newer.
 
 Download this fork's `.vsix` from [GitHub Releases](https://github.com/fallleaves01/dsh-vscode/releases) and run **Extensions: Install from VSIX...**. Its extension ID is `fallleaves01.dsh-sidebar`. The latest release is **0.2.0**. Release assets can lag behind the source version; build from the repository with `pnpm install --frozen-lockfile && pnpm run package` when the desired version is not yet available.
 
@@ -175,10 +175,13 @@ SecretStorage key. It is not an encrypted vault or an isolation boundary against
 tools running as the same OS user. Stored key values are never read back into the
 page, and this repository and its VSIX exclude the credential file and backups.
 
-### DSH 0.2.2-alpha.2 experimental features
+### DSH 0.2.2-alpha.2 and alpha.3 experimental features
 
-The sidebar is verified against DeepSeek Harness `0.2.2-alpha.2`; `0.2.1-rc.2`
-and `0.2.1-rc.3` remain supported. Experimental bundles remain opt-in in the
+The conversation event-stream client is verified against DeepSeek Harness
+`0.2.2-alpha.2` and `0.2.2-alpha.3`; `0.2.1-rc.2` and `0.2.1-rc.3` remain
+supported. The experimental bundles are still verified against `0.2.2-alpha.2`,
+and alpha.3 changed the reminder wire format, so Schedule currently requires a
+runtime through `0.2.2-alpha.2`. Experimental bundles remain opt-in in the
 runtime profile; the sidebar does not enable them automatically (the Plugins page can switch
 them when the runtime allows writes), and each feature appears only when the
 runtime exposes its contract. The alpha release

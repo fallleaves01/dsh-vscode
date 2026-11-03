@@ -9,6 +9,30 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-alpha.2.9] - 2026-11-04
+
+### Fixed
+
+- DeepSeek Harness `0.2.2-alpha.3` compatibility for the shared
+  `session/control` stream. Alpha.3 replaces one `{ key, value, seq }` projection
+  frame per key with one `{ seq, changes: [{ key, val }] }` batch per committed
+  event. The previous parser rejected the new batch as
+  `Invalid control update.`; because `session/control` is a non-optional carrier,
+  the rejection aborted every event stream and surfaced as
+  "DSH sent an invalid event stream frame. Reconnect to refresh its snapshot."
+  The parser now accepts both alpha.2 and alpha.3 shapes, validates a batch
+  before applying any of it, and applies every key through the existing snapshot
+  floor, per-key sequence, prototype-key, inbox and subagent-catalogue rules.
+- An unrecognized `session/control` projection shape is diagnosed (bounded and
+  without quoted values) and ignored instead of aborting the shared carrier.
+  Other control frames retain their previous strict validation.
+
+### Known limitations
+
+- DSH `0.2.2-alpha.3` also redesigned the reminder wire format. Schedule and
+  delivery history still use the alpha.2 shape in this build, so Schedule
+  currently requires a runtime through `0.2.2-alpha.2`.
+
 ## [0.2.2-alpha.2.8] - 2026-11-03
 
 ### Fixed

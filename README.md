@@ -11,7 +11,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
-The current source version is **0.2.2-alpha.2.8**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.2.2-alpha.2.9**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md)
 
@@ -85,7 +85,7 @@ Install the official DeepSeek Harness CLI:
 npm install -g @deepseek-ai/dsh
 ```
 
-Install DSH on the host where the extension runs. For Remote SSH, this is the remote host. DeepSeek Harness `0.1.2-rc.1` or newer is required. History search and Schedule need `0.2.0-rc.2` or newer; the experimental bundles are verified against `0.2.2-alpha.2`, while `0.2.1-rc.2` and `0.2.1-rc.3` remain supported. The alpha CLI itself requires Node.js 24.9 or newer.
+Install DSH on the host where the extension runs. For Remote SSH, this is the remote host. DeepSeek Harness `0.1.2-rc.1` or newer is required. History search and Schedule need `0.2.0-rc.2` or newer; the conversation event-stream client is verified against `0.2.2-alpha.2` and `0.2.2-alpha.3`, while the experimental bundles are verified against `0.2.2-alpha.2`; `0.2.1-rc.2` and `0.2.1-rc.3` remain supported. DSH `0.2.2-alpha.3` changed the reminder wire format, so Schedule currently requires a runtime through `0.2.2-alpha.2`. The alpha CLI itself requires Node.js 24.9 or newer.
 
 ### Published release
 
@@ -114,6 +114,10 @@ For a full local check run `pnpm run check`; `./build.sh` writes
 `artifacts/dsh-sidebar-<version>.vsix`. Other settings include
 `reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
 `startupTimeout` and `searchBaseUrl`.
+
+### Upgrading to 0.2.2-alpha.2.9
+
+0.2.2-alpha.2.9 adds DeepSeek Harness `0.2.2-alpha.3` compatibility. Alpha.3 batches `session/control` projection updates into `{ seq, changes: [{ key, val }] }` instead of one `{ key, value, seq }` frame per change; the previous parser rejected the new frame with `Invalid control update.`, and because `session/control` is a shared non-optional carrier, that rejection aborted all event streams with **DSH sent an invalid event stream frame. Reconnect to refresh its snapshot.** The parser now accepts both alpha.2 and alpha.3 shapes, validates a batch before applying it, applies each key with the existing snapshot floor, per-key sequence, prototype, inbox and subagent-catalogue rules, and diagnoses then ignores an unrecognized projection shape instead of aborting the carrier. DSH `0.2.2-alpha.2` remains supported. Reload the VS Code window after updating.
 
 ### Upgrading to 0.2.2-alpha.2.8
 
@@ -311,9 +315,9 @@ SecretStorage key. It is not an encrypted vault or an isolation boundary against
 tools running as the same OS user. Stored key values are never read back into the
 page, and this repository and its VSIX exclude the credential file and backups.
 
-### DSH 0.2.2-alpha.2 experimental features
+### DSH 0.2.2-alpha.2 and alpha.3 experimental features
 
-The sidebar is verified against the official DeepSeek Harness `0.2.2-alpha.2` runtime; `0.2.1-rc.2` and `0.2.1-rc.3` remain supported. Experimental bundles remain opt-in in the runtime profile; the sidebar does not enable them automatically (the Plugins page can switch them when the runtime allows writes), and each feature appears only when the runtime exposes its contract. A runtime without the feature keeps the previous behavior. The alpha release adds Web-first optional bundles (Live Share, Forge, Computer Use and personalized recommendations); they appear in the Plugins list with their platform and installation state, but this sidebar does not implement their Web panels.
+The conversation event-stream client is verified against the official DeepSeek Harness `0.2.2-alpha.2` and `0.2.2-alpha.3` runtimes; `0.2.1-rc.2` and `0.2.1-rc.3` remain supported. The experimental bundles are still verified against `0.2.2-alpha.2`, and DSH alpha.3 changed the reminder wire format, so Schedule currently requires a runtime through `0.2.2-alpha.2`. Experimental bundles remain opt-in in the runtime profile; the sidebar does not enable them automatically (the Plugins page can switch them when the runtime allows writes), and each feature appears only when the runtime exposes its contract. A runtime without the feature keeps the previous behavior. The alpha release adds Web-first optional bundles (Live Share, Forge, Computer Use and personalized recommendations); they appear in the Plugins list with their platform and installation state, but this sidebar does not implement their Web panels.
 
 The following alpha.2 surfaces are Web-only and are not implemented in this
 sidebar: Live Share, Forge, Computer Use and personalized-recommendation panels;
