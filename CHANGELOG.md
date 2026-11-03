@@ -33,6 +33,18 @@ VSIX — see the README for installing one.
   failure instead of being silently discarded; the carrier itself is not
   aborted.
 
+### Security
+
+- A quoted selection whose text contains a recognized credential now carries a
+  visible warning that the model receives the selected text as written; the
+  credential matcher is display-only and the send semantics remain unchanged.
+  The warning, chip tooltip, transcript quote and remove-button label never
+  contain the raw value.
+- When the Webview's credential-masking entry point is unavailable, a quote
+  chip shows **Quoted text** instead of falling back to raw text. Quote tooltip
+  and aria values are capped at 2,000 characters; visible text and the stored
+  quote keep their existing length.
+
 ## [0.2.2-alpha.2.7] - 2026-11-03
 
 ### Added

@@ -644,3 +644,98 @@ describe('quoted credentials never reach a visible attribute', () => {
     expect(String(sends(h).at(-1)?.text)).not.toContain(key)
   })
 })
+
+describe('quoted credentials are warned about without being shown', () => {
+  // Deliberately synthetic; this fixture cannot authenticate to any service.
+  const key = 'sk-' + 'A1'.repeat(16)
+  const credentialWarning = 'This quote contains a credential. The model receives the selected text as written.'
+  const maskUnavailableWarning = 'Credential masking is unavailable here, so this quote is not previewed. The model receives the selected text as written.'
+
+  it('warns on an assistant reply carrying a raw credential and still sends it verbatim', async () => {
+    const h = open({ messages: [{ id: 'a1', role: 'assistant', text: 'The key is ' + key }] })
+    await h.settle()
+    h.selectText('.message.assistant .message-body')
+    action(h).click()
+    const chip = chips(h)[0]!
+    expect(chip.hasAttribute('data-credential-warning')).toBe(true)
+    expect(chip.querySelector('.quote-chip-warning')).not.toBeNull()
+    expect(chip.textContent).not.toContain(key)
+    expect(chip.outerHTML).not.toContain(key)
+    expect(chipTexts(h)[0]).not.toContain(key)
+    expect(chipTexts(h)[0]).toContain('sk-')
+    expect(chipTitles(h)[0]).not.toContain(key)
+    expect(chipTitles(h)[0]).toContain('model receives the selected text as written')
+    expect(chip.getAttribute('aria-label')).toContain('model receives the selected text as written')
+    for (const element of chip.querySelectorAll('*')) {
+      for (const attribute of element.attributes) expect(attribute.value).not.toContain(key)
+    }
+    h.document.getElementById('send')!.dispatchEvent(new Event('click', { bubbles: true }))
+    // DSH send semantics are display-only masking: the model gets the selection.
+    expect(String(sends(h).at(-1)?.text)).toBe('> The key is ' + key)
+  })
+  it('does not warn on ordinary quoted text', async () => {
+    const h = open()
+    await h.settle()
+    await quoteSelected(h)
+    const chip = chips(h)[0]!
+    expect(chip.hasAttribute('data-credential-warning')).toBe(false)
+    expect(chip.querySelector('.quote-chip-warning')).toBeNull()
+    expect(chipTitles(h)[0]).toBe('quoted line')
+  })
+  it('does not warn about a user selection that is already masked', async () => {
+    const h = open({ messages: [{ id: 'u1', role: 'user', text: 'use ' + key }, ANSWER] })
+    await h.settle()
+    expect(h.document.querySelector('.message.user')!.innerHTML).not.toContain(key)
+    await quoteSelected(h)
+    const chip = chips(h)[0]!
+    expect(chip.hasAttribute('data-credential-warning')).toBe(false)
+    expect(chip.outerHTML).not.toContain(key)
+    expect(chipTitles(h)[0]).not.toContain(key)
+    h.document.getElementById('send')!.dispatchEvent(new Event('click', { bubbles: true }))
+    expect(String(sends(h).at(-1)?.text)).not.toContain(key)
+  })
+  it('uses a safe placeholder when the masking entry point is unavailable', async () => {
+    const h = open({ messages: [{ id: 'a1', role: 'assistant', text: 'The key is ' + key }] })
+    await h.settle()
+    const globals = window as unknown as Record<string, Record<string, unknown>>
+    const markdown = globals.dshMarkdown!
+    const original = markdown.maskUserText
+    delete markdown.maskUserText
+    try {
+      h.selectText('.message.assistant .message-body')
+      action(h).click()
+      const chip = chips(h)[0]!
+      expect(chip.hasAttribute('data-credential-warning')).toBe(true)
+      expect(chipTexts(h)[0]).toBe('Quoted text')
+      expect(chip.textContent).not.toContain(key)
+      expect(chip.outerHTML).not.toContain(key)
+      expect(chipTitles(h)[0]).not.toContain(key)
+      expect(chipTitles(h)[0]).toContain('masking is unavailable')
+      expect(chip.getAttribute('aria-label')).toContain('masking is unavailable')
+      for (const element of chip.querySelectorAll('*')) {
+        for (const attribute of element.attributes) expect(attribute.value).not.toContain(key)
+      }
+      h.document.getElementById('send')!.dispatchEvent(new Event('click', { bubbles: true }))
+      // The send is unchanged; only the preview falls back to a safe placeholder.
+      expect(String(sends(h).at(-1)?.text)).toBe('> The key is ' + key)
+    } finally {
+      markdown.maskUserText = original
+    }
+  })
+  it('caps chip tooltips at 2000 characters and keeps the full quoted text', async () => {
+    const long = 'word '.repeat(1000)
+    const h = open({ messages: [{ id: 'u1', role: 'user', text: long }] })
+    await h.settle()
+    await quoteSelected(h)
+    const chip = chips(h)[0]!
+    expect(chip.hasAttribute('data-credential-warning')).toBe(false)
+    expect(chipTitles(h)[0]).toHaveLength(2001)
+    expect(chipTitles(h)[0]).toBe(long.slice(0, 2000) + '…')
+    // The visible chip remains the established single-line preview.
+    expect(chipTexts(h)[0]!.endsWith('…')).toBe(true)
+    expect(chipTexts(h)[0]!.length).toBeLessThan(210)
+    // The stored quote and the send keep every character (selection edges trimmed).
+    h.document.getElementById('send')!.dispatchEvent(new Event('click', { bubbles: true }))
+    expect(sends(h).at(-1)?.text).toBe('> ' + long.trim())
+  })
+})

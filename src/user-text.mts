@@ -5,6 +5,9 @@ import { messageQuoteRanges, quoteTextOf } from './quote-text.mjs'
 type SecretRule = ReturnType<typeof createSecretRule>
 type SecretMatch = NonNullable<ReturnType<SecretRule['match']>>
 
+/** Longest tooltip value derived from one quote; its visible text stays whole. */
+const QUOTE_ATTRIBUTE_MAX_CHARS = 2000
+
 /**
  * DSH's QuotePreview glyph: two filled quotation marks in a 16px box. The paths
  * are drawn around (0, 0), so the group carries DSH's own offset.
@@ -79,6 +82,16 @@ function maskedPlainText(text: string, rule: SecretRule): string {
   }
 }
 
+/** Cap a tooltip value with an ellipsis; the quote's DOM text is not touched. */
+function quoteAttributeText(text: string): string {
+  if (text.length <= QUOTE_ATTRIBUTE_MAX_CHARS) return text
+  let cut = QUOTE_ATTRIBUTE_MAX_CHARS
+  // Do not leave a dangling high surrogate in a tooltip attribute.
+  const last = text.charCodeAt(cut - 1)
+  if (last >= 0xD800 && last <= 0xDBFF) cut -= 1
+  return text.slice(0, cut) + '…'
+}
+
 /**
  * Mask recognized credentials in one string without building a DOM.
  *
@@ -112,7 +125,7 @@ function quotePreview(text: string, rule: SecretRule): HTMLElement {
   const source = document.createElement('span')
   source.className = 'quote-preview-text'
   source.dataset.quotePreviewText = ''
-  source.title = maskedPlainText(text, rule)
+  source.title = quoteAttributeText(maskedPlainText(text, rule))
   appendSecretText(source, text, rule)
   preview.append(mark, source)
   return preview

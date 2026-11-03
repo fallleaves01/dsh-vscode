@@ -112,4 +112,16 @@ describe('user message blockquotes', () => {
     expect(node.querySelector('.quote-preview')).toBeNull()
     expect(node.textContent).toBe(text)
   })
+  it('keeps a short quote tooltip complete', () => {
+    const node = renderUserText('> quoted')
+    expect(node.querySelector('[data-quote-preview-text]')!.title).toBe('quoted')
+  })
+  it('keeps long quote text in the DOM while capping its tooltip', () => {
+    const long = 'x'.repeat(5000)
+    const node = renderUserText('> ' + long)
+    const source = node.querySelector<HTMLElement>('[data-quote-preview-text]')!
+    expect(source.textContent).toHaveLength(5000)
+    expect(source.title).toHaveLength(2001)
+    expect(source.title).toBe(long.slice(0, 2000) + '…')
+  })
 })

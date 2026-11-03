@@ -78,10 +78,10 @@ VS Code reserves drag operations that start inside the workbench (the Explorer o
 
 Select text within one user message or one completed assistant reply. A floating **Quote text** action appears above the selection; choosing it adds the excerpt to the composer as a link-like quote chip. The selection must stay within one message body; streaming, failed, deferred, tool and notice rows, cross-message selections, and read-only child sessions do not offer the action.
 
-- Quotes appear above the textarea in insertion order. Hover a chip for the full excerpt; remove it with `×`. The chip truncates long excerpts but keeps the whole selected text for the send.
+- Quotes appear above the textarea in insertion order. Hover a chip for up to 2,000 characters of the masked excerpt; remove it with `×`. The chip truncates long excerpts but keeps the whole selected text for the send.
 - On send, each quote becomes a Markdown blockquote with one `> ` prefix per line, in insertion order, followed by one blank line and the typed prompt. This is the same model-visible form DSH Web uses; the transcript renders it as the same link-like quote.
 - A quote-only message is allowed. If the typed prompt would route as a slash command or skill, the send is refused while quotes are present; remove the quote to run the command.
-- The sidebar keeps each quote as a chip before the typed text rather than as an inline node placed at the caret; the model-visible Markdown is the same. Recognized credentials stay masked in the chip, its tooltip and the transcript quote.
+- The sidebar keeps each quote as a chip before the typed text rather than as an inline node placed at the caret; the model-visible Markdown is the same. Recognized credentials stay masked in the chip, its tooltip and the transcript quote. Masking is display-only: a quote whose selected text contains a recognized credential (for example a raw key in an assistant reply) shows a warning, and the model receives the selected text as written. When credential masking is unavailable, the chip shows only **Quoted text** rather than the raw value.
 
 ### Shared runtime across windows
 

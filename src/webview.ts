@@ -694,6 +694,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .quote-chip-mark { flex: none; display: inline-flex; align-items: center; width: 13px; height: 13px; }
     .quote-chip .quote-mark { width: 13px; height: 13px; }
     .quote-chip-text { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .quote-chip-warning { flex: none; color: var(--vscode-editorWarning-foreground, #cca700); font-size: 11px; line-height: 18px; }
     .quote-chip-remove { flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; color: var(--dsh-muted); background: transparent; }
     .quote-chip-remove:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .context-chip, .attachment-chip { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 4px; padding: 1px 4px; border: .5px solid var(--dsh-border); border-radius: 5px; color: var(--dsh-muted); background: transparent; }
@@ -5445,10 +5446,38 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const quoted = quotes.map(quote => quoteBlockOf(quote.text)).join('\\n\\n');
       return text === '' ? quoted : quoted + '\\n\\n' + text;
     }
-    /** Credential-masked projection for a chip attribute; '' when unavailable. */
+    /** Longest attribute derived from a quote; stored and sent text are never capped. */
+    const QUOTE_ATTRIBUTE_MAX_CHARS = 2000;
+    /** Fixed warning copy; it carries none of the quoted text. */
+    const QUOTE_CREDENTIAL_WARNING = 'This quote contains a credential. The model receives the selected text as written.';
+    const QUOTE_MASK_UNAVAILABLE_WARNING = 'Credential masking is unavailable here, so this quote is not previewed. The model receives the selected text as written.';
+    /** What a chip shows instead of raw text when no mask entry point exists. */
+    const QUOTE_SAFE_PLACEHOLDER = 'Quoted text';
+    /**
+     * Cap one attribute value (tooltip, aria description) with an ellipsis.
+     * Visible text and the stored quote keep their existing length.
+     */
+    function quoteAttributeText(value) {
+      const text = String(value === undefined || value === null ? '' : value);
+      if (text.length <= QUOTE_ATTRIBUTE_MAX_CHARS) return text;
+      let cut = QUOTE_ATTRIBUTE_MAX_CHARS;
+      // Never split a surrogate pair at the attribute cut: a dangling high
+      // surrogate renders as U+FFFD in the native tooltip.
+      const last = text.charCodeAt(cut - 1);
+      if (last >= 0xD800 && last <= 0xDBFF) cut -= 1;
+      return text.slice(0, cut) + '…';
+    }
+    /**
+     * The credential-masked projection of one quote, or undefined when the
+     * masking entry point is missing. A missing mask is never a license to
+     * render the raw text: the caller shows a safe placeholder instead.
+     */
     function maskedQuoteText(text) {
       const mask = window.dshMarkdown && window.dshMarkdown.maskUserText;
-      return typeof mask === 'function' ? mask(text) : '';
+      if (typeof mask !== 'function') return undefined;
+      // An exception here must not make renderQuotes fall back to raw text; the
+      // caller treats undefined as "masking unavailable" and shows a placeholder.
+      try { return mask(text); } catch { return undefined; }
     }
     /** DSH's filled quote glyph, used by the chip, the action and the transcript. */
     function quoteMarkNode() {
@@ -5501,11 +5530,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     /**
      * Draw the quote dock.
      *
-     * The visible chip text is the masked projection and the tooltip carries
-     * the full masked text, so neither an attribute nor the chip itself can
-     * show a raw credential. The stored text (what a send carries) is the text
-     * the user selected; the transcript only ever exposes the masked form
-     * unless they explicitly revealed it.
+     * A chip shows the credential-masked projection of the quoted text, never
+     * the raw value. The mask is display-only (DSH send semantics carry the
+     * selected text verbatim), so a quote whose projection differs from the
+     * selection gets a visible warning: otherwise the mask would imply the send
+     * was masked as well. When the masking entry point is unavailable the chip
+     * says only "Quoted text": raw text must not become the fallback.
      */
     function renderQuotes() {
       const dock = elements.quotes;
@@ -5514,17 +5544,36 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       dock.classList.toggle('hidden', draftQuotes.length === 0);
       for (const quote of draftQuotes) {
         const masked = maskedQuoteText(quote.text);
-        const shown = masked === '' ? quote.text : masked;
+        const maskedAvailable = typeof masked === 'string';
+        // A projection that differs from the selection means the credential
+        // rules matched text the send still carries verbatim (assistant output
+        // is unmasked; a user value only after an explicit reveal).
+        const warning = !maskedAvailable || masked !== quote.text;
+        const safe = maskedAvailable ? masked : QUOTE_SAFE_PLACEHOLDER;
+        const warningText = maskedAvailable ? QUOTE_CREDENTIAL_WARNING : QUOTE_MASK_UNAVAILABLE_WARNING;
         const chip = node('div', 'quote-chip'); chip.dataset.quoteId = String(quote.id);
         const mark = node('span', 'quote-chip-mark'); mark.setAttribute('aria-hidden', 'true'); mark.append(quoteMarkNode());
-        const text = node('span', 'quote-chip-text', shown.length > 200 ? shown.slice(0, 200) + '…' : shown);
-        if (masked !== '') text.title = masked;
+        const text = node('span', 'quote-chip-text', safe.length > 200 ? safe.slice(0, 200) + '…' : safe);
+        // Only attributes are capped; the stored quote and its preview keep
+        // their existing lengths.
+        text.title = warning ? quoteAttributeText(safe) + '\\n\\n' + warningText : quoteAttributeText(safe);
         const remove = node('button', 'quote-chip-remove', '×');
         remove.type = 'button'; remove.title = 'Remove quote';
-        const snippet = (masked === '' ? '' : masked.replace(/\\s+/g, ' ')).slice(0, 60);
+        const snippet = quoteAttributeText(maskedAvailable ? safe : '').replace(/\\s+/g, ' ').slice(0, 60);
         remove.setAttribute('aria-label', snippet === '' ? 'Remove quote' : 'Remove quote: ' + snippet);
         remove.addEventListener('click', () => removeQuote(quote.id));
-        chip.append(mark, text, remove); dock.append(chip);
+        if (warning) {
+          chip.dataset.credentialWarning = '';
+          chip.setAttribute('role', 'group');
+          chip.setAttribute('aria-label', 'Quoted text. ' + warningText);
+          const badge = node('span', 'quote-chip-warning', '⚠');
+          badge.setAttribute('aria-hidden', 'true');
+          badge.title = warningText;
+          chip.append(mark, badge, text, remove);
+        } else {
+          chip.append(mark, text, remove);
+        }
+        dock.append(chip);
       }
       updateSend();
     }
