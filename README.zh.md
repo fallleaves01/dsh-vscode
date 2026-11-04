@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-alpha.3.1**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-alpha.3.2**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -59,7 +59,7 @@ Runtime 到侧边栏的状态投递是有界的：同一时刻最多一个视图
 npm install -g @deepseek-ai/dsh
 ```
 
-DSH 应安装在扩展实际运行的主机上；使用 Remote SSH 时，应安装在远程主机上。需要 DeepSeek Harness `0.1.2-rc.1` 或更新版本；历史搜索与 Schedule 需要 `0.2.0-rc.2` 或更新版本，对话事件流客户端已在 `0.2.2-alpha.2` 与 `0.2.2-alpha.3` 上验证，实验性 bundle 仍在 `0.2.2-alpha.2` 上验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。DSH `0.2.2-alpha.3` 更改了 reminder 的 wire 格式，因此 Schedule 目前要求 runtime 不高于 `0.2.2-alpha.2`。alpha CLI 本身要求 Node.js 24.9 或更新版本。
+DSH 应安装在扩展实际运行的主机上；使用 Remote SSH 时，应安装在远程主机上。需要 DeepSeek Harness `0.1.2-rc.1` 或更新版本；历史搜索与 Schedule 需要 `0.2.0-rc.2` 或更新版本，对话事件流客户端已在 `0.2.2-alpha.2` 与 `0.2.2-alpha.3` 上验证，实验性 bundle 仍在 `0.2.2-alpha.2` 上验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。Schedule 同时支持 `0.2.2-alpha.2` 与 `0.2.2-alpha.3` 的 catalog 与 history。alpha CLI 本身要求 Node.js 24.9 或更新版本。
 
 ### 发布版
 
@@ -88,6 +88,10 @@ pnpm run package
 `artifacts/dsh-sidebar-<version>.vsix`。其他设置包括
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
+
+### 升级到 0.2.2-alpha.3.2
+
+0.2.2-alpha.3.2 完成 DeepSeek Harness `0.2.2-alpha.3` 适配。Schedule/reminders 现在读取 alpha.3 的宿主级任务（目的地、`active`/`paused`/`ended`、投递回执），并提供 **Run now**、**Pause**/**Resume**、**Delete**、**Delete ended** 与分页投递历史；alpha.2 的 catalog 与 history 请求仍受支持。若归档会话的唯一活动是 active reminder，扩展会以 `stopActivity` 重试并提示已停止提醒；运行中的 turn 不会被隐式停止。alpha.3 的 `apply_patch` 工具现在渲染逐文件 diff 卡片，并接入 Review Changes、changed-file 列表、Revert 与未保存文件冲突检查。声明支持附件输入的斜杠命令可以携带已上传文件 receipt 与图片；仅支持旧 images 协议的 runtime 会明确拒绝文件，而不是静默丢弃。
 
 ### 升级到 0.2.2-alpha.3.1
 
@@ -251,7 +255,7 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 
 ### DSH 0.2.2-alpha.2 与 alpha.3 实验性功能
 
-对话事件流客户端已针对官方 DeepSeek Harness `0.2.2-alpha.2` 与 `0.2.2-alpha.3` 运行时完成验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。实验性 bundle 仍只在 `0.2.2-alpha.2` 上验证，且 DSH alpha.3 更改了 reminder 的 wire 格式，因此 Schedule 目前要求 runtime 不高于 `0.2.2-alpha.2`。实验性 bundle 仍需在运行时 profile 中按需启用；插件不会自动代为启用（runtime 允许写入时，插件页可显式切换），只在运行时暴露相应契约时显示对应界面。运行时缺少该能力时，界面保持原有行为。alpha 版本新增以 Web 端为先的可选 bundle（Live Share、Forge、Computer Use 与个性化推荐）；它们会出现在插件清单中并显示平台/安装状态，但本侧边栏未实现其 Web 面板。
+对话事件流客户端已针对官方 DeepSeek Harness `0.2.2-alpha.2` 与 `0.2.2-alpha.3` 运行时完成验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。实验性 bundle 仍只在 `0.2.2-alpha.2` 上验证；Schedule 同时支持 `0.2.2-alpha.2` 与 `0.2.2-alpha.3`。实验性 bundle 仍需在运行时 profile 中按需启用；插件不会自动代为启用（runtime 允许写入时，插件页可显式切换），只在运行时暴露相应契约时显示对应界面。运行时缺少该能力时，界面保持原有行为。alpha 版本新增以 Web 端为先的可选 bundle（Live Share、Forge、Computer Use 与个性化推荐）；它们会出现在插件清单中并显示平台/安装状态，但本侧边栏未实现其 Web 面板。
 
 以下 alpha.2 能力属于 Web 端，本侧边栏未实现：Live Share、Forge、Computer
 Use 与个性化推荐面板；Statistics 标签页；creation、文件拖拽与插件推荐卡片。

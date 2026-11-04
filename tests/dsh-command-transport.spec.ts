@@ -60,4 +60,51 @@ describe('command attachment format negotiation', () => {
     await expect(transport.execute('s', '/compact', [])).rejects.toThrow('descriptor')
     expect(call).toHaveBeenCalledTimes(2)
   })
+
+  it('maps a staged file to its upload receipt in submittedAttachments', async () => {
+    const call = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValue(ack)
+    const transport = new DshCommandTransport(call)
+    await transport.execute('s', '/review the attached report', [image, { type: 'file', receiptId: 'receipt-42' }])
+    expect(call.mock.calls[1]).toEqual([
+      'commands/execute',
+      {
+        agentId: 's',
+        line: '/review the attached report',
+        submittedAttachments: [image, { type: 'file', receiptId: 'receipt-42' }],
+      },
+      300_000,
+    ])
+  })
+
+  it('rejects a staged file on the legacy images format instead of dropping it', async () => {
+    const call = vi.fn().mockRejectedValueOnce(legacy())
+    const transport = new DshCommandTransport(call)
+    const failure = await transport.execute('s', '/review', [{ type: 'file', receiptId: 'receipt-secret-7' }])
+      .catch(error => error as Error)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure.message).toContain('does not support file attachments on commands')
+    // The receipt never reaches the message the user reads or the output channel.
+    expect(failure.message).not.toContain('receipt-secret-7')
+    // The capability probe is the only request: the command was never attempted.
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a mixed image and file batch on the legacy format without executing it', async () => {
+    const call = vi.fn().mockRejectedValueOnce(legacy())
+    const transport = new DshCommandTransport(call)
+    await expect(transport.execute('s', '/review', [image, { type: 'file', receiptId: 'receipt-1' }]))
+      .rejects.toThrow('does not support file attachments')
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps sending image bytes on the legacy format after the fallback', async () => {
+    const call = vi.fn().mockRejectedValueOnce(legacy()).mockResolvedValue(ack)
+    const transport = new DshCommandTransport(call)
+    await transport.execute('s', '/plan inspect', [image])
+    expect(call.mock.calls[1]).toEqual([
+      'commands/execute',
+      { agentId: 's', line: '/plan inspect', images: [{ mediaType: image.mediaType, data: image.data, name: image.name }] },
+      300_000,
+    ])
+  })
 })

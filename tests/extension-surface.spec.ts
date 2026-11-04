@@ -10,6 +10,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DshConnectionError } from '../src/dsh-connection.js'
 import { env } from 'vscode'
 import type { DshFrame, SessionModels, SkillDescriptor } from '../src/dsh-client.js'
 
@@ -166,6 +167,8 @@ function testClient() {
     startStreams: vi.fn(async () => {}), dispose: vi.fn(), handledSessionIds: [] as string[], respond: vi.fn(async () => ({ accepted: true })),
     monitorJobs: vi.fn(), goal: vi.fn(async () => null), schedules: vi.fn(async () => []), searchHistory: vi.fn(async () => ({ items: [], hasMore: false })),
     scheduleHistory: vi.fn(), changeGoal: vi.fn(), pendingRequests: vi.fn(() => []),
+    scheduleRun: vi.fn(async (id: string) => ({ id })), scheduleEdit: vi.fn(async (id: string, edit: { action: string }) => edit.action === 'delete' ? { id, deleted: true } : { id }),
+    scheduleDeleteInactive: vi.fn(async () => ({ deleted: 0 })),
     listWorkspaces: vi.fn(async () => ({ archivedSessionIds: [], pinnedSessionIds: [], pinningAvailable: false })),
     sessionProjections: vi.fn(async (): Promise<any> => ({kind:'sequenced',asOfSeq:1,values:{}})),
     adoptSessionProjections: vi.fn((_id:string,_seq:number,values:Record<string,unknown>)=>values),
@@ -238,7 +241,7 @@ describe('host surface wiring', () => {
     ;(vscode.env as { language: string }).language = 'en'
   })
 
-  async function activated(options: { catalog?: unknown; translation?: unknown; language?: string } = {}) {
+  async function activated(options: { catalog?: unknown; translation?: unknown; language?: string; setup?: (client: any) => void } = {}) {
     const { client, emit, fail } = testClient()
     mocks.client = client
     client.listCommands.mockResolvedValue([
@@ -248,6 +251,7 @@ describe('host surface wiring', () => {
     client.permissionCatalog.mockResolvedValue(options.catalog === undefined ? CATALOG : options.catalog)
     client.cotTranslationLimits.mockResolvedValue(options.translation)
     if (options.language !== undefined) (vscode.env as { language: string }).language = options.language
+    options.setup?.(client)
     const context: any = {
       subscriptions: [] as Array<{ dispose(): void }>,
       extensionUri: { fsPath: '/extension' },
@@ -1524,6 +1528,109 @@ describe('host surface wiring', () => {
       await vi.waitFor(() => expect(h.posts().some(packet => packet.type === 'attachment-error')).toBe(true))
     })
   })
+  describe('slash command attachments', () => {
+    const messages = (h: { posts: () => Array<Record<string, any>> }): Array<Record<string, any>> => {
+      const all: Array<Record<string, any>> = []
+      for (const packet of h.posts()) {
+        if (packet.type === 'state') all.push(...(packet.state?.messages ?? []))
+        else if (packet.type === 'state-update') {
+          all.push(...(packet.update?.messages?.reset ?? []), ...(packet.update?.messages?.upserts ?? []))
+        }
+      }
+      return all
+    }
+
+    /** Stage one uploaded file through the ordinary Webview attachment path. */
+    async function stagedFile(h: any, requestId = 1): Promise<void> {
+      h.send({ type: 'attach-files', sessionId: 'a', requestId, files: [{ name: 'report.pdf', data: Buffer.from('abc').toString('base64') }] })
+      await vi.waitFor(() => expect(h.posts().some((packet: any) => packet.type === 'draft-files'
+        && (packet.files as unknown[]).length === 1)).toBe(true))
+    }
+
+    it('sends a staged file receipt with a command that declares attachments', async () => {
+      const h = await activated()
+      h.client.listCommands.mockResolvedValue([{ name: 'review', description: '', input: { hint: '', attachments: true } }])
+      h.client.executeCommand.mockClear()
+      await stagedFile(h)
+      h.send({ type: 'send', sessionId: 'a', requestId: 9, text: '/review report', mode: 'queue' })
+      await vi.waitFor(() => expect(h.client.executeCommand).toHaveBeenCalledTimes(1))
+      const [sessionId, line, attachments] = h.client.executeCommand.mock.calls[0]!
+      expect(sessionId).toBe('a')
+      expect(line).toBe('/review report')
+      expect(attachments).toEqual([expect.objectContaining({ type: 'file', receiptId: 'receipt-1', name: 'report.pdf' })])
+      expect(h.posts().some((packet: any) => packet.type === 'restore-draft')).toBe(false)
+    })
+
+    it('sends image and staged file attachments together', async () => {
+      const h = await activated()
+      h.client.listCommands.mockResolvedValue([{ name: 'review', description: '', input: { hint: '', attachments: true } }])
+      h.client.executeCommand.mockClear()
+      h.send({ type: 'attach-images', sessionId: 'a', requestId: 2, images: [{ mediaType: 'image/png', data: 'YWJj', name: 'shot.png' }] })
+      await vi.waitFor(() => expect(h.posts().some((packet: any) => packet.type === 'draft-images'
+        && (packet.images as unknown[]).length === 1)).toBe(true))
+      await stagedFile(h)
+      h.send({ type: 'send', sessionId: 'a', requestId: 10, text: '/review report', mode: 'queue' })
+      await vi.waitFor(() => expect(h.client.executeCommand).toHaveBeenCalledTimes(1))
+      const attachments = h.client.executeCommand.mock.calls[0]![2] as any[]
+      expect(attachments).toHaveLength(2)
+      expect(attachments[0]).toMatchObject({ type: 'image', mediaType: 'image/png', data: 'YWJj', name: 'shot.png' })
+      expect(attachments[1]).toMatchObject({ type: 'file', receiptId: 'receipt-1' })
+    })
+
+    it('still sends an image-only command declared through the legacy images flag', async () => {
+      const h = await activated()
+      h.client.listCommands.mockResolvedValue([{ name: 'plan', description: '', input: { hint: '', images: true } }])
+      h.client.executeCommand.mockClear()
+      h.send({ type: 'attach-images', sessionId: 'a', requestId: 2, images: [{ mediaType: 'image/png', data: 'YWJj', name: 'shot.png' }] })
+      await vi.waitFor(() => expect(h.posts().some((packet: any) => packet.type === 'draft-images')).toBe(true))
+      h.send({ type: 'send', sessionId: 'a', requestId: 11, text: '/plan inspect', mode: 'queue' })
+      await vi.waitFor(() => expect(h.client.executeCommand).toHaveBeenCalledTimes(1))
+      expect(h.client.executeCommand.mock.calls[0]![2]).toEqual([expect.objectContaining({ type: 'image', mediaType: 'image/png', data: 'YWJj' })])
+    })
+
+    it('keeps the attachments on a held command and runs them after the turn', async () => {
+      const h = await activated()
+      h.client.listCommands.mockResolvedValue([{ name: 'review', description: '', input: { hint: '', attachments: true } }])
+      h.client.executeCommand.mockClear()
+      await stagedFile(h)
+      h.emit({ type: 'host/session-status', sessionId: 'a', running: true }, 'host')
+      await vi.waitFor(() => expect(h.mergedState().running).toBe(true))
+      h.send({ type: 'send', sessionId: 'a', requestId: 12, text: '/review report', mode: 'queue' })
+      await vi.waitFor(() => expect(h.mergedState().queuedCommands).toHaveLength(1))
+      // The dock preview stays text only; the staged receipt rides along internally.
+      expect(h.mergedState().queuedCommands[0]).toMatchObject({ text: '/review report', preview: '/review report' })
+      expect(h.client.executeCommand).not.toHaveBeenCalled()
+      h.emit({ type: 'host/session-status', sessionId: 'a', running: false }, 'host')
+      await vi.waitFor(() => expect(h.client.executeCommand).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(h.mergedState().queuedCommands).toEqual([]))
+      expect(h.client.executeCommand.mock.calls[0]![2]).toEqual([expect.objectContaining({ type: 'file', receiptId: 'receipt-1' })])
+    })
+
+    it('refuses a file attachment for a command that declares none, with the original text', async () => {
+      const h = await activated()
+      h.client.listCommands.mockResolvedValue([{ name: 'plan', description: '', input: { hint: '' } }])
+      h.client.executeCommand.mockClear()
+      await stagedFile(h)
+      h.send({ type: 'send', sessionId: 'a', requestId: 13, text: '/plan inspect', mode: 'queue' })
+      await vi.waitFor(() => expect(h.posts().some((packet: any) => packet.type === 'restore-draft'
+        && packet.requestId === 13)).toBe(true))
+      expect(h.client.executeCommand).not.toHaveBeenCalled()
+      await vi.waitFor(() => expect(messages(h).some(message => message.role === 'notice'
+        && String(message.text).includes('does not accept attachments'))).toBe(true))
+    })
+
+    it('names a command failure that carried a file without logging the receipt', async () => {
+      const h = await activated()
+      h.client.listCommands.mockResolvedValue([{ name: 'review', description: '', input: { hint: '', attachments: true } }])
+      h.client.executeCommand.mockResolvedValueOnce({ commandId: 'command', result: { kind: 'error', text: 'The runtime could not read the attachment.' } })
+      await stagedFile(h)
+      mocks.output.length = 0
+      h.send({ type: 'send', sessionId: 'a', requestId: 14, text: '/review report', mode: 'queue' })
+      await vi.waitFor(() => expect(messages(h).some(message => message.role === 'notice'
+        && String(message.text).includes('could not read the attachment'))).toBe(true))
+      expect(mocks.output.every(line => !String(line).includes('receipt-1'))).toBe(true)
+    })
+  })
 })
   describe('explorer add to chat command', () => {
     const uri = (fsPath: string) => ({ scheme: 'file', fsPath, toString: () => fsPath })
@@ -1684,6 +1791,132 @@ describe('host surface wiring', () => {
       await activated()
       await command()()
       await vi.waitFor(() => expect(mocks.openDialog).toHaveBeenCalledTimes(1))
+    })
+  })
+
+  describe('reminder and archive host wiring', () => {
+    /** A real, non-blank conversation summary; the archive handler ignores blank rows. */
+    const openSession = (sessionId: string) => ({ sessionId, cwd: '/workspace', updatedAt: 1, blank: false, running: false,
+      agentAvailable: true, agentPreset: 'standard', projections: { values: { agentPreset: 'standard', plan: { active: false, pending: false } } } })
+    /** One parsed alpha.3 reminder; management endpoints exist only for this shape. */
+    const reminder = { id: 'r', title: 'Morning review', prompt: 'Check jobs', kind: 'daily', scheduledAt: '2026-11-05T01:00:00Z',
+      status: 'active', target: { kind: 'new' as const }, involvedSessionIds: [] as string[], updatedAt: 'rev-1' }
+
+    /** Activate with one open conversation and (optionally) an alpha.3 reminder catalog. */
+    async function started(options: { reminder?: boolean; setup?: (client: any) => void } = {}) {
+      const h = await activated({ setup: client => {
+        client.listSessions.mockResolvedValue({ items: [openSession('a'), openSession('b')] })
+        if (options.reminder === true) client.schedules.mockResolvedValue([reminder])
+        options.setup?.(client)
+      } })
+      // Notifications are shared across this file's tests; only this test's own
+      // notices matter for the assertions below.
+      mocks.info.mockClear()
+      mocks.error.mockClear()
+      return h
+    }
+    const items = (h: Awaited<ReturnType<typeof started>>): any[] => (h.mergedState().schedules?.items ?? []) as any[]
+
+    it('shows one alpha.3 reminder even though its target names no conversation', async () => {
+      const h = await started({ reminder: true })
+      await vi.waitFor(() => expect(items(h)).toHaveLength(1))
+      expect(items(h)[0]).toMatchObject({ id: 'r', status: 'active', target: { kind: 'new' } })
+    })
+
+    it('runs, pauses and resumes a reminder through the alpha.3 endpoints', async () => {
+      const h = await started({ reminder: true })
+      await vi.waitFor(() => expect(items(h)).toHaveLength(1))
+
+      h.send({ type: 'schedule-run', id: 'r' })
+      await vi.waitFor(() => expect(h.client.scheduleRun).toHaveBeenCalledWith('r'))
+      h.send({ type: 'schedule-set-active', id: 'r', active: false })
+      await vi.waitFor(() => expect(h.client.scheduleEdit).toHaveBeenCalledWith('r',
+        { action: 'update', patch: { active: false }, expectedUpdatedAt: 'rev-1' }))
+      h.send({ type: 'schedule-set-active', id: 'r', active: true })
+      await vi.waitFor(() => expect(h.client.scheduleEdit).toHaveBeenCalledWith('r',
+        { action: 'update', patch: { active: true }, expectedUpdatedAt: 'rev-1' }))
+      expect(h.client.scheduleDeleteInactive).not.toHaveBeenCalled()
+    })
+
+    it('asks before deleting one reminder or every ended reminder', async () => {
+      const h = await started({ reminder: true })
+      await vi.waitFor(() => expect(items(h)).toHaveLength(1))
+
+      // A declined confirmation must not reach the runtime.
+      mocks.warning.mockResolvedValueOnce(undefined)
+      h.send({ type: 'schedule-delete', id: 'r', title: 'Morning review' })
+      await vi.waitFor(() => expect(mocks.warning).toHaveBeenCalledTimes(1))
+      expect(String(mocks.warning.mock.calls[0]![0])).toContain('Morning review')
+      expect(h.client.scheduleEdit).not.toHaveBeenCalled()
+
+      mocks.warning.mockResolvedValueOnce('Delete')
+      h.send({ type: 'schedule-delete', id: 'r', title: 'Morning review' })
+      await vi.waitFor(() => expect(h.client.scheduleEdit).toHaveBeenCalledWith('r',
+        { action: 'delete', expectedUpdatedAt: 'rev-1' }))
+
+      mocks.warning.mockResolvedValueOnce('Delete')
+      h.client.scheduleDeleteInactive.mockResolvedValueOnce({ deleted: 2 })
+      h.send({ type: 'schedule-delete-ended' })
+      await vi.waitFor(() => expect(h.client.scheduleDeleteInactive).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(String(mocks.info.mock.calls.at(-1)?.[0] ?? '')).toContain('Deleted 2 ended reminders'))
+    })
+
+    it('reads an alpha.3 delivery page addressed by id only', async () => {
+      const h = await started({ reminder: true, setup: client => {
+        client.scheduleHistory.mockResolvedValueOnce({ id: 'r', records: [
+          { scheduledAt: '2026-11-04T01:00:00Z', deliveredAt: '2026-11-04T01:00:01Z', messageId: 'm1', prompt: 'sent', targetSessionId: 'x' },
+        ], earlierRecordsUnavailable: false, earlierRecordsPruned: true, retention: { days: 30, records: 200 }, nextBefore: 'm1' })
+      } })
+      await vi.waitFor(() => expect(items(h)).toHaveLength(1))
+      h.send({ type: 'schedule-history', id: 'r' })
+
+      await vi.waitFor(() => expect(h.client.scheduleHistory).toHaveBeenCalledWith(undefined, 'r', undefined))
+      await vi.waitFor(() => expect(h.mergedState().schedules?.history?.records).toHaveLength(1))
+      const history = h.mergedState().schedules.history
+      expect(history).toMatchObject({ id: 'r', earlierRecordsPruned: true, earlierRecordsUnavailable: false,
+        nextBefore: 'm1', retention: { days: 30, records: 200 } })
+      expect(history.records[0]).toMatchObject({ messageId: 'm1', prompt: 'sent' })
+    })
+
+    it('keeps a failed reminder action visible in the panel and the log', async () => {
+      const h = await started({ reminder: true, setup: client => {
+        client.scheduleRun.mockRejectedValueOnce(new Error('schedule/input-invalid: task is ended'))
+      } })
+      await vi.waitFor(() => expect(items(h)).toHaveLength(1))
+      h.send({ type: 'schedule-run', id: 'r' })
+
+      await vi.waitFor(() => expect(String(h.mergedState().schedules?.error ?? '')).toContain('Could not run the reminder'))
+      expect(String(h.mergedState().schedules.error)).toContain('input-invalid')
+      await vi.waitFor(() => expect(mocks.output.some(line => line.includes('schedule/input-invalid'))).toBe(true))
+    })
+
+    it('retries archiving with stopActivity when only active reminders block it', async () => {
+      const h = await started({ setup: client => {
+        client.archiveSession.mockRejectedValueOnce(new DshConnectionError('workspace/session-active',
+          "cannot archive session 'a': the session is active (schedule)"))
+          .mockResolvedValueOnce({ archivedSessionIds: ['a'] })
+      } })
+      h.send({ type: 'archive-session', sessionId: 'a' })
+
+      await vi.waitFor(() => expect(mocks.info).toHaveBeenCalled())
+      expect(h.client.archiveSession).toHaveBeenNthCalledWith(1, 'a')
+      expect(h.client.archiveSession).toHaveBeenNthCalledWith(2, 'a', true)
+      expect(String(mocks.info.mock.calls.at(-1)![0])).toContain('active reminders were stopped')
+    })
+
+    it.each([
+      ['a running turn', "cannot archive session 'a': the session is active (turn)"],
+      ['a turn and an active reminder', "cannot archive session 'a': the session is active (schedule, turn)"],
+    ])('does not silently stop %s to archive', async (_case, message) => {
+      const h = await started({ setup: client => {
+        client.archiveSession.mockRejectedValueOnce(new DshConnectionError('workspace/session-active', message))
+      } })
+      h.send({ type: 'archive-session', sessionId: 'a' })
+
+      await vi.waitFor(() => expect(mocks.error).toHaveBeenCalled())
+      expect(h.client.archiveSession).toHaveBeenCalledTimes(1)
+      expect(String(mocks.error.mock.calls.at(-1)![0])).toContain('Could not archive the conversation')
+      expect(mocks.info).not.toHaveBeenCalled()
     })
   })
 

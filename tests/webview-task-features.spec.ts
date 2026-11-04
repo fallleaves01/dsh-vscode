@@ -35,6 +35,62 @@ describe('Goal, reminders, workflows, search and background output UI', () => {
     expect(h.posts.at(-1)).toEqual({ type: 'schedule-history', sessionId: 'other', id: 'r' })
     buttons[1]!.click(); expect(h.posts.at(-1)).toEqual({ type: 'schedule-history', sessionId: 'other', id: 'r', before: 'm' })
   })
+  it('renders alpha.3 reminders with their target, status and management actions', async () => {
+    const h = open()
+    h.sendState({ schedules: { available: true, loading: false, items: [
+      { id: 'r', title: 'Morning review', prompt: 'Check jobs', kind: 'daily', scheduledAt: '2026-11-05T01:00:00Z',
+        status: 'active', target: { kind: 'session', sessionId: 'session-a' }, sessionId: 'session-a', involvedSessionIds: ['session-a'], updatedAt: 'rev-1' },
+      { id: 'paused', title: 'Standup', prompt: 'Post status', kind: 'every', scheduledAt: '2026-11-06T09:00:00Z',
+        status: 'paused', target: { kind: 'new_once', sessionId: 'reserved', create: {} } },
+      { id: 'ended', title: 'One-off', prompt: 'Finished', kind: 'after', scheduledAt: '2026-11-01T01:00:00Z',
+        status: 'ended', target: { kind: 'new', create: {} } },
+    ] } }); await h.settle()
+
+    const panel = h.document.querySelector('#schedulePanel')!
+    expect(panel.textContent).toContain('active · daily · next')
+    expect(panel.textContent).toContain('paused · every')
+    expect(panel.textContent).toContain('ended · after · last')
+    expect(panel.textContent).toContain('Delivers to this conversation')
+    expect(panel.textContent).toContain('Creates one conversation at the first delivery')
+    expect(panel.textContent).toContain('Creates a new conversation for each delivery')
+    expect(panel.textContent).toContain('Delete ended')
+
+    const rows = [...panel.querySelectorAll<HTMLElement>('.reminder-row')]
+    const labels = (row: HTMLElement) => [...row.querySelectorAll('button')].map(button => button.textContent)
+    const row = (title: string) => rows.find(item => item.textContent?.includes(title))!
+    expect(labels(row('Morning review'))).toEqual(['Delivery history', 'Run now', 'Pause', 'Delete'])
+    expect(labels(row('Standup'))).toEqual(['Delivery history', 'Run now', 'Resume', 'Delete'])
+    expect(labels(row('One-off'))).toEqual(['Delivery history', 'Delete'])
+
+    const click = (title: string, label: string): void => {
+      ;[...row(title).querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === label)!.click()
+    }
+    click('Morning review', 'Run now')
+    expect(h.posts.at(-1)).toEqual({ type: 'schedule-run', id: 'r' })
+    click('Morning review', 'Pause')
+    expect(h.posts.at(-1)).toEqual({ type: 'schedule-set-active', id: 'r', active: false })
+    click('Standup', 'Resume')
+    expect(h.posts.at(-1)).toEqual({ type: 'schedule-set-active', id: 'paused', active: true })
+    click('Morning review', 'Delete')
+    expect(h.posts.at(-1)).toEqual({ type: 'schedule-delete', id: 'r', title: 'Morning review' })
+    click('One-off', 'Delivery history')
+    expect(h.posts.at(-1)).toEqual({ type: 'schedule-history', id: 'ended' })
+    ;[...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Delete ended')!.click()
+    expect(h.posts.at(-1)).toEqual({ type: 'schedule-delete-ended' })
+  })
+  it('shows alpha.3 delivery history without a conversation identity', async () => {
+    const h = open()
+    h.sendState({ schedules: { available: true, loading: false, items: [
+      { id: 'r', title: 'T', prompt: 'P', kind: 'daily', scheduledAt: '2026-11-05T01:00:00Z', status: 'active', target: { kind: 'new', create: {} } },
+    ], history: { id: 'r', records: [{ scheduledAt: 'a', deliveredAt: 'b', messageId: 'm', prompt: 'sent' }],
+      nextBefore: 'm', earlierRecordsPruned: true, retention: { days: 30, records: 200 } } } }); await h.settle()
+
+    const panel = h.document.querySelector('#schedulePanel')!
+    expect(panel.textContent).toContain('Retention: 30 days · 200 records')
+    expect(panel.textContent).toContain('sent')
+    ;[...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Load earlier deliveries')!.click()
+    expect(h.posts.at(-1)).toEqual({ type: 'schedule-history', id: 'r', before: 'm' })
+  })
   it('opens a workflow member independently and exposes workflow logs', async () => {
     const h = open(); h.sendState({ workflows: [{ id: 'w', name: 'Audit', members: [{ childId: 'c', seq: 1, label: 'Verify', phase: 'Testing', outcome: 'success' }], stopReason: 'finished' }] }); await h.settle()
     expect(h.document.querySelector('#taskList')?.textContent).toContain('Testing')

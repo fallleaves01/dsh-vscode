@@ -1,7 +1,42 @@
-import type { CommandExecution, PromptImage } from './dsh-client.js'
+import type { CommandExecution, PromptAttachment } from './dsh-client.js'
 
 type Format = 'submittedAttachments' | 'images'
 type Call = <T>(endpoint: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+
+/**
+ * alpha.3 `CommandSubmitAttachment[]`: image bytes inline, staged files by the
+ * receipt the upload call already returned.
+ */
+function submittedAttachmentsOf(attachments: readonly PromptAttachment[]): Record<string, unknown>[] {
+  return attachments.map(attachment => attachment.type === 'file'
+    ? { type: 'file', receiptId: attachment.receiptId }
+    : {
+      type: 'image',
+      mediaType: attachment.mediaType,
+      data: attachment.data,
+      ...(attachment.name === undefined ? {} : { name: attachment.name }),
+    })
+}
+
+/**
+ * alpha.2 `images` carries image bytes only.
+ *
+ * A staged file must not be silently dropped: submitting the command without
+ * the attachment the user chose would run something else than what the card
+ * shows. The error names no receipt, so it is safe to show and to log.
+ */
+function legacyImagesOf(attachments: readonly PromptAttachment[]): Record<string, unknown>[] {
+  return attachments.map(attachment => {
+    if (attachment.type === 'file') {
+      throw new Error('This DeepSeek runtime does not support file attachments on commands; update the runtime, or remove the file and send it as a prompt attachment.')
+    }
+    return {
+      mediaType: attachment.mediaType,
+      data: attachment.data,
+      ...(attachment.name === undefined ? {} : { name: attachment.name }),
+    }
+  })
+}
 
 /** Negotiate with an empty, non-executing line; never retry the user's command. */
 export class DshCommandTransport {
@@ -9,13 +44,10 @@ export class DshCommandTransport {
 
   constructor(private readonly call: Call) {}
 
-  async execute(sessionId: string, line: string, images: readonly PromptImage[]): Promise<CommandExecution | undefined> {
+  async execute(sessionId: string, line: string, attachments: readonly PromptAttachment[] = []): Promise<CommandExecution | undefined> {
     const format = await this.resolveFormat(sessionId)
-    const attachments = images.map(({ mediaType, data, name }) => ({
-      ...(format === 'submittedAttachments' ? { type: 'image' } : {}),
-      mediaType, data, ...(name === undefined ? {} : { name }),
-    }))
-    return this.call('commands/execute', { agentId: sessionId, line, [format]: attachments }, 300_000)
+    const payload = format === 'submittedAttachments' ? submittedAttachmentsOf(attachments) : legacyImagesOf(attachments)
+    return this.call('commands/execute', { agentId: sessionId, line, [format]: payload }, 300_000)
   }
 
   private resolveFormat(sessionId: string): Promise<Format> {

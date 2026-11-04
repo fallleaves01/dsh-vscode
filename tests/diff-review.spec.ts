@@ -957,4 +957,191 @@ describe('DiffReviewManager', () => {
       expect(mocks.showTextDocument).not.toHaveBeenCalled()
     })
   })
+
+  describe('apply_patch reviews', () => {
+    const patchOf = (lines: readonly string[]): string => lines.join('\n')
+    const callEvent = (seq: number, callId: string, input: string): DshEvent =>
+      event('tool/call', seq, { turn: 1, callId, name: 'apply_patch', arguments: JSON.stringify({ input }) })
+    const resultEvent = (seq: number, callId: string, meta: unknown, text = 'Success. Updated the following files:'): DshEvent =>
+      event('tool/result', seq, { turn: 1, meta, message: {
+        source: { kind: 'tool', callId },
+        content: [{ type: 'tool-result', toolCallId: callId, isError: false, content: [{ type: 'text', text }] }],
+      } })
+    const multiFilePatch = patchOf([
+      '*** Begin Patch',
+      '*** Update File: app.ts',
+      '@@',
+      ' context',
+      '-old',
+      '+new',
+      ' context',
+      '*** Add File: added.ts',
+      '+export const added = true',
+      '*** Delete File: gone.ts',
+      '*** Update File: moved.ts',
+      '*** Move to: destination.ts',
+      '@@',
+      '-line',
+      '+line changed',
+      '*** End Patch',
+    ])
+    const updateHunk = (before: string, after: string) =>
+      (appliedHunks(before, after) ?? []).map(diff => ({ path: 'app.ts', ...diff }))
+
+    function writeInitialTree(cwd: string): void {
+      fs.writeFileSync(path.join(cwd, 'app.ts'), 'context\nold\ncontext\n')
+      fs.writeFileSync(path.join(cwd, 'gone.ts'), 'delete me\n')
+      fs.writeFileSync(path.join(cwd, 'moved.ts'), 'line\n')
+    }
+
+    function writeFinalTree(cwd: string): void {
+      fs.writeFileSync(path.join(cwd, 'app.ts'), 'context\nnew\ncontext\n')
+      fs.rmSync(path.join(cwd, 'gone.ts'))
+      fs.rmSync(path.join(cwd, 'moved.ts'))
+      fs.writeFileSync(path.join(cwd, 'destination.ts'), 'line changed\n')
+      fs.writeFileSync(path.join(cwd, 'added.ts'), 'export const added = true\n')
+    }
+
+    const patchMeta = {
+      diffs: [
+        ...updateHunk('context\nold\ncontext\n', 'context\nnew\ncontext\n'),
+        { path: 'gone.ts', oldText: 'delete me\n', newText: '' },
+      ],
+      stopped: false,
+    }
+
+    it('reviews, reverts and rebuilds a multi-file patch without a runtime view', async () => {
+      const cwd = temporaryWorkspace()
+      writeInitialTree(cwd)
+      const manager = new DiffReviewManager()
+      const call = callEvent(10, 'patch-1', multiFilePatch)
+      manager.accept('patch', cwd, call)
+      writeFinalTree(cwd)
+      expect(manager.accept('patch', cwd, resultEvent(11, 'patch-1', patchMeta))).toBe(true)
+
+      const changed = manager.changedFiles('patch')
+      expect(changed).toHaveLength(1)
+      // Order is deterministic: diff-bearing paths in patch order, then the
+      // location-only paths (a deletion, a move destination).
+      expect(changed[0]?.files.map(file => file.path)).toEqual(
+        ['app.ts', 'added.ts', 'moved.ts', 'gone.ts', 'destination.ts'])
+      expect(changed[0]?.files.map(file => file.canRevert)).toEqual([true, true, true, true, true])
+
+      await manager.reviewFile('patch', cwd, 'app.ts', 1)
+      const [, beforeUri, afterUri] = mocks.executeCommand.mock.calls.at(-1)!
+      expect(manager.provideTextDocumentContent(beforeUri)).toBe('context\nold\ncontext\n')
+      expect(manager.provideTextDocumentContent(afterUri)).toBe('context\nnew\ncontext\n')
+
+      manager.revertAll('patch')
+      expect(fs.readFileSync(path.join(cwd, 'app.ts'), 'utf8')).toBe('context\nold\ncontext\n')
+      expect(fs.readFileSync(path.join(cwd, 'gone.ts'), 'utf8')).toBe('delete me\n')
+      expect(fs.readFileSync(path.join(cwd, 'moved.ts'), 'utf8')).toBe('line\n')
+      expect(fs.existsSync(path.join(cwd, 'added.ts'))).toBe(false)
+      expect(fs.existsSync(path.join(cwd, 'destination.ts'))).toBe(false)
+
+      // Replaying the same call/result pair from history without views keeps the
+      // hunks it can see, but no full-file snapshot can revert them.
+      const rebuilt = new DiffReviewManager().rebuild('patch-replay', cwd,
+        [call, resultEvent(11, 'patch-1', patchMeta)].map(entry => ({ event: entry })))
+      expect(rebuilt).toHaveLength(1)
+      expect(rebuilt[0]?.files.map(file => [file.path, file.canRevert])).toEqual(
+        [['app.ts', false], ['added.ts', false], ['gone.ts', false]])
+    })
+
+    it('records only the effects a stopped patch confirmed', async () => {
+      const cwd = temporaryWorkspace(), app = path.join(cwd, 'app.ts'), other = path.join(cwd, 'other.ts')
+      fs.writeFileSync(app, 'old app\n')
+      fs.writeFileSync(other, 'old other\n')
+      const manager = new DiffReviewManager()
+      const patch = patchOf([
+        '*** Begin Patch',
+        '*** Update File: app.ts',
+        '-old app',
+        '+new app',
+        '*** Update File: other.ts',
+        '-old other',
+        '+new other',
+        '*** End Patch',
+      ])
+      manager.accept('stopped', cwd, callEvent(20, 'patch-2', patch))
+      // The commit stopped after its first operation: only app.ts was written.
+      fs.writeFileSync(app, 'new app\n')
+      expect(manager.accept('stopped', cwd, resultEvent(21, 'patch-2', {
+        diffs: updateHunk('old app\n', 'new app\n'),
+        stopped: true,
+      }))).toBe(true)
+      expect(manager.changedFiles('stopped')).toEqual([{ turn: 1, files: [{ path: 'app.ts', additions: 1, deletions: 1, canRevert: true }] }])
+
+      // A commit stopped before any change must not resurrect the call preview.
+      const before = new DiffReviewManager()
+      fs.writeFileSync(app, 'old app\n')
+      before.accept('stopped-none', cwd, callEvent(30, 'patch-3', patch))
+      expect(before.accept('stopped-none', cwd, resultEvent(31, 'patch-3', { diffs: [], stopped: true }))).toBe(false)
+      expect(before.changedFiles('stopped-none')).toEqual([])
+    })
+
+    it('records the files a stopped patch did write, including a completed addition', () => {
+      const cwd = temporaryWorkspace()
+      fs.writeFileSync(path.join(cwd, 'app.ts'), 'old app\n')
+      const manager = new DiffReviewManager()
+      const patch = patchOf([
+        '*** Begin Patch',
+        '*** Add File: added.ts',
+        '+export const added = true',
+        '*** Update File: app.ts',
+        '-old app',
+        '+new app',
+        '*** Update File: other.ts',
+        '-old other',
+        '+new other',
+        '*** End Patch',
+      ])
+      manager.accept('stopped-add', cwd, callEvent(40, 'patch-4', patch))
+      fs.writeFileSync(path.join(cwd, 'app.ts'), 'new app\n')
+      fs.writeFileSync(path.join(cwd, 'added.ts'), 'export const added = true\n')
+      expect(manager.accept('stopped-add', cwd, resultEvent(41, 'patch-4', {
+        diffs: updateHunk('old app\n', 'new app\n'),
+        stopped: true,
+      }))).toBe(true)
+      // The stopped title is the card's; the review still lists what the disk
+      // proves the commit wrote: the update and the completed creation.
+      expect(manager.changedFiles('stopped-add')).toEqual([{ turn: 1, files: [
+        { path: 'added.ts', additions: 1, deletions: 0, canRevert: true },
+        { path: 'app.ts', additions: 1, deletions: 1, canRevert: true },
+      ] }])
+    })
+
+    it('ignores malformed and empty patches', () => {
+      const cwd = temporaryWorkspace()
+      fs.writeFileSync(path.join(cwd, 'app.ts'), 'old\n')
+      const manager = new DiffReviewManager()
+      for (const [index, input] of ['not a patch', patchOf(['*** Begin Patch', '*** End Patch'])].entries()) {
+        const session = `ignored-${String(index)}`
+        manager.accept(session, cwd, callEvent(40 + index * 2, `patch-ignored-${String(index)}`, input))
+        expect(manager.accept(session, cwd, resultEvent(41 + index * 2, `patch-ignored-${String(index)}`, { diffs: [], stopped: false }))).toBe(false)
+        expect(manager.changedFiles(session)).toEqual([])
+      }
+    })
+
+    it('accepts an official runtime view and captures a deletion path without diff text', async () => {
+      const cwd = temporaryWorkspace(), file = path.join(cwd, 'gone.ts')
+      fs.writeFileSync(file, 'delete me\n')
+      const manager = new DiffReviewManager()
+      const call = event('tool/call', 50, { turn: 1, callId: 'view-patch', name: 'apply_patch', arguments: '{}' })
+      manager.accept('view-patch', cwd, call, {
+        for: 'call',
+        view: { card: 'diff', title: 'Apply patch (1 file)', diffs: [], locations: [{ path: 'gone.ts' }] },
+      })
+      fs.rmSync(file)
+      const result = resultEvent(51, 'view-patch', { diffs: [{ path: 'gone.ts', oldText: 'delete me\n', newText: '' }], stopped: false },
+        'Success. Updated the following files:\nD gone.ts')
+      expect(manager.accept('view-patch', cwd, result, {
+        for: 'result',
+        view: { card: 'diff', title: 'Apply patch', diffs: [{ path: 'gone.ts', oldText: 'delete me\n', newText: '' }] },
+      })).toBe(true)
+      expect(manager.changedFiles('view-patch')).toEqual([{ turn: 1, files: [{ path: 'gone.ts', additions: 0, deletions: 1, canRevert: true }] }])
+      manager.revertAll('view-patch')
+      expect(fs.readFileSync(file, 'utf8')).toBe('delete me\n')
+    })
+  })
 })

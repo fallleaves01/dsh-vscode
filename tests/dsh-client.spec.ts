@@ -426,6 +426,9 @@ describe('DSH 0.1.2 chat transport', () => {
     const h = harness()
     await h.client.renameSession('s', 'Renamed')
     await h.client.archiveSession('s')
+    // alpha.3 stops running work (including active schedules) when asked, so the
+    // archive is durable instead of refused with `workspace/session-active`.
+    await h.client.archiveSession('s', true)
     await h.client.attachment('s', { attachmentId: 'image', mediaType: 'image/png', bytes: 8, width: 1, height: 1 })
     await h.client.pluginInventory()
     await h.client.settings()
@@ -437,6 +440,7 @@ describe('DSH 0.1.2 chat transport', () => {
     expect(h.requests).toEqual([
       { endpoint: 'session/rename', args: { request: { sessionId: 's', title: 'Renamed' } } },
       { endpoint: 'workspace/archiveSession', args: { request: { sessionId: 's' } } },
+      { endpoint: 'workspace/archiveSession', args: { request: { sessionId: 's', stopActivity: true } } },
       { endpoint: 'session/attachment', args: { request: { sessionId: 's', attachmentId: 'image', attachment: { attachmentId: 'image', mediaType: 'image/png', bytes: 8, width: 1, height: 1 } } } },
       { endpoint: 'pluginInventory/list', args: {} }, { endpoint: 'settings/describe', args: {} },
       { endpoint: 'settings/mutate', args: { ns: 'ns', ops: [{ op: 'set', path: ['x'], value: 1 }], expectedRevision: 3 } },
@@ -966,7 +970,9 @@ describe('task feature RPCs and project background discovery', () => {
       { endpoint: 'goals/get', args: { agentId: 's' } },
       { endpoint: 'goals/edit', args: { agentId: 's', ref: { id: 'g', revision: 2 }, request: { objective: 'New', maxGoalRounds: 6 } } },
       { endpoint: 'schedule/catalog', args: {} },
-      { endpoint: 'schedule/history', args: { request: { sessionId: 's', id: 'r', before: 'cursor', limit: 20 } } },
+      // alpha.3 addresses a task by id; the owning session is only the legacy
+      // fallback hint and is not part of a successful request.
+      { endpoint: 'schedule/history', args: { request: { id: 'r', limit: 20, before: 'cursor' } } },
       { endpoint: 'session/search', args: { request: { query: 'needle' } } },
     ]))
     const output: unknown[] = [], fail = vi.fn(); const cancel = h.client.observeJob('s', 'job', 99, frame => output.push(frame), fail)
@@ -976,6 +982,100 @@ describe('task feature RPCs and project background discovery', () => {
     expect(output).toHaveLength(1); cancel()
     expect(h.outgoing.some(frame => frame.type === 'cancel')).toBe(true)
     expect(h.requests.some(request => /job\/(read|collect)/.test(request.endpoint))).toBe(false)
+  })
+  it('keeps an alpha.3 reminder whose target creates new conversations', async () => {
+    const h = harness()
+    h.results['schedule/catalog'] = [{
+      id: 'r1', kind: 'daily', title: 'Morning review', prompt: 'Check jobs', scheduledAt: '2026-11-05T01:00:00Z',
+      time: '09:00:00.000', timeZone: 'Asia/Shanghai',
+      target: { kind: 'new', create: { cwd: '/workspace' } },
+      involvedSessionIds: [], status: 'active', createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-03T00:00:00Z',
+      lastDelivery: { scheduledAt: '2026-11-04T01:00:00Z', deliveredAt: '2026-11-04T01:00:01Z', messageId: 'm', targetSessionId: 'created' },
+    }]
+    expect(await h.client.schedules()).toEqual([{
+      id: 'r1', title: 'Morning review', prompt: 'Check jobs', kind: 'daily', scheduledAt: '2026-11-05T01:00:00Z',
+      status: 'active', target: { kind: 'new' }, involvedSessionIds: [], updatedAt: '2026-11-03T00:00:00Z',
+      lastDelivery: { scheduledAt: '2026-11-04T01:00:00Z', deliveredAt: '2026-11-04T01:00:01Z', messageId: 'm', targetSessionId: 'created' },
+    }])
+  })
+  it('falls back to the alpha.2 history request only when the runtime rejects the alpha.3 request shape', async () => {
+    const h = harness()
+    const call = vi.mocked(h.connection.call)
+    /** Fail the next call with one shutdown error, recording the attempt first. */
+    const rejectOnce = (error: DshConnectionError): void => {
+      call.mockImplementationOnce(async (endpoint: string, args: unknown) => {
+        h.requests.push({ endpoint, args })
+        throw error
+      })
+    }
+    h.results['schedule/history'] = { id: 'r', records: [], earlierRecordsUnavailable: true, earlierRecordsPruned: false, retention: { days: 30, records: 200 } }
+
+    // alpha.3 serves the request that names the task by id alone.
+    await expect(h.client.scheduleHistory('s', 'r')).resolves.toMatchObject({ id: 'r', records: [] })
+    expect(h.requests).toEqual([{ endpoint: 'schedule/history', args: { request: { id: 'r', limit: 20 } } }])
+
+    // Real alpha.2 refuses that request at the typert boundary with
+    // gateway/input-invalid and a wire-field message that never names sessionId.
+    h.requests.length = 0
+    rejectOnce(new DshConnectionError('gateway/input-invalid',
+      'typert gateway: schedule/history: wire field "request" failed boundary validation'))
+    await expect(h.client.scheduleHistory('s', 'r', 'cursor')).resolves.toMatchObject({ id: 'r' })
+    expect(h.requests).toEqual([
+      { endpoint: 'schedule/history', args: { request: { id: 'r', limit: 20, before: 'cursor' } } },
+      { endpoint: 'schedule/history', args: { request: { sessionId: 's', id: 'r', limit: 20, before: 'cursor' } } },
+    ])
+
+    // The descriptor wording alpha.3 used before its release keeps working.
+    h.requests.length = 0
+    rejectOnce(new DshConnectionError('gateway/arguments-invalid',
+      'typert gateway: schedule/history: args fields do not match the descriptor: missing "sessionId"'))
+    await expect(h.client.scheduleHistory('s', 'r')).resolves.toMatchObject({ id: 'r' })
+    expect(h.requests).toHaveLength(2)
+
+    // Without a legacy conversation there is nothing to fall back to.
+    h.requests.length = 0
+    rejectOnce(new DshConnectionError('gateway/input-invalid',
+      'typert gateway: schedule/history: wire field "request" failed boundary validation'))
+    await expect(h.client.scheduleHistory('', 'r')).rejects.toThrow('wire field')
+    expect(h.requests).toHaveLength(1)
+    h.requests.length = 0
+    rejectOnce(new DshConnectionError('gateway/input-invalid',
+      'typert gateway: schedule/history: wire field "request" failed boundary validation'))
+    await expect(h.client.scheduleHistory(undefined, 'r')).rejects.toThrow('wire field')
+    expect(h.requests).toHaveLength(1)
+  })
+  it.each([
+    ['a network failure', new DshConnectionError('transport-error', 'DSH schedule/history did not complete. Check the connection before retrying.')],
+    ['an authentication refusal', new DshConnectionError('authentication-required', 'DSH authentication expired or was refused. Reconnect the runtime.')],
+    ['a cancelled call', new DshConnectionError('cancelled', 'DSH schedule/history was cancelled.')],
+    ['a business refusal', new DshConnectionError('schedule/input-invalid', 'typert gateway: schedule/history: limit must be between 1 and 100')],
+    ['another endpoint boundary failure', new DshConnectionError('gateway/input-invalid', 'typert gateway: session/search: wire field "request" failed boundary validation')],
+  ])('does not retry a schedule history failure that is not a request-shape refusal: %s', async (_case, error) => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockImplementationOnce(async (endpoint: string, args: unknown) => {
+      h.requests.push({ endpoint, args })
+      throw error
+    })
+    await expect(h.client.scheduleHistory('s', 'r')).rejects.toThrow(error.message)
+    expect(h.requests).toHaveLength(1)
+  })
+  it('sends the alpha.3 reminder management contracts', async () => {
+    const h = harness()
+    h.results['schedule/run'] = { id: 'r', kind: 'daily', title: 'Run', prompt: 'P', scheduledAt: 'x', target: { kind: 'new', create: {} }, involvedSessionIds: [], status: 'active' }
+    h.results['schedule/edit'] = { id: 'r', deleted: true }
+    h.results['schedule/deleteInactive'] = { deleted: 3 }
+    expect(await h.client.scheduleRun('r')).toMatchObject({ id: 'r' })
+    expect(await h.client.scheduleEdit('r', { action: 'update', patch: { active: false }, expectedUpdatedAt: 'rev-1' })).toEqual({ id: 'r', deleted: true })
+    await h.client.scheduleEdit('r', { action: 'update', patch: { active: true } })
+    await h.client.scheduleEdit('r', { action: 'delete' })
+    expect(await h.client.scheduleDeleteInactive()).toEqual({ deleted: 3 })
+    expect(h.requests).toEqual([
+      { endpoint: 'schedule/run', args: { request: { id: 'r' } } },
+      { endpoint: 'schedule/edit', args: { request: { id: 'r', action: 'update', patch: { active: false }, expectedUpdatedAt: 'rev-1' } } },
+      { endpoint: 'schedule/edit', args: { request: { id: 'r', action: 'update', patch: { active: true } } } },
+      { endpoint: 'schedule/edit', args: { request: { id: 'r', action: 'delete' } } },
+      { endpoint: 'schedule/deleteInactive', args: {} },
+    ])
   })
   it('discovers work in unvisited conversations with at most eight pending baselines', async () => {
     const h = harness(false); await h.client.startStreams()

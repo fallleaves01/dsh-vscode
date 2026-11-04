@@ -4275,6 +4275,30 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function reminderTime(value) {
       const date = new Date(value); return Number.isNaN(date.getTime()) ? string(value) : date.toLocaleString();
     }
+    /** Human label for the conversation one reminder delivers to. */
+    function reminderConversation(current, sessionId) {
+      if (sessionId === current.sessionId) return 'this conversation';
+      const found = array(current.sessions).find(item => record(item) && item.id === sessionId);
+      return found ? string(found.title) : 'another conversation';
+    }
+    /** One-line destination summary for an alpha.3 reminder target. */
+    function reminderTarget(current, reminder) {
+      const target = record(reminder.target);
+      if (!target) {
+        const sessionId = string(reminder.sessionId);
+        return sessionId ? 'Delivers to ' + reminderConversation(current, sessionId) : '';
+      }
+      if (target.kind === 'session') return 'Delivers to ' + reminderConversation(current, string(target.sessionId));
+      if (target.kind === 'new_once') return 'Creates one conversation at the first delivery';
+      return 'Creates a new conversation for each delivery';
+    }
+    /** Status and the relevant occurrence for one reminder. */
+    function reminderSchedule(reminder) {
+      const kind = string(reminder.kind), status = string(reminder.status);
+      if (status === 'ended') return 'ended · ' + kind + ' · last ' + reminderTime(reminder.scheduledAt);
+      if (status === 'paused') return 'paused · ' + kind;
+      return 'active · ' + kind + ' · next ' + reminderTime(reminder.scheduledAt);
+    }
     function renderTaskFeatures(current) {
       const goal = record(current.goal) || {}, value = record(goal.value), schedules = record(current.schedules) || {}, reminders = array(schedules.items);
       const available = value || goal.available || goal.loading || goal.error || schedules.available || schedules.loading || schedules.error || reminders.length;
@@ -4306,11 +4330,35 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.schedulePanel.append(node('div', 'feature-title', 'Reminders'));
       if (schedules.error) elements.schedulePanel.append(node('div', 'feature-hint', string(schedules.error)));
       if (!reminders.length) elements.schedulePanel.append(node('div', 'feature-hint', schedules.loading ? 'Loading reminders…' : 'No reminders in this project.'));
+      let endedReminders = 0;
       for (const reminder of reminders) {
         const row = node('div', 'reminder-row');
-        row.append(node('div', 'feature-title', string(reminder.title)), node('div', 'feature-copy', string(reminder.prompt)), node('div', 'feature-hint', reminder.status + ' · ' + reminder.kind + ' · ' + (reminder.status === 'active' ? 'next ' : 'scheduled ') + reminderTime(reminder.scheduledAt)));
+        const target = reminderTarget(current, reminder);
+        const status = string(reminder.status);
+        if (status === 'ended') endedReminders += 1;
+        row.append(node('div', 'feature-title', string(reminder.title)), node('div', 'feature-copy', string(reminder.prompt)), node('div', 'feature-hint', reminderSchedule(reminder)));
+        if (target) row.append(node('div', 'feature-hint', target));
         if (reminder.lastDelivery) row.append(node('div', 'feature-hint', 'Last delivered ' + reminderTime(reminder.lastDelivery.deliveredAt)));
-        row.append(featureButton('Delivery history', () => vscode.postMessage({ type: 'schedule-history', sessionId: reminder.sessionId, id: reminder.id }))); elements.schedulePanel.append(row);
+        const rowActions = node('div', 'feature-actions');
+        const historyMessage = { type: 'schedule-history', id: reminder.id, ...(typeof reminder.sessionId === 'string' ? { sessionId: reminder.sessionId } : {}) };
+        rowActions.append(featureButton('Delivery history', () => vscode.postMessage(historyMessage)));
+        // Management endpoints exist only on alpha.3, whose catalog rows carry a
+        // target. Hiding the buttons for a legacy row avoids calling endpoints
+        // that runtime never served.
+        if (record(reminder.target) !== undefined) {
+          if (status !== 'ended') rowActions.append(featureButton('Run now', () => vscode.postMessage({ type: 'schedule-run', id: reminder.id })));
+          if (status === 'active') rowActions.append(featureButton('Pause', () => vscode.postMessage({ type: 'schedule-set-active', id: reminder.id, active: false })));
+          else if (status === 'paused') rowActions.append(featureButton('Resume', () => vscode.postMessage({ type: 'schedule-set-active', id: reminder.id, active: true })));
+          rowActions.append(featureButton('Delete', () => vscode.postMessage({ type: 'schedule-delete', id: reminder.id, title: string(reminder.title) })));
+        }
+        row.append(rowActions);
+        elements.schedulePanel.append(row);
+      }
+      // Ended tasks stay listed until removed; one panel-level action clears them.
+      if (endedReminders > 0) {
+        const cleanup = node('div', 'feature-actions');
+        cleanup.append(featureButton('Delete ended', () => vscode.postMessage({ type: 'schedule-delete-ended' })));
+        elements.schedulePanel.append(cleanup);
       }
       const history = record(schedules.history);
       if (history) {
@@ -4321,7 +4369,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         if (history.error) box.append(node('div', 'feature-hint', string(history.error)));
         if (history.loading) box.append(node('div', 'feature-hint', 'Loading history…'));
         else if (!array(history.records).length && !history.error) box.append(node('div', 'feature-hint', 'No deliveries yet.'));
-        if (history.nextBefore && !history.loading) box.append(featureButton('Load earlier deliveries', () => vscode.postMessage({ type: 'schedule-history', sessionId: history.sessionId, id: history.id, before: history.nextBefore })));
+        if (history.nextBefore && !history.loading) {
+          const earlier = { type: 'schedule-history', id: string(history.id), ...(typeof history.sessionId === 'string' ? { sessionId: history.sessionId } : {}), before: history.nextBefore };
+          box.append(featureButton('Load earlier deliveries', () => vscode.postMessage(earlier)));
+        }
         elements.schedulePanel.append(box);
       }
     }

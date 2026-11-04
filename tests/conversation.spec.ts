@@ -436,3 +436,104 @@ describe('hostile content nesting', () => {
     expect(() => cyclic.messages()).not.toThrow()
   })
 })
+
+describe('apply_patch conversation cards', () => {
+  const patchOf = (lines: readonly string[]): string => lines.join('\n')
+  const call = (seq: number, callId: string, input: string): DshEvent =>
+    event('tool/call', seq, { turn: 1, callId, name: 'apply_patch', arguments: JSON.stringify({ input }) })
+  const result = (seq: number, callId: string, meta: unknown, text = 'Success. Updated the following files:\nM app.ts'): DshEvent =>
+    event('tool/result', seq, { turn: 1, meta, message: {
+      source: { kind: 'tool', callId },
+      content: [{ type: 'tool-result', toolCallId: callId, isError: false, content: [{ type: 'text', text }] }],
+    } })
+
+  it('presents the call as a diff card instead of its raw patch text', () => {
+    const projector = new ConversationProjector()
+    projector.apply(call(1, 'c1', patchOf([
+      '*** Begin Patch',
+      '*** Add File: added.ts',
+      '+export const added = true',
+      '*** Update File: app.ts',
+      '-old',
+      '+new',
+      '*** End Patch',
+    ])))
+    const message = projector.messages()[0]!
+    expect(message.callView).toMatchObject({
+      card: 'diff', title: 'Apply patch (2 files)',
+      diffs: [
+        { path: 'added.ts', oldText: null, newText: 'export const added = true\n' },
+        { path: 'app.ts', oldText: 'old', newText: 'new' },
+      ],
+    })
+    expect(message.callView?.locations).toEqual([{ path: 'added.ts' }, { path: 'app.ts' }])
+    expect(JSON.stringify(message.callView)).not.toContain('*** Begin Patch')
+    expect(message.rawInput).toContain('*** Begin Patch')
+  })
+
+  it('presents the result after a live run and from history identically', () => {
+    const entries = [
+      call(1, 'c1', patchOf([
+        '*** Begin Patch',
+        '*** Add File: added.ts',
+        '+export const added = true',
+        '*** Update File: app.ts',
+        '-old',
+        '+new',
+        '*** End Patch',
+      ])),
+      result(2, 'c1', { diffs: [{ path: 'app.ts', oldText: 'old', newText: 'new' }], stopped: false }),
+    ]
+    const live = new ConversationProjector()
+    entries.forEach(entry => live.apply(entry))
+    const history = new ConversationProjector()
+    history.reset(entries)
+    expect(history.messages()).toEqual(live.messages())
+    expect(live.messages()[0]).toMatchObject({
+      callView: { card: 'diff', title: 'Apply patch (2 files)' },
+      resultView: { card: 'diff', title: 'Apply patch', diffs: [
+        { path: 'added.ts', oldText: null, newText: 'export const added = true\n' },
+        { path: 'app.ts', oldText: 'old', newText: 'new' },
+      ] },
+      rawResult: 'Success. Updated the following files:\nM app.ts',
+    })
+  })
+
+  it('marks a stopped patch and never claims unconfirmed effects', () => {
+    const projector = new ConversationProjector()
+    projector.apply(call(1, 'c1', patchOf([
+      '*** Begin Patch',
+      '*** Update File: app.ts',
+      '-old',
+      '+new',
+      '*** Update File: other.ts',
+      '-one',
+      '+two',
+      '*** End Patch',
+    ])))
+    projector.apply(result(2, 'c1', { diffs: [{ path: 'app.ts', oldText: 'old', newText: 'new' }], stopped: true },
+      'Patch stopped after 1 of 2 operations.\nCompleted:\nM app.ts\nNot executed:\n- operation 2 (update other.ts)'))
+    expect(projector.messages()[0]?.resultView).toMatchObject({
+      card: 'diff', title: 'Apply patch (stopped)', diffs: [{ path: 'app.ts', oldText: 'old', newText: 'new' }],
+    })
+    const nothing = new ConversationProjector()
+    nothing.apply(call(3, 'c2', patchOf([
+      '*** Begin Patch',
+      '*** Update File: app.ts',
+      '-old',
+      '+new',
+      '*** End Patch',
+    ])))
+    nothing.apply(result(4, 'c2', { diffs: [], stopped: true }, 'Patch stopped after 0 of 1 operations.'))
+    expect(nothing.messages()[0]?.resultView).toMatchObject({ card: 'generic', title: 'Apply patch (stopped)' })
+    expect(JSON.stringify(nothing.messages()[0]?.resultView)).not.toContain('-old')
+  })
+
+  it('falls back to a generic card for malformed patches and metadata', () => {
+    const projector = new ConversationProjector()
+    projector.apply(call(1, 'c1', 'this is not a patch'))
+    expect(projector.messages()[0]?.callView).toBeUndefined()
+    projector.apply(result(2, 'c1', { diffs: [null] }))
+    expect(projector.messages()[0]?.resultView).toMatchObject({ card: 'generic' })
+  })
+})

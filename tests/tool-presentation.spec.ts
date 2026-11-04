@@ -113,3 +113,133 @@ describe('0.1.2 built-in tool presentation', () => {
     })
   })
 })
+
+describe('Codex-style apply_patch presentation', () => {
+  const patchOf = (lines: readonly string[]): string => lines.join('\n')
+  const call = (linesOrPatch: string | readonly string[]): Record<string, unknown> | undefined =>
+    presentToolCall('apply_patch', { input: typeof linesOrPatch === 'string' ? linesOrPatch : patchOf(linesOrPatch) })
+  const patchResult = (meta: unknown, text = 'Success. Updated the following files:\nM app.ts') =>
+    presentToolResult('apply_patch', { input: '' }, result(meta, text), false)
+
+  const multiFile = patchOf([
+    '*** Begin Patch',
+    '*** Add File: added.ts',
+    '+export const added = true',
+    '*** Update File: app.ts',
+    '@@',
+    ' context',
+    '-old',
+    '+new',
+    '*** Delete File: gone.ts',
+    '*** Update File: moved.ts',
+    '*** Move to: destination.ts',
+    '@@',
+    '-line',
+    '+line changed',
+    '*** End Patch',
+  ])
+
+  it('previews every operation of a multi-file patch without showing its raw text', () => {
+    const view = call(multiFile)
+    expect(view).toMatchObject({
+      card: 'diff',
+      title: 'Apply patch (5 files)',
+      diffs: [
+        { path: 'added.ts', oldText: null, newText: 'export const added = true\n' },
+        { path: 'app.ts', oldText: 'context\nold', newText: 'context\nnew' },
+        { path: 'moved.ts', oldText: 'line', newText: 'line changed' },
+      ],
+    })
+    // A deletion has no diff text, so it appears only among the locations.
+    expect(view?.locations).toEqual([
+      { path: 'added.ts' }, { path: 'app.ts' }, { path: 'gone.ts' },
+      { path: 'moved.ts' }, { path: 'destination.ts' },
+    ])
+    expect(JSON.stringify(view)).not.toContain('*** Begin Patch')
+  })
+
+  it('accepts the documented syntax variants', () => {
+    expect(call(['<<EOF', '*** Begin Patch', '*** Add File: empty.ts', '*** End Patch', 'EOF']))
+      .toMatchObject({ card: 'diff', title: 'Apply patch (1 file)', diffs: [{ path: 'empty.ts', oldText: null, newText: '' }] })
+    expect(call(['*** Begin Patch', '*** Delete File: gone.ts', '*** End Patch']))
+      .toMatchObject({ card: 'diff', title: 'Apply patch (1 file)', diffs: [], locations: [{ path: 'gone.ts' }] })
+    // An end-of-file anchor closes a hunk; blank lines after it are ignored.
+    expect(call(['*** Begin Patch', '*** Update File: app.ts', '-old', '+new', '*** End of File', '', '*** End Patch']))
+      .toMatchObject({ diffs: [{ path: 'app.ts', oldText: 'old', newText: 'new' }] })
+    // CRLF input is accepted and the trailing CR is not content.
+    expect(call(['*** Begin Patch', '*** Update File: app.ts', '-old\r', '+new\r', '*** End Patch'].join('\r\n')))
+      .toMatchObject({ diffs: [{ path: 'app.ts', oldText: 'old', newText: 'new' }] })
+    // An empty patch is valid and has no operation to preview.
+    expect(call(['*** Begin Patch', '*** End Patch'])).toEqual({
+      card: 'diff', title: 'Apply patch (0 files)', diffs: [], locations: [],
+    })
+  })
+
+  it('falls back for malformed or unsupported patches instead of throwing', () => {
+    const malformed = [
+      'not a patch at all',
+      patchOf(['*** Begin Patch', '*** Update File: app.ts', '*** End Patch']),
+      patchOf(['*** Begin Patch', '*** Update File: app.ts', '@@', 'not a hunk line', '*** End Patch']),
+      patchOf(['*** Begin Patch', '*** Add File: app.ts', 'not added content', '*** End Patch']),
+      patchOf(['*** Begin Patch', '*** Environment ID: remote', '*** Add File: app.ts', '+x', '*** End Patch']),
+      patchOf(['*** Begin Patch', '*** Update File: app.ts', '-old', '*** End of File', 'stray', '*** End Patch']),
+      '*** Begin Patch\n*** Add File: app.ts\n+x',
+    ]
+    for (const patch of malformed) {
+      expect(presentToolCall('apply_patch', { input: patch })).toBeUndefined()
+      expect(presentToolCall('apply_patch', JSON.stringify({ input: patch }))).toBeUndefined()
+    }
+    expect(presentToolCall('apply_patch', {})).toBeUndefined()
+    expect(presentToolCall('apply_patch', '{broken')).toBeUndefined()
+  })
+
+  it('previews a multi-file call from JSON arguments exactly like an object', () => {
+    expect(presentToolCall('apply_patch', JSON.stringify({ input: multiFile }))).toEqual(call(multiFile))
+  })
+
+  it('presents applied result hunks and created files under the patch title', () => {
+    const source = patchOf([
+      '*** Begin Patch',
+      '*** Add File: added.ts',
+      '+export const added = true',
+      '*** Update File: app.ts',
+      '-old',
+      '+new',
+      '*** End Patch',
+    ])
+    const view = presentToolResult('apply_patch', { input: source }, result({
+      diffs: [{ path: 'app.ts', oldText: 'old', newText: 'new' }],
+      stopped: false,
+    }), false)
+    expect(view).toMatchObject({
+      card: 'diff', title: 'Apply patch',
+      diffs: [
+        { path: 'added.ts', oldText: null, newText: 'export const added = true\n' },
+        { path: 'app.ts', oldText: 'old', newText: 'new' },
+      ],
+    })
+    expect(JSON.stringify(view)).not.toContain('*** Add File:')
+  })
+
+  it('keeps a stopped patch to the hunks its metadata confirms', () => {
+    expect(patchResult({ diffs: [{ path: 'app.ts', oldText: 'old', newText: 'new' }], stopped: true }))
+      .toMatchObject({ card: 'diff', title: 'Apply patch (stopped)', diffs: [{ path: 'app.ts' }] })
+    // Nothing applied: a generic card carries the runtime's own stop summary
+    // instead of previewing intentions that never ran.
+    const stoppedNothing = patchResult({ diffs: [], stopped: true },
+      'Patch stopped after 0 of 2 operations.\nFailed:\n- operation 1 (update app.ts, patch line 3): no match')
+    expect(stoppedNothing).toMatchObject({ card: 'generic', title: 'Apply patch (stopped)' })
+    expect(stoppedNothing?.content).toEqual([{ type: 'text', text: expect.stringContaining('Patch stopped after 0 of 2 operations.') }])
+    expect(JSON.stringify(stoppedNothing)).not.toContain('*** Begin Patch')
+  })
+
+  it('does not claim an applied change without trustworthy metadata', () => {
+    for (const meta of [undefined, { diffs: [] }, { diffs: [null] }, { diffs: 'nope' }]) {
+      expect(patchResult(meta, 'Patch stopped after 1 of 2 operations.')).toMatchObject({ card: 'generic' })
+    }
+    expect(patchResult({ diffs: [] }, 'Success. No operations in patch.'))
+      .toMatchObject({ card: 'generic', title: 'Apply patch', content: [{ type: 'text', text: 'Success. No operations in patch.' }] })
+    expect(presentToolResult('apply_patch', { input: '' }, result({ diffs: [{ path: 'app.ts', oldText: 'old', newText: 'new' }] }, 'denied', true), true))
+      .toMatchObject({ card: 'generic' })
+  })
+})

@@ -5,7 +5,7 @@ import * as vscode from 'vscode'
 import type { DshEvent } from './conversation.js'
 import type { HistoryEntry } from './dsh-client.js'
 import { comparableFilePath } from './file-path.js'
-import { fileMutation, mutationDiff, diffsFromMeta, writeCreated, toolRecord, type FileMutation, type FileDiff } from './tool-presentation.js'
+import { fileMutation, mutationDiff, diffsFromMeta, presentToolCall, writeCreated, toolRecord, type FileMutation, type FileDiff } from './tool-presentation.js'
 import { diffLineStats, verifiedMutation } from './tool-diff.js'
 
 export interface ChangedFileItem {
@@ -28,6 +28,8 @@ interface PendingFile {
   turn: number
   mutation?: FileMutation
   identity?: string
+  /** The tool that named this file; an apply_patch result is authoritative. */
+  tool?: string
 }
 
 interface ReviewSnapshot {
@@ -110,6 +112,42 @@ function diffsOf(value: unknown, expected: 'call' | 'result'): FileDiff[] {
     ) return []
     return [{ path: diff.path, oldText: diff.oldText, newText: diff.newText }]
   })
+}
+
+/**
+ * The call preview of an `apply_patch`: the runtime view when one was delivered,
+ * otherwise the local parser of the same syntax.
+ *
+ * A patch names every path it touches in its locations, including a deletion and
+ * a move destination, which have no diff text but still need their "before"
+ * image captured while the call is announced.
+ */
+function applyPatchCallInfo(view: unknown, args: unknown): { diffs: FileDiff[]; locations: string[] } | undefined {
+  const wrapper = record(view)
+  const callView = wrapper?.for === 'call' ? record(wrapper.view) : undefined
+  const fallback = record(presentToolCall('apply_patch', args))
+  const diffsOfView = (source: UnknownRecord | undefined): FileDiff[] => {
+    if (source === undefined) return []
+    return (Array.isArray(source.diffs) ? source.diffs : []).flatMap((value): FileDiff[] => {
+      const diff = record(value)
+      if (typeof diff?.path !== 'string' || (diff.oldText !== null && typeof diff.oldText !== 'string')
+        || typeof diff.newText !== 'string') return []
+      return [{ path: diff.path, oldText: diff.oldText, newText: diff.newText }]
+    })
+  }
+  // Prefer the runtime's own hunks; a view without them still contributes its
+  // locations, and the local parser fills whatever the view did not name.
+  const viewDiffs = diffsOfView(callView)
+  const diffs = viewDiffs.length > 0 ? viewDiffs : diffsOfView(fallback)
+  const locations = new Set<string>()
+  for (const source of [callView, fallback]) {
+    for (const value of source !== undefined && Array.isArray(source.locations) ? source.locations : []) {
+      const location = record(value)
+      if (typeof location?.path === 'string' && location.path.trim() !== '') locations.add(location.path)
+    }
+  }
+  if (diffs.length === 0 && locations.size === 0) return undefined
+  return { diffs, locations: [...locations] }
 }
 
 function inside(basePath: string, filePath: string): boolean {
@@ -372,11 +410,29 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
 
     if (event.type === 'tool/call') {
       const data = record(event.data)
-      const mutation = typeof data?.name === 'string' ? fileMutation(data.name, data.arguments) : undefined
-      const files = groupedDiffs(cwd, mutation === undefined ? diffsOf(view, 'call') : [mutationDiff(mutation)], turn)
+      const name = typeof data?.name === 'string' ? data.name : ''
+      const mutation = fileMutation(name, data?.arguments)
+      const patch = mutation === undefined && name === 'apply_patch' ? applyPatchCallInfo(view, data?.arguments) : undefined
+      const callDiffs = mutation !== undefined ? [mutationDiff(mutation)] : patch !== undefined ? patch.diffs : diffsOf(view, 'call')
+      const files = groupedDiffs(cwd, callDiffs, turn)
+      // A deletion and a move destination have no diff text; their locations
+      // are the only way to capture the before image the review reverts to.
+      if (patch !== undefined) for (const locationPath of patch.locations) {
+        const absolutePath = projectPath(cwd, locationPath)
+        if (absolutePath === undefined) continue
+        const pathKey = comparableFilePath(absolutePath)
+        if (files.has(pathKey)) continue
+        files.set(pathKey, {
+          absolutePath,
+          displayPath: path.relative(cwd, absolutePath) || path.basename(absolutePath),
+          diffs: [],
+          turn,
+        })
+      }
       const previous = this.pending.get(key)
       for (const [pathKey, file] of files) {
         if (mutation !== undefined) file.mutation = mutation
+        if (name !== '') file.tool = name
         const earlier = previous?.get(pathKey)?.before
         if (earlier !== undefined) file.before = earlier
         file.identity = previous?.get(pathKey)?.identity ?? comparableFilePath(file.absolutePath)
@@ -401,10 +457,15 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     const currentPending = pending === undefined
       ? undefined
       : new Map([...pending.values()].map(file => [comparableFilePath(file.absolutePath), file]))
-    const modern = [...(currentPending?.values() ?? [])].some(file => file.mutation !== undefined)
-    const applied = modern ? diffsFromMeta(record(event.data)?.meta) : undefined
+    const pendingFiles = currentPending === undefined ? [] : [...currentPending.values()]
+    const modern = pendingFiles.some(file => file.mutation !== undefined)
+    // A patch result reports exactly the hunks it applied; unapplied intentions
+    // must never be resurrected from the call preview when a commit stopped.
+    const patch = pendingFiles.some(file => file.tool === 'apply_patch')
+    const applied = modern || patch ? diffsFromMeta(record(event.data)?.meta) : undefined
+    const stopped = record(record(event.data)?.meta)?.stopped === true
     const created = modern && writeCreated(event)
-    const resultDiffs = modern ? applied ?? [] : diffsOf(view, 'result')
+    const resultDiffs = modern ? applied ?? [] : applied ?? diffsOf(view, 'result')
     const results = groupedDiffs(cwd, resultDiffs, turn)
     const fileKeys = new Set([...(currentPending?.keys() ?? []), ...results.keys()])
     let updated = false
@@ -419,18 +480,31 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
       if (modern && callFile === undefined) continue
       const after = replay ? undefined : readImage(absolutePath)
       const mutation = callFile?.mutation
-      const actualDiffs = mutation === undefined ? diffs : resultFile?.diffs
-        ?? (created && mutation.kind === 'write' ? [mutationDiff(mutation)] : [])
+      // Metadata-authoritative tools record only reported effects. A completed
+      // patch may still add the created files its metadata cannot carry; a
+      // stopped one may not, because those operations never ran.
+      const patchAdditions = patch && !stopped
+        ? (callFile?.diffs ?? []).filter(diff => diff.oldText === null)
+        : []
+      const actualDiffs = mutation === undefined
+        ? (patch ? resultFile?.diffs ?? patchAdditions : diffs)
+        : resultFile?.diffs ?? (created && mutation.kind === 'write' ? [mutationDiff(mutation)] : [])
       const before = callFile?.before
+      // A deletion removes the path before the result arrives, so its call-time
+      // identity cannot be re-resolved; the recorded before-image still proves
+      // the file that was read is the one the tool changed.
+      const targetExists = fs.existsSync(absolutePath)
       const sameTarget = before?.text === null || callFile?.identity === comparableFilePath(absolutePath)
+        || (!targetExists && callFile !== undefined)
       const matchedApplied = resultFile?.diffs ?? (applied?.length === 0 ? applied : undefined)
       const verified = sameTarget && (mutation === undefined
         ? before !== undefined && after !== undefined && before.text !== after.text
         : before !== undefined && after !== undefined && verifiedMutation(before.text, after.text, mutation, matchedApplied, created))
+      const contextualHunks = patch ? resultFile !== undefined : mutation !== undefined && !created
       const snapshot = verified && before !== undefined && after !== undefined
         ? { before: before.text, after: after.text, fullFile: true,
           ...diffLineStats([{ path: displayPath, oldText: before.text, newText: after.text ?? '' }]) }
-        : fragmentSnapshot(actualDiffs, mutation !== undefined && !created)
+        : fragmentSnapshot(actualDiffs, contextualHunks)
       if (snapshot === undefined) continue
       this.record(sessionId, { absolutePath, displayPath, turn: fileTurn, identity: comparableFilePath(absolutePath),
         root: cwd, snapshots: [{ ...snapshot, eventSeq: event.seq }] })
@@ -821,7 +895,12 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     // Write beside the target and rename it into place: a failed write leaves
     // the reviewed file byte-for-byte unchanged instead of truncated (S2).
     const temporary = path.join(directory, '.' + path.basename(target) + '.dsh-revert-' + randomUUID())
-    const mode = fs.statSync(target).mode & 0o777
+    // A deletion has no target left to copy a mode from; the revert recreates it
+    // with the default file mode and the reviewed content.
+    let mode = 0o644
+    try { mode = fs.statSync(target).mode & 0o777 } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
     let descriptor: number | undefined
     try {
       descriptor = fs.openSync(temporary, 'wx', mode)

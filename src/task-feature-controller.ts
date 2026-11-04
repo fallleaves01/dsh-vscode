@@ -1,6 +1,6 @@
 import type { DshClient, DshFrame, SessionSummary } from './dsh-client.js'
 import { wireRecord } from './dsh-streams.js'
-import { emptyGoalState, emptyScheduleState, emptySearchState, goalOf, type GoalState, type ScheduleState, type ScheduleHistory, type HistorySearchState } from './task-features.js'
+import { emptyGoalState, emptyScheduleState, emptySearchState, goalOf, scheduleRefusal, type GoalState, type ScheduleEntry, type ScheduleState, type ScheduleHistory, type HistorySearchState } from './task-features.js'
 
 export interface TaskFeatureState { goal: GoalState; schedules: ScheduleState; historySearch: HistorySearchState }
 export type GoalAction = 'create' | 'edit' | 'pause' | 'resume' | 'complete' | 'clear'
@@ -65,7 +65,13 @@ export class TaskFeatureController {
       const ids = new Set(this.sessions().map(item => item.sessionId))
       const { error: _error, ...previous } = this.state.schedules
       this.schedulesClient = client
-      this.update({ schedules: { ...previous, available: true, loading: false, items: items.filter(item => ids.has(item.sessionId)) } })
+      // alpha.3 catalogs are runtime-wide and name their destination through
+      // `target`. A `new` or `new_once` target names no current conversation
+      // (the latter may name a reserved one), so filtering on a session id would
+      // drop every reminder. Only a legacy alpha.2 row, which names its owning
+      // conversation directly, keeps the per-project filter.
+      this.update({ schedules: { ...previous, available: true, loading: false,
+        items: items.filter(item => item.target !== undefined || item.sessionId === undefined || ids.has(item.sessionId)) } })
     } catch (error) {
       if (client !== this.client || revision !== this.scheduleRead) return
       const detail = errorText(error)
@@ -101,16 +107,19 @@ export class TaskFeatureController {
   }
   async showScheduleHistory(sessionId: string, id: string, before?: string): Promise<void> {
     const client = this.client; const epoch = this.epoch; const revision = ++this.historyRead
-    const task = this.state.schedules.items.find(item => item.id === id && item.sessionId === sessionId)
+    const task = this.state.schedules.items.find(item => item.id === id)
     if (!client || !task) throw new Error('This reminder is no longer in the project catalog.')
+    // alpha.3 pages a task by id alone; alpha.2 needs the owning conversation,
+    // which only a legacy entry (or the caller) can supply.
+    const owner = task.sessionId ?? (sessionId === '' ? undefined : sessionId)
     const previous = this.state.schedules.history
-    const records = before && previous?.id === id && previous.sessionId === sessionId ? previous.records : []
-    this.update({ schedules: { ...this.state.schedules, history: { sessionId, id, records, loading: true } } })
+    const records = before !== undefined && previous?.id === id ? previous.records : []
+    this.update({ schedules: { ...this.state.schedules, history: { id, ...(owner === undefined ? {} : { sessionId: owner }), records, loading: true } } })
     try {
-      const value = await client.scheduleHistory(sessionId, id, before)
+      const value = await client.scheduleHistory(owner, id, before)
       if (client !== this.client || epoch !== this.epoch || revision !== this.historyRead) return
       if (!wireRecord(value) || !Array.isArray(value.records)) throw new Error(wireRecord(value) && typeof value.code === 'string' ? value.code : 'Invalid reminder history.')
-      const history: ScheduleHistory = { sessionId, id, records: [...records], loading: false,
+      const history: ScheduleHistory = { id, ...(owner === undefined ? {} : { sessionId: owner }), records: [...records], loading: false,
         earlierRecordsUnavailable: value.earlierRecordsUnavailable === true, earlierRecordsPruned: value.earlierRecordsPruned === true,
         ...(wireRecord(value.retention) && typeof value.retention.days === 'number' && typeof value.retention.records === 'number' ? { retention: { days: value.retention.days, records: value.retention.records } } : {}),
         ...(typeof value.nextBefore === 'string' ? { nextBefore: value.nextBefore } : {}) }
@@ -122,8 +131,93 @@ export class TaskFeatureController {
       this.update({ schedules: { ...this.state.schedules, history } })
     } catch (error) {
       if (client === this.client && epoch === this.epoch && revision === this.historyRead) this.update({ schedules: { ...this.state.schedules,
-        history: { sessionId, id, records, loading: false, error: errorText(error) } } })
+        history: { id, ...(owner === undefined ? {} : { sessionId: owner }), records, loading: false, error: errorText(error) } } })
     }
+  }
+
+  /** The reminder row one action addresses, or a readable error when it is gone. */
+  private scheduleEntry(id: string): ScheduleEntry {
+    const item = this.state.schedules.items.find(candidate => candidate.id === id)
+    if (item === undefined) throw new Error('This reminder is no longer in the project catalog.')
+    return item
+  }
+
+  /**
+   * Keep one failed reminder action visible in the panel and to the caller.
+   *
+   * The host also reports the rejection as a chat notice; without either surface
+   * the click would merely do nothing, which is the failure mode this panel is
+   * meant to prevent.
+   */
+  private failSchedule(action: string, error: unknown): never {
+    this.update({ schedules: { ...this.state.schedules, error: `${action}: ${errorText(error)}` } })
+    throw error
+  }
+
+  /** Run one reminder now without consuming its next occurrence. */
+  async runSchedule(id: string): Promise<void> {
+    const client = this.client
+    if (client === undefined) throw new Error('DSH is not connected.')
+    this.scheduleEntry(id)
+    try {
+      const refusal = scheduleRefusal(await client.scheduleRun(id))
+      if (refusal !== null) throw new Error(refusal)
+    } catch (error) {
+      if (client === this.client) this.failSchedule('Could not run the reminder', error)
+      throw error
+    }
+    if (client === this.client) await this.refreshSchedules(true)
+  }
+
+  /** Pause or resume one reminder through the alpha.3 closed edit operation. */
+  async setScheduleActive(id: string, active: boolean): Promise<void> {
+    const client = this.client
+    if (client === undefined) throw new Error('DSH is not connected.')
+    const item = this.scheduleEntry(id)
+    try {
+      const refusal = scheduleRefusal(await client.scheduleEdit(id, { action: 'update', patch: { active },
+        ...(item.updatedAt === undefined ? {} : { expectedUpdatedAt: item.updatedAt }) }))
+      if (refusal !== null) throw new Error(refusal)
+    } catch (error) {
+      if (client === this.client) this.failSchedule(active ? 'Could not resume the reminder' : 'Could not pause the reminder', error)
+      throw error
+    }
+    if (client === this.client) await this.refreshSchedules(true)
+  }
+
+  /** Delete one reminder and its saved deliveries. */
+  async deleteSchedule(id: string): Promise<void> {
+    const client = this.client
+    if (client === undefined) throw new Error('DSH is not connected.')
+    const item = this.scheduleEntry(id)
+    try {
+      const value = await client.scheduleEdit(id, { action: 'delete',
+        ...(item.updatedAt === undefined ? {} : { expectedUpdatedAt: item.updatedAt }) })
+      const refusal = scheduleRefusal(value)
+      if (refusal !== null) throw new Error(refusal)
+      if (!wireRecord(value) || value.deleted !== true) throw new Error('DSH did not delete the reminder.')
+    } catch (error) {
+      if (client === this.client) this.failSchedule('Could not delete the reminder', error)
+      throw error
+    }
+    if (client === this.client) await this.refreshSchedules(true)
+  }
+
+  /** Remove every ended reminder and answer how many rows went away. */
+  async deleteEndedSchedules(): Promise<number> {
+    const client = this.client
+    if (client === undefined) throw new Error('DSH is not connected.')
+    let deleted = 0
+    try {
+      const value = await client.scheduleDeleteInactive()
+      if (!wireRecord(value) || !Number.isSafeInteger(value.deleted)) throw new Error('Invalid reminder cleanup result.')
+      deleted = value.deleted as number
+    } catch (error) {
+      if (client === this.client) this.failSchedule('Could not delete ended reminders', error)
+      throw error
+    }
+    if (client === this.client) await this.refreshSchedules(true)
+    return deleted
   }
   async search(query: string): Promise<void> {
     const client = this.client; const revision = ++this.searchRead; query = query.trim()

@@ -455,6 +455,31 @@ function initialState(cwd: string): ChatViewState {
   }
 }
 
+/**
+ * Whether an archive refusal names Schedule activity and nothing else.
+ *
+ * DSH alpha.3 refuses `workspace/archiveSession` with `workspace/session-active`
+ * and lists the activity families in the message, for example
+ * "cannot archive session 'x': the session is active (schedule)". Only that
+ * schedule-only refusal is safe to retry with `stopActivity`: retrying when a
+ * turn, a subagent or a job is also reported would stop work the user did not
+ * ask to stop.
+ */
+function archiveBlockedBySchedulesOnly(error: unknown): boolean {
+  if (!(error instanceof DshConnectionError) || error.code !== 'workspace/session-active') return false
+  const kinds = /\(([^()]*)\)\s*\.?\s*$/.exec(error.message)?.[1]
+  if (kinds === undefined) return false
+  const families = kinds.split(',').map(kind => kind.trim()).filter(kind => kind !== '')
+  return families.length > 0 && families.every(family => family === 'schedule')
+}
+
+/** Name the attachment kind in a user-facing failure, never a receipt. */
+function attachmentKindOf(attachments: readonly PromptAttachment[]): 'images' | 'files' | 'attachments' {
+  if (attachments.every(attachment => attachment.type === 'image')) return 'images'
+  if (attachments.every(attachment => attachment.type === 'file')) return 'files'
+  return 'attachments'
+}
+
 export class DshChatController implements vscode.Disposable {
   private readonly changes = new vscode.EventEmitter<ChatViewState>()
   private readonly settingsChanges = new vscode.EventEmitter<void>()
@@ -518,7 +543,7 @@ export class DshChatController implements vscode.Disposable {
   /** Confirmed ratings per conversation, so switching back is not another RPC. */
   private readonly feedbackBySession = new Map<string, Map<string, MessageFeedbackItem>>()
   /** Slash commands held until a conversation is idle, in submission order. */
-  private readonly queuedCommands = new Map<string, { id: string; text: string; images: readonly PromptImage[] }[]>()
+  private readonly queuedCommands = new Map<string, { id: string; text: string; attachments: readonly PromptAttachment[] }[]>()
   private drainingCommands = false
   private historyEntries: HistoryEntry[] = []
   private archivedSessionIds = new Set<string>()
@@ -691,6 +716,22 @@ export class DshChatController implements vscode.Disposable {
   async searchHistory(query: string): Promise<void> { this.requireReady(); await this.taskFeatures.search(query) }
   async scheduleHistory(sessionId: string, id: string, before?: string): Promise<void> {
     this.requireReady(); await this.taskFeatures.showScheduleHistory(sessionId, id, before)
+  }
+  /** Run one reminder now from the panel; failures stay visible to the user. */
+  async runSchedule(id: string): Promise<void> {
+    this.requireReady(); await this.taskFeatures.runSchedule(id)
+  }
+  /** Pause or resume one reminder from the panel. */
+  async setScheduleActive(id: string, active: boolean): Promise<void> {
+    this.requireReady(); await this.taskFeatures.setScheduleActive(id, active)
+  }
+  /** Delete one reminder from the panel; the Webview asks for confirmation first. */
+  async deleteSchedule(id: string): Promise<void> {
+    this.requireReady(); await this.taskFeatures.deleteSchedule(id)
+  }
+  /** Remove every ended reminder and answer how many were deleted. */
+  async deleteEndedSchedules(): Promise<number> {
+    this.requireReady(); return this.taskFeatures.deleteEndedSchedules()
   }
   async changeGoal(sessionId: string, action: GoalAction, ref?: { id: string; revision: number }, request?: { objective?: string; maxGoalRounds?: number }): Promise<void> {
     this.requireReady()
@@ -1376,15 +1417,35 @@ export class DshChatController implements vscode.Disposable {
     this.publishSessionItems()
   }
 
-  async archiveSession(sessionId: string): Promise<void> {
+  /**
+   * Archive one conversation.
+   *
+   * DSH alpha.3 refuses an archive with `workspace/session-active` while the
+   * conversation still has running work. A refusal that names only an active
+   * reminder is retried with `stopActivity`, because archiving a conversation is
+   * exactly the user decision that ends its reminders. A running turn (or any
+   * other activity) is not stopped implicitly: its refusal is reported so the
+   * user can stop it deliberately.
+   *
+   * @returns whether active reminders were stopped for the archive.
+   */
+  async archiveSession(sessionId: string): Promise<'archived' | 'stopped-schedules'> {
     this.requireReady()
     const summary = this.summaries.find(item => item.sessionId === sessionId)
     // A subagent belongs to its parent conversation; archiving it alone would
     // delete the only path back to it without making it recoverable.
-    if (summary === undefined || summary.blank || summary.origin === 'subagent') return
+    if (summary === undefined || summary.blank || summary.origin === 'subagent') return 'archived'
     const client = this.requireClient()
-    const result = await client.archiveSession(sessionId)
-    if (this.client !== client) return
+    let result: { archivedSessionIds: string[] }
+    let stoppedSchedules = false
+    try {
+      result = await client.archiveSession(sessionId)
+    } catch (error) {
+      if (!archiveBlockedBySchedulesOnly(error)) throw error
+      result = await client.archiveSession(sessionId, true)
+      stoppedSchedules = true
+    }
+    if (this.client !== client) return stoppedSchedules ? 'stopped-schedules' : 'archived'
     const previouslyArchived = this.archivedSessionIds
     this.archivedSessionIds = new Set(result.archivedSessionIds)
     this.unreadSessionIds.delete(sessionId)
@@ -1393,6 +1454,7 @@ export class DshChatController implements vscode.Disposable {
     // Job rows and live output of an archived conversation must disappear here.
     this.pruneArchivedJobs()
     await this.loadSessions()
+    return stoppedSchedules ? 'stopped-schedules' : 'archived'
   }
 
   /**
@@ -1656,22 +1718,22 @@ export class DshChatController implements vscode.Disposable {
     const currentReadOnlyReason = this.childReadOnlyReason(sessionId)
     if (currentReadOnlyReason !== null) throw new Error(currentReadOnlyReason)
     if (slash.kind === 'command') {
+      // `input.attachments` is the current capability and `images` the alpha.2
+      // spelling; declarations are additive, so either one admits staged files
+      // and images. A command that declares neither keeps the original refusal.
       if (attachments.length > 0 && (command?.input?.attachments ?? command?.input?.images) !== true) {
         const imagesOnly = images.length === attachments.length
         throw new Error(`${slash.token} does not accept ${imagesOnly ? 'image attachments' : 'attachments'}; remove them first.`)
-      }
-      if (images.length !== attachments.length) {
-        throw new Error(`${slash.token} cannot use file attachments; remove them first.`)
       }
       // A command sent with Enter while a turn owns the agent waits for it, the
       // way a queued message does. Executing it now is what `/compact` cannot
       // survive: it refuses while the agent is busy, so the user got a failed
       // command node instead of a compaction. Cmd/Ctrl+Enter still runs it now.
       if (mode === 'queue' && this._state.running) {
-        this.holdCommand(sessionId, normalized, images)
+        this.holdCommand(sessionId, normalized, attachments)
         return
       }
-      await this.runCommand(client, sessionId, normalized, images, slash.token)
+      await this.runCommand(client, sessionId, normalized, attachments, slash.token)
       return
     }
     await client.prompt(
@@ -1699,13 +1761,15 @@ export class DshChatController implements vscode.Disposable {
     client: DshClient,
     sessionId: string,
     line: string,
-    images: readonly PromptImage[],
+    attachments: readonly PromptAttachment[],
     token: string,
   ): Promise<void> {
-    const execution = await client.executeCommand(sessionId, line, images.length > 0 ? images : undefined)
+    const execution = await client.executeCommand(sessionId, line, attachments.length > 0 ? attachments : undefined)
     if (execution === undefined) throw new Error(`DeepSeek did not recognize ${token}.`)
-    if (images.length > 0 && execution.result.kind === 'error') {
-      throw new Error(execution.result.text ?? `${token} could not use the attached images.`)
+    if (attachments.length > 0 && execution.result.kind === 'error') {
+      // The runtime text is the clearest reason for the refusal; the fallback
+      // names the attachment kind and never echoes a receipt or file bytes.
+      throw new Error(execution.result.text ?? `${token} could not use the attached ${attachmentKindOf(attachments)}.`)
     }
   }
 
@@ -1724,9 +1788,9 @@ export class DshChatController implements vscode.Disposable {
   }
 
   /** Hold one command until its conversation is idle. */
-  private holdCommand(sessionId: string, text: string, images: readonly PromptImage[]): void {
+  private holdCommand(sessionId: string, text: string, attachments: readonly PromptAttachment[]): void {
     const queue = this.queuedCommands.get(sessionId) ?? []
-    queue.push({ id: randomUUID(), text, images: [...images] })
+    queue.push({ id: randomUUID(), text, attachments: [...attachments] })
     this.queuedCommands.set(sessionId, queue)
     this.output.appendLine(`[commands] holding ${slashTokenOf(text)} until the conversation is idle`)
     this.publishQueuedCommands(sessionId)
@@ -1758,7 +1822,7 @@ export class DshChatController implements vscode.Disposable {
     const client = this.client
     if (client === undefined) throw new Error('DeepSeek Harness is not connected.')
     this.removeQueuedCommand(sessionId, id)
-    await this.runCommand(client, sessionId, command.text, command.images, slashTokenOf(command.text))
+    await this.runCommand(client, sessionId, command.text, command.attachments, slashTokenOf(command.text))
   }
 
   /**
@@ -1785,7 +1849,7 @@ export class DshChatController implements vscode.Disposable {
         else this.queuedCommands.set(sessionId, remaining)
         this.publishQueuedCommands(sessionId)
         try {
-          await this.runCommand(client, sessionId, next.text, next.images, slashTokenOf(next.text))
+          await this.runCommand(client, sessionId, next.text, next.attachments, slashTokenOf(next.text))
         } catch (error) {
           // Arguments may contain private text; the command name is enough to
           // identify a failed queue item, and failures must never auto-retry.
@@ -4903,8 +4967,31 @@ class DshSurface implements vscode.Disposable {
           if (typeof value.query === 'string') await this.controller.searchHistory(value.query)
           return
         case 'schedule-history':
-          if (typeof value.sessionId === 'string' && typeof value.id === 'string') await this.controller.scheduleHistory(value.sessionId, value.id, typeof value.before === 'string' ? value.before : undefined)
+          // alpha.3 names the reminder by id alone; `sessionId` is only the
+          // legacy alpha.2 fallback hint and may be absent.
+          if (typeof value.id === 'string') await this.controller.scheduleHistory(typeof value.sessionId === 'string' ? value.sessionId : '', value.id, typeof value.before === 'string' ? value.before : undefined)
           return
+        case 'schedule-run':
+          if (typeof value.id === 'string') await this.controller.runSchedule(value.id)
+          return
+        case 'schedule-set-active':
+          if (typeof value.id === 'string' && typeof value.active === 'boolean') await this.controller.setScheduleActive(value.id, value.active)
+          return
+        case 'schedule-delete': {
+          if (typeof value.id !== 'string') return
+          const title = typeof value.title === 'string' && value.title.trim() !== '' ? value.title.trim() : 'this reminder'
+          const confirmed = await vscode.window.showWarningMessage(`Delete the reminder "${title}" and its saved deliveries?`, { modal: true }, 'Delete')
+          if (confirmed !== 'Delete') return
+          await this.controller.deleteSchedule(value.id)
+          return
+        }
+        case 'schedule-delete-ended': {
+          const confirmed = await vscode.window.showWarningMessage('Delete every ended reminder and its saved deliveries?', { modal: true }, 'Delete')
+          if (confirmed !== 'Delete') return
+          const deleted = await this.controller.deleteEndedSchedules()
+          if (deleted > 0) await vscode.window.showInformationMessage(`Deleted ${String(deleted)} ended reminder${deleted === 1 ? '' : 's'}.`)
+          return
+        }
         case 'goal-action': {
           if (typeof value.sessionId !== 'string' || !['create', 'edit', 'pause', 'resume', 'complete', 'clear'].includes(String(value.action))) return
           const action = value.action as GoalAction
@@ -4966,14 +5053,18 @@ class DshSurface implements vscode.Disposable {
           if (typeof value.sessionId === 'string') {
             const session = this.controller.state.sessions.find(item => item.id === value.sessionId)
             if (session === undefined || session.blank || session.subagent !== undefined || session.parentId !== undefined) return
+            let outcome: 'archived' | 'stopped-schedules'
             try {
-              await this.controller.archiveSession(session.id)
+              outcome = await this.controller.archiveSession(session.id)
             } catch (error) {
               const detail = error instanceof Error ? error.message : String(error)
               await vscode.window.showErrorMessage(`Could not archive the conversation. ${detail} Update DSH if this method is unavailable.`)
               return
             }
-            const undo = await vscode.window.showInformationMessage('Conversation archived.', 'Undo')
+            const notice = outcome === 'stopped-schedules'
+              ? 'Conversation archived. Its active reminders were stopped.'
+              : 'Conversation archived.'
+            const undo = await vscode.window.showInformationMessage(notice, 'Undo')
             if (undo === 'Undo') {
               try { await this.controller.unarchiveSession(session.id) }
               catch (error) { await vscode.window.showErrorMessage(`Could not restore the conversation. ${dshErrorText(error)}`) }

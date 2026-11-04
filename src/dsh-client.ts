@@ -1,5 +1,5 @@
 import type { DshConnection } from './dsh-connection.js'
-import { MAX_ATTACHMENT_RESPONSE_BYTES } from './dsh-connection.js'
+import { DshConnectionError, MAX_ATTACHMENT_RESPONSE_BYTES } from './dsh-connection.js'
 import { DshRemoteApi } from './dsh-remote-api.js'
 import { DshSessionFeed, type SessionOpening } from './dsh-session-feed.js'
 import { wireRecord } from './dsh-streams.js'
@@ -278,6 +278,31 @@ export type DshFrame =
   | { channel: 'mux'; rpcId: string; payload: Record<string, unknown> }
   | { channel: 'host'; rpcId: string; payload: Record<string, unknown> }
 
+/** Error codes a typert boundary uses when it refuses a request shape. */
+const SCHEDULE_SHAPE_CODES: ReadonlySet<string> = new Set(['gateway/input-invalid', 'gateway/arguments-invalid'])
+/** Wording typert uses when the refusal is about the request shape. */
+const SCHEDULE_SHAPE_WORDING = ['wire field', 'boundary validation', 'args fields do not match', 'descriptor', 'invalid request', 'request shape']
+
+/**
+ * Whether a rejected `schedule/history` call only rejected the alpha.3 request.
+ *
+ * alpha.3 addresses a reminder by `id`; alpha.2 requires the owning conversation
+ * in `sessionId` and its typert boundary refuses the newer descriptor. The real
+ * alpha.2 refusal is `gateway/input-invalid` with
+ * `typert gateway: schedule/history: wire field "request" failed boundary
+ * validation`; other runtime versions used `gateway/arguments-invalid` and named
+ * the missing `sessionId` instead. Only a boundary/shape refusal for this exact
+ * endpoint may be retried with the legacy request: transport, authentication,
+ * cancellation and business failures are reported unchanged.
+ */
+function legacyScheduleHistoryShape(error: unknown): boolean {
+  if (!(error instanceof DshConnectionError) || !SCHEDULE_SHAPE_CODES.has(error.code)) return false
+  const message = error.message.toLowerCase()
+  // A shape failure of another endpoint says nothing about this request.
+  if (!message.includes('schedule/history')) return false
+  return SCHEDULE_SHAPE_WORDING.some(wording => message.includes(wording))
+}
+
 interface ModelCatalog {
   default: ModelSelection
   routableProviders: string[]
@@ -341,8 +366,41 @@ export class DshClient {
     await this.call(`goals/${action}`, { agentId: sessionId, ...(action === 'create' || ref === undefined ? {} : { ref }), ...(request === undefined ? {} : { request }) })
   }
   async schedules(): Promise<ScheduleEntry[]> { return schedulesOf(await this.call('schedule/catalog', {}, 10_000)) }
-  scheduleHistory(sessionId: string, id: string, before?: string): Promise<unknown> {
-    return this.call('schedule/history', { request: { sessionId, id, limit: 20, ...(before === undefined ? {} : { before }) } }, 10_000)
+  /**
+   * Read one reminder's saved deliveries.
+   *
+   * alpha.3 addresses the task by id and pages with `before`; alpha.2 required
+   * the owning conversation, so its request shape is retried only when the
+   * runtime rejects the newer descriptor. `sessionId` is the legacy fallback
+   * hint and may be unknown for a `new` target.
+   */
+  async scheduleHistory(sessionId: string | undefined, id: string, before?: string): Promise<unknown> {
+    const page = { id, limit: 20, ...(before === undefined ? {} : { before }) }
+    try { return await this.call('schedule/history', { request: page }, 10_000) }
+    catch (error) {
+      if (sessionId === undefined || sessionId === '' || !legacyScheduleHistoryShape(error)) throw error
+      return this.call('schedule/history', { request: { sessionId, ...page } }, 10_000)
+    }
+  }
+  /** Deliver one reminder now without consuming or moving its next occurrence. */
+  scheduleRun(id: string): Promise<unknown> {
+    return this.call('schedule/run', { request: { id } }, 10_000)
+  }
+  /**
+   * Pause, resume or delete one reminder.
+   *
+   * DSH alpha.3 replaced the old `schedule/delete`/`schedule/update` endpoints
+   * with this closed edit operation; `expectedUpdatedAt` is the stored revision
+   * the caller read and makes a stale edit a `schedule_conflict` instead of a
+   * silent overwrite.
+   */
+  scheduleEdit(id: string, edit: { action: 'update'; patch: { active: boolean }; expectedUpdatedAt?: string }
+    | { action: 'delete'; expectedUpdatedAt?: string }): Promise<unknown> {
+    return this.call('schedule/edit', { request: { id, ...edit } }, 10_000)
+  }
+  /** Remove every ended reminder; answers `{ deleted: number }`. */
+  scheduleDeleteInactive(): Promise<unknown> {
+    return this.call('schedule/deleteInactive', {}, 10_000)
   }
   searchHistory(query: string): Promise<{ items: Array<{ sessionId: string; snippet: string }>; hasMore: boolean }> {
     return this.call('session/search', { request: { query } }, 10_000)
@@ -385,8 +443,17 @@ export class DshClient {
     return this.feed.adoptProjections(sessionId, seq, values)
   }
   renameSession(sessionId: string, title: string): Promise<{ title: string; seq?: number }> { return this.api.renameSession(sessionId, title) }
-  archiveSession(sessionId: string): Promise<{ archivedSessionIds: string[] }> {
-    return this.call('workspace/archiveSession', { request: { sessionId } })
+  /**
+   * Archive one conversation.
+   *
+   * `stopActivity` tells DSH alpha.3 to stop the conversation's running work
+   * instead of refusing the archive with `workspace/session-active`: its turn,
+   * subagent descendants, owned jobs, and active schedules. The caller decides
+   * when that is safe; the runtime stops them through the same paths as the
+   * user's own stop actions.
+   */
+  archiveSession(sessionId: string, stopActivity = false): Promise<{ archivedSessionIds: string[] }> {
+    return this.call('workspace/archiveSession', { request: { sessionId, ...(stopActivity ? { stopActivity: true } : {}) } })
   }
   /** DSH answers with the same `WorkspaceArchiveValue` shape as archiving does. */
   unarchiveSession(sessionId: string): Promise<{ archivedSessionIds: string[] }> {
@@ -675,9 +742,9 @@ export class DshClient {
     this.invalidateSessionDiscovery(sessionId)
     return { agentPreset: selected }
   }
-  executeCommand(sessionId: string, line: string, images: readonly PromptImage[] = []): Promise<CommandExecution | undefined> {
+  executeCommand(sessionId: string, line: string, attachments: readonly PromptAttachment[] = []): Promise<CommandExecution | undefined> {
     this.feed.handleRequestsFor(sessionId)
-    return this.commandTransport.execute(sessionId, line, images)
+    return this.commandTransport.execute(sessionId, line, attachments)
   }
   dispose(): void {
     this.lifetime.abort()

@@ -9,6 +9,40 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-alpha.3.2] - 2026-11-04
+
+### Added
+
+- Schedule management for DSH alpha.3: reminder rows now offer **Run now**,
+  **Pause**/**Resume**, **Delete** and a panel-level **Delete ended** action.
+  Deletions require confirmation; manual runs, pause/resume conflicts and stale
+  revisions are surfaced instead of appearing as silent no-ops.
+- `apply_patch` presentation: the alpha.3 Codex-style multi-file patch tool now
+  renders a per-file diff card, contributes to changed-file lists and Review
+  Changes, supports Revert (including delete/move) and participates in the
+  unsaved-file conflict check when the runtime supplies the presenter view.
+- Slash commands whose descriptor declares attachment input can carry staged
+  file receipts as well as images. A runtime with the legacy images-only
+  command protocol rejects file attachments explicitly instead of dropping them.
+
+### Fixed
+
+- DSH alpha.3 Schedule catalog entries (host-wide `target`, `active`/`paused`/
+  `ended`, delivery receipts) are parsed instead of silently dropped; this
+  restores the “Goal & reminders” panel on alpha.3. Delivery history now uses
+  the alpha.3 `{ id, limit, before }` request and paged result, with an
+  alpha.2 fallback for older runtimes.
+- Archiving a conversation whose only activity is an active reminder retries
+  with `workspace/archiveSession({ stopActivity: true })` and reports that the
+  reminders were stopped. A running turn, subagent or job is never stopped
+  implicitly; those refusals remain visible.
+- The alpha.2 Schedule-history fallback now recognizes the real
+  `gateway/input-invalid` boundary refusal
+  (`typert gateway: schedule/history: wire field "request" failed boundary
+  validation`) and retries the legacy `sessionId` request once. Transport,
+  authentication, cancellation and business errors are still reported
+  unchanged.
+
 ## [0.2.2-alpha.3.1] - 2026-11-04
 
 ### Fixed
