@@ -43,7 +43,11 @@ export class SettingsPanelManager implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined
   private close: (() => void) | undefined
   private embedded: { webview: vscode.Webview; id: string } | undefined
+  /** Re-read an open page; the plugin-install commands call this after a change. */
+  private refreshPage: (() => void) | undefined
   constructor(private readonly host: Host, private readonly extensionUri: vscode.Uri, private readonly version: string) {}
+  /** Ask the open settings surface to re-read its data. A no-op when nothing is open. */
+  refresh(): void { this.refreshPage?.() }
   dispose(): void { this.close?.(); this.panel?.dispose(); this.panel = undefined; this.embedded = undefined }
   /** Reuse the same fenced settings controller in the chat's modal surface. */
   openEmbedded(webview: vscode.Webview): void {
@@ -129,6 +133,7 @@ export class SettingsPanelManager implements vscode.Disposable {
       }
       void panel.webview.postMessage({ type: 'state', state })
     }
+    this.refreshPage = () => { if (!disposed) void refresh() }
     const refresh = async (force = false): Promise<void> => {
       if (disposed) return
       if (busy && !force) { pendingRefresh = true; return }
@@ -447,7 +452,7 @@ export class SettingsPanelManager implements vscode.Disposable {
         if (value.type === 'ready') { ready = true; void refresh(); return }
         if (value.type === 'refresh') { void refresh(); return }
         if (value.type === 'native-action') {
-          const commands: Record<string, string> = { theme: 'workbench.action.selectTheme', shortcuts: 'workbench.action.openGlobalKeybindings', 'extension-settings': 'workbench.action.openSettings', plugins: 'deepseekHarness.managePlugins' }
+          const commands: Record<string, string> = { theme: 'workbench.action.selectTheme', shortcuts: 'workbench.action.openGlobalKeybindings', 'extension-settings': 'workbench.action.openSettings', plugins: 'deepseekHarness.managePlugins', 'discover-plugins': 'deepseekHarness.discoverPlugins', 'install-official-plugin': 'deepseekHarness.installOfficialPlugin' }
           const command = typeof value.action === 'string' ? commands[value.action] : undefined
           if (command) void vscode.commands.executeCommand(command, ...(value.action === 'extension-settings' ? ['@ext:fallleaves01.dsh-sidebar'] : []))
           else if (value.action === 'search-guide') void vscode.env.openExternal(vscode.Uri.parse('https://api-docs.deepseek.com/guides/search'))
@@ -471,6 +476,6 @@ export class SettingsPanelManager implements vscode.Disposable {
       }),
       panel.onDidDispose(() => { this.close?.(); this.panel = undefined }),
     ]
-    this.close = () => { if (disposed) return; disposed = true; ++generation; lifetime.abort(); if (timer) clearTimeout(timer); for (const item of disposables) item.dispose(); this.close = undefined }
+    this.close = () => { if (disposed) return; disposed = true; ++generation; lifetime.abort(); if (timer) clearTimeout(timer); for (const item of disposables) item.dispose(); this.refreshPage = undefined; this.close = undefined }
   }
 }

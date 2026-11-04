@@ -302,6 +302,21 @@ describe('dedicated DSH settings surface', () => {
     h.result({ ok: true, application: 'restart-required', restartRequired: true })
     expect(document.body.textContent).toContain('Restart the DeepSeek Harness runtime')
   })
+  it('offers the market and official install entries on the plugins page', () => {
+    const h = harness(bundlePageState()); h.click('Built-in plugins')
+    h.click('Discover plugins…')
+    expect(h.posts.at(-1)).toMatchObject({ type: 'native-action', action: 'discover-plugins' })
+    h.click('Install official plugin…')
+    expect(h.posts.at(-1)).toMatchObject({ type: 'native-action', action: 'install-official-plugin' })
+    expect(document.body.textContent).toContain('shared DSH web profile')
+  })
+  it('keeps the install entries visible on a read-only runtime so the command can explain ownership', () => {
+    const h = harness({ ...bundlePageState(), writable: false });
+    h.click('Built-in plugins')
+    expect(h.button('Discover plugins…').disabled).toBe(false)
+    h.click('Discover plugins…')
+    expect(h.posts.at(-1)).toMatchObject({ type: 'native-action', action: 'discover-plugins' })
+  })
   it('keeps switches for bundles the Host does not list by default', () => {
     const state = bundlePageState()
     state.bundles = [...state.bundles,

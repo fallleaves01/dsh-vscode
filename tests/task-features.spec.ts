@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { goalOf, JobOutputTail, scheduleRefusal, schedulesOf, workflowsOf } from '../src/task-features.js'
+import { formatDurationSeconds, goalOf, JobOutputTail, localTimeZone, schedulePromptOf, scheduleRefusal, schedulesOf, scheduleTimingOf, scheduleTitleOf, workflowsOf } from '../src/task-features.js'
 import type { DshEvent } from '../src/conversation.js'
 const event = (type: string, data: Record<string, unknown>, seq = 1): DshEvent => ({ type, data, seq, time: 0 })
 const goal = { id: 'g', revision: 2, objective: 'Fix tasks', phase: 'active', maxGoalRounds: 8, roundsStarted: 3 }
@@ -43,7 +43,7 @@ describe('published task feature projections', () => {
     expect(schedulesOf(catalog)).toEqual([{
       id: 'r1', title: 'Morning review', prompt: 'Check jobs', kind: 'daily', scheduledAt: '2026-11-05T01:00:00Z',
       status: 'active', target: { kind: 'session', sessionId: 's' }, sessionId: 's', involvedSessionIds: ['s', 'other'],
-      updatedAt: '2026-11-03T00:00:00Z',
+      updatedAt: '2026-11-03T00:00:00Z', timingDetail: { kind: 'daily', time: '09:00:00.000', timeZone: 'Asia/Shanghai' },
       lastDelivery: { scheduledAt: '2026-11-04T01:00:00Z', deliveredAt: '2026-11-04T01:00:01Z', messageId: 'm', targetSessionId: 's' },
     }])
   })
@@ -88,6 +88,71 @@ describe('published task feature projections', () => {
     expect(scheduleRefusal(null)).toBeNull()
   })
 })
+describe('reminder timing builder for native dialogs', () => {
+  it('builds each alpha.3 timing kind from dialog text', () => {
+    expect(scheduleTimingOf({ kind: 'after', duration: '10m' })).toEqual({ kind: 'after', after_seconds: 600 })
+    expect(scheduleTimingOf({ kind: 'after', duration: '90s' })).toEqual({ kind: 'after', after_seconds: 90 })
+    expect(scheduleTimingOf({ kind: 'every', duration: '2h' })).toEqual({ kind: 'every', every_seconds: 7200 })
+    expect(scheduleTimingOf({ kind: 'at', date: '2026-11-05', time: '09:30', timeZone: 'UTC' }))
+      .toEqual({ kind: 'at', at: { date: '2026-11-05', time: '09:30:00', time_zone: 'UTC' } })
+    expect(scheduleTimingOf({ kind: 'daily', time: '07:05', timeZone: 'Asia/Shanghai' }))
+      .toEqual({ kind: 'daily', daily: { time: '07:05:00', time_zone: 'Asia/Shanghai' } })
+    expect(scheduleTimingOf({ kind: 'weekly', time: '08:00', weekdays: '5,1,3,3', timeZone: 'UTC' }))
+      .toEqual({ kind: 'weekly', weekly: { time: '08:00:00', time_zone: 'UTC', weekdays: [1, 3, 5] } })
+    expect(scheduleTimingOf({ kind: 'cron', expression: ' */5 * * * * ', timeZone: 'UTC' }))
+      .toEqual({ kind: 'cron', cron: { expression: '*/5 * * * *', time_zone: 'UTC' } })
+    const rrule = 'DTSTART;TZID=Asia/Shanghai:20261105T090000\nRRULE:FREQ=DAILY'
+    expect(scheduleTimingOf({ kind: 'rrule', rrule })).toEqual({ kind: 'rrule', rrule })
+  })
+  it('defaults wall-clock rules to the editor local IANA zone', () => {
+    const zone = localTimeZone()
+    expect(zone).not.toBe('')
+    expect(scheduleTimingOf({ kind: 'daily', time: '09:00' }))
+      .toEqual({ kind: 'daily', daily: { time: '09:00:00', time_zone: zone } })
+    expect(scheduleTimingOf({ kind: 'at', date: '2026-11-05', time: '09:00' }))
+      .toEqual({ kind: 'at', at: { date: '2026-11-05', time: '09:00:00', time_zone: zone } })
+  })
+  it('rejects invalid dialog answers before a request is built', () => {
+    expect(() => scheduleTimingOf({ kind: 'after', duration: '0m' })).toThrow('positive duration')
+    expect(() => scheduleTimingOf({ kind: 'after', duration: 'soon' })).toThrow('duration')
+    expect(() => scheduleTimingOf({ kind: 'every', duration: '30s' })).toThrow('at least 1m')
+    expect(() => scheduleTimingOf({ kind: 'daily', time: '24:00', timeZone: 'UTC' })).toThrow('HH:mm')
+    expect(() => scheduleTimingOf({ kind: 'at', date: '2026-13-01', time: '09:00', timeZone: 'UTC' })).toThrow('real calendar date')
+    expect(() => scheduleTimingOf({ kind: 'at', date: '2026-11-05', time: '09:00', timeZone: 'Mars/Olympus' })).toThrow('not a known time zone')
+    expect(() => scheduleTimingOf({ kind: 'weekly', time: '09:00', weekdays: '0,8', timeZone: 'UTC' })).toThrow('weekdays 1-7')
+    expect(() => scheduleTimingOf({ kind: 'cron', expression: '* * * *', timeZone: 'UTC' })).toThrow('exactly five fields')
+    expect(() => scheduleTimingOf({ kind: 'rrule', rrule: 'RRULE:FREQ=DAILY' })).toThrow('DTSTART')
+  })
+  it('normalizes titles, prompts and durations for the request body', () => {
+    expect(scheduleTitleOf('  Review jobs  ')).toBe('Review jobs')
+    expect(() => scheduleTitleOf('   ')).toThrow('title')
+    expect(() => scheduleTitleOf('x'.repeat(121))).toThrow('120')
+    expect(schedulePromptOf('  Check the jobs  ')).toBe('Check the jobs')
+    expect(() => schedulePromptOf('  ')).toThrow('instruction')
+    expect(formatDurationSeconds(600)).toBe('10m')
+    expect(formatDurationSeconds(90)).toBe('90s')
+    expect(formatDurationSeconds(3600)).toBe('1h')
+  })
+  it('keeps the stored rule detail that an edit prefills from', () => {
+    const catalog = [
+      { id: 'a', kind: 'after', title: 'T', prompt: 'P', scheduledAt: '2026-11-05T01:00:00Z', afterSeconds: 600,
+        target: { kind: 'new' }, involvedSessionIds: [], status: 'active' },
+      { id: 'w', kind: 'weekly', title: 'T', prompt: 'P', scheduledAt: 'x', time: '08:00:00.000', timeZone: 'UTC',
+        weekdays: [1, 3], target: { kind: 'new' }, involvedSessionIds: [], status: 'paused' },
+      { id: 'c', kind: 'cron', title: 'T', prompt: 'P', scheduledAt: 'x', expression: '0 9 * * *', timeZone: 'UTC',
+        target: { kind: 'new' }, involvedSessionIds: [], status: 'ended' },
+      { id: 'r', kind: 'rrule', title: 'T', prompt: 'P', scheduledAt: 'x', rrule: 'DTSTART:20261105T090000Z\nRRULE:FREQ=DAILY',
+        target: { kind: 'new' }, involvedSessionIds: [], status: 'active' },
+    ]
+    expect(schedulesOf(catalog).map(item => item.timingDetail)).toEqual([
+      { kind: 'after', afterSeconds: 600 },
+      { kind: 'weekly', time: '08:00:00.000', timeZone: 'UTC', weekdays: [1, 3] },
+      { kind: 'cron', expression: '0 9 * * *', timeZone: 'UTC' },
+      { kind: 'rrule', rrule: 'DTSTART:20261105T090000Z\nRRULE:FREQ=DAILY' },
+    ])
+  })
+})
+
 describe('non-consuming bounded background output', () => {
   it('retains channels, timestamps and the absolute resume cursor', () => {
     const tail = new JobOutputTail(12)

@@ -11,7 +11,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
-The current source version is **0.2.2-alpha.3.2**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.2.2-alpha.3.3**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md)
 
@@ -114,6 +114,10 @@ For a full local check run `pnpm run check`; `./build.sh` writes
 `artifacts/dsh-sidebar-<version>.vsix`. Other settings include
 `reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
 `startupTimeout` and `searchBaseUrl`.
+
+### Upgrading to 0.2.2-alpha.3.3
+
+0.2.2-alpha.3.3 adds reminder creation and editing. The Goal & reminders panel now shows **New reminder** and **Edit**: creation asks for a title, the instruction, one of the seven alpha.3 timing forms (`after`, `at`, `every`, `daily`, `weekly`, `cron`, `rrule`) and a destination (this conversation, one new conversation, or a new conversation per delivery); editing changes the title, instruction or timing with the stored revision, so a concurrent change is reported as a conflict instead of overwriting it. The same release adds session-level feedback from the conversation actions menu (seven categories plus optional free text; it records immediately and starts no model turn) and a minimal plugin discovery surface: the Plugins settings page can search a configured plugin-market index, install a compatible version after confirmation, and install an official on-demand bundle such as a Claude Code/Codex subagent or Computer Use. Plugin-market index URLs are configured in DSH settings; this VS Code surface does not edit the index list. Reload the VS Code window after updating.
 
 ### Upgrading to 0.2.2-alpha.3.2
 

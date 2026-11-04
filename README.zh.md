@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-alpha.3.2**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-alpha.3.3**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -88,6 +88,10 @@ pnpm run package
 `artifacts/dsh-sidebar-<version>.vsix`。其他设置包括
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
+
+### 升级到 0.2.2-alpha.3.3
+
+0.2.2-alpha.3.3 增加提醒创建与编辑。Goal & reminders 面板新增 **New reminder** 与 **Edit**：创建时依次输入标题、指令、alpha.3 的七种时间形式之一（`after`、`at`、`every`、`daily`、`weekly`、`cron`、`rrule`）以及目的地（当前会话、只创建一个新会话、每次创建一个新会话）；编辑可修改标题、指令或时间，并携带当前 revision，因此并发修改会报告冲突而不会覆盖。同一版本还增加会话级反馈：从会话动作菜单选择七类之一并填写可选文本，立即记录且不启动模型回合；以及最小插件发现入口：Plugins 设置页可搜索已配置的插件市场索引、确认后安装兼容版本，也可安装官方 on-demand bundle（Claude Code/Codex 子代理、Computer Use 等）。插件市场索引 URL 需在 DSH 设置中配置，VS Code 侧不编辑索引列表。更新后请重新加载 VS Code 窗口。
 
 ### 升级到 0.2.2-alpha.3.2
 

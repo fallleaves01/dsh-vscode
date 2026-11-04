@@ -565,6 +565,15 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
       fieldset.append(grid); content.append(fieldset)
     }
     content.append(button('Manage runtime plugins', () => native('plugins'), 'quiet'))
+    // The two explicit install entries stay enabled on a read-only runtime: the
+    // command explains who owns the profile instead of hiding the action.
+    content.append(el('p', 'hint', 'Discover installs a plugin from a configured plugin market index; the official entry installs an on-demand DSH bundle this installation does not ship. Both change the shared DSH web profile.'))
+    const marketActions = el('div', 'plugin-market-actions')
+    marketActions.append(
+      button('Discover plugins…', () => native('discover-plugins'), 'quiet'),
+      button('Install official plugin…', () => native('install-official-plugin'), 'quiet'),
+    )
+    content.append(marketActions)
   }
   function render(): void {
     const active = document.activeElement as HTMLInputElement | null

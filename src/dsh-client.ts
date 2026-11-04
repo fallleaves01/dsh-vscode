@@ -10,7 +10,12 @@ import type { ConfigurableProvider, CredentialState, DiscoveredModel, ModelDisco
 import { permissionCatalogOf, type PermissionCatalog } from './collaboration-state.js'
 import { RemoteRead } from './remote-read.js'
 import { DshCommandTransport } from './dsh-command-transport.js'
-import { goalOf, schedulesOf, type GoalView, type ScheduleEntry } from './task-features.js'
+import { goalOf, schedulesOf, type GoalView, type ScheduleCreateRequest, type ScheduleEntry, type ScheduleUpdatePatch } from './task-features.js'
+
+/** A market index read may fetch a remote document; the install runs a package manager. */
+export const PLUGIN_MARKET_TIMEOUT_MS = 60_000
+/** Outlasts the host's file-lock wait and the package-manager run it starts. */
+export const BUNDLE_INSTALL_TIMEOUT_MS = 300_000
 
 export interface SessionSummary {
   sessionId: string
@@ -52,6 +57,14 @@ export interface DshBundleInfo {
   installed?: boolean
   optional?: boolean
   removable?: boolean
+  /**
+   * alpha.3: the exact package to install for an on-demand catalog entry.
+   *
+   * Only official entries the installation does not ship advertise it, so it is
+   * the one spec an "install official plugin" flow may send; a bundle without
+   * it is either installed or not installable from this extension.
+   */
+  installTarget?: { spec: string; version: string }
   /** alpha2: whether the Host lists this bundle by default; undefined on older runtimes. */
   listedByDefault?: boolean
   /** alpha2: whether `pluginManager/updateBundle` accepts this bundle; undefined means unknown. */
@@ -59,6 +72,218 @@ export interface DshBundleInfo {
   readOnlyReason?: 'management-required' | 'unaddressable'
   meta?: { title?: unknown; description?: unknown }
   error?: { code?: string }
+}
+
+/** One configured plugin-market index as `pluginMarket/listIndexes` reports it. */
+export interface DshMarketIndexSummary {
+  url: string
+  title?: string
+  description?: string
+  /** Last read failure; the row still names its URL so the user can fix it. */
+  error?: string
+}
+
+/** The installation target of one market version. */
+export interface DshMarketInstallTarget {
+  spec: string
+  registry?: string
+}
+
+/** One plugin version the market index lists, with its compatibility verdict. */
+export interface DshMarketListingVersion {
+  version: string
+  install: DshMarketInstallTarget
+  /** Undefined when the index omitted the verdict; the default version is authoritative. */
+  compatible?: boolean
+}
+
+/** One plugin row of a plugin-market search page. */
+export interface DshMarketListingEntry {
+  name: string
+  title?: string
+  description?: string
+  author?: string
+  homepage?: string
+  /** The version installed by default: the highest compatible one; absent when none is compatible. */
+  defaultVersion?: string
+  versions: DshMarketListingVersion[]
+  installation?: { status: 'not-installed' | 'installed' | 'update-available' | 'different-version' | 'provided'; installedVersion?: string }
+}
+
+/** One page of `pluginMarket/search`, with display text already localized. */
+export interface DshMarketSearchPage {
+  url?: string
+  title?: string
+  entries: DshMarketListingEntry[]
+  total: number
+  nextOffset: number | null
+}
+
+/** Optional arguments of `pluginManager/installBundle`. */
+export interface DshBundleInstallOptions {
+  requestId?: string
+  registry?: string
+  saveExact?: boolean
+}
+
+/**
+ * The profile mutation outcome `pluginManager/installBundle` returns.
+ *
+ * `bundle` is the installed package name and `pendingBuilds` lists packages
+ * whose build scripts await approval; both are display data only. Error
+ * diagnostics stay out of this type so they cannot reach a log or a Webview.
+ */
+export interface DshBundleInstallResult {
+  changed: boolean
+  application: 'applied' | 'restart-required' | 'failed' | 'cancelled' | 'overridden'
+  stage?: string
+  target?: string
+  restartReason?: string
+  bundle?: string
+  version?: string
+  pendingBuilds?: string[]
+  error?: { code?: string }
+}
+
+/**
+ * The one localization rule the market wire uses: a plain string, or a record
+ * whose `en` entry is the fallback for every other language.
+ */
+function marketText(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const text = value.trim()
+    return text === '' ? undefined : text.slice(0, 4000)
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const fields = value as Record<string, unknown>
+  const english = fields.en
+  if (typeof english === 'string' && english.trim() !== '') return english.trim().slice(0, 4000)
+  for (const candidate of Object.values(fields)) {
+    if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim().slice(0, 4000)
+  }
+  return undefined
+}
+
+function marketIndexOf(value: unknown): DshMarketIndexSummary | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  if (typeof row.url !== 'string' || row.url.trim() === '') return undefined
+  const title = marketText(row.title), description = marketText(row.description)
+  const error = typeof row.error === 'string' && row.error.trim() !== '' ? row.error.trim().slice(0, 1000) : undefined
+  return { url: row.url,
+    ...(title === undefined ? {} : { title }),
+    ...(description === undefined ? {} : { description }),
+    ...(error === undefined ? {} : { error }) }
+}
+
+function marketIndexesOf(value: unknown): DshMarketIndexSummary[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.flatMap((row): DshMarketIndexSummary[] => {
+    const parsed = marketIndexOf(row)
+    return parsed === undefined ? [] : [parsed]
+  })
+}
+
+function marketVersionOf(value: unknown): DshMarketListingVersion | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  if (typeof row.version !== 'string' || row.version === '') return undefined
+  const install = typeof row.install === 'object' && row.install !== null ? row.install as Record<string, unknown> : undefined
+  if (typeof install?.spec !== 'string' || install.spec.trim() === '') return undefined
+  const registry = typeof install.registry === 'string' && install.registry !== '' ? install.registry : undefined
+  const compatibility = typeof row.compatibility === 'object' && row.compatibility !== null ? row.compatibility as Record<string, unknown> : undefined
+  const compatible = typeof compatibility?.compatible === 'boolean' ? compatibility.compatible : undefined
+  return { version: row.version, install: { spec: install.spec, ...(registry === undefined ? {} : { registry }) },
+    ...(compatible === undefined ? {} : { compatible }) }
+}
+
+function marketInstallationOf(value: unknown): DshMarketListingEntry['installation'] {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  const status = row.status
+  if (status !== 'not-installed' && status !== 'installed' && status !== 'update-available'
+    && status !== 'different-version' && status !== 'provided') return undefined
+  return { status, ...(typeof row.installedVersion === 'string' ? { installedVersion: row.installedVersion } : {}) }
+}
+
+function marketEntryOf(value: unknown): DshMarketListingEntry | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  if (typeof row.name !== 'string' || row.name.trim() === '') return undefined
+  const versions = Array.isArray(row.versions)
+    ? row.versions.flatMap((version): DshMarketListingVersion[] => {
+      const parsed = marketVersionOf(version)
+      return parsed === undefined ? [] : [parsed]
+    })
+    : []
+  const title = marketText(row.title), description = marketText(row.description)
+  const author = typeof row.author === 'string' && row.author.trim() !== '' ? row.author.trim().slice(0, 300) : undefined
+  const homepage = typeof row.homepage === 'string' && /^https?:\/\//i.test(row.homepage) ? row.homepage.slice(0, 1000) : undefined
+  const installation = marketInstallationOf(row.installation)
+  return { name: row.name,
+    versions,
+    ...(typeof row.defaultVersion === 'string' && row.defaultVersion !== '' ? { defaultVersion: row.defaultVersion } : {}),
+    ...(title === undefined ? {} : { title }),
+    ...(description === undefined ? {} : { description }),
+    ...(author === undefined ? {} : { author }),
+    ...(homepage === undefined ? {} : { homepage }),
+    ...(installation === undefined ? {} : { installation }) }
+}
+
+function marketPageOf(value: unknown): DshMarketSearchPage | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  if (!Array.isArray(row.entries)) return undefined
+  if (row.total !== undefined && (typeof row.total !== 'number' || !Number.isFinite(row.total))) return undefined
+  if (row.nextOffset !== undefined && row.nextOffset !== null
+    && (typeof row.nextOffset !== 'number' || !Number.isFinite(row.nextOffset))) return undefined
+  const entries = row.entries.flatMap((entry): DshMarketListingEntry[] => {
+    const parsed = marketEntryOf(entry)
+    return parsed === undefined ? [] : [parsed]
+  })
+  const url = typeof row.url === 'string' ? row.url : undefined
+  const title = marketText(row.title)
+  return { entries, total: typeof row.total === 'number' ? row.total : entries.length, nextOffset: typeof row.nextOffset === 'number' ? row.nextOffset : null,
+    ...(url === undefined ? {} : { url }), ...(title === undefined ? {} : { title }) }
+}
+
+/** Codes the bundle installer can report; unknown codes are kept bounded. */
+const INSTALL_ERROR_CODES = new Set(['management-required', 'unaddressable', 'unknown-plugin', 'invalid-spec',
+  'already-installed', 'ambiguous-install', 'not-bundle', 'not-removable', 'stop-profile', 'bundle-in-use',
+  'stale-approval', 'incompatible-version', 'unsupported-platform', 'operation-error'])
+
+function installResultOf(value: unknown): DshBundleInstallResult | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  const application = row.application
+  if (application !== 'applied' && application !== 'restart-required' && application !== 'failed'
+    && application !== 'cancelled' && application !== 'overridden') return undefined
+  let error: DshBundleInstallResult['error']
+  if (row.error !== undefined) {
+    if (typeof row.error !== 'object' || row.error === null) return undefined
+    const cause = row.error as Record<string, unknown>
+    const code = typeof cause.code === 'string' ? cause.code.replace(/[^\x20-\x7E]/gu, '').slice(0, 64) : undefined
+    if (cause.code !== undefined && (code === undefined || code === '')) return undefined
+    // Only the bounded, known code is kept: diagnostics may quote package output.
+    if (code !== undefined && INSTALL_ERROR_CODES.has(code)) error = { code }
+  }
+  const pendingBuilds = Array.isArray(row.pendingBuilds)
+    ? row.pendingBuilds.flatMap((name: unknown): string[] => typeof name === 'string' && name.trim() !== '' ? [name.trim().slice(0, 300)] : [])
+    : undefined
+  const restartReason = typeof row.restartReason === 'string' ? row.restartReason.slice(0, 100) : undefined
+  const stage = typeof row.stage === 'string' ? row.stage.slice(0, 40) : undefined
+  const target = typeof row.target === 'string' ? row.target.slice(0, 500) : undefined
+  const bundle = typeof row.bundle === 'string' && row.bundle !== '' ? row.bundle.slice(0, 500) : undefined
+  const version = typeof row.version === 'string' && row.version !== '' ? row.version.slice(0, 200) : undefined
+  return { changed: typeof row.changed === 'boolean' ? row.changed : application === 'applied',
+    application,
+    ...(stage === undefined ? {} : { stage }),
+    ...(target === undefined ? {} : { target }),
+    ...(restartReason === undefined ? {} : { restartReason }),
+    ...(bundle === undefined ? {} : { bundle }),
+    ...(version === undefined ? {} : { version }),
+    ...(pendingBuilds === undefined ? {} : { pendingBuilds }),
+    ...(error === undefined ? {} : { error }) }
 }
 
 /** The profile mutation outcome `pluginManager/setBundleEnabled` returns. */
@@ -124,6 +349,34 @@ function translationLimitsOf(value: unknown): DshTranslationLimits | undefined {
   if (!Array.isArray(reported) || !reported.every(item => typeof item === 'string')) return undefined
   if (maxTextChars === undefined || provider === undefined || targetLanguage === undefined) return undefined
   return { maxTextChars, preferences: { provider, targetLanguage }, availableProviders: reported.filter(isTranslationProvider) }
+}
+
+/**
+ * Validate the business result of `sessionFeedback/record`.
+ *
+ * Like the message ratings, the answer is an `{ok}` union carried inside the
+ * transport's value slot, so a refusal is a value that must become a rejection.
+ * Only envelope fields are read here: the feedback text cannot reach a message
+ * built by this function, so it cannot reach a log through one either.
+ */
+function recordedSessionFeedback(result: unknown): { recorded: true } {
+  if (!wireRecord(result)) {
+    throw new DshConnectionError('invalid-response', 'DSH returned an unexpected session feedback result.')
+  }
+  if (result.ok === true) {
+    const value = result.value
+    if (wireRecord(value) && value.recorded === true) return { recorded: true }
+    throw new DshConnectionError('invalid-response', 'DSH did not confirm the session feedback was recorded.')
+  }
+  if (result.ok === false) {
+    const error = result.error
+    const code = wireRecord(error) && typeof error.code === 'string' && error.code !== '' ? error.code : 'unknown'
+    if (code === 'session-not-found') {
+      throw new DshConnectionError('session-not-found', 'This conversation no longer exists in the runtime, so the feedback was not recorded.')
+    }
+    throw new DshConnectionError(code, `DSH did not record the session feedback (${code}).`)
+  }
+  throw new DshConnectionError('invalid-response', 'DSH returned an unexpected session feedback result.')
 }
 
 export interface CommandDescriptor {
@@ -251,6 +504,27 @@ export interface MessageFeedbackItem {
 export type MessageFeedbackOutcome<T> =
   | { ok: true; value: T }
   | { ok: false; error: { code: string; message?: string; current?: MessageFeedbackItem | null } }
+
+/**
+ * DSH's Session-level feedback vocabulary.
+ *
+ * The seven categories are the whole accepted set; the Host offers them verbatim
+ * so a label choice always maps to one of these wire values.
+ */
+export type SessionFeedbackCategory =
+  | 'other'
+  | 'task-result'
+  | 'instruction-following'
+  | 'product-interaction'
+  | 'service-stability'
+  | 'resource-cost'
+  | 'security-privacy-permission'
+
+/** One Session-level feedback entry. Empty text is encoded by omission. */
+export interface SessionFeedbackRequest {
+  text?: string
+  category?: SessionFeedbackCategory
+}
 
 export interface SessionModels {
   current: ModelSelection
@@ -387,16 +661,21 @@ export class DshClient {
     return this.call('schedule/run', { request: { id } }, 10_000)
   }
   /**
-   * Pause, resume or delete one reminder.
+   * Pause, resume, retime or delete one reminder.
    *
    * DSH alpha.3 replaced the old `schedule/delete`/`schedule/update` endpoints
    * with this closed edit operation; `expectedUpdatedAt` is the stored revision
    * the caller read and makes a stale edit a `schedule_conflict` instead of a
-   * silent overwrite.
+   * silent overwrite. An update patch may name a title, a prompt, a timing rule
+   * or the active flag, all in one atomic write.
    */
-  scheduleEdit(id: string, edit: { action: 'update'; patch: { active: boolean }; expectedUpdatedAt?: string }
+  scheduleEdit(id: string, edit: { action: 'update'; patch: ScheduleUpdatePatch; expectedUpdatedAt?: string }
     | { action: 'delete'; expectedUpdatedAt?: string }): Promise<unknown> {
     return this.call('schedule/edit', { request: { id, ...edit } }, 10_000)
+  }
+  /** Create one reminder; DSH answers with its stored catalog entry. */
+  createSchedule(request: ScheduleCreateRequest): Promise<unknown> {
+    return this.call('schedule/create', { request }, 10_000)
   }
   /** Remove every ended reminder; answers `{ deleted: number }`. */
   scheduleDeleteInactive(): Promise<unknown> {
@@ -554,6 +833,26 @@ export class DshClient {
   }
 
   /**
+   * Record one Session-level feedback entry.
+   *
+   * The request text is free-form user content: it is trimmed for the wire (an
+   * empty text is omitted, per the contract) and is never logged here. Feedback
+   * starts no model turn and interrupts none, so this call changes no session
+   * state; the returned confirmation is the whole result.
+   */
+  async recordSessionFeedback(sessionId: string, request: SessionFeedbackRequest = {}): Promise<{ recorded: true }> {
+    const text = typeof request.text === 'string' ? request.text.trim() : ''
+    const value = await this.call<unknown>('sessionFeedback/record', {
+      request: {
+        sessionId,
+        ...(text === '' ? {} : { text }),
+        ...(request.category === undefined ? {} : { category: request.category }),
+      },
+    })
+    return recordedSessionFeedback(value)
+  }
+
+  /**
    * Copy the conversation up to an event seq into a new one.
    *
    * `atSeq` is an inclusive cut; omitting it takes the last completed turn. The
@@ -599,6 +898,55 @@ export class DshClient {
    */
   setBundleEnabled(name: string, enabled: boolean): Promise<DshBundleChange> {
     return this.call<DshBundleChange>('pluginManager/setBundleEnabled', { name, enabled }, 130_000)
+  }
+  /**
+   * List the plugin-market indexes configured in the runtime profile.
+   *
+   * A runtime without the `plugin-market` service answers HTTP 404; the caller
+   * turns that into "enable the bundle or configure an index" rather than a
+   * protocol error. A malformed body is refused, never displayed.
+   */
+  async pluginMarketIndexes(): Promise<DshMarketIndexSummary[]> {
+    const value = await this.call<unknown>('pluginMarket/listIndexes', {}, PLUGIN_MARKET_TIMEOUT_MS)
+    const indexes = marketIndexesOf(value)
+    if (indexes === undefined) throw new DshConnectionError('invalid-response', 'DSH pluginMarket/listIndexes returned an unexpected result.')
+    return indexes
+  }
+  /**
+   * Search one configured index for plugins matching free text.
+   *
+   * The query is fixed to the first page ordered by relevance: the VS Code
+   * entry installs one plugin, it does not browse paginated results.
+   */
+  async pluginMarketSearch(url: string, text: string): Promise<DshMarketSearchPage> {
+    const query = {
+      ...(text.trim() === '' ? {} : { text: text.trim() }),
+      sort: { kind: 'relevance' as const }, offset: 0, limit: 20,
+    }
+    const value = await this.call<unknown>('pluginMarket/search', { url, query }, PLUGIN_MARKET_TIMEOUT_MS)
+    const page = marketPageOf(value)
+    if (page === undefined) throw new DshConnectionError('invalid-response', 'DSH pluginMarket/search returned an unexpected result.')
+    return page
+  }
+  /**
+   * Install one bundle spec into the runtime profile.
+   *
+   * The host serializes profile mutations under a file lock it waits up to
+   * 120 s for and then runs the package manager, so the client timeout is
+   * deliberately longer than either bound. The caller must confirm with the
+   * user before invoking this: the request changes the shared web profile.
+   */
+  async installBundle(spec: string, options: DshBundleInstallOptions = {}): Promise<DshBundleInstallResult> {
+    const wire = {
+      ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
+      ...(options.registry === undefined || options.registry === '' ? {} : { registry: options.registry }),
+      ...(options.saveExact === undefined ? {} : { saveExact: options.saveExact }),
+    }
+    const value = await this.call<unknown>('pluginManager/installBundle',
+      { spec, ...(Object.keys(wire).length === 0 ? {} : { options: wire }) }, BUNDLE_INSTALL_TIMEOUT_MS)
+    const result = installResultOf(value)
+    if (result === undefined) throw new DshConnectionError('invalid-response', 'DSH pluginManager/installBundle returned an unexpected result.')
+    return result
   }
   /** Origin of the runtime this client is bound to; used for the sign-in callback. */
   get runtimeOrigin(): URL { return this.connection.baseUrl }

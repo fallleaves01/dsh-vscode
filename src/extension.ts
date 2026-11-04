@@ -60,6 +60,8 @@ import {
   type PromptMode,
   type PromptImage,
   type QueueAction,
+  type SessionFeedbackCategory,
+  type SessionFeedbackRequest,
   type SessionModels,
   type SessionSummary,
   type SkillDescriptor,
@@ -75,7 +77,11 @@ import { jobsSnapshotOf, type JobItem } from './jobs.js'
 import { todosOf, type TodoItem } from './task-state.js'
 import { agentTeamOf, type AgentTeamView } from './agent-team-state.js'
 import { TaskFeatureController, type TaskFeatureState, type GoalAction } from './task-feature-controller.js'
-import { emptyGoalState, emptyScheduleState, emptySearchState, JobOutputTail, workflowsOf, type JobChunk, type WorkflowRun } from './task-features.js'
+import { emptyGoalState, emptyScheduleState, emptySearchState, formatDurationSeconds, JobOutputTail, localTimeZone,
+  scheduleClockOf, scheduleCronOf, scheduleDateOf, scheduleDurationOf, schedulePromptOf,
+  scheduleTimeZoneOf, scheduleTimingOf, scheduleTitleOf, scheduleWeekdaysOf, workflowsOf,
+  type JobChunk, type ScheduleEntry, type ScheduleKind, type ScheduleTiming, type ScheduleTimingDetail,
+  type ScheduleTargetRequest, type ScheduleUpdatePatch, type WorkflowRun } from './task-features.js'
 import { TaskPanelManager } from './task-panels.js'
 import { queueSnapshotOf, type QueuedCommandItem, type QueueItemState } from './queue.js'
 import type { AssistantStreamUpdate } from './dsh-assistant-stream.js'
@@ -84,6 +90,7 @@ import { toolWriteIntents } from './tool-write-guard.js'
 import { pageConversationMessage } from './tool-output-page.js'
 import { chatHtml } from './webview.js'
 import { DshPluginManager } from './plugin-manager.js'
+import { discoverPlugins, installOfficialPlugin, type PluginMarketHost } from './plugin-market.js'
 import { SettingsPanelManager } from './settings-panel.js'
 import { runtimeIsNotOurs } from './runtime-change.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
@@ -480,6 +487,53 @@ function attachmentKindOf(attachments: readonly PromptAttachment[]): 'images' | 
   return 'attachments'
 }
 
+/** Native quick-pick choices for one reminder's timing rule. */
+const SCHEDULE_KIND_ITEMS: ReadonlyArray<{ label: string; description: string; scheduleKind: ScheduleKind }> = [
+  { label: 'Once, after a delay', description: 'for example 10m or 90s', scheduleKind: 'after' },
+  { label: 'Once, at a date and time', description: 'local date, time and time zone', scheduleKind: 'at' },
+  { label: 'Every interval', description: 'minimum one minute', scheduleKind: 'every' },
+  { label: 'Daily at a time', description: 'local time and IANA time zone', scheduleKind: 'daily' },
+  { label: 'Weekly on weekdays', description: 'Monday 1 through Sunday 7', scheduleKind: 'weekly' },
+  { label: 'Cron expression', description: 'five fields, for example */5 * * * *', scheduleKind: 'cron' },
+  { label: 'RRULE', description: 'one DTSTART line and one RRULE line', scheduleKind: 'rrule' },
+]
+
+/** Native quick-pick choices for one reminder's delivery destination. */
+const SCHEDULE_TARGET_ITEMS: ReadonlyArray<{ label: string; description: string; targetKind: 'session' | 'new_once' | 'new' }> = [
+  { label: 'This conversation', description: 'deliver into the conversation that created the reminder', targetKind: 'session' },
+  { label: 'New conversation once', description: 'create one conversation at the first delivery', targetKind: 'new_once' },
+  { label: 'New conversation each time', description: 'create a fresh conversation for every delivery', targetKind: 'new' },
+]
+
+/** Native quick-pick choices for the part of one reminder to edit. */
+const SCHEDULE_EDIT_ITEMS: ReadonlyArray<{ label: string; description: string; editField: 'title' | 'prompt' | 'timing' }> = [
+  { label: 'Title', description: 'rename the reminder', editField: 'title' },
+  { label: 'Instruction', description: 'change what is sent when it fires', editField: 'prompt' },
+  { label: 'Schedule', description: 'change when it fires', editField: 'timing' },
+]
+
+/** Turn one pure field parser into a `showInputBox` validator. */
+function scheduleInputProblem(parse: (value: string) => unknown): (value: string) => string | undefined {
+  return value => {
+    try { parse(value); return undefined }
+    catch (error) { return error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/** `YYYY-MM-DD` and `HH:mm` of one instant in the editor's local zone. */
+function localScheduleDefaults(instant: string | undefined, offsetDays: number): { date: string; time: string } {
+  const parsed = instant === undefined ? new Date(Date.now() + offsetDays * 86_400_000) : new Date(instant)
+  const date = Number.isNaN(parsed.getTime()) ? new Date() : parsed
+  const pad = (part: number): string => String(part).padStart(2, '0')
+  return { date: `${String(date.getFullYear())}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    time: `${pad(date.getHours())}:${pad(date.getMinutes())}` }
+}
+
+/** Clock text of one stored `HH:mm:ss[.SSS]` value, as the edit dialog shows it. */
+function clockInputTime(value: string): string {
+  return value.slice(0, 5)
+}
+
 export class DshChatController implements vscode.Disposable {
   private readonly changes = new vscode.EventEmitter<ChatViewState>()
   private readonly settingsChanges = new vscode.EventEmitter<void>()
@@ -732,6 +786,201 @@ export class DshChatController implements vscode.Disposable {
   /** Remove every ended reminder and answer how many were deleted. */
   async deleteEndedSchedules(): Promise<number> {
     this.requireReady(); return this.taskFeatures.deleteEndedSchedules()
+  }
+  /** Ask for one reminder's fields with native dialogs and create it. */
+  async createReminder(): Promise<void> {
+    this.requireReady()
+    const client = this.requireClient()
+    const title = await this.askScheduleField({ title: 'New reminder', prompt: 'Name this reminder.',
+      validateInput: scheduleInputProblem(scheduleTitleOf) })
+    if (title === undefined) return
+    const prompt = await this.askScheduleField({ title: 'Reminder instruction',
+      prompt: 'What should DeepSeek do when this reminder fires?', validateInput: scheduleInputProblem(schedulePromptOf) })
+    if (prompt === undefined) return
+    const kind = await this.promptScheduleKind()
+    if (kind === undefined) return
+    let timing: ScheduleTiming
+    let target: ScheduleTargetRequest
+    try {
+      const built = await this.promptScheduleTiming(kind)
+      if (built === undefined) return
+      timing = built
+      const picked = await this.promptScheduleTarget()
+      if (picked === undefined) return
+      target = picked
+    } catch (error) { await this.showReminderFailure('create', error); return }
+    try { await this.taskFeatures.createSchedule({ title: scheduleTitleOf(title), prompt: schedulePromptOf(prompt), timing, target }) }
+    catch (error) { await this.showReminderFailure('create', error); return }
+    if (this.client !== client) return
+    await vscode.window.showInformationMessage('Reminder created.')
+  }
+
+  /** Ask which part of one reminder to change and apply the edit atomically. */
+  async editReminder(id: string): Promise<void> {
+    this.requireReady()
+    const client = this.requireClient()
+    const item = this.taskFeatures.state.schedules.items.find(candidate => candidate.id === id)
+    if (item === undefined) {
+      await vscode.window.showErrorMessage('This reminder no longer exists. Refresh the reminders panel.')
+      return
+    }
+    if (item.target === undefined) {
+      await vscode.window.showErrorMessage('This reminder was created by an older DSH runtime and cannot be edited here.')
+      return
+    }
+    const field = await vscode.window.showQuickPick(SCHEDULE_EDIT_ITEMS, { title: 'Edit reminder',
+      placeHolder: `Change which part of "${item.title}"?`, ignoreFocusOut: true })
+    if (field === undefined) return
+    let patch: ScheduleUpdatePatch
+    try {
+      if (field.editField === 'title') {
+        const value = await this.askScheduleField({ title: 'Reminder title', prompt: 'Name this reminder.',
+          value: item.title, validateInput: scheduleInputProblem(scheduleTitleOf) })
+        if (value === undefined) return
+        patch = { title: scheduleTitleOf(value) }
+      } else if (field.editField === 'prompt') {
+        const value = await this.askScheduleField({ title: 'Reminder instruction',
+          prompt: 'What should DeepSeek do when this reminder fires?', value: item.prompt,
+          validateInput: scheduleInputProblem(schedulePromptOf) })
+        if (value === undefined) return
+        patch = { prompt: schedulePromptOf(value) }
+      } else {
+        const kind = await this.promptScheduleKind(item)
+        if (kind === undefined) return
+        const timing = await this.promptScheduleTiming(kind, item)
+        if (timing === undefined) return
+        patch = { timing }
+      }
+    } catch (error) { await this.showReminderFailure('edit', error); return }
+    try { await this.taskFeatures.updateSchedule(id, patch) }
+    catch (error) {
+      // Re-read the catalog so a conflict shows the revision the runtime kept.
+      if (this.client === client) await this.taskFeatures.refreshSchedules(true)
+      await this.showReminderFailure('edit', error)
+      return
+    }
+    if (this.client !== client) return
+    await vscode.window.showInformationMessage('Reminder updated.')
+  }
+
+  /** One native input box with optional prefill and per-field validation. */
+  private askScheduleField(options: { title: string; prompt: string; value?: string; validateInput?: (value: string) => string | undefined }): Thenable<string | undefined> {
+    return vscode.window.showInputBox({ title: options.title, prompt: options.prompt, ignoreFocusOut: true,
+      ...(options.value === undefined || options.value === '' ? {} : { value: options.value }),
+      ...(options.validateInput === undefined ? {} : { validateInput: options.validateInput }) })
+  }
+
+  /** Ask where one reminder delivers; "this conversation" is the default choice. */
+  private async promptScheduleTarget(): Promise<ScheduleTargetRequest | undefined> {
+    const picked = await vscode.window.showQuickPick(SCHEDULE_TARGET_ITEMS, { title: 'Reminder destination',
+      placeHolder: 'Where should this reminder be delivered?', ignoreFocusOut: true })
+    if (picked === undefined) return undefined
+    if (picked.targetKind !== 'session') return { kind: picked.targetKind }
+    if (this._state.sessionId === '') throw new Error('Open a conversation before creating a reminder in it.')
+    return { kind: 'session', sessionId: this._state.sessionId }
+  }
+
+  /** Ask for one timing rule kind, keeping the reminder's current rule first. */
+  private async promptScheduleKind(item?: ScheduleEntry): Promise<ScheduleKind | undefined> {
+    const items = [...SCHEDULE_KIND_ITEMS]
+    const index = item === undefined ? -1 : items.findIndex(entry => entry.scheduleKind === item.kind)
+    if (index > 0) items.unshift(...items.splice(index, 1))
+    const picked = await vscode.window.showQuickPick(items, { title: 'Reminder schedule',
+      placeHolder: item === undefined ? 'How often should this reminder fire?' : 'Change the reminder schedule', ignoreFocusOut: true })
+    return picked?.scheduleKind
+  }
+
+  /** Collect the fields one timing rule needs and build its DSH selector. */
+  private async promptScheduleTiming(kind: ScheduleKind, item?: ScheduleEntry): Promise<ScheduleTiming | undefined> {
+    const detail = item?.timingDetail
+    const durationProblem = (minimumSeconds: number): (value: string) => string | undefined =>
+      scheduleInputProblem(value => scheduleDurationOf(value, minimumSeconds))
+    const timeZoneProblem = scheduleInputProblem(scheduleTimeZoneOf)
+    const zoneOf = (current: ScheduleTimingDetail | undefined): string =>
+      current !== undefined && 'timeZone' in current ? current.timeZone : localTimeZone()
+    switch (kind) {
+      case 'after': {
+        const value = await this.askScheduleField({ title: 'Reminder delay',
+          prompt: 'How long from now? Use 10m, 90s or 1h.',
+          ...(detail?.kind === 'after' ? { value: formatDurationSeconds(detail.afterSeconds) } : {}),
+          validateInput: durationProblem(1) })
+        return value === undefined ? undefined : scheduleTimingOf({ kind: 'after', duration: value })
+      }
+      case 'every': {
+        const value = await this.askScheduleField({ title: 'Reminder interval',
+          prompt: 'How often? Use 10m, 90s or 1h; the minimum is one minute.',
+          ...(detail?.kind === 'every' ? { value: formatDurationSeconds(detail.everySeconds) } : {}),
+          validateInput: durationProblem(60) })
+        return value === undefined ? undefined : scheduleTimingOf({ kind: 'every', duration: value })
+      }
+      case 'at': {
+        const defaults = localScheduleDefaults(item?.scheduledAt, item === undefined ? 1 : 0)
+        const date = await this.askScheduleField({ title: 'Reminder date',
+          prompt: 'The local calendar date as YYYY-MM-DD.', value: defaults.date,
+          validateInput: scheduleInputProblem(scheduleDateOf) })
+        if (date === undefined) return undefined
+        const time = await this.askScheduleField({ title: 'Reminder time',
+          prompt: 'The local wall-clock time as HH:mm.', value: defaults.time,
+          validateInput: scheduleInputProblem(scheduleClockOf) })
+        if (time === undefined) return undefined
+        const zone = await this.askScheduleField({ title: 'Time zone',
+          prompt: 'UTC or an IANA time zone such as Asia/Shanghai.', value: zoneOf(undefined), validateInput: timeZoneProblem })
+        return zone === undefined ? undefined : scheduleTimingOf({ kind: 'at', date, time, timeZone: zone })
+      }
+      case 'daily': {
+        const time = await this.askScheduleField({ title: 'Reminder time',
+          prompt: 'The local wall-clock time as HH:mm.',
+          value: detail?.kind === 'daily' ? clockInputTime(detail.time) : '09:00',
+          validateInput: scheduleInputProblem(scheduleClockOf) })
+        if (time === undefined) return undefined
+        const zone = await this.askScheduleField({ title: 'Time zone',
+          prompt: 'UTC or an IANA time zone such as Asia/Shanghai.', value: zoneOf(detail), validateInput: timeZoneProblem })
+        return zone === undefined ? undefined : scheduleTimingOf({ kind: 'daily', time, timeZone: zone })
+      }
+      case 'weekly': {
+        const time = await this.askScheduleField({ title: 'Reminder time',
+          prompt: 'The local wall-clock time as HH:mm.',
+          value: detail?.kind === 'weekly' ? clockInputTime(detail.time) : '09:00',
+          validateInput: scheduleInputProblem(scheduleClockOf) })
+        if (time === undefined) return undefined
+        const weekdays = await this.askScheduleField({ title: 'Weekdays',
+          prompt: 'Weekdays 1-7 (1 = Monday), separated by commas, for example 1,3,5.',
+          value: detail?.kind === 'weekly' ? detail.weekdays.join(',') : '1',
+          validateInput: scheduleInputProblem(scheduleWeekdaysOf) })
+        if (weekdays === undefined) return undefined
+        const zone = await this.askScheduleField({ title: 'Time zone',
+          prompt: 'UTC or an IANA time zone such as Asia/Shanghai.', value: zoneOf(detail), validateInput: timeZoneProblem })
+        return zone === undefined ? undefined : scheduleTimingOf({ kind: 'weekly', time, weekdays, timeZone: zone })
+      }
+      case 'cron': {
+        const expression = await this.askScheduleField({ title: 'Cron expression',
+          prompt: 'Five fields: minute hour day-of-month month day-of-week, for example */5 * * * *.',
+          ...(detail?.kind === 'cron' ? { value: detail.expression } : {}),
+          validateInput: scheduleInputProblem(scheduleCronOf) })
+        if (expression === undefined) return undefined
+        const zone = await this.askScheduleField({ title: 'Time zone',
+          prompt: 'UTC or an IANA time zone such as Asia/Shanghai.', value: zoneOf(detail), validateInput: timeZoneProblem })
+        return zone === undefined ? undefined : scheduleTimingOf({ kind: 'cron', expression, timeZone: zone })
+      }
+      case 'rrule': {
+        const lines = detail?.kind === 'rrule' ? detail.rrule.split('\n') : []
+        const dtstart = await this.askScheduleField({ title: 'DTSTART line',
+          prompt: 'For example DTSTART;TZID=Asia/Shanghai:20261105T090000.',
+          value: lines[0] ?? '',
+          validateInput: value => value.trim().startsWith('DTSTART') ? undefined : 'The DTSTART line must start with DTSTART.' })
+        if (dtstart === undefined) return undefined
+        const rruleLine = await this.askScheduleField({ title: 'RRULE line',
+          prompt: 'For example RRULE:FREQ=DAILY;INTERVAL=1.', value: lines[1] ?? '',
+          validateInput: value => value.trim().startsWith('RRULE') ? undefined : 'The RRULE line must start with RRULE.' })
+        return rruleLine === undefined ? undefined : scheduleTimingOf({ kind: 'rrule', rrule: `${dtstart}\n${rruleLine}` })
+      }
+    }
+  }
+
+  /** Report one reminder dialog or RPC failure with a readable notice. */
+  private async showReminderFailure(action: 'create' | 'edit', error: unknown): Promise<void> {
+    const detail = redactDshSecrets(dshErrorText(error))
+    await vscode.window.showErrorMessage(`Could not ${action === 'create' ? 'create' : 'update'} the reminder. ${detail}`)
   }
   async changeGoal(sessionId: string, action: GoalAction, ref?: { id: string; revision: number }, request?: { objective?: string; maxGoalRounds?: number }): Promise<void> {
     this.requireReady()
@@ -3436,6 +3685,20 @@ export class DshChatController implements vscode.Disposable {
     this.publish({ messageFeedback: [...this.feedback.values()] })
   }
 
+  /**
+   * Record one Session-level feedback entry.
+   *
+   * DSH stores free-form text, so nothing here logs or publishes it: the method
+   * forwards the request and returns the runtime's confirmation. Feedback starts
+   * no model turn and interrupts none, so the conversation state is untouched.
+   */
+  async recordSessionFeedback(sessionId: string, request: SessionFeedbackRequest = {}): Promise<{ recorded: true }> {
+    this.requireReady()
+    const client = this.requireClient()
+    if (sessionId !== this._state.sessionId) throw new Error('Open this conversation before sending feedback.')
+    return client.recordSessionFeedback(sessionId, request)
+  }
+
   /** The latest closed turn's boundary facts, when the loaded window has one. */
   private latestTurnEnd(): { turn: number; seq: number; reasonKind: string } | undefined {
     const facts = this.projector.turnEndFacts()
@@ -3928,6 +4191,23 @@ const MAX_ENCODED_ATTACHMENT_BASE64 = Math.ceil(MAX_DRAFT_FILE_BYTES * 4 / 3) + 
 /** One attachment display name: single line, bounded. */
 const MAX_ATTACHMENT_NAME_CHARS = 256
 
+/**
+ * DSH's seven Session-feedback categories, as the native picker offers them.
+ *
+ * The labels belong to the Host; `category` is the wire value. "No category"
+ * carries none, because the contract allows feedback without one.
+ */
+const SESSION_FEEDBACK_CHOICES: readonly { label: string; description: string; category?: SessionFeedbackCategory }[] = [
+  { label: 'No category', description: 'Record the feedback without a category' },
+  { label: 'Task result', description: 'How the task or turn ended', category: 'task-result' },
+  { label: 'Instruction following', description: 'Whether the instructions were followed', category: 'instruction-following' },
+  { label: 'Product interaction', description: 'How the conversation or interface behaved', category: 'product-interaction' },
+  { label: 'Service stability', description: 'Interruptions, failures, or unavailable features', category: 'service-stability' },
+  { label: 'Resource cost', description: 'Time, tokens, or other resource cost', category: 'resource-cost' },
+  { label: 'Security, privacy, permission', description: 'Safety of access, data, or permissions', category: 'security-privacy-permission' },
+  { label: 'Other', description: 'Anything else', category: 'other' },
+]
+
 /** A Webview-provided attachment name is untrusted: single line, bounded. */
 function attachmentDisplayName(value: unknown): string {
   if (typeof value !== 'string') return 'attachment'
@@ -4375,6 +4655,44 @@ class DshSurface implements vscode.Disposable {
     })
     if (delivered) this.output.appendLine(`[webview] resent the full view state in ${String(Date.now() - started)} ms`)
     else this.output.appendLine('[webview] the full view state could not be delivered; the watchdog may ask again')
+  }
+
+  /**
+   * Ask for one Session-level feedback entry and record it.
+   *
+   * Both native prompts are optional: dismissing either one sends nothing, and
+   * an empty text is valid because DSH accepts feedback without one. The text is
+   * never logged or echoed in a message; failures name only a status code.
+   */
+  private async sendSessionFeedback(sessionId: string): Promise<void> {
+    const picked = await vscode.window.showQuickPick(
+      SESSION_FEEDBACK_CHOICES.map(choice => ({ label: choice.label, description: choice.description, category: choice.category })),
+      { title: 'Send feedback', placeHolder: 'Choose what the feedback is about' },
+    )
+    if (picked === undefined) return
+    const text = await vscode.window.showInputBox({
+      title: 'Send feedback',
+      prompt: 'Describe the feedback (optional)',
+      placeHolder: 'Optional details',
+    })
+    if (text === undefined) return
+    try {
+      await this.controller.recordSessionFeedback(sessionId, {
+        ...(picked.category === undefined ? {} : { category: picked.category }),
+        ...(text.trim() === '' ? {} : { text: text.trim() }),
+      })
+      void vscode.window.showInformationMessage('Feedback recorded.')
+    } catch (error) {
+      if (error instanceof DshConnectionError && error.code === 'session-not-found') {
+        void vscode.window.showWarningMessage('This conversation no longer exists in the runtime. Feedback was not recorded.')
+        return
+      }
+      // Only a status code is reported: the feedback text must not be repeated
+      // into a dialog, and it was never part of the error this extension built.
+      const code = error instanceof DshConnectionError ? error.code : ''
+      const detail = code === '' ? 'The runtime did not confirm it.' : `The runtime reported ${code}.`
+      void vscode.window.showErrorMessage(`Could not record feedback. ${detail}`)
+    }
   }
 
   private async chooseImages(): Promise<void> {
@@ -4971,6 +5289,12 @@ class DshSurface implements vscode.Disposable {
           // legacy alpha.2 fallback hint and may be absent.
           if (typeof value.id === 'string') await this.controller.scheduleHistory(typeof value.sessionId === 'string' ? value.sessionId : '', value.id, typeof value.before === 'string' ? value.before : undefined)
           return
+        case 'schedule-create':
+          await this.controller.createReminder()
+          return
+        case 'schedule-edit':
+          if (typeof value.id === 'string') await this.controller.editReminder(value.id)
+          return
         case 'schedule-run':
           if (typeof value.id === 'string') await this.controller.runSchedule(value.id)
           return
@@ -5048,6 +5372,9 @@ class DshSurface implements vscode.Disposable {
               await vscode.window.showErrorMessage(`Could not rename the conversation. ${detail} Update DSH if this method is unavailable.`)
             }
           }
+          return
+        case 'session-feedback':
+          if (typeof value.sessionId === 'string') await this.sendSessionFeedback(value.sessionId)
           return
         case 'archive-session':
           if (typeof value.sessionId === 'string') {
@@ -6026,6 +6353,20 @@ export function activate(context: vscode.ExtensionContext): void {
       })
     })
   }))
+  /**
+   * The plugin-market and official-install commands share the profile-owning
+   * controller: readiness, client identity and "this runtime is attach-only" are
+   * decided exactly as for the settings page, not re-derived per command.
+   */
+  const pluginMarketHost: PluginMarketHost = {
+    get phase() { return controller.state.phase },
+    get runtimeOwnership() { return controller.runtimeOwnership },
+    client: () => controller.settingsClient(),
+    refreshSettings: () => settingsPanel.refresh(),
+    log: line => output.appendLine(line),
+  }
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.discoverPlugins', () => discoverPlugins(pluginMarketHost)))
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.installOfficialPlugin', () => installOfficialPlugin(pluginMarketHost)))
   /**
    * Deliver Explorer resources to whichever chat surface is open: the sidebar
    * view provider when it is resolved, otherwise the newest editor panel.

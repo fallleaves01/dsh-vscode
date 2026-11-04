@@ -995,6 +995,7 @@ describe('task feature RPCs and project background discovery', () => {
     expect(await h.client.schedules()).toEqual([{
       id: 'r1', title: 'Morning review', prompt: 'Check jobs', kind: 'daily', scheduledAt: '2026-11-05T01:00:00Z',
       status: 'active', target: { kind: 'new' }, involvedSessionIds: [], updatedAt: '2026-11-03T00:00:00Z',
+      timingDetail: { kind: 'daily', time: '09:00:00.000', timeZone: 'Asia/Shanghai' },
       lastDelivery: { scheduledAt: '2026-11-04T01:00:00Z', deliveredAt: '2026-11-04T01:00:01Z', messageId: 'm', targetSessionId: 'created' },
     }])
   })
@@ -1075,6 +1076,22 @@ describe('task feature RPCs and project background discovery', () => {
       { endpoint: 'schedule/edit', args: { request: { id: 'r', action: 'update', patch: { active: true } } } },
       { endpoint: 'schedule/edit', args: { request: { id: 'r', action: 'delete' } } },
       { endpoint: 'schedule/deleteInactive', args: {} },
+    ])
+  })
+  it('sends the alpha.3 schedule create and content-edit contracts', async () => {
+    const h = harness()
+    h.results['schedule/create'] = { id: 'new', kind: 'daily', title: 'Daily review', prompt: 'Check', scheduledAt: 'x',
+      target: { kind: 'session', sessionId: 's' }, involvedSessionIds: [], status: 'active' }
+    const timing = { kind: 'daily' as const, daily: { time: '09:00:00', time_zone: 'UTC' } }
+    expect(await h.client.createSchedule({ title: 'Daily review', prompt: 'Check', timing, target: { kind: 'session', sessionId: 's' } }))
+      .toMatchObject({ id: 'new' })
+    await h.client.scheduleEdit('new', { action: 'update',
+      patch: { title: 'Renamed review', prompt: 'New instruction', timing, active: true }, expectedUpdatedAt: 'rev-2' })
+    expect(h.requests).toEqual([
+      { endpoint: 'schedule/create', args: { request: { title: 'Daily review', prompt: 'Check', timing,
+        target: { kind: 'session', sessionId: 's' } } } },
+      { endpoint: 'schedule/edit', args: { request: { id: 'new', action: 'update',
+        patch: { title: 'Renamed review', prompt: 'New instruction', timing, active: true }, expectedUpdatedAt: 'rev-2' } } },
     ])
   })
   it('discovers work in unvisited conversations with at most eight pending baselines', async () => {
@@ -1308,5 +1325,184 @@ describe('workspace pins', () => {
       channel: 'host', rpcId: '',
       payload: { type: 'host/pinned-sessions-changed', pinnedSessionIds: ['b'] },
     })
+  })
+})
+
+describe('Session-level feedback', () => {
+  const recorded = { ok: true, value: { recorded: true } }
+
+  it('sends the trimmed text and category in the contract request shape', async () => {
+    const h = harness()
+    h.results['sessionFeedback/record'] = recorded
+    await expect(h.client.recordSessionFeedback('s', { text: '  The task ended clearly.  ', category: 'task-result' }))
+      .resolves.toEqual({ recorded: true })
+    expect(h.requests.at(-1)).toEqual({
+      endpoint: 'sessionFeedback/record',
+      args: { request: { sessionId: 's', text: 'The task ended clearly.', category: 'task-result' } },
+    })
+  })
+
+  it('omits an absent or empty text and accepts feedback without a category', async () => {
+    const h = harness()
+    h.results['sessionFeedback/record'] = recorded
+    await h.client.recordSessionFeedback('s')
+    expect(h.requests.at(-1)!.args).toEqual({ request: { sessionId: 's' } })
+    await h.client.recordSessionFeedback('s', { text: '   ' })
+    expect(h.requests.at(-1)!.args).toEqual({ request: { sessionId: 's' } })
+    await h.client.recordSessionFeedback('s', { category: 'security-privacy-permission' })
+    expect(h.requests.at(-1)!.args).toEqual({ request: { sessionId: 's', category: 'security-privacy-permission' } })
+  })
+
+  it('turns session-not-found into a readable rejection that quotes no feedback', async () => {
+    const h = harness()
+    h.results['sessionFeedback/record'] = { ok: false, error: { code: 'session-not-found', sessionId: 's' } }
+    const failure = await h.client.recordSessionFeedback('s', { text: 'a private detail' })
+      .catch(error => error as DshConnectionError)
+    expect(failure).toBeInstanceOf(DshConnectionError)
+    expect(failure.code).toBe('session-not-found')
+    expect(failure.message).toContain('no longer exists')
+    expect(failure.message).not.toContain('a private detail')
+  })
+
+  it('keeps another refusal code and never repeats the feedback text', async () => {
+    const h = harness()
+    h.results['sessionFeedback/record'] = { ok: false, error: { code: 'session/not-ready', message: 'busy' } }
+    const failure = await h.client.recordSessionFeedback('s', { text: 'a private detail' })
+      .catch(error => error as DshConnectionError)
+    expect(failure).toBeInstanceOf(DshConnectionError)
+    expect(failure.code).toBe('session/not-ready')
+    expect(failure.message).toContain('session/not-ready')
+    expect(failure.message).not.toContain('a private detail')
+  })
+
+  it.each([
+    ['a rejected envelope', { ok: true, value: { recorded: false } }],
+    ['a missing value', { ok: true }],
+    ['a non-envelope', null],
+    ['an unknown state', { ok: 'yes' }],
+  ])('rejects a malformed result: %s', async (_case, value) => {
+    const h = harness()
+    h.results['sessionFeedback/record'] = value
+    await expect(h.client.recordSessionFeedback('s')).rejects.toThrow(/session feedback/)
+  })
+})
+
+describe('DSH alpha.3 plugin market and on-demand bundles', () => {
+  it('reads configured market indexes with localized display text', async () => {
+    const h = harness()
+    h.results['pluginMarket/listIndexes'] = [
+      { url: 'https://market.example/index.json', title: { en: 'Official market', zh: '官方市场' }, description: { en: 'First-party plugins' } },
+      { url: 'https://other.example/index.json', error: 'The index answered HTTP 403.' },
+      { notAnIndex: true },
+    ]
+    expect(await h.client.pluginMarketIndexes()).toEqual([
+      { url: 'https://market.example/index.json', title: 'Official market', description: 'First-party plugins' },
+      { url: 'https://other.example/index.json', error: 'The index answered HTTP 403.' },
+    ])
+    expect(h.requests).toEqual([{ endpoint: 'pluginMarket/listIndexes', args: {} }])
+  })
+
+  it('refuses a malformed index list instead of presenting it', async () => {
+    const h = harness()
+    h.results['pluginMarket/listIndexes'] = { entries: [] }
+    await expect(h.client.pluginMarketIndexes()).rejects.toMatchObject({ code: 'invalid-response' })
+  })
+
+  it('sends the fixed relevance query and parses one page', async () => {
+    const h = harness()
+    h.results['pluginMarket/search'] = {
+      url: 'https://market.example/index.json', title: { en: 'Official market' },
+      entries: [{
+        name: '@scope/vision', title: { en: 'Vision' }, description: 'Adds image tools', author: 'Scope',
+        defaultVersion: '1.2.3', installation: { status: 'not-installed' },
+        versions: [
+          { version: '1.2.3', install: { spec: '@scope/vision@1.2.3', registry: 'https://registry.example' }, compatibility: { compatible: true } },
+          { version: '1.3.0-beta.1', install: { spec: '@scope/vision@1.3.0-beta.1' }, compatibility: { compatible: false, runtimeVersion: '0.2.2', requirements: { 'engines.dsh': '>=0.3.0' } } },
+        ],
+      }],
+      total: 1, nextOffset: null,
+    }
+    const page = await h.client.pluginMarketSearch('https://market.example/index.json', '  vision ')
+    expect(page).toEqual({
+      url: 'https://market.example/index.json', title: 'Official market', total: 1, nextOffset: null,
+      entries: [{
+        name: '@scope/vision', title: 'Vision', description: 'Adds image tools', author: 'Scope',
+        defaultVersion: '1.2.3', installation: { status: 'not-installed' },
+        versions: [
+          { version: '1.2.3', install: { spec: '@scope/vision@1.2.3', registry: 'https://registry.example' }, compatible: true },
+          { version: '1.3.0-beta.1', install: { spec: '@scope/vision@1.3.0-beta.1' }, compatible: false },
+        ],
+      }],
+    })
+    expect(h.requests).toEqual([{ endpoint: 'pluginMarket/search', args: {
+      url: 'https://market.example/index.json',
+      query: { text: 'vision', sort: { kind: 'relevance' }, offset: 0, limit: 20 },
+    } }])
+  })
+
+  it('omits empty search text and tolerates a page without totals', async () => {
+    const h = harness()
+    h.results['pluginMarket/search'] = { entries: [{ name: 'plain-plugin', versions: [{ version: '1.0.0', install: { spec: 'plain-plugin@1.0.0' } }] }] }
+    expect(await h.client.pluginMarketSearch('https://market.example/index.json', '   ')).toEqual({
+      entries: [{ name: 'plain-plugin', versions: [{ version: '1.0.0', install: { spec: 'plain-plugin@1.0.0' } }] }],
+      total: 1, nextOffset: null,
+    })
+    expect(h.requests[0]?.args).toEqual({ url: 'https://market.example/index.json',
+      query: { sort: { kind: 'relevance' }, offset: 0, limit: 20 } })
+  })
+
+  it('refuses a malformed search page', async () => {
+    const h = harness()
+    h.results['pluginMarket/search'] = { entries: { name: 'not-an-array' }, total: 1 }
+    await expect(h.client.pluginMarketSearch('https://market.example/index.json', 'vision'))
+      .rejects.toMatchObject({ code: 'invalid-response' })
+  })
+
+  it('installs a bundle with options and keeps only the bounded outcome', async () => {
+    const h = harness()
+    h.results['pluginManager/installBundle'] = {
+      changed: true, application: 'restart-required', stage: 'enable', target: '/profile',
+      restartReason: 'no-hmr', bundle: '@scope/vision', version: '1.2.3',
+      error: { code: 'managed-outside', diagnostic: 'raw package-manager output' },
+    }
+    expect(await h.client.installBundle('@scope/vision@1.2.3', { registry: 'https://registry.example', saveExact: true })).toEqual({
+      changed: true, application: 'restart-required', stage: 'enable', target: '/profile',
+      restartReason: 'no-hmr', bundle: '@scope/vision', version: '1.2.3',
+    })
+    expect(h.requests).toEqual([{ endpoint: 'pluginManager/installBundle', args: {
+      spec: '@scope/vision@1.2.3', options: { registry: 'https://registry.example', saveExact: true },
+    } }])
+  })
+
+  it('omits an empty options object and keeps known failure codes', async () => {
+    const h = harness()
+    h.results['pluginManager/installBundle'] = {
+      application: 'failed', stage: 'install', target: '/profile',
+      error: { code: 'incompatible-version', diagnostic: 'raw diagnostics' },
+      pendingBuilds: ['sharp', 'esbuild', 3],
+    }
+    expect(await h.client.installBundle('@scope/vision')).toEqual({
+      changed: false, application: 'failed', stage: 'install', target: '/profile',
+      error: { code: 'incompatible-version' }, pendingBuilds: ['sharp', 'esbuild'],
+    })
+    expect(h.requests).toEqual([{ endpoint: 'pluginManager/installBundle', args: { spec: '@scope/vision' } }])
+  })
+
+  it('refuses an install result without a known application', async () => {
+    const h = harness()
+    h.results['pluginManager/installBundle'] = { ok: true, application: 'unknown-outcome' }
+    await expect(h.client.installBundle('@scope/vision')).rejects.toMatchObject({ code: 'invalid-response' })
+  })
+
+  it('passes an installTarget through the bundle roster', async () => {
+    const h = harness()
+    h.results['pluginManager/listBundles'] = [
+      { name: '@deepseek-ai/dsh-codex-bundle', official: true, installed: false, installTarget: { spec: '@deepseek-ai/dsh-codex-bundle@1.0.0', version: '1.0.0' } },
+      { name: '@deepseek-ai/dsh-cua-bundle', official: true, installed: true },
+    ]
+    expect(await h.client.listBundles()).toEqual([
+      { name: '@deepseek-ai/dsh-codex-bundle', official: true, installed: false, installTarget: { spec: '@deepseek-ai/dsh-codex-bundle@1.0.0', version: '1.0.0' } },
+      { name: '@deepseek-ai/dsh-cua-bundle', official: true, installed: true },
+    ])
   })
 })

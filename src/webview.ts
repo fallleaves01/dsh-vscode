@@ -1425,6 +1425,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       append('Fork', 'fork-conversation', forkHere ? undefined : {
         disabled: true, title: 'Open this conversation to fork it',
       });
+      // Session feedback is addressed to the conversation the runtime has open
+      // here; a different row would need a conversation switch first.
+      const feedbackHere = state !== undefined && session.id === state.sessionId && !archived;
+      append('Send feedback…', 'session-feedback', feedbackHere ? undefined : {
+        disabled: true, title: 'Open this conversation to send feedback',
+      });
       if (archived) append('Restore', 'unarchive-session');
       else {
         // The Host refuses to archive a conversation with running work; say so
@@ -4328,6 +4334,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       elements.goalPanel.append(actions);
       elements.schedulePanel.append(node('div', 'feature-title', 'Reminders'));
+      if (schedules.available) {
+        const createActions = node('div', 'feature-actions');
+        createActions.append(featureButton('New reminder', () => vscode.postMessage({ type: 'schedule-create' })));
+        elements.schedulePanel.append(createActions);
+      }
       if (schedules.error) elements.schedulePanel.append(node('div', 'feature-hint', string(schedules.error)));
       if (!reminders.length) elements.schedulePanel.append(node('div', 'feature-hint', schedules.loading ? 'Loading reminders…' : 'No reminders in this project.'));
       let endedReminders = 0;
@@ -4349,6 +4360,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           if (status !== 'ended') rowActions.append(featureButton('Run now', () => vscode.postMessage({ type: 'schedule-run', id: reminder.id })));
           if (status === 'active') rowActions.append(featureButton('Pause', () => vscode.postMessage({ type: 'schedule-set-active', id: reminder.id, active: false })));
           else if (status === 'paused') rowActions.append(featureButton('Resume', () => vscode.postMessage({ type: 'schedule-set-active', id: reminder.id, active: true })));
+          rowActions.append(featureButton('Edit', () => vscode.postMessage({ type: 'schedule-edit', id: reminder.id })));
           rowActions.append(featureButton('Delete', () => vscode.postMessage({ type: 'schedule-delete', id: reminder.id, title: string(reminder.title) })));
         }
         row.append(rowActions);

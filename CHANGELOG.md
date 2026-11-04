@@ -9,6 +9,26 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-alpha.3.3] - 2026-11-04
+
+### Added
+
+- Reminder creation and editing. **New reminder** collects a title, instruction,
+  one of the seven DSH alpha.3 timing forms (`after`, `at`, `every`, `daily`,
+  `weekly`, `cron`, `rrule`) and a destination (this conversation, one new
+  conversation, or a new conversation per delivery). **Edit** changes the title,
+  instruction or timing with the stored revision, so a concurrent edit is
+  reported as a conflict rather than overwriting it.
+- Session-level feedback from the conversation actions menu. Seven categories
+  and optional free text are recorded through `sessionFeedback/record`; the
+  action starts no model turn, and the feedback text is not written to logs or
+  diagnostics.
+- Minimal plugin discovery from the Plugins settings page: search a configured
+  plugin-market index and install a chosen compatible version after
+  confirmation, or install an official on-demand bundle (for example the Claude
+  Code/Codex subagents or Computer Use). Plugin-market index URLs remain managed
+  by DSH settings; this surface does not edit them.
+
 ## [0.2.2-alpha.3.2] - 2026-11-04
 
 ### Added

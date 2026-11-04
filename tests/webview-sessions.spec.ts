@@ -63,7 +63,7 @@ describe('main conversation directory and quick switcher', () => {
     h.click('#sessionTrigger')
     h.click('#sessionList .session-more')
     const labels = [...h.document.querySelectorAll('#sessionActions .session-action')].map(button => button.textContent)
-    expect(labels).toEqual(['Pin', 'Rename', 'Fork', 'Archive', 'Copy Session ID'])
+    expect(labels).toEqual(['Pin', 'Rename', 'Fork', 'Send feedback…', 'Archive', 'Copy Session ID'])
     action(h, 'Pin')
     expect(h.posts.at(-1)).toEqual({ type: 'pin-session', sessionId: 'parent' })
     // A pinned conversation offers Unpin instead.
@@ -80,7 +80,7 @@ describe('main conversation directory and quick switcher', () => {
     h.click('#homeArchiveToggle')
     h.click('#homeSessionList .session-more')
     const labels = [...h.document.querySelectorAll('#sessionActions .session-action')].map(button => button.textContent)
-    expect(labels).toEqual(['Rename', 'Fork', 'Restore', 'Copy Session ID'])
+    expect(labels).toEqual(['Rename', 'Fork', 'Send feedback…', 'Restore', 'Copy Session ID'])
     action(h, 'Restore')
     expect(h.posts.at(-1)).toEqual({ type: 'unarchive-session', sessionId: 'archived' })
   })
@@ -152,6 +152,47 @@ describe('main conversation directory and quick switcher', () => {
     expect(h.posts).toEqual([])
   })
 
+  it('sends session feedback from the open conversation', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent] })
+    h.click('#sessionTrigger')
+    h.click('#sessionList .session-more')
+    h.posts.length = 0
+    action(h, 'Send feedback…')
+    expect(h.posts.at(-1)).toEqual({ type: 'session-feedback', sessionId: 'parent' })
+  })
+
+  it('disables Send feedback on rows that are not the open conversation', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent, { id: 'other', title: 'Other work', updatedAt: 1 }] })
+    h.click('#sessionTrigger')
+    h.click('#sessionList .session-row[data-session-id="other"] .session-more')
+    const feedback = [...h.document.querySelectorAll<HTMLButtonElement>('#sessionActions button')].find(button => button.textContent === 'Send feedback…')!
+    expect(feedback.disabled).toBe(true)
+    expect(feedback.title).toBe('Open this conversation to send feedback')
+    h.posts.length = 0
+    feedback.click()
+    // The Host records feedback only for the conversation it has open.
+    expect(h.posts).toEqual([])
+    h.click('#sessionList .session-row[data-session-id="parent"] .session-more')
+    const current = [...h.document.querySelectorAll<HTMLButtonElement>('#sessionActions button')].find(button => button.textContent === 'Send feedback…')!
+    expect(current.disabled).toBe(false)
+  })
+
+  it('disables Send feedback on archived rows', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent], archivedSessions: [{ id: 'archived', title: 'Completed work' }] })
+    h.click('#conversationHome')
+    h.click('#homeArchiveToggle')
+    h.click('#homeSessionList .session-more')
+    const feedback = [...h.document.querySelectorAll<HTMLButtonElement>('#sessionActions button')].find(button => button.textContent === 'Send feedback…')!
+    expect(feedback.disabled).toBe(true)
+    expect(feedback.title).toBe('Open this conversation to send feedback')
+    h.posts.length = 0
+    feedback.click()
+    expect(h.posts).toEqual([])
+  })
+
   it('hides Pin when the runtime does not report pinned sessions', () => {
     const h = open()
     h.sendState({ sessionId: 'parent', sessions: [parent] })
@@ -178,9 +219,9 @@ describe('main conversation directory and quick switcher', () => {
     expect(h.document.activeElement!.closest('.session-row')!.getAttribute('data-session-id')).toBe('parent')
     key(h.document.activeElement!, 'ArrowDown'); expect(h.document.activeElement!.closest('.session-row')!.getAttribute('data-session-id')).toBe('second')
     key(h.document.activeElement!, 'ArrowRight'); expect(h.document.activeElement!.textContent).toBe('Rename')
-    // DSH's menu order: Rename, Fork, Archive, Copy Session ID. Pin is hidden
-    // (no reported capability) and Fork is skipped because this row is not the
-    // open conversation.
+    // Menu order: Rename, Fork, Send feedback…, Archive, Copy Session ID. Pin is
+    // hidden (no reported capability); Fork and Send feedback… are skipped
+    // because this row is not the open conversation.
     key(h.document.activeElement!, 'ArrowDown'); expect(h.document.activeElement!.textContent).toBe('Archive')
     key(h.document.activeElement!, 'ArrowDown'); expect(h.document.activeElement!.textContent).toBe('Copy Session ID')
     key(h.document.activeElement!, 'Escape'); expect(h.document.activeElement!.classList.contains('session-more')).toBe(true)

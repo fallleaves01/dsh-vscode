@@ -31,7 +31,11 @@ describe('Goal, reminders, workflows, search and background output UI', () => {
     const h = open(); h.sendState({ schedules: { items: [{ id: 'r', sessionId: 'other', title: 'Morning review', prompt: 'Check jobs', status: 'active', kind: 'daily', scheduledAt: '2026-10-05T01:00:00Z' }], history: { id: 'r', sessionId: 'other', records: [], nextBefore: 'm', earlierRecordsPruned: true } } }); await h.settle()
     expect(h.document.querySelector('#schedulePanel')?.textContent).toContain('daily')
     expect(h.document.querySelector('#schedulePanel')?.textContent).toContain('pruned')
-    const buttons = h.document.querySelectorAll<HTMLButtonElement>('#schedulePanel button'); buttons[0]!.click()
+    const buttons = h.document.querySelectorAll<HTMLButtonElement>('#schedulePanel button')
+    // A legacy alpha.2 row keeps its history entry point but exposes no
+    // alpha.3 create or edit action.
+    expect([...buttons].map(button => button.textContent)).toEqual(['Delivery history', 'Load earlier deliveries'])
+    buttons[0]!.click()
     expect(h.posts.at(-1)).toEqual({ type: 'schedule-history', sessionId: 'other', id: 'r' })
     buttons[1]!.click(); expect(h.posts.at(-1)).toEqual({ type: 'schedule-history', sessionId: 'other', id: 'r', before: 'm' })
   })
@@ -55,12 +59,17 @@ describe('Goal, reminders, workflows, search and background output UI', () => {
     expect(panel.textContent).toContain('Creates a new conversation for each delivery')
     expect(panel.textContent).toContain('Delete ended')
 
+    const createButton = [...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'New reminder')!
+    expect(createButton).toBeDefined()
+    createButton.click()
+    expect(h.posts.at(-1)).toEqual({ type: 'schedule-create' })
+
     const rows = [...panel.querySelectorAll<HTMLElement>('.reminder-row')]
     const labels = (row: HTMLElement) => [...row.querySelectorAll('button')].map(button => button.textContent)
     const row = (title: string) => rows.find(item => item.textContent?.includes(title))!
-    expect(labels(row('Morning review'))).toEqual(['Delivery history', 'Run now', 'Pause', 'Delete'])
-    expect(labels(row('Standup'))).toEqual(['Delivery history', 'Run now', 'Resume', 'Delete'])
-    expect(labels(row('One-off'))).toEqual(['Delivery history', 'Delete'])
+    expect(labels(row('Morning review'))).toEqual(['Delivery history', 'Run now', 'Pause', 'Edit', 'Delete'])
+    expect(labels(row('Standup'))).toEqual(['Delivery history', 'Run now', 'Resume', 'Edit', 'Delete'])
+    expect(labels(row('One-off'))).toEqual(['Delivery history', 'Edit', 'Delete'])
 
     const click = (title: string, label: string): void => {
       ;[...row(title).querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === label)!.click()
@@ -75,6 +84,8 @@ describe('Goal, reminders, workflows, search and background output UI', () => {
     expect(h.posts.at(-1)).toEqual({ type: 'schedule-delete', id: 'r', title: 'Morning review' })
     click('One-off', 'Delivery history')
     expect(h.posts.at(-1)).toEqual({ type: 'schedule-history', id: 'ended' })
+    click('Morning review', 'Edit')
+    expect(h.posts.at(-1)).toEqual({ type: 'schedule-edit', id: 'r' })
     ;[...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Delete ended')!.click()
     expect(h.posts.at(-1)).toEqual({ type: 'schedule-delete-ended' })
   })
@@ -90,6 +101,18 @@ describe('Goal, reminders, workflows, search and background output UI', () => {
     expect(panel.textContent).toContain('sent')
     ;[...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Load earlier deliveries')!.click()
     expect(h.posts.at(-1)).toEqual({ type: 'schedule-history', id: 'r', before: 'm' })
+  })
+  it('offers New reminder only when the runtime serves Schedule', async () => {
+    const h = open()
+    h.sendState({ goal: { available: true, loading: false, busy: false }, schedules: { available: false, loading: false, items: [] } }); await h.settle()
+    expect([...h.document.querySelectorAll<HTMLButtonElement>('#schedulePanel button')]
+      .some(button => button.textContent === 'New reminder')).toBe(false)
+    h.sendState({ goal: { available: true, loading: false, busy: false }, schedules: { available: true, loading: false, items: [] } }); await h.settle()
+    const button = [...h.document.querySelectorAll<HTMLButtonElement>('#schedulePanel button')]
+      .find(item => item.textContent === 'New reminder')!
+    expect(button).toBeDefined()
+    button.click()
+    expect(h.posts.at(-1)).toEqual({ type: 'schedule-create' })
   })
   it('opens a workflow member independently and exposes workflow logs', async () => {
     const h = open(); h.sendState({ workflows: [{ id: 'w', name: 'Audit', members: [{ childId: 'c', seq: 1, label: 'Verify', phase: 'Testing', outcome: 'success' }], stopReason: 'finished' }] }); await h.settle()

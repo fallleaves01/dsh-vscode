@@ -27,6 +27,9 @@ const mocks = vi.hoisted(() => ({
   fsStat: vi.fn(async (..._args: any[]) => ({ type: 1 })),
   fsReadFile: vi.fn(async (..._args: any[]) => Buffer.from('abc')),
   openDialog: vi.fn(async (..._args: any[]) => undefined as any),
+  input: vi.fn(async (..._args: any[]) => undefined as any),
+  pick: vi.fn(async (..._args: any[]) => undefined as any),
+  progress: vi.fn(async (_options: any, task: any) => task({ report: () => {} })),
   runtime: undefined as any,
 }))
 
@@ -53,6 +56,7 @@ vi.mock('vscode', () => {
     EventEmitter,
     Uri,
     ViewColumn: { Active: 1, Beside: 2 },
+    ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
     StatusBarAlignment: { Left: 1, Right: 2 },
     FileType: { File: 1, Directory: 2 },
     env: { language: 'en', remoteName: undefined, clipboard: { writeText: vi.fn(async () => {}) }, openExternal: vi.fn(async () => true), asExternalUri: vi.fn(async (value: any) => value) },
@@ -78,8 +82,9 @@ vi.mock('vscode', () => {
       showWarningMessage: mocks.warning,
       showInformationMessage: mocks.info,
       showErrorMessage: mocks.error,
-      showInputBox: vi.fn(async () => undefined),
-      showQuickPick: vi.fn(async () => undefined),
+      showInputBox: mocks.input,
+      showQuickPick: mocks.pick,
+      withProgress: (...args: any[]) => (mocks.progress as any)(...args),
       showOpenDialog: (...args: any[]) => (mocks.openDialog as any)(...args),
       onDidChangeActiveTextEditor: () => disposable(),
       onDidChangeTextEditorSelection: () => disposable(),
@@ -168,7 +173,11 @@ function testClient() {
     monitorJobs: vi.fn(), goal: vi.fn(async () => null), schedules: vi.fn(async () => []), searchHistory: vi.fn(async () => ({ items: [], hasMore: false })),
     scheduleHistory: vi.fn(), changeGoal: vi.fn(), pendingRequests: vi.fn(() => []),
     scheduleRun: vi.fn(async (id: string) => ({ id })), scheduleEdit: vi.fn(async (id: string, edit: { action: string }) => edit.action === 'delete' ? { id, deleted: true } : { id }),
-    scheduleDeleteInactive: vi.fn(async () => ({ deleted: 0 })),
+    scheduleDeleteInactive: vi.fn(async () => ({ deleted: 0 })), createSchedule: vi.fn(async () => ({ accepted: true })),
+    pluginMarketIndexes: vi.fn(async () => []),
+    pluginMarketSearch: vi.fn(async () => ({ entries: [], total: 0, nextOffset: null })),
+    installBundle: vi.fn(async () => ({ changed: true, application: 'applied' as const })),
+    listBundles: vi.fn(async () => [] as any[]),
     listWorkspaces: vi.fn(async () => ({ archivedSessionIds: [], pinnedSessionIds: [], pinningAvailable: false })),
     sessionProjections: vi.fn(async (): Promise<any> => ({kind:'sequenced',asOfSeq:1,values:{}})),
     adoptSessionProjections: vi.fn((_id:string,_seq:number,values:Record<string,unknown>)=>values),
@@ -185,6 +194,7 @@ function testClient() {
     messageFeedback: vi.fn(async () => ({ ok: true, value: { items: [] } })),
     putMessageFeedback: vi.fn(async () => ({ ok: true, value: { messageId: 'm1', rating: 'positive', version: 1, createdAt: 1, updatedAt: 1 } })),
     deleteMessageFeedback: vi.fn(async () => ({ ok: true, value: { absent: true } })),
+    recordSessionFeedback: vi.fn(async () => ({ recorded: true })),
     forkSession: vi.fn(async () => 'child'),
     updateQueue: vi.fn(async () => ({ accepted: true })),
     executeCommand: vi.fn(async () => ({ result: { kind: 'success' } })),
@@ -236,6 +246,12 @@ describe('host surface wiring', () => {
     mocks.warning.mockResolvedValue(undefined)
     mocks.command.mockReset()
     mocks.command.mockResolvedValue(undefined)
+    mocks.input.mockReset()
+    mocks.input.mockResolvedValue(undefined)
+    mocks.pick.mockReset()
+    mocks.pick.mockResolvedValue(undefined)
+    mocks.progress.mockReset()
+    mocks.progress.mockImplementation(async (_options: any, task: any) => task({ report: () => {} }))
     mocks.panels.length = 0
     mocks.commands.clear()
     ;(vscode.env as { language: string }).language = 'en'
@@ -1631,7 +1647,272 @@ describe('host surface wiring', () => {
       expect(mocks.output.every(line => !String(line).includes('receipt-1'))).toBe(true)
     })
   })
+
+  describe('session feedback', () => {
+    beforeEach(() => {
+      mocks.info.mockClear()
+      mocks.error.mockClear()
+      mocks.pick.mockReset()
+      mocks.pick.mockResolvedValue(undefined)
+      mocks.input.mockReset()
+      mocks.input.mockResolvedValue(undefined)
+    })
+
+    const feedbackText = 'The summary matched the requested format.'
+
+    it('offers the seven contract categories plus a no-category choice', async () => {
+      const h = await activated()
+      h.send({ type: 'session-feedback', sessionId: 'a' })
+      await vi.waitFor(() => expect(mocks.pick).toHaveBeenCalledTimes(1))
+      const items = mocks.pick.mock.calls[0]![0] as Array<{ label: string; category?: string }>
+      expect(items.filter(item => item.category !== undefined).map(item => item.category)).toEqual([
+        'task-result', 'instruction-following', 'product-interaction', 'service-stability',
+        'resource-cost', 'security-privacy-permission', 'other',
+      ])
+      expect(items.some(item => item.category === undefined && item.label === 'No category')).toBe(true)
+      expect((mocks.pick.mock.calls[0]![1] as { title: string }).title).toBe('Send feedback')
+    })
+
+    it('records a category and text from the native prompts and confirms it', async () => {
+      const h = await activated()
+      mocks.pick.mockResolvedValueOnce({ label: 'Task result', description: '', category: 'task-result' })
+      mocks.input.mockResolvedValueOnce(feedbackText)
+      h.send({ type: 'session-feedback', sessionId: 'a' })
+      await vi.waitFor(() => expect(mocks.info).toHaveBeenCalledWith('Feedback recorded.'))
+      expect(h.client.recordSessionFeedback).toHaveBeenCalledWith('a', { category: 'task-result', text: feedbackText })
+      expect(mocks.warning).not.toHaveBeenCalled()
+      expect(mocks.error).not.toHaveBeenCalled()
+      // The text is user content: it reaches the runtime and nowhere else.
+      expect(mocks.output.every(line => !String(line).includes(feedbackText))).toBe(true)
+      expect(JSON.stringify(h.posts())).not.toContain(feedbackText)
+    })
+
+    it('allows an empty text with no category', async () => {
+      const h = await activated()
+      mocks.pick.mockResolvedValueOnce({ label: 'No category', description: '' })
+      mocks.input.mockResolvedValueOnce('')
+      h.send({ type: 'session-feedback', sessionId: 'a' })
+      await vi.waitFor(() => expect(mocks.info).toHaveBeenCalledWith('Feedback recorded.'))
+      expect(h.client.recordSessionFeedback).toHaveBeenCalledWith('a', {})
+    })
+
+    it('sends nothing when the category prompt is dismissed', async () => {
+      const h = await activated()
+      h.send({ type: 'session-feedback', sessionId: 'a' })
+      await vi.waitFor(() => expect(mocks.pick).toHaveBeenCalledTimes(1))
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(mocks.input).not.toHaveBeenCalled()
+      expect(h.client.recordSessionFeedback).not.toHaveBeenCalled()
+      expect(mocks.info).not.toHaveBeenCalled()
+    })
+
+    it('sends nothing when the text prompt is dismissed', async () => {
+      const h = await activated()
+      mocks.pick.mockResolvedValueOnce({ label: 'Other', description: '', category: 'other' })
+      h.send({ type: 'session-feedback', sessionId: 'a' })
+      await vi.waitFor(() => expect(mocks.input).toHaveBeenCalledTimes(1))
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(h.client.recordSessionFeedback).not.toHaveBeenCalled()
+      expect(mocks.info).not.toHaveBeenCalled()
+      expect(mocks.warning).not.toHaveBeenCalled()
+    })
+
+    it('reports a missing conversation without echoing the feedback', async () => {
+      const h = await activated()
+      h.client.recordSessionFeedback.mockRejectedValueOnce(new DshConnectionError('session-not-found', 'session "a" not found'))
+      mocks.pick.mockResolvedValueOnce({ label: 'Other', description: '', category: 'other' })
+      mocks.input.mockResolvedValueOnce(feedbackText)
+      h.send({ type: 'session-feedback', sessionId: 'a' })
+      await vi.waitFor(() => expect(mocks.warning).toHaveBeenCalledTimes(1))
+      const message = String(mocks.warning.mock.calls[0]![0])
+      expect(message).toContain('no longer exists')
+      expect(message).not.toContain(feedbackText)
+      expect(mocks.error).not.toHaveBeenCalled()
+      expect(mocks.output.every(line => !String(line).includes(feedbackText))).toBe(true)
+    })
+
+    it('reports an unreachable runtime without echoing the feedback', async () => {
+      const h = await activated()
+      h.client.recordSessionFeedback.mockRejectedValueOnce(new DshConnectionError('transport-error', 'socket closed'))
+      mocks.pick.mockResolvedValueOnce({ label: 'Other', description: '', category: 'other' })
+      mocks.input.mockResolvedValueOnce(feedbackText)
+      h.send({ type: 'session-feedback', sessionId: 'a' })
+      await vi.waitFor(() => expect(mocks.error).toHaveBeenCalledTimes(1))
+      const message = String(mocks.error.mock.calls[0]![0])
+      expect(message).toContain('Could not record feedback')
+      expect(message).toContain('transport-error')
+      expect(message).not.toContain(feedbackText)
+      expect(mocks.output.every(line => !String(line).includes(feedbackText))).toBe(true)
+    })
+
+    it('refuses a conversation that is not the open one', async () => {
+      const h = await activated()
+      mocks.pick.mockResolvedValueOnce({ label: 'Other', description: '', category: 'other' })
+      mocks.input.mockResolvedValueOnce('anything')
+      h.send({ type: 'session-feedback', sessionId: 'b' })
+      await vi.waitFor(() => expect(mocks.error).toHaveBeenCalledTimes(1))
+      expect(h.client.recordSessionFeedback).not.toHaveBeenCalled()
+      const message = String(mocks.error.mock.calls[0]![0])
+      expect(message).toContain('Could not record feedback')
+      expect(message).not.toContain('anything')
+    })
+  })
 })
+  describe('plugin market commands', () => {
+    const INDEX = { url: 'https://market.example/index.json', title: 'Official market' }
+    const ENTRY = {
+      name: '@scope/vision', title: 'Vision', description: 'Adds image tools',
+      defaultVersion: '1.2.3', versions: [{ version: '1.2.3', install: { spec: '@scope/vision@1.2.3' }, compatible: true }],
+    }
+    const OFFICIAL = { name: '@deepseek-ai/dsh-codex-bundle', official: true, installed: false,
+      installTarget: { spec: '@deepseek-ai/dsh-codex-bundle@1.0.0', version: '1.0.0' } }
+    const discover = async (h: { client: any }): Promise<void> => { await mocks.commands.get('deepseekHarness.discoverPlugins')!() }
+    const official = async (): Promise<void> => { await mocks.commands.get('deepseekHarness.installOfficialPlugin')!() }
+
+    it('registers both install commands', async () => {
+      await activated()
+      expect(mocks.commands.has('deepseekHarness.discoverPlugins')).toBe(true)
+      expect(mocks.commands.has('deepseekHarness.installOfficialPlugin')).toBe(true)
+    })
+
+    it('installs the default version found through a configured market index', async () => {
+      const h = await activated({ setup: client => {
+        client.pluginMarketIndexes.mockResolvedValue([INDEX])
+        client.pluginMarketSearch.mockResolvedValue({ entries: [ENTRY], total: 1, nextOffset: null })
+        client.installBundle.mockResolvedValue({ changed: true, application: 'applied', bundle: '@scope/vision', version: '1.2.3' })
+      } })
+      mocks.pick.mockResolvedValueOnce({ label: 'Official market', index: INDEX }).mockResolvedValueOnce({ label: 'Vision', entry: ENTRY })
+      mocks.input.mockResolvedValueOnce('vision')
+      mocks.warning.mockResolvedValueOnce('Install')
+      await discover(h)
+      expect(h.client.pluginMarketIndexes).toHaveBeenCalledTimes(1)
+      expect(h.client.pluginMarketSearch).toHaveBeenCalledWith(INDEX.url, 'vision')
+      expect(h.client.installBundle).toHaveBeenCalledWith('@scope/vision@1.2.3', {})
+      const confirmation = mocks.warning.mock.calls[0]!
+      expect(String(confirmation[0])).toContain('Vision 1.2.3')
+      expect(String(confirmation[1]?.detail)).toContain('Spec: @scope/vision@1.2.3')
+      expect(mocks.progress).toHaveBeenCalledTimes(1)
+      expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('installed'))
+    })
+
+    it('sends no request when the installation confirmation is cancelled', async () => {
+      const h = await activated({ setup: client => {
+        client.pluginMarketIndexes.mockResolvedValue([INDEX])
+        client.pluginMarketSearch.mockResolvedValue({ entries: [ENTRY], total: 1, nextOffset: null })
+      } })
+      mocks.pick.mockResolvedValueOnce({ label: 'Official market', index: INDEX }).mockResolvedValueOnce({ label: 'Vision', entry: ENTRY })
+      mocks.input.mockResolvedValueOnce('vision')
+      // The modal resolves undefined: the user dismissed it.
+      await discover(h)
+      expect(h.client.installBundle).not.toHaveBeenCalled()
+      expect(mocks.progress).not.toHaveBeenCalled()
+    })
+
+    it('explains how to configure a missing market index', async () => {
+      const h = await activated({ setup: client => { client.pluginMarketIndexes.mockResolvedValue([]) } })
+      await discover(h)
+      expect(mocks.warning).toHaveBeenCalledWith(expect.stringContaining('index'))
+      expect(mocks.input).not.toHaveBeenCalled()
+      expect(h.client.installBundle).not.toHaveBeenCalled()
+    })
+
+    it('explains that the plugin market service is unavailable on a 404', async () => {
+      const h = await activated({ setup: client => {
+        client.pluginMarketIndexes.mockRejectedValue(new DshConnectionError('http-error', 'DSH pluginMarket/listIndexes failed: HTTP 404.', 404))
+      } })
+      await discover(h)
+      expect(mocks.error).toHaveBeenCalledWith(expect.stringContaining('plugin market service'))
+      expect(mocks.input).not.toHaveBeenCalled()
+      expect(h.client.pluginMarketSearch).not.toHaveBeenCalled()
+    })
+
+    it('treats a gateway unknown-method answer as an unavailable plugin market', async () => {
+      const h = await activated({ setup: client => {
+        client.pluginMarketIndexes.mockRejectedValue(new DshConnectionError('gateway/invocation-unavailable', 'Unknown method.'))
+      } })
+      await discover(h)
+      expect(mocks.error).toHaveBeenCalledWith(expect.stringContaining('plugin market service'))
+      expect(h.client.installBundle).not.toHaveBeenCalled()
+    })
+
+    it('reports a refused installation with a readable explanation', async () => {
+      const h = await activated({ setup: client => {
+        client.pluginMarketIndexes.mockResolvedValue([INDEX])
+        client.pluginMarketSearch.mockResolvedValue({ entries: [ENTRY], total: 1, nextOffset: null })
+        client.installBundle.mockResolvedValue({ changed: false, application: 'failed', error: { code: 'incompatible-version' } })
+      } })
+      mocks.pick.mockResolvedValueOnce({ label: 'Official market', index: INDEX }).mockResolvedValueOnce({ label: 'Vision', entry: ENTRY })
+      mocks.input.mockResolvedValueOnce('vision')
+      mocks.warning.mockResolvedValueOnce('Install')
+      await discover(h)
+      expect(mocks.error).toHaveBeenCalledWith(expect.stringContaining('not compatible with this runtime'))
+    })
+
+    it('asks for a runtime restart when the installation requires one', async () => {
+      const h = await activated({ setup: client => {
+        client.pluginMarketIndexes.mockResolvedValue([INDEX])
+        client.pluginMarketSearch.mockResolvedValue({ entries: [ENTRY], total: 1, nextOffset: null })
+        client.installBundle.mockResolvedValue({ changed: true, application: 'restart-required', version: '1.2.3' })
+      } })
+      mocks.pick.mockResolvedValueOnce({ label: 'Official market', index: INDEX }).mockResolvedValueOnce({ label: 'Vision', entry: ENTRY })
+      mocks.input.mockResolvedValueOnce('vision')
+      mocks.warning.mockResolvedValueOnce('Install')
+      await discover(h)
+      const notice = mocks.warning.mock.calls.at(-1)!
+      expect(String(notice[0])).toContain('Restart the DSH runtime')
+    })
+
+    it('installs an official on-demand bundle and skips installed or ineligible rows', async () => {
+      const h = await activated({ setup: client => {
+        client.listBundles.mockResolvedValue([OFFICIAL,
+          { name: '@deepseek-ai/dsh-cua-bundle', official: true, installed: true, installTarget: { spec: '@deepseek-ai/dsh-cua-bundle@1.0.0', version: '1.0.0' } },
+          { name: 'community-plugin', official: false, installed: false, installTarget: { spec: 'community-plugin@2.0.0', version: '2.0.0' } },
+          { name: '@deepseek-ai/dsh-unaddressable-bundle', official: true, installed: false },
+        ])
+        client.installBundle.mockResolvedValue({ changed: true, application: 'applied', bundle: OFFICIAL.name, version: '1.0.0' })
+      } })
+      mocks.pick.mockResolvedValueOnce({ label: 'Codex', bundle: OFFICIAL })
+      mocks.warning.mockResolvedValueOnce('Install')
+      await official()
+      const choices = mocks.pick.mock.calls[0]![0] as Array<{ label: string }>
+      expect(choices.map(choice => choice.label)).toEqual(['dsh-codex-bundle'])
+      expect(h.client.installBundle).toHaveBeenCalledWith('@deepseek-ai/dsh-codex-bundle@1.0.0', {})
+      expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('installed'))
+    })
+
+    it('says when every official plugin is already installed', async () => {
+      const h = await activated({ setup: client => {
+        client.listBundles.mockResolvedValue([{ name: '@deepseek-ai/dsh-cua-bundle', official: true, installed: true }])
+      } })
+      await official()
+      expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('No official plugins'))
+      expect(h.client.installBundle).not.toHaveBeenCalled()
+      expect(mocks.pick).not.toHaveBeenCalled()
+    })
+
+    it('refuses both commands on an attach-only external runtime before reading the market', async () => {
+      const h = await activated()
+      ;(mocks.runtime as any).state = { kind: 'ready', ownership: 'external' }
+      await discover(h)
+      await official()
+      expect(mocks.warning).toHaveBeenCalledTimes(2)
+      expect(String(mocks.warning.mock.calls[0]![0])).toContain('attach-only')
+      expect(h.client.pluginMarketIndexes).not.toHaveBeenCalled()
+      expect(h.client.listBundles).not.toHaveBeenCalled()
+      expect(h.client.installBundle).not.toHaveBeenCalled()
+    })
+
+    it('routes the settings page plugin buttons to their commands', async () => {
+      await activated()
+      await mocks.commands.get('deepseekHarness.openSettings')!()
+      const panel = mocks.panels.at(-1)!
+      panel.send({ type: 'native-action', action: 'discover-plugins', scope: 'scope' })
+      panel.send({ type: 'native-action', action: 'install-official-plugin', scope: 'scope' })
+      expect(mocks.command).toHaveBeenCalledWith('deepseekHarness.discoverPlugins')
+      expect(mocks.command).toHaveBeenCalledWith('deepseekHarness.installOfficialPlugin')
+    })
+  })
+
   describe('explorer add to chat command', () => {
     const uri = (fsPath: string) => ({ scheme: 'file', fsPath, toString: () => fsPath })
     /** A remote resource as the Explorer should have delivered it. */
@@ -1917,6 +2198,144 @@ describe('host surface wiring', () => {
       expect(h.client.archiveSession).toHaveBeenCalledTimes(1)
       expect(String(mocks.error.mock.calls.at(-1)![0])).toContain('Could not archive the conversation')
       expect(mocks.info).not.toHaveBeenCalled()
+    })
+
+    describe('create and edit dialogs', () => {
+      /** Queue one native input-box answer. */
+      const answers = (...values: Array<string | undefined>): void => {
+        for (const value of values) mocks.input.mockResolvedValueOnce(value)
+      }
+      /** Queue the quick-pick answer for a timing rule kind. */
+      const pickKind = (kind: string): void => {
+        mocks.pick.mockResolvedValueOnce({ label: kind, description: '', scheduleKind: kind })
+      }
+      /** Queue the quick-pick answer for a reminder destination. */
+      const pickTarget = (kind: string): void => {
+        mocks.pick.mockResolvedValueOnce({ label: kind, description: '', targetKind: kind })
+      }
+      /** Queue the quick-pick answer for the part of a reminder to edit. */
+      const pickField = (field: string): void => {
+        mocks.pick.mockResolvedValueOnce({ label: field, description: '', editField: field })
+      }
+
+      it('creates a reminder for this conversation from native dialogs', async () => {
+        const h = await started()
+        answers('Daily review', 'Check jobs', '09:30', 'UTC')
+        pickKind('daily')
+        pickTarget('session')
+        h.send({ type: 'schedule-create' })
+
+        await vi.waitFor(() => expect(h.client.createSchedule).toHaveBeenCalledTimes(1))
+        expect(h.client.createSchedule).toHaveBeenCalledWith({ title: 'Daily review', prompt: 'Check jobs',
+          timing: { kind: 'daily', daily: { time: '09:30:00', time_zone: 'UTC' } },
+          target: { kind: 'session', sessionId: h.mergedState().sessionId } })
+        await vi.waitFor(() => expect(String(mocks.info.mock.calls.at(-1)?.[0] ?? '')).toContain('Reminder created'))
+        // The catalog is re-read so the new row reaches the panel.
+        expect(h.client.schedules.mock.calls.length).toBeGreaterThan(1)
+      })
+
+      it.each([
+        ['after', ['10m'], { kind: 'after', after_seconds: 600 }],
+        ['at', ['2026-11-05', '09:30', 'UTC'], { kind: 'at', at: { date: '2026-11-05', time: '09:30:00', time_zone: 'UTC' } }],
+        ['every', ['45m'], { kind: 'every', every_seconds: 2700 }],
+        ['daily', ['07:05', 'UTC'], { kind: 'daily', daily: { time: '07:05:00', time_zone: 'UTC' } }],
+        ['weekly', ['08:00', '1,3,5', 'UTC'], { kind: 'weekly', weekly: { time: '08:00:00', time_zone: 'UTC', weekdays: [1, 3, 5] } }],
+        ['cron', ['*/5 * * * *', 'UTC'], { kind: 'cron', cron: { expression: '*/5 * * * *', time_zone: 'UTC' } }],
+        ['rrule', ['DTSTART;TZID=Asia/Shanghai:20261105T090000', 'RRULE:FREQ=DAILY;INTERVAL=1'],
+          { kind: 'rrule', rrule: 'DTSTART;TZID=Asia/Shanghai:20261105T090000\nRRULE:FREQ=DAILY;INTERVAL=1' }],
+      ])('builds the %s timing rule from native dialog answers', async (kind, fields, timing) => {
+        const h = await started()
+        answers('Title', 'Instruction', ...(fields as string[]))
+        pickKind(kind)
+        pickTarget('new_once')
+        h.send({ type: 'schedule-create' })
+
+        await vi.waitFor(() => expect(h.client.createSchedule).toHaveBeenCalledTimes(1))
+        expect(h.client.createSchedule).toHaveBeenCalledWith({ title: 'Title', prompt: 'Instruction',
+          timing, target: { kind: 'new_once' } })
+      })
+
+      it('sends the new-conversation-per-delivery target choice', async () => {
+        const h = await started()
+        answers('Title', 'Instruction', '10m')
+        pickKind('after')
+        pickTarget('new')
+        h.send({ type: 'schedule-create' })
+        await vi.waitFor(() => expect(h.client.createSchedule).toHaveBeenCalledTimes(1))
+        expect((h.client.createSchedule.mock.calls[0]![0] as { target: unknown }).target).toEqual({ kind: 'new' })
+      })
+
+      it('does nothing when the create dialog is cancelled', async () => {
+        const h = await started()
+        answers(undefined)
+        h.send({ type: 'schedule-create' })
+        await vi.waitFor(() => expect(mocks.input).toHaveBeenCalledTimes(1))
+        expect(h.client.createSchedule).not.toHaveBeenCalled()
+        expect(mocks.error).not.toHaveBeenCalled()
+      })
+
+      it('reports an invalid dialog answer instead of creating the reminder', async () => {
+        const h = await started()
+        answers('Title', 'Instruction', 'soon')
+        pickKind('after')
+        h.send({ type: 'schedule-create' })
+
+        await vi.waitFor(() => expect(mocks.error).toHaveBeenCalled())
+        expect(String(mocks.error.mock.calls[0]![0])).toContain('Could not create the reminder')
+        expect(String(mocks.error.mock.calls[0]![0])).toContain('duration')
+        expect(h.client.createSchedule).not.toHaveBeenCalled()
+      })
+
+      it('edits one reminder title with its expected revision', async () => {
+        const h = await started({ reminder: true })
+        await vi.waitFor(() => expect(items(h)).toHaveLength(1))
+        pickField('title')
+        answers('Renamed review')
+        h.send({ type: 'schedule-edit', id: 'r' })
+
+        await vi.waitFor(() => expect(h.client.scheduleEdit).toHaveBeenCalledTimes(1))
+        expect(h.client.scheduleEdit).toHaveBeenCalledWith('r',
+          { action: 'update', patch: { title: 'Renamed review' }, expectedUpdatedAt: 'rev-1' })
+        await vi.waitFor(() => expect(String(mocks.info.mock.calls.at(-1)?.[0] ?? '')).toContain('Reminder updated'))
+      })
+
+      it('edits one reminder timing rule through the shared builder', async () => {
+        const h = await started({ reminder: true })
+        await vi.waitFor(() => expect(items(h)).toHaveLength(1))
+        pickField('timing')
+        pickKind('weekly')
+        answers('08:00', '1,5', 'UTC')
+        h.send({ type: 'schedule-edit', id: 'r' })
+
+        await vi.waitFor(() => expect(h.client.scheduleEdit).toHaveBeenCalledTimes(1))
+        expect(h.client.scheduleEdit).toHaveBeenCalledWith('r', { action: 'update',
+          patch: { timing: { kind: 'weekly', weekly: { time: '08:00:00', time_zone: 'UTC', weekdays: [1, 5] } } },
+          expectedUpdatedAt: 'rev-1' })
+      })
+
+      it('does nothing when the edit dialog is cancelled', async () => {
+        const h = await started({ reminder: true })
+        await vi.waitFor(() => expect(items(h)).toHaveLength(1))
+        mocks.pick.mockResolvedValueOnce(undefined)
+        h.send({ type: 'schedule-edit', id: 'r' })
+        await vi.waitFor(() => expect(mocks.pick).toHaveBeenCalled())
+        expect(h.client.scheduleEdit).not.toHaveBeenCalled()
+      })
+
+      it('reports an edit conflict and re-reads the catalog', async () => {
+        const h = await started({ reminder: true, setup: client => {
+          client.scheduleEdit.mockResolvedValueOnce({ id: 'r', code: 'schedule_conflict' })
+        } })
+        await vi.waitFor(() => expect(items(h)).toHaveLength(1))
+        const reads = h.client.schedules.mock.calls.length
+        pickField('prompt')
+        answers('New instruction')
+        h.send({ type: 'schedule-edit', id: 'r' })
+
+        await vi.waitFor(() => expect(mocks.error).toHaveBeenCalled())
+        expect(String(mocks.error.mock.calls.at(-1)![0])).toContain('changed in another window')
+        await vi.waitFor(() => expect(h.client.schedules.mock.calls.length).toBeGreaterThan(reads))
+      })
     })
   })
 

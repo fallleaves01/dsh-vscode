@@ -1,6 +1,6 @@
 import type { DshClient, DshFrame, SessionSummary } from './dsh-client.js'
 import { wireRecord } from './dsh-streams.js'
-import { emptyGoalState, emptyScheduleState, emptySearchState, goalOf, scheduleRefusal, type GoalState, type ScheduleEntry, type ScheduleState, type ScheduleHistory, type HistorySearchState } from './task-features.js'
+import { emptyGoalState, emptyScheduleState, emptySearchState, goalOf, scheduleRefusal, type GoalState, type ScheduleCreateRequest, type ScheduleEntry, type ScheduleState, type ScheduleHistory, type HistorySearchState, type ScheduleUpdatePatch } from './task-features.js'
 
 export interface TaskFeatureState { goal: GoalState; schedules: ScheduleState; historySearch: HistorySearchState }
 export type GoalAction = 'create' | 'edit' | 'pause' | 'resume' | 'complete' | 'clear'
@@ -198,6 +198,34 @@ export class TaskFeatureController {
       if (!wireRecord(value) || value.deleted !== true) throw new Error('DSH did not delete the reminder.')
     } catch (error) {
       if (client === this.client) this.failSchedule('Could not delete the reminder', error)
+      throw error
+    }
+    if (client === this.client) await this.refreshSchedules(true)
+  }
+
+  /** Create one reminder and refresh the catalog the panel renders. */
+  async createSchedule(request: ScheduleCreateRequest): Promise<void> {
+    const client = this.client
+    if (client === undefined) throw new Error('DSH is not connected.')
+    try { await client.createSchedule(request) }
+    catch (error) {
+      if (client === this.client) this.failSchedule('Could not create the reminder', error)
+      throw error
+    }
+    if (client === this.client) await this.refreshSchedules(true)
+  }
+
+  /** Change one reminder's title, instruction or timing rule atomically. */
+  async updateSchedule(id: string, patch: ScheduleUpdatePatch): Promise<void> {
+    const client = this.client
+    if (client === undefined) throw new Error('DSH is not connected.')
+    const item = this.scheduleEntry(id)
+    try {
+      const refusal = scheduleRefusal(await client.scheduleEdit(id, { action: 'update', patch,
+        ...(item.updatedAt === undefined ? {} : { expectedUpdatedAt: item.updatedAt }) }))
+      if (refusal !== null) throw new Error(refusal)
+    } catch (error) {
+      if (client === this.client) this.failSchedule('Could not update the reminder', error)
       throw error
     }
     if (client === this.client) await this.refreshSchedules(true)
