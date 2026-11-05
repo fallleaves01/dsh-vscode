@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-rc.1.1**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-rc.1.2**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -89,6 +89,10 @@ pnpm run package
 `artifacts/dsh-sidebar-<version>.vsix`。其他设置包括
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
+
+### 升级到 0.2.2-rc.1.2
+
+0.2.2-rc.1.2 完成一轮兼容性与可访问性打磨。历史分页优先使用当前的 `session/events` 入口，并为尚未提供 `session/events` 的旧 runtime 保留一次性的 `session/page` 回退，不再以 deprecated 入口为主路径。`apply_patch` 现在即使没有 runtime presenter view，也会把补丁文件头与移动/删除目标纳入未保存文件冲突检查。聊天与设置界面的所有图标按钮和图标菜单触发器都有明确的 hover 标题和可访问名称，运行时状态、jobs、用量、账户、任务、发送/停止、设置控件会在状态变化时同步更新。插件发现与官方 bundle 安装可从命令面板执行。子代理会话中的提醒不再提供“当前会话”目标；投递历史 miss 使用可读文案；共享 managed runtime 被其他窗口使用时，本窗口断开后提示进程仍在运行。本版本不需要 DSH wire 变更。
 
 ### 升级到 0.2.2-rc.1.1
 

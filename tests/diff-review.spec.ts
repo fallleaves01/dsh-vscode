@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   executeCommand: vi.fn(),
-  textDocuments: [] as Array<{ isDirty: boolean; uri: { fsPath: string } }>,
+  textDocuments: [] as Array<{ isDirty: boolean; uri: { fsPath: string; scheme?: string } }>,
   openTextDocument: vi.fn(),
   showTextDocument: vi.fn(),
   showQuickPick: vi.fn(),
@@ -104,8 +104,10 @@ vi.mock('node:fs', async importOriginal => {
 })
 
 import type { DshEvent } from '../src/conversation.js'
+import { DirtyFileGuard } from '../src/dirty-file-guard.js'
 import { DiffReviewManager } from '../src/diff-review.js'
 import { appliedHunks } from '../src/tool-diff.js'
+import { toolWriteIntents } from '../src/tool-write-guard.js'
 
 function event(type: string, seq: number, data: unknown): DshEvent {
   return { type, seq, time: seq, data }
@@ -1142,6 +1144,82 @@ describe('DiffReviewManager', () => {
       expect(manager.changedFiles('view-patch')).toEqual([{ turn: 1, files: [{ path: 'gone.ts', additions: 0, deletions: 1, canRevert: true }] }])
       manager.revertAll('view-patch')
       expect(fs.readFileSync(file, 'utf8')).toBe('delete me\n')
+    })
+
+    it('detects an unsaved file named only by the patch before its result commits', () => {
+      const cwd = temporaryWorkspace()
+      const file = path.join(cwd, 'app.ts')
+      fs.writeFileSync(file, 'context\nold\ncontext\n')
+      mocks.textDocuments.push({ isDirty: true, uri: { scheme: 'file', fsPath: file } })
+      // The call event exists before any tool/result: this is the window in which
+      // the Host cancels the turn, so the guard must see the same paths there.
+      const call = callEvent(60, 'guard-call', multiFilePatch)
+      const intents = toolWriteIntents(call)
+      expect(call.type).toBe('tool/call')
+      expect(intents).toEqual([{
+        callId: 'guard-call',
+        paths: ['app.ts', 'added.ts', 'gone.ts', 'moved.ts', 'destination.ts'],
+      }])
+      const dirty = new DirtyFileGuard().conflicts(cwd, intents[0]?.paths ?? [])
+      expect(dirty.map(document => document.uri.fsPath)).toEqual([file])
+    })
+
+    it('detects unsaved move sources and delete targets with no runtime view', () => {
+      const cwd = temporaryWorkspace()
+      const moved = path.join(cwd, 'moved.ts')
+      const gone = path.join(cwd, 'gone.ts')
+      fs.writeFileSync(moved, 'line\n')
+      fs.writeFileSync(gone, 'delete me\n')
+      mocks.textDocuments.push(
+        { isDirty: true, uri: { scheme: 'file', fsPath: moved } },
+        { isDirty: true, uri: { scheme: 'file', fsPath: gone } },
+      )
+      const input = patchOf([
+        '*** Begin Patch',
+        '*** Delete File: gone.ts',
+        '*** Update File: moved.ts',
+        '*** Move to: destination.ts',
+        '@@',
+        '-line',
+        '+line changed',
+        '*** End Patch',
+      ])
+      const intents = toolWriteIntents(callEvent(62, 'guard-move', input))
+      expect(intents[0]?.paths).toEqual(['gone.ts', 'moved.ts', 'destination.ts'])
+      expect(new DirtyFileGuard().conflicts(cwd, intents[0]?.paths ?? [])
+        .map(document => document.uri.fsPath)).toEqual([moved, gone])
+    })
+
+    it('detects an unsaved deletion target on a replayed call that has only a view', () => {
+      const cwd = temporaryWorkspace()
+      const gone = path.join(cwd, 'gone.ts')
+      fs.writeFileSync(gone, 'delete me\n')
+      mocks.textDocuments.push({ isDirty: true, uri: { scheme: 'file', fsPath: gone } })
+      // A replay can carry an empty argument object: the location list is then
+      // the only place the deletion target is named before the result arrives.
+      const call = event('tool/call', 66, { turn: 1, callId: 'replay-gone', name: 'apply_patch', arguments: '{}' })
+      const intents = toolWriteIntents(call, {
+        for: 'call',
+        view: { card: 'diff', title: 'Apply patch (1 file)', diffs: [], locations: [{ path: 'gone.ts' }] },
+      })
+      expect(intents).toEqual([{ callId: 'replay-gone', paths: ['gone.ts'] }])
+      expect(new DirtyFileGuard().conflicts(cwd, intents[0]?.paths ?? [])
+        .map(document => document.uri.fsPath)).toEqual([gone])
+    })
+
+    it('detects a dirty file only the patch names when a runtime view is present', () => {
+      const cwd = temporaryWorkspace()
+      const file = path.join(cwd, 'app.ts')
+      fs.writeFileSync(file, 'context\nold\ncontext\n')
+      mocks.textDocuments.push({ isDirty: true, uri: { scheme: 'file', fsPath: file } })
+      const call = callEvent(64, 'guard-view', multiFilePatch)
+      const intents = toolWriteIntents(call, {
+        for: 'call',
+        view: { card: 'diff', diffs: [{ path: 'viewed.ts' }] },
+      })
+      expect(intents[0]?.paths).toEqual(['viewed.ts', 'app.ts', 'added.ts', 'gone.ts', 'moved.ts', 'destination.ts'])
+      expect(new DirtyFileGuard().conflicts(cwd, intents[0]?.paths ?? [])
+        .map(document => document.uri.fsPath)).toEqual([file])
     })
   })
 })

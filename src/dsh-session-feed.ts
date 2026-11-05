@@ -148,6 +148,31 @@ function oversizedResponse(error: unknown): boolean {
   return error instanceof DshConnectionError && error.code === 'invalid-response' && error.message.includes('larger than')
 }
 
+/** One history page from `session/events` or its deprecated `session/page` alias. */
+type HistoryPageEndpoint = 'session/events' | 'session/page'
+
+/**
+ * Whether one failed `session/events` read means the runtime serves no usable
+ * `session/events` entry point.
+ *
+ * rc.1/alpha.3 answer it; an older runtime answers the unknown endpoint with a
+ * 404, an unknown-method gateway fault, or a request-shape refusal at that
+ * name. Only those may fall back to the deprecated `session/page`; transport,
+ * authentication, cancellation and business failures are reported unchanged.
+ */
+function legacySessionEventsUnavailable(error: unknown): boolean {
+  if (!(error instanceof DshConnectionError)) return false
+  if (error.code === 'http-error' && error.status === 404) return true
+  if (error.code === 'gateway/method-unavailable' || error.code === 'gateway/definition-unavailable') return true
+  if (error.code === 'gateway/arguments-invalid' || error.code === 'gateway/input-invalid') {
+    const message = error.message.toLowerCase()
+    return message.includes('session/events')
+      && (message.includes('wire field') || message.includes('args fields do not match')
+        || message.includes('descriptor') || message.includes('boundary validation'))
+  }
+  return false
+}
+
 /**
  * Safe label for an untrusted wire `type`.
  *
@@ -274,6 +299,8 @@ export class DshSessionFeed {
   /** Unrecognized `session/control` projection shapes already reported. */
   private readonly reportedProjectionShapes = new Set<string>()
   private projectionShapesCapped = false
+  /** Whether this runtime served `session/events`; cleared once, on fallback. */
+  private historyEventsAvailable = true
 
   constructor(private readonly connection: DshConnection, private readonly emit: (frame: DshFrame) => void,
     private readonly error: (error: Error) => void,
@@ -570,39 +597,79 @@ export class DshSessionFeed {
     })
   }
 
+  /**
+   * Read one older history page.
+   *
+   * `session/events` is the current entry point; `session/page` is its
+   * deprecated alias and the only name older runtimes serve. The first read
+   * prefers events, and a 404, unknown-method or request-shape refusal switches
+   * this feed to the legacy name for every later page, so an old runtime pays
+   * that probe once. Both endpoints answer with the same `SessionEventsPage`
+   * contract, whose `cursor` is the inclusive cut of the page (the supplied
+   * `throughSeq` when one is sent).
+   */
   async page(sessionId: string, beforeSeq: number): Promise<{ events: HistoryEntry[]; hasMore: boolean }> {
     const state = this.follow
     if (state?.sessionId !== sessionId || state.cursor < 0) throw new Error('Open the session before loading older history.')
     // `throughSeq` is the snapshot cursor on purpose: 0.2.0 rejects a value past
     // the session's cursor with `gateway/bad-request`, so paging must walk
     // backwards from a real one.
+    let endpoint: HistoryPageEndpoint = this.historyEventsAvailable ? 'session/events' : 'session/page'
     for (let index = 0; index < HISTORY_PAGE_BUDGETS.length; index += 1) {
       const budget = HISTORY_PAGE_BUDGETS[index] ?? 1
-      let result: { records: unknown; hasMore: boolean }
+      const request = { address: state.address, throughSeq: state.cursor, beforeSeq, maxMessages: budget }
+      let value: unknown
       try {
-        result = await this.connection.call<{ records: unknown; hasMore: boolean }>('session/page', {
-          request: { address: state.address, throughSeq: state.cursor, beforeSeq, maxMessages: budget },
-        })
+        value = await this.readHistoryPage(endpoint, request)
       } catch (error) {
-        // The carrier refuses a response over its budget with `invalid-response`.
-        // A smaller page is the one retry that can fit; every other failure is a
-        // real error the caller already knows how to explain.
-        if (!oversizedResponse(error)) throw error
-        const nextBudget = HISTORY_PAGE_BUDGETS[index + 1]
-        if (nextBudget === undefined) {
-          this.diagnostic(`session/page: history page is still over ${String(MAX_FRAME_BYTES)} bytes at maxMessages ${String(budget)}`)
-          throw new Error(HISTORY_PAGE_TOO_LARGE_MESSAGE)
-        }
         if (this.follow !== state) throw new Error('The conversation changed while loading history.')
-        this.diagnostic(`session/page: history page is over ${String(MAX_FRAME_BYTES)} bytes at maxMessages ${String(budget)}; retrying with maxMessages ${String(nextBudget)}`)
-        continue
+        if (endpoint === 'session/events' && legacySessionEventsUnavailable(error)) {
+          this.historyEventsAvailable = false
+          endpoint = 'session/page'
+          this.diagnostic('session/events: this runtime serves only the deprecated session/page entry point; falling back for older history')
+          try {
+            value = await this.readHistoryPage(endpoint, request)
+          } catch (fallbackError) {
+            if (this.follow !== state) throw new Error('The conversation changed while loading history.')
+            if (this.retrySmallerHistoryPage(fallbackError, endpoint, budget, index)) continue
+            throw fallbackError
+          }
+        } else if (this.retrySmallerHistoryPage(error, endpoint, budget, index)) {
+          continue
+        } else throw error
       }
       if (this.follow !== state) throw new Error('The conversation changed while loading history.')
-      if (typeof result.hasMore !== 'boolean') throw new Error('Invalid history page.')
-      return { events: decodeHistory(result.records), hasMore: result.hasMore }
+      if (!wireRecord(value) || typeof value.hasMore !== 'boolean') throw new Error('Invalid history page.')
+      // alpha.3/rc.1 pages carry their inclusive cut; an older runtime's page
+      // omits it. The cut must never be substituted for the caller's cursor.
+      if (value.cursor !== undefined && !Number.isSafeInteger(value.cursor)) throw new Error('Invalid history page.')
+      return { events: decodeHistory(value.records), hasMore: value.hasMore }
     }
     // Unreachable: the last budget either returns or throws above.
     throw new Error(HISTORY_PAGE_TOO_LARGE_MESSAGE)
+  }
+
+  /** Read one page from the requested history endpoint. */
+  private readHistoryPage(endpoint: HistoryPageEndpoint, request: Record<string, unknown>): Promise<unknown> {
+    return this.connection.call<unknown>(endpoint, { request })
+  }
+
+  /**
+   * Whether one oversized history page should be retried at the next budget.
+   *
+   * The last budget is an actionable failure: the runtime answered, but no
+   * admissible page fits the frame limit. A failure that is not a size refusal
+   * never retries.
+   */
+  private retrySmallerHistoryPage(error: unknown, endpoint: HistoryPageEndpoint, budget: number, index: number): boolean {
+    if (!oversizedResponse(error)) return false
+    const nextBudget = HISTORY_PAGE_BUDGETS[index + 1]
+    if (nextBudget === undefined) {
+      this.diagnostic(`${endpoint}: history page is still over ${String(MAX_FRAME_BYTES)} bytes at maxMessages ${String(budget)}`)
+      throw new Error(HISTORY_PAGE_TOO_LARGE_MESSAGE)
+    }
+    this.diagnostic(`${endpoint}: history page is over ${String(MAX_FRAME_BYTES)} bytes at maxMessages ${String(budget)}; retrying with maxMessages ${String(nextBudget)}`)
+    return true
   }
 
   async respond(id: string, value: unknown): Promise<RpcReceipt> {

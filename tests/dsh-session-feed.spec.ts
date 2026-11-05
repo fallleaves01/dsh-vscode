@@ -628,8 +628,9 @@ describe('follow snapshot page budgets', () => {
 })
 
 describe('history page budget fallback', () => {
-  const OVERSIZED = () => new DshConnectionError('invalid-response', 'DSH session/page returned a response larger than 8388608 bytes.')
+  const OVERSIZED = () => new DshConnectionError('invalid-response', 'DSH session/events returned a response larger than 8388608 bytes.')
   const PAGE_TOO_LARGE = 'The older history is larger than the 8 MiB frame limit. Open the conversation again; if it keeps failing, reconnect the runtime.'
+  const record = (seq: number) => ({ type: 'event', event: { type: 'user/message', seq, time: seq, data: {} } })
 
   async function openConversation(h: ReturnType<typeof harness>): Promise<void> {
     const opening = h.feed.open('a')
@@ -637,50 +638,137 @@ describe('history page budget fallback', () => {
     await opening
   }
 
+  const requestedCalls = (call: ReturnType<typeof vi.mocked<DshConnection['call']>>): Array<{ endpoint: string; args: unknown }> =>
+    call.mock.calls.map(([endpoint, args]) => ({ endpoint, args }))
   const requestedBudgets = (call: ReturnType<typeof vi.mocked<DshConnection['call']>>): number[] =>
     call.mock.calls.map(([, args]) => (args as { request: { maxMessages: number } }).request.maxMessages)
 
-  it('asks for the largest history budget first', async () => {
+  it('prefers session/events with the snapshot cut and the largest budget first', async () => {
     const h = harness()
     await h.feed.start()
     await openConversation(h)
     const call = vi.mocked(h.connection.call)
-    call.mockResolvedValueOnce({ records: [], hasMore: false })
+    call.mockResolvedValueOnce({ cursor: 5, records: [], hasMore: false })
     await expect(h.feed.page('a', 5)).resolves.toEqual({ events: [], hasMore: false })
-    expect(requestedBudgets(call)).toEqual([30])
+    expect(requestedCalls(call)).toEqual([{ endpoint: 'session/events', args: { request: {
+      address: { kind: 'session', sessionId: 'a' }, throughSeq: 5, beforeSeq: 5, maxMessages: 30,
+    } } }])
   })
 
-  it('retries an oversized page with the next budget and returns the smaller page', async () => {
+  it('parses the alpha.3 page cursor and keeps its chronological records', async () => {
     const h = harness()
     await h.feed.start()
     await openConversation(h)
     const call = vi.mocked(h.connection.call)
-    call.mockRejectedValueOnce(OVERSIZED())
-    call.mockResolvedValueOnce({ records: [], hasMore: true })
-    await expect(h.feed.page('a', 5)).resolves.toEqual({ events: [], hasMore: true })
-    expect(requestedBudgets(call)).toEqual([30, 12])
-  })
-
-  it('reports a dedicated error when every history budget is oversized', async () => {
-    const h = harness()
-    await h.feed.start()
-    await openConversation(h)
-    const call = vi.mocked(h.connection.call)
-    call.mockRejectedValue(OVERSIZED())
-    await expect(h.feed.page('a', 5)).rejects.toThrow(PAGE_TOO_LARGE)
-    expect(requestedBudgets(call)).toEqual([...HISTORY_PAGE_BUDGETS])
-    // The failure belongs to this caller; it must not tear down the feed.
+    call.mockResolvedValueOnce({ cursor: 5, records: [record(3), record(4)], hasMore: true })
+    const page = await h.feed.page('a', 5)
+    expect(page.events.map(entry => entry.event.seq)).toEqual([3, 4])
+    expect(page.hasMore).toBe(true)
     expect(h.errors).toEqual([])
   })
 
-  it('rethrows any other failure unchanged instead of lowering the budget', async () => {
+  it.each([
+    ['a missing endpoint', new DshConnectionError('http-error', 'DSH session/events failed: HTTP 404.', 404)],
+    ['an unknown method', new DshConnectionError('gateway/method-unavailable',
+      'typert gateway: session/events: active Service "sessionController" has no callable method "events"')],
+    ['a request-shape refusal', new DshConnectionError('gateway/input-invalid',
+      'typert gateway: session/events: wire field "request" failed boundary validation')],
+  ])('falls back to the deprecated session/page after %s', async (_case, failure) => {
+    const h = harness()
+    await h.feed.start()
+    await openConversation(h)
+    const call = vi.mocked(h.connection.call)
+    call.mockRejectedValueOnce(failure)
+    // An older runtime answers with the pre-cursor SessionPage shape.
+    call.mockResolvedValueOnce({ records: [], hasMore: false })
+    await expect(h.feed.page('a', 5)).resolves.toEqual({ events: [], hasMore: false })
+    expect(requestedCalls(call)).toEqual([
+      { endpoint: 'session/events', args: { request: {
+        address: { kind: 'session', sessionId: 'a' }, throughSeq: 5, beforeSeq: 5, maxMessages: 30,
+      } } },
+      { endpoint: 'session/page', args: { request: {
+        address: { kind: 'session', sessionId: 'a' }, throughSeq: 5, beforeSeq: 5, maxMessages: 30,
+      } } },
+    ])
+    expect(h.errors).toEqual([])
+
+    // The probe is paid once: later pages go straight to the legacy name.
+    call.mockResolvedValueOnce({ records: [record(1)], hasMore: false })
+    const next = await h.feed.page('a', 1)
+    expect(next.events.map(entry => entry.event.seq)).toEqual([1])
+    expect(call.mock.calls.at(-1)?.[0]).toBe('session/page')
+    expect(call.mock.calls.filter(([endpoint]) => endpoint === 'session/events')).toHaveLength(1)
+  })
+
+  it('does not fall back for a real failure', async () => {
     const h = harness()
     await h.feed.start()
     await openConversation(h)
     const call = vi.mocked(h.connection.call)
     call.mockRejectedValueOnce(new DshConnectionError('gateway/bad-request', 'History is unavailable.'))
     await expect(h.feed.page('a', 5)).rejects.toThrow('History is unavailable.')
-    expect(requestedBudgets(call)).toEqual([30])
+    expect(requestedCalls(call)).toHaveLength(1)
+    expect(call.mock.calls[0]![0]).toBe('session/events')
+    expect(h.errors).toEqual([])
+  })
+
+  it('retries smaller budgets on the fallback endpoint after the probe', async () => {
+    const h = harness()
+    await h.feed.start()
+    await openConversation(h)
+    const call = vi.mocked(h.connection.call)
+    call.mockRejectedValueOnce(new DshConnectionError('http-error', 'DSH session/events failed: HTTP 404.', 404))
+    call.mockRejectedValueOnce(OVERSIZED())
+    call.mockResolvedValueOnce({ records: [record(2)], hasMore: false })
+    const page = await h.feed.page('a', 5)
+    expect(page.events.map(entry => entry.event.seq)).toEqual([2])
+    expect(requestedCalls(call).map(entry => entry.endpoint)).toEqual(['session/events', 'session/page', 'session/page'])
+    expect(requestedBudgets(call)).toEqual([30, 30, 12])
+  })
+
+  it('reports the dedicated error when every history budget is oversized', async () => {
+    const h = harness()
+    await h.feed.start()
+    await openConversation(h)
+    const call = vi.mocked(h.connection.call)
+    call.mockRejectedValue(OVERSIZED())
+    await expect(h.feed.page('a', 5)).rejects.toThrow(PAGE_TOO_LARGE)
+    expect(requestedCalls(call).map(entry => entry.endpoint)).toEqual(HISTORY_PAGE_BUDGETS.map(() => 'session/events'))
+    expect(requestedBudgets(call)).toEqual([...HISTORY_PAGE_BUDGETS])
+    // A size refusal is not a missing entry point: nothing fell back.
+    expect(h.diagnostics.some(line => line.includes('session/events: history page is over'))).toBe(true)
+    expect(h.diagnostics.some(line => line.includes('falling back'))).toBe(false)
+    // The failure belongs to this caller; it must not tear down the feed.
+    expect(h.errors).toEqual([])
+  })
+
+  it('keeps cursor pagination contiguous without duplicates', async () => {
+    const h = harness()
+    await h.feed.start()
+    await openConversation(h)
+    const call = vi.mocked(h.connection.call)
+    call.mockResolvedValueOnce({ cursor: 5, records: [record(3), record(4)], hasMore: true })
+    call.mockResolvedValueOnce({ cursor: 5, records: [record(1), record(2)], hasMore: false })
+    const first = await h.feed.page('a', 5)
+    const second = await h.feed.page('a', 3)
+    expect(first.events.map(entry => entry.event.seq)).toEqual([3, 4])
+    expect(second.events.map(entry => entry.event.seq)).toEqual([1, 2])
+    const merged = new Map([...first.events, ...second.events].map(entry => [entry.event.seq, entry]))
+    expect([...merged.keys()].sort((left, right) => left - right)).toEqual([1, 2, 3, 4])
+    expect(requestedCalls(call).map(entry => entry.endpoint)).toEqual(['session/events', 'session/events'])
+    expect(requestedBudgets(call)).toEqual([30, 30])
+    expect(call.mock.calls.map(([, args]) => (args as { request: { beforeSeq: number } }).request.beforeSeq)).toEqual([5, 3])
+  })
+
+  it('rejects a malformed page payload', async () => {
+    const h = harness()
+    await h.feed.start()
+    await openConversation(h)
+    const call = vi.mocked(h.connection.call)
+    call.mockResolvedValueOnce({ records: [] })
+    await expect(h.feed.page('a', 5)).rejects.toThrow('Invalid history page.')
+    call.mockResolvedValueOnce({ cursor: 'soon', records: [], hasMore: false })
+    await expect(h.feed.page('a', 5)).rejects.toThrow('Invalid history page.')
   })
 })
 

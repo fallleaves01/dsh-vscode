@@ -506,6 +506,9 @@ const SCHEDULE_TARGET_ITEMS: ReadonlyArray<{ label: string; description: string;
   { label: 'New conversation each time', description: 'create a fresh conversation for every delivery', targetKind: 'new' },
 ]
 
+/** Why a delegated child cannot receive a reminder directly. */
+const DELEGATED_SCHEDULE_TARGET_MESSAGE = 'This is a subagent conversation. A reminder cannot deliver into it; create the reminder for a new conversation instead.'
+
 /** Native quick-pick choices for the part of one reminder to edit. */
 const SCHEDULE_EDIT_ITEMS: ReadonlyArray<{ label: string; description: string; editField: 'title' | 'prompt' | 'timing' }> = [
   { label: 'Title', description: 'rename the reminder', editField: 'title' },
@@ -558,6 +561,8 @@ export class DshChatController implements vscode.Disposable {
    * without that, the later one would replace the idle copy with a failure.
    */
   private intentionalDisconnect: RuntimeOwnership | undefined
+  /** Corrected idle copy learned after the stop (for example a shared runtime remains in use). */
+  private intentionalDisconnectNote: string | undefined
   private activityRevision = 0
   private readonly runtimeActivity = new Map<string, { running: boolean; revision: number }>()
   private sessionLoadGeneration = 0
@@ -821,6 +826,10 @@ export class DshChatController implements vscode.Disposable {
       if (picked === undefined) return
       target = picked
     } catch (error) { await this.showReminderFailure('create', error); return }
+    if (target.kind === 'session' && this.isDelegatedChildSession(target.sessionId)) {
+      await vscode.window.showErrorMessage(DELEGATED_SCHEDULE_TARGET_MESSAGE)
+      return
+    }
     try { await this.taskFeatures.createSchedule({ title: scheduleTitleOf(title), prompt: schedulePromptOf(prompt), timing, target }) }
     catch (error) { await this.showReminderFailure('create', error); return }
     if (this.client !== client) return
@@ -882,11 +891,16 @@ export class DshChatController implements vscode.Disposable {
       ...(options.validateInput === undefined ? {} : { validateInput: options.validateInput }) })
   }
 
-  /** Ask where one reminder delivers; "this conversation" is the default choice. */
+  /** Ask where one reminder delivers; a delegated child cannot receive one. */
   private async promptScheduleTarget(): Promise<ScheduleTargetRequest | undefined> {
-    const picked = await vscode.window.showQuickPick(SCHEDULE_TARGET_ITEMS, { title: 'Reminder destination',
-      placeHolder: 'Where should this reminder be delivered?', ignoreFocusOut: true })
+    const delegatedChild = this.isDelegatedChildSession()
+    const options = delegatedChild ? SCHEDULE_TARGET_ITEMS.filter(item => item.targetKind !== 'session') : SCHEDULE_TARGET_ITEMS
+    const picked = await vscode.window.showQuickPick(options, { title: 'Reminder destination',
+      placeHolder: delegatedChild
+        ? 'This is a subagent conversation; choose a new conversation destination.'
+        : 'Where should this reminder be delivered?', ignoreFocusOut: true })
     if (picked === undefined) return undefined
+    if (picked.targetKind === 'session' && delegatedChild) throw new Error(DELEGATED_SCHEDULE_TARGET_MESSAGE)
     if (picked.targetKind !== 'session') return { kind: picked.targetKind }
     if (this._state.sessionId === '') throw new Error('Open a conversation before creating a reminder in it.')
     return { kind: 'session', sessionId: this._state.sessionId }
@@ -1009,6 +1023,20 @@ export class DshChatController implements vscode.Disposable {
     if (parent?.agentAvailable !== true) return 'The owning agent is unavailable. Open its conversation and send a message to resume it, then return to this child.'
     return null
   }
+  /**
+   * Whether one conversation is a delegated subagent child.
+   *
+   * DSH resumes reminder destinations on its own; a child belongs to its parent,
+   * so the runtime refuses it. The open conversation knows its owner through
+   * `parentSessionId`; an unloaded catalog row or a non-continuable child is
+   * recognised through the row itself.
+   */
+  private isDelegatedChildSession(sessionId: string = this._state.sessionId): boolean {
+    if (sessionId === '') return false
+    if (sessionId === this._state.sessionId && this._state.parentSessionId !== null) return true
+    if (this.childReadOnlyReason(sessionId) !== null) return true
+    return this._state.sessions.some(item => item.id === sessionId && item.parentId !== undefined)
+  }
   async sendToChild(sessionId: string, text: string, mode: PromptMode = 'queue'): Promise<void> {
     const client = this.taskClient(false); const child = this._state.sessions.find(item => item.id === sessionId)
     if (!child?.parentId || !child.subagent) throw new Error('This child is no longer in the project.')
@@ -1111,7 +1139,10 @@ export class DshChatController implements vscode.Disposable {
   }
 
   observeRuntime(state: RuntimeState): void {
-    if (state.kind !== 'stopped') this.intentionalDisconnect = undefined
+    if (state.kind !== 'stopped') {
+      this.intentionalDisconnect = undefined
+      this.intentionalDisconnectNote = undefined
+    }
     if (state.kind === 'stopped' && this.intentionalDisconnect !== undefined) {
       const ownership = this.intentionalDisconnect
       this.cancelRecovery()
@@ -1119,13 +1150,13 @@ export class DshChatController implements vscode.Disposable {
       this.disconnectClient()
       for (const summary of this.summaries) summary.running = false
       this.clearLiveControls()
-      const statusText = ownership === 'external' || ownership === 'attached'
+      const statusText = this.intentionalDisconnectNote ?? (ownership === 'external' || ownership === 'attached'
         ? 'Disconnected from the external DSH runtime. It is still running outside this window.'
         : ownership === 'adopted'
           ? 'Disconnected from the shared DSH runtime. Another window may still be using it.'
           : ownership === 'managed'
             ? 'Disconnected from DeepSeek Harness. Its managed runtime was stopped.'
-            : 'Disconnected from DeepSeek Harness.'
+            : 'Disconnected from DeepSeek Harness.')
       this.publish({ phase: 'idle', statusText, setup: null, canReconnect: false, runtimeConnection: null,
         ...this.runningPatch(false), messages: this.resetToDurableMessages() })
       return
@@ -1419,13 +1450,28 @@ export class DshChatController implements vscode.Disposable {
     ++this.runtimeSwitchRevision
     this.cancelRecovery()
     this.intentionalDisconnect = this.runtime.state.kind === 'ready' ? this.runtime.state.ownership : this._state.runtimeConnection?.ownership
+    this.intentionalDisconnectNote = undefined
     this.publish({ phase: 'loading', statusText: 'Disconnecting from DeepSeek Harness…', canReconnect: false })
     try {
       await this.runtime.stop()
     } catch (error) {
       this.intentionalDisconnect = undefined
+      this.intentionalDisconnectNote = undefined
       throw error
     }
+  }
+
+  /**
+   * Replace the idle disconnect banner once the runtime's actual fate is known.
+   *
+   * A shared managed runtime keeps running for other windows even though this
+   * window's stop published `stopped`. The manager learns that after the stop
+   * resolves, so it may correct the banner while no later state has arrived.
+   */
+  noteDisconnectOutcome(text: string): void {
+    if (this._state.phase !== 'idle') return
+    this.intentionalDisconnectNote = text
+    this.publish({ statusText: text })
   }
 
   /**
@@ -6429,9 +6475,13 @@ export function activate(context: vscode.ExtensionContext): void {
         if (descriptor !== undefined && descriptor.manageable && descriptor.pid === pid
           && await broker.isRecordRunning(pid, descriptor.processStartTime)) {
           const others = (await broker.liveLeases()).filter(lease => lease.runtimePid === undefined || lease.runtimePid === pid)
-          return others.length > 0
+          // The stop reported `stopped` before the broker could see the other
+          // window's lease; the Webview banner must not claim the runtime ended.
+          const note = others.length > 0
             ? 'Disconnected this window. Another VS Code window is still using the runtime, so it keeps running.'
             : 'Disconnected, but the runtime process is still running. Use Show Output for details.'
+          controller.noteDisconnectOutcome(note)
+          return note
         }
       }
       const released = controller.releasedSessions

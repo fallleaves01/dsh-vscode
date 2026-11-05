@@ -9,6 +9,37 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-rc.1.2] - 2026-11-05
+
+### Added
+
+- Explicit hover titles and accessible names for every icon button and icon menu
+  trigger in the conversation and settings surfaces. Runtime state, jobs,
+  usage, account, task, send/stop and settings controls update those labels
+  when their state changes; menu triggers expose `aria-haspopup` and
+  `aria-expanded` consistently.
+- **DeepSeek Harness: Discover Plugins** and **DeepSeek Harness: Install Official
+  Plugin Bundle** are contributed to the Command Palette. Their handlers were
+  already present; this makes them reachable without opening Settings.
+
+### Fixed
+
+- History paging uses `session/events` instead of the deprecated `session/page`
+  on current runtimes, with a one-time fallback to `session/page` on older
+  runtimes that do not serve `session/events`. The 30/12/4/1 page budgets, 8 MiB handling, cursor checks and
+  snapshot semantics are unchanged.
+- `apply_patch` file headers, move sources and delete targets now contribute to
+  the unsaved-file conflict check even without a runtime presenter view, so a
+  patch that would overwrite an unsaved editor is cancelled before dispatch.
+- Reminders created inside a delegated subagent no longer offer the current
+  conversation as a delivery target; the host and controller reject that target
+  locally instead of sending a request the runtime will refuse.
+- Delivery-history misses now show readable copy instead of raw
+  `delivery_cursor_not_found`/`schedule_not_found` codes.
+- When another VS Code window still uses a managed runtime, disconnecting this
+  window now reports that the process remains in use instead of saying the
+  managed runtime was stopped.
+
 ## [0.2.2-rc.1.1] - 2026-11-05
 
 ### Added

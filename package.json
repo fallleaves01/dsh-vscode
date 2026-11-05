@@ -3,7 +3,7 @@
   "displayName": "DSH Sidebar",
   "description": "A project-aware VS Code chat sidebar powered by the official DeepSeek Harness runtime.",
   "icon": "media/deepseek.png",
-  "version": "0.2.2-rc.1.1",
+  "version": "0.2.2-rc.1.2",
   "private": true,
   "publisher": "fallleaves01",
   "license": "MIT",
@@ -59,7 +59,9 @@
     "onCommand:deepseekHarness.diagnoseOccupancy",
     "onCommand:deepseekHarness.endLeftoverRuntime",
     "onCommand:deepseekHarness.forgetSavedRuntime",
-    "onCommand:deepseekHarness.configureTaskServices"
+    "onCommand:deepseekHarness.configureTaskServices",
+    "onCommand:deepseekHarness.discoverPlugins",
+    "onCommand:deepseekHarness.installOfficialPlugin"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -128,6 +130,14 @@
         "command": "deepseekHarness.managePlugins",
         "title": "DeepSeek Harness: Manage Runtime Plugins",
         "icon": "$(extensions)"
+      },
+      {
+        "command": "deepseekHarness.discoverPlugins",
+        "title": "DeepSeek Harness: Discover Plugins"
+      },
+      {
+        "command": "deepseekHarness.installOfficialPlugin",
+        "title": "DeepSeek Harness: Install Official Plugin Bundle"
       },
       {
         "command": "deepseekHarness.addSelection",

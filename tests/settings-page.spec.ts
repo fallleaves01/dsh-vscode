@@ -422,3 +422,67 @@ describe('settings page document hardening', () => {
     expect(html).toMatch(/script-src 'nonce-[0-9a-f]{32}';/)
   })
 })
+
+describe('settings button hover and accessible names', () => {
+  const unnamed = (): string[] => [...document.querySelectorAll<HTMLButtonElement>('button')].flatMap(button => {
+    const title = (button.title || '').trim(), label = (button.getAttribute('aria-label') || '').trim()
+    return title !== '' && label !== '' ? [] : [`${button.className} text=${JSON.stringify(button.textContent?.slice(0, 40))}`]
+  })
+
+  it('names every button on the general, plugins and provider pages', () => {
+    const h = harness()
+    expect(unnamed()).toEqual([])
+    h.click('Built-in plugins')
+    expect(unnamed()).toEqual([])
+    expect(document.querySelector<HTMLButtonElement>('[data-section="inventory"]')?.title).toBe('Plugins')
+    h.click('Models')
+    expect(unnamed()).toEqual([])
+    document.querySelector<HTMLButtonElement>('[data-provider="anthropic"]')!.click()
+    expect(unnamed()).toEqual([])
+  })
+
+  it('names every button on the search, bundle and read-only pages', () => {
+    const search = harness(searchPageState())
+    expect(unnamed()).toEqual([])
+    search.click('Web search')
+    expect(unnamed()).toEqual([])
+    search.update({ writable: false })
+    expect(unnamed()).toEqual([])
+
+    const bundles = harness(bundlePageState())
+    bundles.click('Built-in plugins')
+    expect(unnamed()).toEqual([])
+    for (const tab of [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')]) tab.click()
+    expect(unnamed()).toEqual([])
+  })
+
+  it('keeps the reveal, provider and reasoning controls in sync with their state', () => {
+    const h = harness(); h.click('Models')
+    const row = document.querySelector<HTMLButtonElement>('[data-provider="anthropic"]')!
+    expect(row.title).toBe('Show settings for Anthropic')
+    expect(row.getAttribute('aria-label')).toBe(row.title)
+    row.click()
+    const expanded = document.querySelector<HTMLButtonElement>('[data-provider="anthropic"]')!
+    expect(expanded.getAttribute('aria-expanded')).toBe('true')
+    expect(expanded.title).toBe('Hide settings for Anthropic')
+    expect(expanded.getAttribute('aria-label')).toBe(expanded.title)
+
+    const reveal = document.querySelector<HTMLButtonElement>('[aria-label="Show API key"]')!
+    expect(reveal.title).toBe('Show API key')
+    reveal.click()
+    expect(reveal.title).toBe('Hide API key')
+    expect(reveal.getAttribute('aria-label')).toBe('Hide API key')
+    expect(reveal.getAttribute('aria-pressed')).toBe('true')
+    reveal.click()
+    expect(reveal.title).toBe('Show API key')
+    expect(reveal.getAttribute('aria-label')).toBe('Show API key')
+
+    document.querySelector<HTMLInputElement>('[data-focus-key="reasoning:0:enabled"]')!.click()
+    const levels = [...document.querySelectorAll<HTMLButtonElement>('.reasoning-row button')]
+    expect(levels.length).toBeGreaterThan(0)
+    for (const level of levels) {
+      expect(level.title).toMatch(/^Delete level /)
+      expect(level.getAttribute('aria-label')).toBe(level.title)
+    }
+  })
+})

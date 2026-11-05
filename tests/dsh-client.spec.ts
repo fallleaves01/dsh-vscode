@@ -26,7 +26,8 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
   const results: Record<string, unknown> = {
     'session/list': { items: [] }, 'session/create': { sessionId: 's' },
     'session/modelCatalog': { default: { provider: 'p', model: 'm' }, routableProviders: ['p'], groups: [], failures: [] },
-    'session/page': { records: [event(1)], hasMore: false },
+    'session/events': { cursor: 5, records: [event(5)], hasMore: false },
+    'session/page': { records: [event(5)], hasMore: false },
     'skills/list': { skills: [] }, 'agentPresets/list': { presets: [] }, 'agentPresets/select': 'coding',
   }
   const socket = new EventEmitter() as EventEmitter & { readyState: number; send: (raw: string) => void; terminate: () => void }
@@ -246,9 +247,29 @@ describe('DSH 0.1.2 chat transport', () => {
     await h.client.openSession('child', 'parent')
     h.requests.length = 0
     await h.client.history('child', 0)
-    const page = h.requests.find(request => request.endpoint === 'session/page')
+    const page = h.requests.find(request => request.endpoint === 'session/events')
     expect(page?.args).toMatchObject({ request: { address: {
       kind: 'subagent', parentSessionId: 'parent', childSessionId: 'child', mode: 'unknown' } } })
+  })
+
+  it('falls back to session/page when the runtime has no session/events entry point', async () => {
+    const h = harness()
+    await h.client.openSession('s')
+    h.requests.length = 0
+    vi.mocked(h.connection.call).mockImplementationOnce(async (endpoint: string, args: unknown) => {
+      h.requests.push({ endpoint, args })
+      throw new DshConnectionError('http-error', 'DSH session/events failed: HTTP 404.', 404)
+    })
+    const page = await h.client.history('s', 5)
+    expect(page.events.map(entry => entry.event.seq)).toEqual([5])
+    expect(h.requests).toEqual([
+      { endpoint: 'session/events', args: { request: { address: { kind: 'session', sessionId: 's' }, throughSeq: 5, beforeSeq: 5, maxMessages: 30 } } },
+      { endpoint: 'session/page', args: { request: { address: { kind: 'session', sessionId: 's' }, throughSeq: 5, beforeSeq: 5, maxMessages: 30 } } },
+    ])
+    // The legacy probe is remembered: the next page skips session/events.
+    h.requests.length = 0
+    await h.client.history('s', 3)
+    expect(h.requests.map(request => request.endpoint)).toEqual(['session/page'])
   })
 
   it('treats a payload without its array as an unavailable inventory', async () => {
@@ -478,7 +499,7 @@ describe('DSH 0.1.2 chat transport', () => {
     for (const frame of h.frames.filter(f => f.payload.type === 'session/event')) projector.apply(frame.payload.event as any)
     expect(projector.messages()[0]?.text).toBe('hello world')
     await h.client.history('s', 5)
-    expect(h.requests.at(-1)).toEqual({ endpoint: 'session/page', args: { request: { address: { kind: 'session', sessionId: 's' }, throughSeq: 5, beforeSeq: 5, maxMessages: 30 } } })
+    expect(h.requests.at(-1)).toEqual({ endpoint: 'session/events', args: { request: { address: { kind: 'session', sessionId: 's' }, throughSeq: 5, beforeSeq: 5, maxMessages: 30 } } })
   })
 
   it('opts into 0.1.5 streaming, buffers the live baseline and settlement, and keeps history cursors durable', async () => {

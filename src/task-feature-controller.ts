@@ -6,6 +6,23 @@ export interface TaskFeatureState { goal: GoalState; schedules: ScheduleState; h
 export type GoalAction = 'create' | 'edit' | 'pause' | 'resume' | 'complete' | 'clear'
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error)
 
+/**
+ * Readable copy for a paged delivery-history miss.
+ *
+ * DSH reports the alpha.3 miss as a raw discriminator (`delivery_cursor_not_found`
+ * or `schedule_not_found`). The panel keeps the failure state, but a user reads
+ * the sentence, not the wire code; unknown failures keep their original detail.
+ */
+export function reminderHistoryFailureText(error: unknown): string {
+  const raw = errorText(error)
+  const code = typeof (error as { code?: unknown } | null)?.code === 'string'
+    ? (error as { code: string }).code
+    : raw.trim()
+  if (code === 'delivery_cursor_not_found') return 'That delivery page is no longer available. Refresh the reminder.'
+  if (code === 'schedule_not_found') return 'This reminder no longer exists. Refresh the reminders panel.'
+  return raw
+}
+
 /** Async feature reads belong to a runtime and selection, never to whichever view finishes last. */
 export class TaskFeatureController {
   state: TaskFeatureState = { goal: emptyGoalState(), schedules: emptyScheduleState(), historySearch: emptySearchState() }
@@ -131,7 +148,7 @@ export class TaskFeatureController {
       this.update({ schedules: { ...this.state.schedules, history } })
     } catch (error) {
       if (client === this.client && epoch === this.epoch && revision === this.historyRead) this.update({ schedules: { ...this.state.schedules,
-        history: { id, ...(owner === undefined ? {} : { sessionId: owner }), records, loading: false, error: errorText(error) } } })
+        history: { id, ...(owner === undefined ? {} : { sessionId: owner }), records, loading: false, error: reminderHistoryFailureText(error) } } })
     }
   }
 
@@ -203,10 +220,26 @@ export class TaskFeatureController {
     if (client === this.client) await this.refreshSchedules(true)
   }
 
+  /**
+   * Whether one session is a delegated child DSH refuses as a reminder target.
+   *
+   * A child belongs to its parent conversation; only a `new`/`new_once` target
+   * creates the conversation a delivery may start on its own.
+   */
+  private isDelegatedChild(sessionId: string): boolean {
+    const summary = this.sessions().find(item => item.sessionId === sessionId)
+    return summary !== undefined && (summary.origin === 'subagent'
+      || (typeof summary.parentSessionId === 'string' && summary.parentSessionId !== ''))
+  }
   /** Create one reminder and refresh the catalog the panel renders. */
   async createSchedule(request: ScheduleCreateRequest): Promise<void> {
     const client = this.client
     if (client === undefined) throw new Error('DSH is not connected.')
+    if (request.target?.kind === 'session' && this.isDelegatedChild(request.target.sessionId)) {
+      const message = 'This conversation is a delegated subagent task; a reminder cannot deliver into it. Choose a new conversation destination.'
+      this.update({ schedules: { ...this.state.schedules, error: `Could not create the reminder. ${message}` } })
+      throw new Error(message)
+    }
     try { await client.createSchedule(request) }
     catch (error) {
       if (client === this.client) this.failSchedule('Could not create the reminder', error)

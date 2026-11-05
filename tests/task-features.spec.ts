@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { formatDurationSeconds, goalOf, JobOutputTail, localTimeZone, schedulePromptOf, scheduleRefusal, schedulesOf, scheduleTimingOf, scheduleTitleOf, workflowsOf } from '../src/task-features.js'
+import { TaskFeatureController, reminderHistoryFailureText } from '../src/task-feature-controller.js'
+import type { DshClient, SessionSummary } from '../src/dsh-client.js'
 import type { DshEvent } from '../src/conversation.js'
 const event = (type: string, data: Record<string, unknown>, seq = 1): DshEvent => ({ type, data, seq, time: 0 })
 const goal = { id: 'g', revision: 2, objective: 'Fix tasks', phase: 'active', maxGoalRounds: 8, roundsStarted: 3 }
@@ -195,4 +197,49 @@ it('bounds chunk count as well as bytes and ignores empty output', () => {
   tail.output({ chunks: Array.from({ length: 10000 }, (_, at) => ({ at, text: at % 2 ? 'x' : '' })), next: 5000 })
   expect(tail.chunks).toHaveLength(1024)
   expect(tail.gap).toBe(true)
+})
+
+describe('reminder failure copy and delegated destinations', () => {
+  it('turns a paged delivery miss into readable copy and keeps unknown detail', () => {
+    expect(reminderHistoryFailureText(new Error('delivery_cursor_not_found')))
+      .toBe('That delivery page is no longer available. Refresh the reminder.')
+    expect(reminderHistoryFailureText(new Error('schedule_not_found')))
+      .toBe('This reminder no longer exists. Refresh the reminders panel.')
+    // A DSH gateway failure carries its code beside a longer message: keep it.
+    const gateway = Object.assign(new Error('typert gateway: schedule/history: wire field "request" failed boundary validation'), { code: 'gateway/input-invalid' })
+    expect(reminderHistoryFailureText(gateway)).toContain('boundary validation')
+    expect(reminderHistoryFailureText(new Error('transport failed'))).toBe('transport failed')
+  })
+
+  it('refuses a session target for a delegated child before calling DSH', async () => {
+    const createSchedule = vi.fn(async () => ({ accepted: true }))
+    const client = {
+      goal: vi.fn(async () => null),
+      schedules: vi.fn(async () => []),
+      scheduleHistory: vi.fn(async () => ({ records: [] })),
+      createSchedule,
+    } as unknown as DshClient
+    const summaries = [
+      { sessionId: 'parent', updatedAt: 2, running: false, blank: false },
+      { sessionId: 'child', parentSessionId: 'parent', origin: 'subagent', updatedAt: 1, running: false, blank: false },
+    ] as SessionSummary[]
+    const controller = new TaskFeatureController(vi.fn(), () => summaries)
+    controller.bind(client)
+    controller.select('child', {})
+    // Let the selection's own catalog read settle; a later success would clear
+    // the panel error this guard writes.
+    await vi.waitFor(() => expect(controller.state.schedules.loading).toBe(false))
+
+    await expect(controller.createSchedule({ title: 'Review', prompt: 'Check jobs',
+      timing: { kind: 'after', after_seconds: 60 }, target: { kind: 'session', sessionId: 'child' } }))
+      .rejects.toThrow('delegated subagent')
+    expect(createSchedule).not.toHaveBeenCalled()
+    expect(controller.state.schedules.error).toContain('delegated subagent')
+
+    // The destinations the runtime does accept still reach it.
+    await controller.createSchedule({ title: 'Review', prompt: 'Check jobs',
+      timing: { kind: 'after', after_seconds: 60 }, target: { kind: 'new_once' } })
+    expect(createSchedule).toHaveBeenCalledTimes(1)
+    expect((createSchedule.mock.calls[0]![0] as { target: unknown }).target).toEqual({ kind: 'new_once' })
+  })
 })

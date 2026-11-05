@@ -834,11 +834,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       <button id="conversationHome" class="icon-button" title="All conversations" aria-label="All conversations"><svg viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></svg></button>
       <span class="brand-mark deepseek-mark" aria-hidden="true"></span>
       <div id="sessionControl" class="session-control">
-        <button id="sessionTrigger" class="session-trigger" aria-label="Project conversations" aria-haspopup="dialog" aria-expanded="false"><span id="sessionTriggerTitle" class="session-trigger-title">New conversation</span><span id="sessionAttentionCount" class="session-attention-count hidden"></span><svg viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5"/></svg></button>
+        <button id="sessionTrigger" class="session-trigger" title="Project conversations" aria-label="Project conversations" aria-haspopup="dialog" aria-expanded="false"><span id="sessionTriggerTitle" class="session-trigger-title">New conversation</span><span id="sessionAttentionCount" class="session-attention-count hidden"></span><svg viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5"/></svg></button>
         <div id="sessionMenu" class="session-menu hidden" role="dialog" aria-label="Project conversations">
           <input id="sessionSearch" class="session-search" type="search" placeholder="Search titles and message history" aria-label="Search conversations">
           <div id="sessionList" class="session-list" role="list" aria-label="Recent conversations"></div>
-          <div class="session-menu-footer"><button id="viewAllSessions" class="session-directory-link" type="button"><span>View all conversations</span><span id="sessionTotal"></span></button></div>
+          <div class="session-menu-footer"><button id="viewAllSessions" class="session-directory-link" type="button" title="View all conversations" aria-label="View all conversations"><span>View all conversations</span><span id="sessionTotal"></span></button></div>
         </div>
       </div>
       <div id="jobsControl" class="jobs-control hidden">
@@ -855,7 +855,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     </header>
     <section id="conversationHomeView" class="conversation-home hidden" aria-label="Conversation directory">
       <div class="home-directory-header">
-        <div class="home-list-heading"><span id="homeListTitle">Recent conversations</span><button id="homeArchiveToggle" class="home-archive-toggle" type="button" aria-pressed="false">Archived</button></div>
+        <div class="home-list-heading"><span id="homeListTitle">Recent conversations</span><button id="homeArchiveToggle" class="home-archive-toggle" type="button" title="Show archived conversations" aria-label="Show archived conversations" aria-pressed="false">Archived</button></div>
         <p id="homeError" class="home-error hidden" role="alert"></p>
         <div id="homeRuntime" class="home-runtime hidden" role="status"></div>
       </div>
@@ -866,15 +866,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     </section>
     <div id="conversationPane" class="conversation-pane">
       <main id="scroll" class="scroll" tabindex="0" aria-label="Conversation"><div id="conversation" class="conversation"><div id="conversationStatus" class="conversation-slot"></div><div id="conversationHistory" class="conversation-slot"></div><div id="messages" class="messages"></div><div id="conversationTail" class="conversation-slot"></div></div></main>
-      <button id="jumpLatest" class="jump-latest" type="button" aria-label="Jump to latest" aria-controls="scroll" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14m-5-5 5 5 5-5"/></svg>Jump to latest</button>
+      <button id="jumpLatest" class="jump-latest" type="button" aria-label="Jump to latest" aria-controls="scroll" hidden title="Jump to latest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14m-5-5 5 5 5-5"/></svg>Jump to latest</button>
       <button id="quoteSelection" class="quote-selection" type="button" aria-label="Quote text" title="Quote text" hidden><svg class="quote-mark" viewBox="0 0 16 16" aria-hidden="true"><g transform="translate(6.8 2.4)"><path d="M2.8125 0.583008L3.2002 1.16602C2.43912 1.6713 1.88491 2.41238 1.60547 3.25684H2.98926V6.70605H0V4.52148C1.96593e-05 2.70313 0.9109 1.00575 2.42578 0L2.8125 0.583008Z" fill="currentColor"/><path d="M7.50781 0.583008L7.89551 1.16602C7.13443 1.6713 6.58022 2.41238 6.30078 3.25684H7.68457V6.70605H4.69531V4.52148C4.69533 2.70313 5.60621 1.00575 7.12109 0L7.50781 0.583008Z" fill="currentColor"/></g></svg>Quote text</button>
     </div>
     <footer id="composerFooter" class="composer-wrap">
       <p id="conversationCreationError" class="home-error hidden" role="alert"></p>
       <div class="task-area">
-      <details id="taskFeatures" class="task-panel task-features hidden"><summary id="taskFeaturesSummary">Goal &amp; reminders</summary><div class="feature-body"><div class="feature-actions"><button id="refreshTasks" class="feature-action" type="button">Refresh tasks</button><button id="configureTaskServices" class="feature-action" type="button">Configure task services</button></div><section id="goalPanel"></section><section id="schedulePanel"></section></div></details>
+      <details id="taskFeatures" class="task-panel task-features hidden"><summary id="taskFeaturesSummary">Goal &amp; reminders</summary><div class="feature-body"><div class="feature-actions"><button id="refreshTasks" class="feature-action" type="button" title="Refresh the goal and reminder list" aria-label="Refresh the goal and reminder list">Refresh tasks</button><button id="configureTaskServices" class="feature-action" type="button" title="Configure the runtime services used by goals and reminders" aria-label="Configure the runtime services used by goals and reminders">Configure task services</button></div><section id="goalPanel"></section><section id="schedulePanel"></section></div></details>
       <section id="taskPanel" class="task-panel hidden" aria-label="Tasks">
-        <button id="taskToggle" class="task-toggle" type="button" aria-expanded="true" aria-controls="taskList"></button>
+        <button id="taskToggle" class="task-toggle" type="button" title="Tasks" aria-label="Tasks" aria-expanded="true" aria-controls="taskList"></button>
         <div id="taskList" class="task-list"></div>
       </section>
       </div>
@@ -892,7 +892,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           <input id="contextSearch" class="context-search" type="search" placeholder="Search project files" aria-label="Search files to add" autocomplete="off" spellcheck="false">
           <div id="contextList" class="context-list" role="listbox" aria-label="Files to include" aria-multiselectable="true"></div>
           <div class="context-menu-hint" role="note" title="Hold Shift while dragging files from outside VS Code if the window blocks the drop.">Hold Shift while dragging files from outside VS Code if the window blocks the drop.</div>
-          <div class="context-menu-footer"><button id="contextFiles" class="context-menu-action" type="button">Add files…</button><button id="contextImage" class="context-menu-action" type="button">Attach image…</button><button id="contextUpload" class="context-menu-action" type="button">Upload from this computer…</button><button id="contextDone" class="context-menu-action" type="button">Done</button></div>
+          <div class="context-menu-footer"><button id="contextFiles" class="context-menu-action" type="button" title="Add files from the workspace" aria-label="Add files from the workspace">Add files…</button><button id="contextImage" class="context-menu-action" type="button" title="Attach an image" aria-label="Attach an image">Attach image…</button><button id="contextUpload" class="context-menu-action" type="button" title="Upload a file from this computer" aria-label="Upload a file from this computer">Upload from this computer…</button><button id="contextDone" class="context-menu-action" type="button" title="Close the attach menu" aria-label="Close the attach menu">Done</button></div>
         </div>
         <div id="mentionMenu" class="command-menu hidden" role="listbox" aria-label="Files and folders"></div>
         <div id="commandMenu" class="command-menu hidden" role="listbox" aria-label="DeepSeek commands"></div>
@@ -1328,6 +1328,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const value = document.createElement(tag);
       if (className) value.className = className;
       if (text !== undefined) value.textContent = text;
+      // Every button carries a hover and accessible name. Icon-only buttons get
+      // them explicitly; a button whose visible text is its name gets both here,
+      // so a text control can never be left unexplained. Glyph-only labels
+      // (×, ▸, …) are not names and are skipped.
+      if (tag === 'button' && typeof text === 'string' && /[\\p{L}\\p{N}]/u.test(text)) {
+        value.title = text;
+        value.setAttribute('aria-label', text);
+      }
       return value;
     }
 
@@ -1407,6 +1415,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const button = node('button', 'session-action', label); button.type = 'button'; button.setAttribute('role', 'menuitem');
         button.disabled = !state || state.phase !== 'ready' || Boolean(options && options.disabled);
         if (options && options.title) button.title = options.title;
+        if (!button.getAttribute('aria-label')) button.setAttribute('aria-label', button.title || label);
+        else if (button.title) button.setAttribute('aria-label', button.title);
         button.addEventListener('click', () => {
           if (button.disabled) return;
           closeSessionActions(false); closeSessionMenu(false);
@@ -1612,6 +1622,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       } else homeListDirty = true;
       elements.homeListTitle.textContent = homeArchived ? 'Archived conversations' : 'Recent conversations';
       elements.homeArchiveToggle.textContent = homeArchived ? 'Back to recent' : 'Archived (' + array(current.archivedSessions).filter(mainConversation).length + ')';
+      elements.homeArchiveToggle.title = homeArchived ? 'Show recent conversations' : 'Show archived conversations';
+      elements.homeArchiveToggle.setAttribute('aria-label', elements.homeArchiveToggle.title);
       elements.homeArchiveToggle.setAttribute('aria-pressed', String(homeArchived));
       if (previousAction && previousAction.kind === 'conversation') {
         const list = document.getElementById(previousAction.listId);
@@ -1797,6 +1809,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function fileButton(path, line, label, className) {
       const button = node('button', 'file-link' + (className ? ' ' + className : ''), label || path);
       button.type = 'button'; button.title = 'Open ' + path + (line ? ':' + String(line) : '');
+      button.setAttribute('aria-label', button.title);
       button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); vscode.postMessage({ type: 'open-file', path, ...(line ? { line } : {}) }); });
       return button;
     }
@@ -1949,10 +1962,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         }
         for (const filePath of paths) {
           const actions = node('div', 'tool-actions');
-          const open = node('button', 'tool-action', paths.length === 1 ? 'Open File' : 'Open ' + filePath);
+          const open = node('button', 'tool-action', paths.length === 1 ? 'Open File' : 'Open ' + filePath); open.title = open.textContent; open.setAttribute('aria-label', open.title);
           open.type = 'button'; open.addEventListener('click', () => vscode.postMessage({ type: 'open-file', path: filePath })); actions.append(open);
           if (!message.streaming && !message.failed) {
-            const review = node('button', 'tool-action', paths.length === 1 ? 'Review Changes' : 'Review ' + filePath);
+            const review = node('button', 'tool-action', paths.length === 1 ? 'Review Changes' : 'Review ' + filePath); review.title = review.textContent; review.setAttribute('aria-label', review.title);
             review.type = 'button'; review.addEventListener('click', () => postChangeAction('review-file', { path: filePath }, context)); actions.append(review);
           }
           body.append(actions);
@@ -2201,6 +2214,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const button = node('button', 'session-action' + (danger ? ' danger' : ''), label); button.type = 'button'; button.setAttribute('role', 'menuitem');
         button.disabled = disabled || !state || state.phase !== 'ready';
         if (disabled) button.title = 'Full snapshots are unavailable for this change';
+        button.setAttribute('aria-label', button.title || label);
         button.addEventListener('click', () => {
           closeSessionActions(false);
           postChangeAction(type, file ? { path: file.path, ...(type === 'open-file' ? {} : { turn }) } : {}, context);
@@ -2224,11 +2238,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       toggle.append(chevron, node('span', 'changed-files-title', count + (count === 1 ? ' file changed' : ' files changed')));
       const totals = stats(files.reduce((sum, file) => sum + (file.additions || 0), 0), files.reduce((sum, file) => sum + (file.deletions || 0), 0));
       head.append(toggle, totals);
-      const review = node('button', 'changed-action', 'Review'); review.type = 'button'; review.title = 'Review all changes'; review.addEventListener('click', () => postChangeAction('review-all', {}, context)); head.append(review);
-      const more = node('button', 'session-more changed-more', '…'); more.type = 'button'; more.setAttribute('aria-label', 'Actions for all changes'); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
+      const review = node('button', 'changed-action', 'Review'); review.type = 'button'; review.title = 'Review all changes'; review.setAttribute('aria-label', review.title); review.addEventListener('click', () => postChangeAction('review-all', {}, context)); head.append(review);
+      const more = node('button', 'session-more changed-more', '…'); more.type = 'button'; more.title = 'Actions for all changes'; more.setAttribute('aria-label', more.title); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
       more.addEventListener('click', event => { event.stopPropagation(); if (sessionAction && sessionAction.anchor === more) closeSessionActions(true); else openChangeActions(groups, more, undefined, undefined, context); }); head.append(more); box.append(head);
       const body = node('div', 'changed-files-body');
-      const sync = () => { const expanded = expandedChanges.has(origin); toggle.setAttribute('aria-expanded', String(expanded)); toggle.title = expanded ? 'Hide changed files' : 'Show changed files'; body.classList.toggle('hidden', !expanded); chevron.classList.toggle('expanded', expanded); };
+      const sync = () => { const expanded = expandedChanges.has(origin); toggle.setAttribute('aria-expanded', String(expanded)); toggle.title = expanded ? 'Hide changed files' : 'Show changed files'; toggle.setAttribute('aria-label', toggle.title); body.classList.toggle('hidden', !expanded); chevron.classList.toggle('expanded', expanded); };
       toggle.addEventListener('click', () => { if (expandedChanges.has(origin)) expandedChanges.delete(origin); else expandedChanges.add(origin); sync(); conversationScroller.changed(); });
       for (const group of groups) {
         const section = node('div', 'changed-turn');
@@ -2239,7 +2253,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           open.append(node('span', 'changed-file-name', normalized.slice(index + 1)), node('span', 'changed-file-dir', index > 0 ? normalized.slice(0, index) : ''));
           open.title = 'Review ' + file.path + (groups.length > 1 ? ' · Turn ' + group.turn : ''); open.setAttribute('aria-label', open.title);
           open.addEventListener('click', () => { postChangeAction('review-file', { path: file.path, turn: group.turn }, context); });
-          const actions = node('button', 'session-more changed-more', '…'); actions.type = 'button'; actions.setAttribute('aria-label', 'Actions for ' + file.path + ' in turn ' + group.turn); actions.setAttribute('aria-haspopup', 'menu'); actions.setAttribute('aria-expanded', 'false');
+          const actions = node('button', 'session-more changed-more', '…'); actions.type = 'button'; actions.title = 'Actions for ' + file.path + ' in turn ' + group.turn; actions.setAttribute('aria-label', actions.title); actions.setAttribute('aria-haspopup', 'menu'); actions.setAttribute('aria-expanded', 'false');
           actions.addEventListener('click', event => { event.stopPropagation(); if (sessionAction && sessionAction.anchor === actions) closeSessionActions(true); else openChangeActions(groups, actions, file, group.turn, context); });
           row.addEventListener('contextmenu', event => { event.preventDefault(); openChangeActions(groups, actions, file, group.turn, context); });
           row.append(open, stats(file.additions || 0, file.deletions || 0), actions); section.append(row);
@@ -2628,6 +2642,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       view.wrapper.dataset.translationState = failed ? 'failed' : pending ? 'pending' : 'ready';
       view.wrapper.dataset.translationView = showOriginal ? 'original' : 'translated';
       view.toggle.textContent = showOriginal ? 'View translation' : 'View original';
+      view.toggle.title = view.toggle.textContent;
+      view.toggle.setAttribute('aria-label', view.toggle.title);
       view.toggle.disabled = failed;
       view.spinner.hidden = !pending;
       view.failure.hidden = !failed;
@@ -3020,6 +3036,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         // must not be a tab stop: one Tab would land on it and kill the arrows.
         option.tabIndex = -1;
         option.append(node('span', 'model-option-label', modelChoiceLabel(model)));
+        option.title = modelChoiceLabel(model) + ' — ' + modelChoiceProvider(model);
+        option.setAttribute('aria-label', option.title);
         if (model.selected === true) {
           option.setAttribute('aria-selected', 'true');
           const badge = node('span', 'model-option-current', 'Current');
@@ -3393,7 +3411,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       if (current.phase === 'idle') {
         const actions = node('div', 'actions');
-        const connect = titled(node('button', 'primary', 'Connect to DSH'), 'Connect to DSH; reuses a compatible saved runtime or starts one'); connect.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(connect);
+        const connect = titled(node('button', 'primary', 'Connect to DSH'), 'Connect to a DSH runtime; reuses a compatible saved runtime or starts a new one'); connect.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(connect);
         box.append(actions);
       } else if (current.phase === 'loading') {
         const actions = node('div', 'actions');
@@ -3637,13 +3655,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           chip.append(thumb);
         } else chip.append(node('span', '', '▧'));
         chip.append(node('span', 'attachment-name', image.name || 'Image'));
-        const remove = node('button', 'attachment-remove', '×'); remove.title = 'Remove attachment'; remove.addEventListener('click', () => vscode.postMessage({ type: 'remove-attachment', id: image.id, sessionId: state && state.sessionId }));
+        const remove = node('button', 'attachment-remove', '×'); remove.title = 'Remove attachment'; remove.setAttribute('aria-label', remove.title); remove.addEventListener('click', () => vscode.postMessage({ type: 'remove-attachment', id: image.id, sessionId: state && state.sessionId }));
         chip.append(remove); elements.attachments.append(chip);
       }
       for (const file of draftFiles) {
         const chip = node('div', 'attachment-chip');
         chip.append(node('span', '', '📄'), node('span', 'attachment-name', file.name), node('span', 'attachment-size', formatBytes(file.bytes)));
-        const remove = node('button', 'attachment-remove', '×'); remove.title = 'Remove attachment'; remove.addEventListener('click', () => vscode.postMessage({ type: 'remove-attachment', id: file.id, sessionId: state && state.sessionId }));
+        const remove = node('button', 'attachment-remove', '×'); remove.title = 'Remove attachment'; remove.setAttribute('aria-label', remove.title); remove.addEventListener('click', () => vscode.postMessage({ type: 'remove-attachment', id: file.id, sessionId: state && state.sessionId }));
         chip.append(remove); elements.attachments.append(chip);
       }
       for (const card of cards) {
@@ -3653,12 +3671,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           const status = node('div', 'attachment-status'); status.append(node('span', 'attachment-spinner'), node('span', '', 'Uploading…')); chip.append(status);
         } else if (card.status === 'error') {
           const status = node('div', 'attachment-status'); status.append(node('span', '', 'Upload failed')); chip.append(status);
-          const retry = node('button', 'attachment-retry', 'Retry'); retry.type = 'button'; retry.title = 'Retry uploading ' + card.name;
+          const retry = node('button', 'attachment-retry', 'Retry'); retry.type = 'button'; retry.title = 'Retry uploading ' + card.name; retry.setAttribute('aria-label', retry.title);
           retry.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); retry.disabled = true; retryUploadCard(card); });
           chip.append(retry);
           if (card.error) { const detail = node('span', 'attachment-error-text', card.error); detail.title = card.error; chip.append(detail); }
         }
-        const remove = node('button', 'attachment-remove', '×'); remove.title = 'Remove attachment';
+        const remove = node('button', 'attachment-remove', '×'); remove.title = 'Remove attachment'; remove.setAttribute('aria-label', remove.title);
         remove.addEventListener('click', () => {
           if (!state) return;
           const list = uploadCardsOf(state.sessionId); const index = list.indexOf(card);
@@ -3684,8 +3702,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (selected) line.append(node('span', 'command-option-current', 'Current'));
       option.append(line, node('span', 'command-option-description', description));
       // The description is ellipsised in a narrow sidebar; the title keeps it
-      // readable on hover without growing the row.
-      option.title = description;
+      // readable on hover without growing the row. The accessible name is the
+      // option name itself, never an absent description.
+      option.title = description || label;
+      option.setAttribute('aria-label', label);
       option.addEventListener('click', () => { if (selected || disabled) return; policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); onSelect(); });
       return option;
     }
@@ -3985,7 +4005,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         option.dataset.key = JSON.stringify([candidate.path, candidate.startLine, candidate.endLine]);
         const copy = node('span', 'context-option-copy'); copy.append(node('span', 'context-option-name', contextLabel(candidate)), node('span', 'context-option-path', candidate.path + (candidate.suggestion ? ' · ' + candidate.suggestion : '')));
         option.append(node('span', 'context-option-mark', chosen ? '✓' : '+'), copy);
-        option.title = candidate.path; option.addEventListener('click', () => toggleContext(candidate)); elements.contextList.append(option);
+        option.title = candidate.path; option.setAttribute('aria-label', (chosen ? 'Remove ' : 'Add ') + contextLabel(candidate));
+        option.addEventListener('click', () => toggleContext(candidate)); elements.contextList.append(option);
       }
       if (contextError || contextLoading || !choices.length) elements.contextList.append(node('div', 'context-menu-status', contextError || (contextLoading ? 'Searching project files…' : 'No matching files')));
       if (focusedKey) { const focused = [...elements.contextList.querySelectorAll('.context-option')].find(option => option.dataset.key === focusedKey); if (focused) focused.focus(); }
@@ -4476,6 +4497,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const expanded = !collapsedTaskPanels.has(current.sessionId);
       elements.taskToggle.replaceChildren(node('span', 'task-toggle-title', 'Tasks'), node('span', 'task-toggle-count', counts.join(' · ')));
       elements.taskToggle.title = 'Tasks · ' + counts.join(' · ') + (waiting ? ' · ' + waiting + ' need you' : '');
+      elements.taskToggle.setAttribute('aria-label', elements.taskToggle.title);
       if (waiting) elements.taskToggle.append(node('span', 'task-attention', waiting + ' need you'));
       const chevron = node('span', 'task-chevron'); chevron.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>'; elements.taskToggle.append(chevron);
       elements.taskToggle.setAttribute('aria-expanded', String(expanded));
@@ -4871,7 +4893,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const chevron = node('button', 'job-chevron' + (expanded ? ' expanded' : ''), '▸');
         chevron.type = 'button';
         chevron.setAttribute('aria-expanded', String(expanded));
-        chevron.setAttribute('aria-label', (expanded ? 'Hide live output of ' : 'Show live output of ') + string(job && job.label, 'background job'));
+        chevron.title = (expanded ? 'Hide live output of ' : 'Show live output of ') + string(job && job.label, 'background job');
+        chevron.setAttribute('aria-label', chevron.title);
         chevron.addEventListener('click', event => { event.stopPropagation(); toggleJobOutput(job); });
         row.append(chevron);
       } else {
@@ -4929,6 +4952,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const notice = current.accountNotice;
       elements.accountTrigger.title = typeof notice === 'string' && notice !== '' ? notice
         : account.signedIn === true ? 'DeepSeek account' : 'Sign in to DeepSeek';
+      elements.accountTrigger.setAttribute('aria-label', elements.accountTrigger.title);
       elements.accountMenu.classList.toggle('hidden', !accountOpen);
       elements.accountTrigger.setAttribute('aria-expanded', String(accountOpen));
       if (!accountOpen) return;
@@ -5018,6 +5042,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         actions.append(button);
       }
       const refresh = node('button', 'feature-action', 'Refresh'); refresh.type = 'button';
+      refresh.title = 'Refresh the background jobs list'; refresh.setAttribute('aria-label', refresh.title);
       refresh.addEventListener('click', event => { event.stopPropagation(); vscode.postMessage({ type: 'refresh-tasks' }); });
       actions.append(refresh);
       elements.jobsMenu.append(actions);
@@ -5035,14 +5060,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const toggle = node('button', 'jobs-section-toggle');
         toggle.type = 'button';
         toggle.setAttribute('aria-expanded', String(open));
-        toggle.setAttribute('aria-label', 'Finished ' + String(settledJobs.length));
+        toggle.title = (open ? 'Hide ' : 'Show ') + String(settledJobs.length) + ' finished background job' + (settledJobs.length === 1 ? '' : 's');
+        toggle.setAttribute('aria-label', toggle.title);
         const chevron = node('span', 'jobs-section-chevron' + (open ? ' open' : ''), '▸');
         chevron.setAttribute('aria-hidden', 'true');
         toggle.append(chevron, document.createTextNode('Finished ' + String(settledJobs.length)));
         toggle.addEventListener('click', event => { event.stopPropagation(); settledJobsOpen = !open; renderJobs(); });
         const clear = node('button', 'jobs-clear', 'Clear');
         clear.type = 'button';
-        clear.title = 'Clear finished background jobs';
+        clear.title = 'Clear finished background jobs'; clear.setAttribute('aria-label', clear.title);
         clear.addEventListener('click', event => {
           event.stopPropagation();
           const clearing = new Set(settledJobs.map(job => jobKeyOf(job)));
@@ -5363,7 +5389,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         : requested ? 'Stop requested; waiting for the current step to finish. Click again to retry.'
           : 'Stop';
       elements.cancel.setAttribute('aria-label', stopping ? 'Stopping…' : requested ? 'Stop requested; click to retry.' : 'Stop');
-      elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue(); renderNavigation(current);
+      elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)';
+      elements.send.setAttribute('aria-label', elements.send.title); updateSend(); renderQueue(); renderNavigation(current);
       if (renderedChrome.commands !== current.commands || renderedChrome.skills !== current.skills || renderedChrome.permissions !== current.permissions) renderCommandMenu();
       renderedChrome = {
         creatingConversation: Boolean(pendingConversationCreation),
@@ -5495,11 +5522,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.heldNotice.append(node('span', 'held-notice-text', text));
       const retry = node('button', 'held-action', 'Check again');
       retry.type = 'button';
-      retry.title = 'Ask the runtime again whether this conversation is still held';
+      retry.title = 'Ask the runtime again whether this conversation is still held'; retry.setAttribute('aria-label', retry.title);
       retry.addEventListener('click', () => vscode.postMessage({ type: 'retry-occupancy' }));
       const diagnose = node('button', 'held-action', 'Find the holder');
       diagnose.type = 'button';
-      diagnose.title = 'Report which process holds this conversation';
+      diagnose.title = 'Report which process holds this conversation'; diagnose.setAttribute('aria-label', diagnose.title);
       diagnose.addEventListener('click', () => vscode.postMessage({ type: 'diagnose-occupancy' }));
       elements.heldNotice.append(retry, diagnose);
     }

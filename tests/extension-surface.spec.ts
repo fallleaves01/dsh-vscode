@@ -31,6 +31,8 @@ const mocks = vi.hoisted(() => ({
   pick: vi.fn(async (..._args: any[]) => undefined as any),
   progress: vi.fn(async (_options: any, task: any) => task({ report: () => {} })),
   runtime: undefined as any,
+  broker: undefined as any,
+  brokerState: { descriptor: undefined as any, running: false, leases: [] as any[] },
 }))
 
 vi.mock('vscode', () => {
@@ -142,6 +144,35 @@ vi.mock('../src/runtime.js', () => ({
     externalRuntimeUrlToRemember() { return undefined }
     async rememberExternalRuntime() { return true }
   },
+}))
+
+vi.mock('../src/runtime-broker.js', () => {
+  class RuntimeBroker {
+    constructor() { mocks.broker = this }
+    readDescriptor() { return mocks.brokerState.descriptor }
+    async isRecordRunning() { return mocks.brokerState.running }
+    async liveLeases() { return mocks.brokerState.leases }
+    async acquireTransition() { return { release: (): void => {} } }
+    async sweep() { return [] }
+    async stop() { return true }
+    takeLease() { return Promise.resolve() }
+    clearLease() {}
+    clearDescriptor() {}
+    publishOwnedRuntime() { return Promise.resolve() }
+  }
+  return {
+    RuntimeBroker,
+    nodeProcessProbe: () => ({}),
+    sharedRuntimeDirectory: () => '/shared-runtimes',
+    describeDescriptor: () => 'DSH runtime',
+    describeLockHolders: () => '',
+    sessionLockPaths: () => [],
+  }
+})
+
+vi.mock('../src/runtime-recovery.js', () => ({
+  inspectRecordedRuntime: async () => ({ state: 'none' }),
+  endRecordedRuntime: async () => ({ ended: false, reason: 'unproved' }),
 }))
 
 vi.mock('../src/dsh-client.js', () => ({
@@ -257,12 +288,15 @@ describe('host surface wiring', () => {
     mocks.pick.mockResolvedValue(undefined)
     mocks.progress.mockReset()
     mocks.progress.mockImplementation(async (_options: any, task: any) => task({ report: () => {} }))
+    mocks.brokerState.descriptor = undefined
+    mocks.brokerState.running = false
+    mocks.brokerState.leases = []
     mocks.panels.length = 0
     mocks.commands.clear()
     ;(vscode.env as { language: string }).language = 'en'
   })
 
-  async function activated(options: { catalog?: unknown; translation?: unknown; language?: string; setup?: (client: any) => void } = {}) {
+  async function activated(options: { catalog?: unknown; translation?: unknown; language?: string; storagePath?: string; setup?: (client: any) => void } = {}) {
     const { client, emit, fail } = testClient()
     mocks.client = client
     client.listCommands.mockResolvedValue([
@@ -277,7 +311,7 @@ describe('host surface wiring', () => {
       subscriptions: [] as Array<{ dispose(): void }>,
       extensionUri: { fsPath: '/extension' },
       extension: { packageJSON: { version: '0.1.16' } },
-      globalStorageUri: undefined,
+      globalStorageUri: options.storagePath === undefined ? undefined : { fsPath: options.storagePath },
       workspaceState: { get: () => [], update: async () => {} },
       globalState: { get: () => true, update: async () => {} },
       secrets: { get: async () => undefined, store: async () => {}, delete: async () => {} },
@@ -1978,6 +2012,30 @@ describe('host surface wiring', () => {
       expect(state.statusText).not.toBe('DeepSeek Harness stopped.')
     })
 
+    it('reports a shared runtime disconnect as still in use instead of stopped', async () => {
+      mocks.brokerState.descriptor = { manageable: true, pid: 4242, launchUrl: 'http://127.0.0.1:3080/?token=secret', processStartTime: 1 }
+      mocks.brokerState.running = true
+      mocks.brokerState.leases = [{ instanceId: 'other-window', runtimePid: 4242 }]
+      const h = await activated({ storagePath: '/storage' })
+      const runtime = mocks.runtime
+      runtime.state = { kind: 'ready', ownership: 'managed', pid: 4242, localUri: { toString: () => 'http://127.0.0.1:3080' } }
+      runtime.listener?.({ ...runtime.state })
+      runtime.stop = vi.fn(async () => { runtime.listener?.({ kind: 'stopped' }) })
+      pickCurrent(); pickAction('disconnect'); mocks.pick.mockResolvedValueOnce(undefined)
+      mocks.warning.mockResolvedValueOnce('Disconnect')
+      await manager()
+      // The stop reported `stopped` before the broker saw the other lease; the
+      // Webview must end on the accurate sentence, not "was stopped".
+      await vi.waitFor(() => expect(h.mergedState().statusText).toContain('Another VS Code window'))
+      expect(h.mergedState().statusText).not.toContain('managed runtime was stopped')
+      expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('Another VS Code window'))
+      // A duplicated stop event must not restore the generic "was stopped"
+      // sentence after the broker-confirmed in-use correction.
+      runtime.listener?.({ kind: 'stopped' })
+      await vi.waitFor(() => expect(h.mergedState().statusText).toContain('Another VS Code window'))
+      expect(h.mergedState().statusText).not.toContain('managed runtime was stopped')
+    })
+
     it('dispatches restart to the existing command after confirmation', async () => {
       await activated()
       pickCurrent(); pickAction('restart'); mocks.pick.mockResolvedValueOnce(undefined)
@@ -2037,6 +2095,27 @@ describe('host surface wiring', () => {
         command: 'deepseekHarness.restart', when: 'view == deepseekHarness.chat', group: 'navigation@2',
       })
       expect(manifest.activationEvents).toContain('onCommand:deepseekHarness.manageRuntimes')
+    })
+
+    it('contributes the plugin discovery commands to the Command Palette', async () => {
+      await activated()
+      const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+        activationEvents?: string[]
+        contributes?: { commands?: Array<Record<string, unknown>> }
+      }
+      expect(manifest.contributes?.commands).toContainEqual({
+        command: 'deepseekHarness.discoverPlugins',
+        title: 'DeepSeek Harness: Discover Plugins',
+      })
+      expect(manifest.contributes?.commands).toContainEqual({
+        command: 'deepseekHarness.installOfficialPlugin',
+        title: 'DeepSeek Harness: Install Official Plugin Bundle',
+      })
+      expect(manifest.activationEvents).toContain('onCommand:deepseekHarness.discoverPlugins')
+      expect(manifest.activationEvents).toContain('onCommand:deepseekHarness.installOfficialPlugin')
+      // The manifest is not enough on its own: the palette entry must have a handler.
+      expect(mocks.commands.has('deepseekHarness.discoverPlugins')).toBe(true)
+      expect(mocks.commands.has('deepseekHarness.installOfficialPlugin')).toBe(true)
     })
   })
 
@@ -2462,6 +2541,58 @@ describe('host surface wiring', () => {
         await vi.waitFor(() => expect(mocks.error).toHaveBeenCalled())
         expect(String(mocks.error.mock.calls.at(-1)![0])).toContain('changed in another window')
         await vi.waitFor(() => expect(h.client.schedules.mock.calls.length).toBeGreaterThan(reads))
+      })
+    })
+
+    describe('reminder destination for a delegated child', () => {
+      const summary = (sessionId: string, extra: Record<string, unknown> = {}) => ({ sessionId, cwd: '/workspace', updatedAt: 1,
+        blank: false, running: false, agentAvailable: true, agentPreset: 'standard',
+        projections: { values: { agentPreset: 'standard', plan: { active: false, pending: false } } }, ...extra })
+      /** Activate on a project whose selected conversation is a subagent child. */
+      const onChild = async () => {
+        // `activated` seeds permissions for the session id `a`, so the parent
+        // keeps that id and the child is selected after activation.
+        const h = await activated({ setup: client => client.listSessions.mockResolvedValue({ items: [
+          summary('a', { updatedAt: 2 }),
+          summary('child', { origin: 'subagent', parentSessionId: 'a' }),
+        ] }) })
+        h.send({ type: 'select-session', sessionId: 'child' })
+        await vi.waitFor(() => expect(h.mergedState().sessionId).toBe('child'))
+        return h
+      }
+      const answers = (...values: Array<string | undefined>): void => {
+        for (const value of values) mocks.input.mockResolvedValueOnce(value)
+      }
+      const pickKind = (kind: string): void => {
+        mocks.pick.mockResolvedValueOnce({ label: kind, description: '', scheduleKind: kind })
+      }
+
+      it('hides This conversation and creates a new-conversation reminder', async () => {
+        const h = await onChild()
+        answers('Title', 'Instruction', '10m')
+        pickKind('after')
+        let targetItems: any[] = []
+        mocks.pick.mockImplementationOnce(async (items: any[]) => {
+          targetItems = items
+          return items.find(item => item.targetKind === 'new_once')
+        })
+        h.send({ type: 'schedule-create' })
+
+        await vi.waitFor(() => expect(h.client.createSchedule).toHaveBeenCalledTimes(1))
+        expect(targetItems.map(item => item.targetKind)).toEqual(['new_once', 'new'])
+        expect((h.client.createSchedule.mock.calls[0]![0] as { target: unknown }).target).toEqual({ kind: 'new_once' })
+      })
+
+      it('refuses a stale This-conversation choice without calling DSH', async () => {
+        const h = await onChild()
+        answers('Title', 'Instruction', '10m')
+        pickKind('after')
+        mocks.pick.mockResolvedValueOnce({ label: 'This conversation', description: '', targetKind: 'session' })
+        h.send({ type: 'schedule-create' })
+
+        await vi.waitFor(() => expect(mocks.error).toHaveBeenCalled())
+        expect(String(mocks.error.mock.calls.at(-1)?.[0] ?? '')).toContain('subagent')
+        expect(h.client.createSchedule).not.toHaveBeenCalled()
       })
     })
   })

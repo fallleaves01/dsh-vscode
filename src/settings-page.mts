@@ -42,6 +42,9 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
   const locked = (): boolean => !!pending || !state?.writable
   const button = (label: string, action: () => void, className = '', disabled = false): HTMLButtonElement => {
     const control = el('button', className, label); control.type = 'button'; control.disabled = disabled
+    // Every settings control carries a hover and accessible name; icon-only
+    // buttons (reveal, delete-level, tabs, navigation) override this explicitly.
+    if (/[\p{L}\p{N}]/u.test(label)) { control.title = label; control.setAttribute('aria-label', label) }
     control.addEventListener('click', () => { if (!control.disabled) action() }); return control
   }
   /**
@@ -389,7 +392,10 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
       })
       value.placeholder = level === 'off' ? 'Not sent' : level; value.disabled = locked() || level === 'off'; value.setAttribute('aria-label', `${level} API value`)
       row.append(select, value, button('×', () => { entries.splice(index, 1); changed(); render() }, 'quiet danger', locked()))
-      row.querySelector('button')!.setAttribute('aria-label', `Delete level ${level}`); group.append(row)
+      const deleteLevel = row.querySelector('button')!
+      deleteLevel.title = `Delete level ${level}`
+      deleteLevel.setAttribute('aria-label', deleteLevel.title)
+      group.append(row)
     })
     group.append(error, button('+ Add level', () => {
       const highest = Math.max(-1, ...used.map(level => levels.indexOf(level)))
@@ -505,6 +511,8 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
       const row = button('', () => { selectedProvider = selectedProvider === provider.id ? undefined : provider.id; candidates = []; errors.delete('models'); render() }, 'provider', !!pending)
       row.dataset.provider = provider.id
       row.setAttribute('aria-expanded', String(selectedProvider === provider.id))
+      row.title = (selectedProvider === provider.id ? 'Hide settings for ' : 'Show settings for ') + provider.name
+      row.setAttribute('aria-label', row.title)
       row.append(el('span', 'dot' + ((provider.account ? state?.signedIn : provider.credential?.configured) ? ' active' : '')),
         el('span', 'provider-label', provider.name), el('span', 'hint', provider.account ? state?.signedIn ? 'Signed in' : 'Account sign-in' : provider.credential?.configured ? 'Configured' : 'Not configured'))
       shell.append(row); content.append(shell)
@@ -599,6 +607,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
       views.forEach(([id, label], index) => {
         const selected = section === id, tab = button(label, () => { section = id; message = ''; render() }, '', !!pending)
         tab.dataset.section = id; tab.dataset.focusKey = 'section:' + id; tab.id = 'plugin-tab-' + id; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(selected)); tab.setAttribute('aria-controls', 'plugin-panel'); tab.tabIndex = selected ? 0 : -1
+        tab.title = label; tab.setAttribute('aria-label', label)
         tab.addEventListener('keydown', event => {
           const target = event.key === 'ArrowRight' ? (index + 1) % views.length : event.key === 'ArrowLeft' ? (index + views.length - 1) % views.length : event.key === 'Home' ? 0 : event.key === 'End' ? views.length - 1 : undefined
           if (target === undefined || pending) return

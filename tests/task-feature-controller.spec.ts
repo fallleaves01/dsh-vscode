@@ -83,7 +83,7 @@ describe('task reads and edits across runtime/selection changes', () => {
     client.schedules.mockResolvedValue([{ id: 'r', sessionId: 's' }] as any); await controller.refreshSchedules()
     client.scheduleHistory.mockResolvedValueOnce({ code: 'delivery_cursor_not_found' } as any)
     await controller.showScheduleHistory('s', 'r', 'lost')
-    expect(controller.state.schedules.history?.error).toBe('delivery_cursor_not_found')
+    expect(controller.state.schedules.history?.error).toContain('delivery page is no longer available')
     client.scheduleHistory.mockReturnValueOnce(late.promise)
     const pending = controller.showScheduleHistory('s', 'r'); controller.select('other', {})
     late.resolve({ records: [{ scheduledAt: 'x', deliveredAt: 'x', messageId: 'x' }] }); await pending
