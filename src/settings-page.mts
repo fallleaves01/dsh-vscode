@@ -1,4 +1,4 @@
-import type { ModelDraft, ProviderView, SettingsFieldView, SettingsFormView, SettingsPageState, DiscoveredModel } from './settings-page-state.js'
+import type { BundleVersionListView, BundleVersionView, DiscoveredModel, ModelDraft, ProviderView, SettingsFieldView, SettingsFormView, SettingsPageState } from './settings-page-state.js'
 import { secretIcon, updateSecretIcon } from './secret-icon.mjs'
 import { settingsIcon } from './settings-ui.js'
 export { createSettingsModal } from './settings-modal.mjs'
@@ -29,11 +29,20 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
   let searchMode: { revision: number; enabled: boolean } | undefined, searchSelectionRevision: number | undefined
   let searchKeyTarget: { ns: string; revision: number } | undefined
   let allowed: { revision: number; enabled: boolean; routes: { provider: string; model: string }[]; reset?: boolean } | undefined
-  let pending: { id: string; scope: string; type: string; provider?: string; section: string } | undefined
+  let pending: { id: string; scope: string; type: string; provider?: string; section: string; bundle?: string; version?: string } | undefined
   let queue: Message[] = [], candidates: DiscoveredModel[] = [], selectedModels = new Set<string>(), modelSearch = '', allowSearch = ''
   let message = ''
   let toastKey = '', toastEpoch = 0
   let pendingBundle: { name: string; enabled: boolean } | undefined
+  /** The version list each bundle last returned, and the newest update outcome. */
+  const bundleLists = new Map<string, BundleVersionListView>(), bundleCheckErrors = new Map<string, string>()
+  interface BundleUpdateView {
+    ok: boolean
+    outcome?: 'updated' | 'restart-required' | 'restored' | 'unrestored' | 'unchanged'
+    step?: 'check' | 'remove' | 'install'
+    from?: string; to?: string; restoreApplication?: string; error?: string
+  }
+  const bundleResults = new Map<string, BundleUpdateView>()
   const announcedToasts = new Set<string>()
   let toastTimer: number | undefined
   const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] => {
@@ -107,7 +116,8 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
   const start = (body: Message): void => {
     if (!state || pending) return
     const id = 'settings-' + (++serial)
-    pending = { id, scope: state.scope, type: String(body.type), section, ...(typeof body.provider === 'string' ? { provider: body.provider } : {}) }
+    pending = { id, scope: state.scope, type: String(body.type), section, ...(typeof body.provider === 'string' ? { provider: body.provider } : {}),
+      ...(typeof body.name === 'string' ? { bundle: body.name } : {}), ...(typeof body.version === 'string' ? { version: body.version } : {}) }
     if (body.type === 'set-bundle' && typeof body.name === 'string' && typeof body.enabled === 'boolean') pendingBundle = { name: body.name, enabled: body.enabled }
     message = ''; api.postMessage({ ...body, requestId: id, scope: state.scope }); render()
   }
@@ -522,6 +532,121 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
     if (selectedProvider === NEW_PROVIDER) { const draft = providerDrafts.get(NEW_PROVIDER); if (draft) renderProvider(draft, undefined) }
     if (!state?.providers.length && state?.piRevision === undefined) content.append(el('p', 'empty', 'No configurable model adapter is available in this runtime.'))
   }
+  /** Bound one runtime-provided display string; only textContent consumes it. */
+  const displayText = (value: unknown, limit = 300): string => typeof value === 'string' ? value.slice(0, limit) : ''
+  const bundleVersionDate = (value: unknown): string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : ''
+  /** Accept only the shape the panel projects; every retained field is bounded again here. */
+  const receivedBundleVersions = (value: unknown): BundleVersionView[] => {
+    if (!Array.isArray(value)) return []
+    const seen = new Set<string>()
+    return value.flatMap((row): BundleVersionView[] => {
+      if (!row || typeof row !== 'object') return []
+      const item = row as Record<string, unknown>
+      const version = typeof item.version === 'string' ? item.version.slice(0, 128) : ''
+      if (version === '' || seen.has(version)) return []
+      seen.add(version)
+      // The rc.1 contract declares one rejected package object, not an array.
+      const rejected = item.incompatible !== null && typeof item.incompatible === 'object' && !Array.isArray(item.incompatible)
+        ? item.incompatible as Record<string, unknown> : undefined
+      const name = typeof rejected?.name === 'string' ? rejected.name.slice(0, 300) : ''
+      const required = typeof rejected?.version === 'string' ? rejected.version.slice(0, 128) : ''
+      const runtimeVersion = typeof rejected?.runtimeVersion === 'string' ? rejected.runtimeVersion.slice(0, 128) : ''
+      const incompatible = name === '' || required === '' || runtimeVersion === '' ? undefined : { name, version: required, runtimeVersion }
+      return [{
+        version, prerelease: item.prerelease === true, bundle: item.bundle === true,
+        ...(typeof item.publishedAt === 'string' ? { publishedAt: item.publishedAt.slice(0, 64) } : {}),
+        ...(typeof item.deprecated === 'string' ? { deprecated: item.deprecated.slice(0, 300) } : {}),
+        ...(incompatible === undefined ? {} : { incompatible }),
+      }]
+    }).slice(0, 100)
+  }
+  /** Phrase one update outcome for the bundle card, never for a toast alone. */
+  const bundleUpdateCopy = (result: BundleUpdateView): { text: string; className: string } => {
+    const from = result.from !== undefined && result.from !== '' ? result.from : 'the previous version'
+    const installed = result.from !== undefined && result.from !== '' ? `version ${result.from}` : 'the installed version'
+    const to = result.to !== undefined && result.to !== '' ? result.to : 'the chosen version'
+    const detail = result.error !== undefined && result.error !== '' ? ' ' + result.error : ''
+    if (result.ok && result.outcome === 'restart-required') return { text: `Updated ${from} → ${to}. Restart the DeepSeek Harness runtime to apply the change.`, className: 'success' }
+    if (result.ok) return { text: `Updated ${from} → ${to}.`, className: 'success' }
+    // A failed restore is only possible after the removal step, so only the
+    // install step may say that the previous version could not be restored.
+    if (result.outcome === 'restored') return { text: `The update to ${to} failed. The previous version ${from} was reinstalled${result.restoreApplication === 'restart-required' ? '; restart the runtime to finish restoring it' : ''}.`, className: 'error' }
+    if (result.outcome === 'unrestored') return { text: `The update to ${to} failed and the previous version ${from} could not be restored. Repair the profile with the DSH plugin manager before continuing.`, className: 'error' }
+    if (result.outcome === 'unchanged') {
+      if (result.step === 'check') return { text: `The update to ${to} was not accepted; ${installed} remains installed.${detail}`, className: 'error' }
+      if (result.step === 'remove') return { text: `The update to ${to} did not start; ${installed} was not removed.${detail}`, className: 'error' }
+      return { text: `The update to ${to} failed; ${installed} remains installed.${detail}`, className: 'error' }
+    }
+    return { text: result.error !== undefined && result.error !== '' ? result.error : 'The bundle update failed.', className: 'error' }
+  }
+  /**
+   * Third-party profile bundles the runtime can update.
+   *
+   * They are usually ordinary profile dependencies (`optional === false`), so
+   * they are listed here rather than under the experimental-bundles switches.
+   * The page only offers the versions the panel last listed; each version row
+   * sends an update request and the panel owns the modal confirmation.
+   */
+  const renderThirdPartyBundles = (): void => {
+    const updatable = (state?.bundles ?? []).filter(bundle => bundle.updatable === true && bundle.installed === true)
+    if (!updatable.length) return
+    content.append(el('h3', 'inventory-heading', 'Third-party bundles'))
+    content.append(el('p', 'hint', 'Third-party profile bundles the runtime can update. Updating one changes the shared DSH web profile for every window that uses it.'))
+    const manage = state?.writable === true
+    if (!manage) content.append(el('p', 'notice', state?.reason || 'This runtime is read-only. Update its third-party bundles from the client that manages this profile.'))
+    const fieldset = el('fieldset'); fieldset.disabled = locked() || !manage
+    const grid = el('div', 'plugin-inventory')
+    for (const bundle of updatable) {
+      const card = el('article', 'inventory-card bundle-card')
+      card.append(el('div', 'inventory-name', bundle.title ?? bundle.name),
+        el('span', 'hint bundle-status', ['v' + (bundle.version ?? 'unknown'), 'Installed'].join(' · ')))
+      if (bundle.description) card.append(el('span', 'hint bundle-description', bundle.description))
+      const checking = pending?.type === 'check-bundle-versions' && pending.bundle === bundle.name
+      const updating = pending?.type === 'update-bundle' && pending.bundle === bundle.name
+      card.append(button(checking ? 'Checking for updates…' : 'Check for updates', () => start({ type: 'check-bundle-versions', name: bundle.name }), 'quiet', !!pending || !manage))
+      if (updating) card.append(el('p', 'hint', `Updating to ${displayText(pending?.version, 128)}…`))
+      const list = bundleLists.get(bundle.name)
+      if (list) {
+        if (list.versions.length) {
+          const choices = el('div', 'choices')
+          for (const version of list.versions) {
+            // A version that declares no `dsh.bundle` cannot replace the
+            // installed bundle; the runtime would refuse the update.
+            const replaceable = version.bundle === true
+            const row = button('', () => { if (replaceable) start({ type: 'update-bundle', name: bundle.name, version: version.version }) },
+              'quiet bundle-version', !!pending || !manage || !replaceable)
+            row.title = replaceable ? `Update to version ${version.version}`
+              : `Version ${version.version} does not declare a plugin bundle, so it cannot replace this bundle.`
+            row.setAttribute('aria-label', row.title)
+            row.append(el('span', 'version-number', version.version))
+            const published = bundleVersionDate(version.publishedAt)
+            if (published) row.append(el('span', 'hint', published))
+            if (version.prerelease) row.append(el('span', 'hint', 'Prerelease'))
+            if (version.deprecated !== undefined) {
+              const marker = el('span', 'hint', 'Deprecated'); marker.title = version.deprecated; row.append(marker)
+            }
+            if (version.incompatible !== undefined) {
+              const marker = el('span', 'hint', 'Incompatible')
+              marker.title = `${version.incompatible.name}@${version.incompatible.version} requires runtime ${version.incompatible.runtimeVersion}`
+              row.append(marker)
+            }
+            choices.append(row)
+          }
+          card.append(choices)
+        } else card.append(el('p', 'hint', 'No newer versions are available.'))
+        if (list.omitted > 0) card.append(el('p', 'hint', `${String(list.omitted)} more versions are not shown.`))
+      }
+      const checkError = bundleCheckErrors.get(bundle.name)
+      if (checkError !== undefined) card.append(el('p', 'error', checkError))
+      const result = bundleResults.get(bundle.name)
+      if (result !== undefined) {
+        const copy = bundleUpdateCopy(result)
+        card.append(el('p', copy.className, copy.text))
+      }
+      grid.append(card)
+    }
+    fieldset.append(grid); content.append(fieldset)
+  }
   const renderInventory = (): void => {
     const search = input(inventorySearch, 'plugin-search', value => { inventorySearch = value; render() }); search.placeholder = 'Search plugins'; search.setAttribute('aria-label', 'Search plugins'); content.append(search)
     const groups = state?.inventory ?? []
@@ -572,6 +697,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
       }
       fieldset.append(grid); content.append(fieldset)
     }
+    renderThirdPartyBundles()
     content.append(button('Manage runtime plugins', () => native('plugins'), 'quiet'))
     // The two explicit install entries stay enabled on a read-only runtime: the
     // command explains who owns the profile instead of hiding the action.
@@ -670,7 +796,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
     if (value?.type === 'state') {
       const previous = state; state = value.state as SettingsPageState
       if (previous && previous.scope !== state.scope) {
-        fields.clear(); providerDrafts.clear(); advancedProviders.clear(); searchKey = ''; searchKeyRevision = undefined; searchKeyTarget = undefined; searchMode = undefined; searchSelectionRevision = undefined; allowed = undefined; pending = undefined; pendingBundle = undefined; queue = []; selectedProvider = undefined; candidates = []; errors.clear(); message = ''
+        fields.clear(); providerDrafts.clear(); advancedProviders.clear(); searchKey = ''; searchKeyRevision = undefined; searchKeyTarget = undefined; searchMode = undefined; searchSelectionRevision = undefined; allowed = undefined; pending = undefined; pendingBundle = undefined; queue = []; selectedProvider = undefined; candidates = []; errors.clear(); message = ''; bundleLists.clear(); bundleCheckErrors.clear(); bundleResults.clear()
       }
       if (state.loading && previous?.scope === state.scope) { banner.textContent = state.reason || state.error || 'Refreshing settings…'; refresh.disabled = true; return }
       render(); return
@@ -679,7 +805,29 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
     const request = pending; pending = undefined
     toastEpoch += 1
     if (request.type === 'set-bundle') pendingBundle = undefined
-    if (request.type === 'discover-models') {
+    if (request.type === 'check-bundle-versions' && request.bundle !== undefined) {
+      if (value.ok) {
+        bundleLists.set(request.bundle, { installed: displayText(value.installed, 128), versions: receivedBundleVersions(value.versions),
+          omitted: typeof value.omitted === 'number' && Number.isSafeInteger(value.omitted) && value.omitted > 0 ? value.omitted : 0 })
+        bundleCheckErrors.delete(request.bundle)
+      } else if (!value.cancelled) bundleCheckErrors.set(request.bundle, displayText(value.error, 1500) || 'The runtime could not list bundle versions.')
+    } else if (request.type === 'update-bundle' && request.bundle !== undefined) {
+      if (value.cancelled) bundleResults.delete(request.bundle)
+      else {
+        const outcome = value.outcome, step = value.step
+        bundleResults.set(request.bundle, {
+          ok: value.ok === true,
+          ...(outcome === 'updated' || outcome === 'restart-required' || outcome === 'restored' || outcome === 'unrestored' || outcome === 'unchanged' ? { outcome } : {}),
+          ...(step === 'check' || step === 'remove' || step === 'install' ? { step } : {}),
+          ...(typeof value.from === 'string' ? { from: value.from.slice(0, 128) } : {}),
+          ...(typeof value.to === 'string' ? { to: value.to.slice(0, 128) } : {}),
+          ...(typeof value.restoreApplication === 'string' ? { restoreApplication: value.restoreApplication.slice(0, 64) } : {}),
+          ...(typeof value.error === 'string' ? { error: value.error.slice(0, 1500) } : {}),
+        })
+        // The installed version changed; a further click must re-read the list.
+        if (value.ok) bundleLists.delete(request.bundle)
+      }
+    } else if (request.type === 'discover-models') {
       if (value.ok && Array.isArray(value.models)) { candidates = value.models; selectedModels.clear(); modelSearch = '' }
     } else if (request.type === 'save-search') {
       if (Array.isArray(value.results)) for (const result of value.results) {
@@ -709,7 +857,9 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
         }
       }
     } else if (request.type === 'remove-provider' && value.ok) { providerDrafts.delete(selectedProvider!); selectedProvider = undefined }
-    if (!value.ok && !value.cancelled) errors.set(request.section, value.error || 'The settings operation failed. Your draft was retained.')
+    if (request.type === 'check-bundle-versions' || request.type === 'update-bundle') {
+      // Both report inside their bundle card, so the section-level toast is unchanged.
+    } else if (!value.ok && !value.cancelled) errors.set(request.section, value.error || 'The settings operation failed. Your draft was retained.')
     else { errors.delete(request.section); if (request.type !== 'discover-models' && request.type !== 'set-bundle' && !value.cancelled) message = 'Saved.' }
     render(); next()
   }

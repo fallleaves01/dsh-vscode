@@ -6,7 +6,7 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, quoted message text, and native change review. This source version is **0.2.2-rc.1.3**.
+DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, quoted message text, and native change review. This source version is **0.2.2-rc.1.4**.
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
@@ -20,8 +20,8 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 - **Conversations and history.** Stream responses, inspect tool calls, answer approvals and questions, and load earlier messages through the official DSH runtime.
 - **Failed response recovery and retries.** Keep received output when a request fails, show its error code and a readable reason in chat and subagent details, and restore saved failed attempts when reopening history. Retried attempts collapse into one expandable row with retry delay and failure reason; a turn stopped by the output token limit shows DSH's cut-off notice. Retries remain separate; output that could not be saved is marked as available only in the current view.
-- **Conversation directory.** Use the directory for recent and archived conversation lists, search, rename, archive with Undo, and restore. New conversation opens the full chat composer with model, reasoning effort, agent composition, and permission controls. The top picker switches main conversations; subagents remain in the owning conversation's Tasks panel.
-- **Conversation actions.** Pin or unpin, rename, fork, archive or restore, and copy the session ID from the conversation menu. Branching a completed turn forks at that turn's own boundary, so later stopped or failed work is not copied.
+- **Conversation directory.** Use the directory for recent and archived conversation lists, search, rename, archive with Undo, and restore. The local filter matches a case-insensitive substring of the conversation title or the session ID, and message bodies are searched when history search is enabled. New conversation opens the full chat composer with model, reasoning effort, agent composition, and permission controls. The top picker switches main conversations; subagents remain in the owning conversation's Tasks panel.
+- **Conversation actions.** Pin or unpin, rename, fork, archive or restore, and copy the session ID from the conversation menu. While the conversation that is open in this window is not archived, the same menu copies its complete history as Markdown. Branching a completed turn forks at that turn's own boundary, so later stopped or failed work is not copied.
 - **Independent subagent details.** Click a subagent name in its tool card to enter the child conversation, or use the trailing arrow to open independent details. Inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer. External executions appear as informational rows without a local transcript.
 - **Background tasks and task services.** Inspect bounded process output, Goal status and round limits, Schedule reminders and delivery history, and Workflow phases and job logs when the runtime exposes these services. Search conversation message bodies when history search is enabled.
 - **Explicit file context.** Use `+` to search and add workspace files or folders, remove each reference with `×`, or use typed `@` references and **Add Selection to Chat**. The current editor and selected lines are optional suggestions. Select resources in the Explorer and run **DeepSeek Harness: Add to Chat** from the context menu; use **Upload from this computer…** for local files; or drop operating-system files onto the composer (hold Shift if VS Code suppresses the drop). See [Adding files to the composer](https://github.com/fallleaves01/dsh-vscode#adding-files-to-the-composer).
@@ -181,9 +181,10 @@ page, and this repository and its VSIX exclude the credential file and backups.
 ### DSH 0.2.2-alpha.2 and alpha.3 experimental features
 
 The conversation event-stream client is verified against DeepSeek Harness
-`0.2.2-alpha.2` and `0.2.2-alpha.3`; `0.2.1-rc.2` and `0.2.1-rc.3` remain
-supported. The experimental bundles are still verified against `0.2.2-alpha.2`; Schedule
-is verified against both `0.2.2-alpha.2` and `0.2.2-alpha.3`. Experimental bundles remain opt-in in the
+`0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1`; `0.2.1-rc.2` and `0.2.1-rc.3`
+remain supported. The experimental bundles are still verified against
+`0.2.2-alpha.2`; Schedule is verified against `0.2.2-alpha.2`,
+`0.2.2-alpha.3` and `0.2.2-rc.1`. Experimental bundles remain opt-in in the
 runtime profile; the sidebar does not enable them automatically (the Plugins page can switch
 them when the runtime allows writes), and each feature appears only when the
 runtime exposes its contract. The alpha release
@@ -196,12 +197,14 @@ The following alpha.2 surfaces are Web-only and are not implemented in this
 sidebar: Live Share, Forge, Computer Use and personalized-recommendation panels;
 the Statistics tab; creation, file-drag and plugin-recommendation cards. Their
 tools use the generic tool card. Action-card proposals (`propose_action`) render
-as generic tool cards without the card buttons. Plugin detail documents, version
-lists and bundle updates (`pluginManager/readBundleDetail`, `listVersions`,
-`updateBundle`) and market entry details (`pluginMarket/readEntryDetail`) are
-not implemented; use the DSH Web plugin manager. An on-demand bundle that is not
+as generic tool cards without the card buttons. Plugin detail documents
+(`pluginManager/readBundleDetail`) and market entry details
+(`pluginMarket/readEntryDetail`) are not implemented; use the DSH Web plugin
+manager. Version lists and updates of an updatable third-party profile bundle
+are implemented in the Plugins settings page. An on-demand bundle that is not
 installed is not listed here; install it from the DSH plugin manager. Quoted messages render as Markdown blockquotes;
-the Web selection-quote control is not in the sidebar composer. Auto review
+**Quote text** adds an excerpt to the composer as a chip before the typed prompt
+rather than as an inline node at the caret. Auto review
 approval reasons follow the editor language; an Auto review *failure*
 (`AUTO_REVIEW_FAILED`) renders as an ordinary tool failure. Web appearance
 settings (`ui-*`, `locale`, including `foldedReplies`) and Web
@@ -211,13 +214,13 @@ read on alpha.2. PTC nested `tool/ptc-dispatch` rows are not rendered
 separately; the parent tool card shows the result. Computer Use also needs macOS and the runtime's native CUA
 binary; without it the bundle switch reports a platform/operation failure.
 
-DSH Web management surfaces not implemented here are Schedule task deletion and
-clearing inactive tasks (`schedule/delete`, `schedule/deleteInactive`), stopping
-and archiving a running conversation (`workspace/archiveSession` with
-`stopActivity`), generic slash-command option risk confirmation, and the Task
-Details command bar with full retained-output links. Live Share stop-sharing and
-Forge merge confirmations remain Web-only with their panels. Background jobs
-themselves are implemented in the **Background jobs** menu above.
+DSH Web management surfaces not implemented here are stopping and archiving a
+running conversation (`workspace/archiveSession` with `stopActivity`), generic
+slash-command option risk confirmation, and the Task Details command bar with
+full retained-output links. Schedule task deletion and clearing ended tasks are
+implemented in the Schedule panel. Live Share stop-sharing and Forge merge
+confirmations remain Web-only with their panels. Background jobs themselves are
+implemented in the **Background jobs** menu above.
 
 - **Auto review permission preset.** When the runtime serves
   `permissionPresets/catalog`, the Permission selector offers an `EXP`-marked
@@ -238,7 +241,16 @@ themselves are implemented in the **Background jobs** menu above.
   `restart-required`. Reasoning translation is implemented in place through
   `cotTranslation/limits` and `cotTranslation/translate`, with the translation
   shown by default and a View original action; plugin market discovery/search/
-  install and speech capture/transcription are not implemented. Worktree
+  install and speech capture/transcription are not implemented. The same page
+  lists an installed third-party profile bundle the runtime marks `updatable`
+  under **Third-party bundles**: **Check for updates** shows published versions
+  with date, prerelease, deprecation and incompatibility markers, and a chosen
+  version is installed only after a modal confirmation. Registry URLs, attempt
+  reasons and package-manager diagnostics are not shown; the result reports
+  updated, restart required, restored, unrestored or unchanged (the update was
+  not accepted and the installed version is still in place); a listed version
+  that declares no plugin bundle is shown disabled with an explanation; and the
+  controls are disabled for attach-only and read-only runtimes. Worktree
   `workingDirectory` is not consumed yet, and the sidebar exposes no persistent
   terminal panel. Enabling the session-search bundle with `enableHistorySearch`
   can mount two `session-query-sqlite` rows; check the runtime profile. See the

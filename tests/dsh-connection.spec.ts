@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { once } from 'node:events'
 import { WebSocketServer } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DshConnection, dshLocalUrl } from '../src/dsh-connection.ts'
+import { DshConnection, dshLocalUrl, MAX_SESSION_MARKDOWN_BYTES } from '../src/dsh-connection.ts'
 import { DshRemoteApi } from '../src/dsh-remote-api.ts'
 
 const servers: Server[] = []
@@ -373,4 +373,86 @@ describe('HTTP response bounds', () => {
       await expect(connection.call('session/list', {})).rejects.toThrow('larger than')
     } finally { connection.dispose() }
   })
+})
+
+describe('session Markdown export', () => {
+  const TRANSCRIPT = '# Session\n\nA complete transcript.\n'
+
+  /** Authenticate against the launch token route, then serve export responses. */
+  async function authenticatedExport(handler: RequestListener): Promise<DshConnection> {
+    const url = await serve((request, response) => {
+      if (request.url?.startsWith('/?token=') === true) {
+        response.writeHead(303, { location: '/', 'set-cookie': cookieFor(request.headers.host!) })
+        response.end()
+        return
+      }
+      handler(request, response)
+    })
+    const connection = connect(url)
+    await connection.authenticate(launchUrl(url))
+    return connection
+  }
+
+  it('reads the export route with the session id and the authentication cookie', async () => {
+    let target: { path: string | undefined; cookie: string | undefined } = { path: undefined, cookie: undefined }
+    const connection = await authenticatedExport((request, response) => {
+      target = { path: request.url, cookie: request.headers.cookie }
+      response.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' })
+      response.end(TRANSCRIPT)
+    })
+    await expect(connection.readSessionMarkdown('session-1')).resolves.toBe(TRANSCRIPT)
+    expect(target.path).toBe('/api/session.markdown?sessionId=session-1')
+    expect(target.cookie).toBe(cookieFor(connection.baseUrl.host))
+  })
+
+  it('rejects a response that is not Markdown', async () => {
+    const connection = await authenticatedExport((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ markdown: TRANSCRIPT }))
+    })
+    await expect(connection.readSessionMarkdown('session-1')).rejects.toMatchObject({ code: 'invalid-response' })
+  })
+
+  it.each([404, 500])('classifies an HTTP %i response without exposing its body', async status => {
+    const connection = await authenticatedExport((_request, response) => {
+      response.writeHead(status, { 'content-type': 'text/plain' })
+      response.end(`failed at /Users/secret/session.jsonl with ${TOKEN}`)
+    })
+    const failure = await connection.readSessionMarkdown('session-1').catch((error: unknown) => error)
+    expect(failure).toMatchObject({ code: status === 404 ? 'session-export-unavailable' : 'http-error', status })
+    expect(String((failure as Error).message)).not.toContain('/Users/secret')
+    expect(String((failure as Error).message)).not.toContain(TOKEN)
+  })
+
+  it('drops the cookie when the export route refuses authentication', async () => {
+    const connection = await authenticatedExport((_request, response) => {
+      response.writeHead(401, { 'content-type': 'text/plain' })
+      response.end(TRANSCRIPT)
+    })
+    expect(connection.authenticated).toBe(true)
+    await expect(connection.readSessionMarkdown('session-1')).rejects.toMatchObject({
+      code: 'authentication-required', status: 401,
+    })
+    expect(connection.authenticated).toBe(false)
+  })
+
+  it('refuses a response that declares more than the export budget', async () => {
+    const connection = await authenticatedExport((_request, response) => {
+      response.writeHead(200, {
+        'content-type': 'text/markdown',
+        'content-length': String(MAX_SESSION_MARKDOWN_BYTES + 1),
+      })
+      response.end(TRANSCRIPT)
+    })
+    await expect(connection.readSessionMarkdown('session-1')).rejects.toMatchObject({ code: 'invalid-response' })
+  })
+
+  it.each(['../escape', 'session/list?token=secret', 'has space', ''])(
+    'rejects invalid session id %j before sending', async sessionId => {
+      const fetchSpy = vi.fn()
+      vi.stubGlobal('fetch', fetchSpy)
+      const connection = connect(new URL('http://127.0.0.1:3080'))
+      await expect(connection.readSessionMarkdown(sessionId)).rejects.toMatchObject({ code: 'invalid-session' })
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
 })

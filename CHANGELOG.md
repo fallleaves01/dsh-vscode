@@ -9,6 +9,74 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-rc.1.4] - 2026-11-05
+
+### Added
+
+- **Copy Session as Markdown** in the conversation actions menu. The action is
+  enabled only for the conversation that is open in this window and is not
+  archived. The extension host reads the runtime's complete export through the
+  authenticated `GET /api/session.markdown` route, and the runtime formats the
+  document, including its original log path. The Markdown is written only to the
+  clipboard and the Webview reports "Session copied as Markdown."; it does not
+  enter Webview state, the Output channel, or a file. A response above 32 MiB
+  is refused. The route belongs to the DSH Web profile's HTTP surface, not to
+  the RPC contract: a runtime or profile that does not serve it answers 404,
+  which is reported as "This runtime does not support session Markdown export."
+  An expired authentication reports that the runtime must be reconnected.
+  Failure notices use fixed classified copy and never echo the response body, a
+  local path or an exception message; the Output channel records only a bounded
+  failure class.
+- **Third-party bundles** in Settings → Plugins. For an installed profile bundle
+  the runtime marks `updatable`, **Check for updates** lists the
+  published versions with their publication date, prerelease, deprecation and
+  incompatibility markers; registry URLs, attempt reasons, runtime diagnostics
+  and package-manager output are not shown. Choosing a version requires a modal
+  confirmation that names the shared web profile, the other windows using it,
+  the hot-module-replacement stop, the attempted reinstallation of the previous
+  version and the network requirement. The result is reported as one of five
+  outcomes: updated, restart required, update failed with the previous version
+  reinstalled, update failed with the previous version not restored (explicit
+  warning), or unchanged — the update was not accepted and the installed
+  version is still in place. An unchanged outcome covers a refused target check
+  (`step: check`), a failed or cancelled removal of the old version
+  (`step: remove`), and a non-HMR installation failure that leaves the old
+  version installed (`step: install` without `restore`); the "not restored"
+  warning is used only after a recovery reinstallation actually failed. A
+  listed version that declares no plugin bundle is shown disabled with an
+  explanation. The controls are disabled for attach-only external runtimes and
+  read-only profiles, and only a version from the most recent listing can be
+  installed.
+- Conversation search matches the typed query as a case-insensitive substring of
+  either the conversation title or the session ID, in addition to the existing
+  message-history search.
+
+### Changed
+
+- The DSH client now wraps `pluginManager/listVersions` and
+  `pluginManager/updateBundle`. Both results pass through a field whitelist, so
+  registry URLs, raw refusal reasons, diagnostics and `packageResult` paths
+  cannot reach the settings page or its Webview state. Version decoding follows
+  the rc.1 contract: `PluginVersion.incompatible` is a single object, and
+  `updateBundle.step` distinguishes the target check, the removal of the
+  installed version and the installation result.
+- The new surfaces target DeepSeek Harness `0.2.2-rc.1` and require no wire/RPC
+  change from the extension. The export route and the two plugin-manager
+  methods are covered by unit tests with an HTTP mock; no end-to-end run
+  against a live DSH runtime was performed for this build.
+
+### Fixed
+
+- The README, its Chinese translation and the Marketplace README no longer
+  describe `pluginManager/listVersions`/`updateBundle`, Schedule task deletion
+  and clearing ended tasks, or a missing selection-quote control as
+  unimplemented. Bundle version lists and updates are implemented in the
+  Plugins settings page, Schedule has offered deletion and **Delete ended**
+  since 0.2.2-alpha.3.2, and **Quote text** has been available since
+  0.2.2-alpha.2.7. Plugin detail documents (`pluginManager/readBundleDetail`)
+  and market entry details (`pluginMarket/readEntryDetail`) remain
+  unimplemented.
+
 ## [0.2.2-rc.1.3] - 2026-11-05
 
 ### Added

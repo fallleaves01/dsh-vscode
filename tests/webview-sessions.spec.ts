@@ -63,7 +63,7 @@ describe('main conversation directory and quick switcher', () => {
     h.click('#sessionTrigger')
     h.click('#sessionList .session-more')
     const labels = [...h.document.querySelectorAll('#sessionActions .session-action')].map(button => button.textContent)
-    expect(labels).toEqual(['Pin', 'Rename', 'Fork', 'Send feedback…', 'Archive', 'Copy Session ID'])
+    expect(labels).toEqual(['Pin', 'Rename', 'Fork', 'Send feedback…', 'Archive', 'Copy Session ID', 'Copy Session as Markdown'])
     action(h, 'Pin')
     expect(h.posts.at(-1)).toEqual({ type: 'pin-session', sessionId: 'parent' })
     // A pinned conversation offers Unpin instead.
@@ -80,7 +80,7 @@ describe('main conversation directory and quick switcher', () => {
     h.click('#homeArchiveToggle')
     h.click('#homeSessionList .session-more')
     const labels = [...h.document.querySelectorAll('#sessionActions .session-action')].map(button => button.textContent)
-    expect(labels).toEqual(['Rename', 'Fork', 'Send feedback…', 'Restore', 'Copy Session ID'])
+    expect(labels).toEqual(['Rename', 'Fork', 'Send feedback…', 'Restore', 'Copy Session ID', 'Copy Session as Markdown'])
     action(h, 'Restore')
     expect(h.posts.at(-1)).toEqual({ type: 'unarchive-session', sessionId: 'archived' })
   })
@@ -106,6 +106,57 @@ describe('main conversation directory and quick switcher', () => {
     const notice = h.document.getElementById('sessionNotice')!
     expect(notice.textContent).toBe('Session ID copied')
     expect(notice.classList.contains('hidden')).toBe(false)
+  })
+
+  it('asks the Host to copy the open conversation as Markdown and shows its notice', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent] })
+    h.click('#sessionTrigger')
+    h.click('#sessionList .session-more')
+    h.posts.length = 0
+    action(h, 'Copy Session as Markdown')
+    expect(h.posts.at(-1)).toEqual({ type: 'copy-session-markdown', sessionId: 'parent' })
+    // The export is asynchronous, so the Webview must not report success before
+    // the Host's copy has completed; only the Host notice says what happened.
+    expect(h.document.getElementById('sessionNotice')!.classList.contains('hidden')).toBe(true)
+    h.send({ type: 'session-notice', text: 'Session copied as Markdown.' })
+    const notice = h.document.getElementById('sessionNotice')!
+    expect(notice.textContent).toBe('Session copied as Markdown.')
+    expect(notice.classList.contains('hidden')).toBe(false)
+    // A Host failure notice replaces the same element instead of adding a banner.
+    h.send({ type: 'session-notice', text: 'This runtime does not support session Markdown export.' })
+    expect(notice.textContent).toBe('This runtime does not support session Markdown export.')
+  })
+
+  it('disables Copy Session as Markdown on rows that are not the open conversation', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent, { id: 'other', title: 'Other work', updatedAt: 1 }] })
+    h.click('#sessionTrigger')
+    h.click('#sessionList .session-row[data-session-id="other"] .session-more')
+    const copy = [...h.document.querySelectorAll<HTMLButtonElement>('#sessionActions button')]
+      .find(button => button.textContent === 'Copy Session as Markdown')!
+    expect(copy.disabled).toBe(true)
+    expect(copy.title).toBe('Open this conversation to copy it as Markdown')
+    h.posts.length = 0
+    copy.click()
+    // The export route addresses the runtime's open conversation; a click here
+    // must stay local rather than copying a different transcript.
+    expect(h.posts).toEqual([])
+  })
+
+  it('disables Copy Session as Markdown on archived rows', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent], archivedSessions: [{ id: 'archived', title: 'Completed work' }] })
+    h.click('#conversationHome')
+    h.click('#homeArchiveToggle')
+    h.click('#homeSessionList .session-more')
+    const copy = [...h.document.querySelectorAll<HTMLButtonElement>('#sessionActions button')]
+      .find(button => button.textContent === 'Copy Session as Markdown')!
+    expect(copy.disabled).toBe(true)
+    expect(copy.title).toBe('Open this conversation to copy it as Markdown')
+    h.posts.length = 0
+    copy.click()
+    expect(h.posts).toEqual([])
   })
 
   it('forks from the menu without an explicit boundary', () => {
@@ -213,15 +264,32 @@ describe('main conversation directory and quick switcher', () => {
     h.click('#sessionTrigger'); input(h, 'sessionSearch', 'main'); expect(ids(h)).toEqual(['parent', 'body'])
     expect(h.document.querySelector('#sessionList script')).toBeNull(); expect(h.document.querySelector('#sessionList')!.textContent).toContain('up to 20')
   })
+  it('matches session id substrings case-insensitively alongside titles', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent,
+      { id: 'Alpha-9', title: 'Unrelated work', updatedAt: 2 },
+      { id: 'omega', title: 'Alpha report', updatedAt: 1 }] })
+    h.click('#sessionTrigger')
+    // One row matches by id and another by title; the query is case-insensitive
+    // and the merged list keeps the Host order and one row per conversation.
+    input(h, 'sessionSearch', 'ALPHA')
+    expect(ids(h)).toEqual(['Alpha-9', 'omega'])
+    // An id-only fragment finds the conversation whose title does not match.
+    input(h, 'sessionSearch', 'lpha-9')
+    expect(ids(h)).toEqual(['Alpha-9'])
+    // A title-only fragment keeps working as before.
+    input(h, 'sessionSearch', 'REPORT')
+    expect(ids(h)).toEqual(['omega'])
+  })
   it('supports search-to-list keyboard navigation and an independent Escape for the action menu', () => {
     const h = open(); h.sendState({ sessionId: 'parent', sessions: [parent, { id: 'second', title: 'Second', updatedAt: 1 }] }); h.click('#sessionTrigger')
     const search = h.document.getElementById('sessionSearch')!; search.focus(); key(search, 'ArrowDown')
     expect(h.document.activeElement!.closest('.session-row')!.getAttribute('data-session-id')).toBe('parent')
     key(h.document.activeElement!, 'ArrowDown'); expect(h.document.activeElement!.closest('.session-row')!.getAttribute('data-session-id')).toBe('second')
     key(h.document.activeElement!, 'ArrowRight'); expect(h.document.activeElement!.textContent).toBe('Rename')
-    // Menu order: Rename, Fork, Send feedback…, Archive, Copy Session ID. Pin is
-    // hidden (no reported capability); Fork and Send feedback… are skipped
-    // because this row is not the open conversation.
+    // Menu order: Rename, Fork, Send feedback…, Archive, Copy Session ID,
+    // Copy Session as Markdown. Pin is hidden (no reported capability); Fork and
+    // Send feedback… are skipped because this row is not the open conversation.
     key(h.document.activeElement!, 'ArrowDown'); expect(h.document.activeElement!.textContent).toBe('Archive')
     key(h.document.activeElement!, 'ArrowDown'); expect(h.document.activeElement!.textContent).toBe('Copy Session ID')
     key(h.document.activeElement!, 'Escape'); expect(h.document.activeElement!.classList.contains('session-more')).toBe(true)
@@ -383,13 +451,13 @@ describe('pinned conversations front both session lists', () => {
     expect(groups(h, '#sessionList')).toEqual(['Message matches'])
   })
 
-  it('keeps the single Title matches heading while searching, still pinned first', async () => {
+  it('keeps the single title-or-ID heading while searching, still pinned first', async () => {
     const h = open()
     h.sendState({ sessionId: 'alpha', sessions: [beta, alpha], pinnedSessionIds: ['beta'] })
     h.click('#sessionTrigger')
     input(h, 'sessionSearch', 'a')
     expect(ids(h)).toEqual(['beta', 'alpha'])
-    expect(groups(h, '#sessionList')).toEqual(['Title matches'])
+    expect(groups(h, '#sessionList')).toEqual(['Title or ID matches'])
   })
 })
 

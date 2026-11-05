@@ -6,6 +6,12 @@ import { redactDshSecrets } from './runtime-output.js'
 export const MAX_HTTP_RESPONSE_BYTES = 8 * 1024 * 1024
 /** Image reads carry base64 and are allowed a larger endpoint-level budget. */
 export const MAX_ATTACHMENT_RESPONSE_BYTES = 96 * 1024 * 1024
+/**
+ * One Markdown session export may carry a complete transcript, so it gets its
+ * own bound above the RPC body limit. The read is a browser-equivalent export,
+ * not an image, and it must still be refused rather than buffered without end.
+ */
+export const MAX_SESSION_MARKDOWN_BYTES = 32 * 1024 * 1024
 /** One multiplexed WebSocket frame may not exceed this size. */
 export const MAX_WS_PAYLOAD_BYTES = 16 * 1024 * 1024
 
@@ -213,6 +219,58 @@ export class DshConnection {
       }
       throw new DshConnectionError('transport-error', `DSH ${endpoint} did not complete. Check the connection before retrying.`)
     }
+  }
+
+  /**
+   * Read one complete session transcript as Markdown from the runtime's
+   * authenticated export route.
+   *
+   * The route (`GET /api/session.markdown`) belongs to the Web profile's HTTP
+   * surface, not to the RPC contract: a runtime or profile without the export
+   * bundle answers 404, which callers must present as "not supported" rather
+   * than as a protocol fault. The body is returned verbatim and is written only
+   * to the user's clipboard by its caller, so it never enters logs or view
+   * state. Session ids are accepted only in the runtime's own identifier shape.
+   */
+  async readSessionMarkdown(sessionId: string): Promise<string> {
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(sessionId)) {
+      throw new DshConnectionError('invalid-session', 'Invalid session id.')
+    }
+    this.#lifetime.signal.throwIfAborted()
+    const url = new URL('/api/session.markdown', this.#origin)
+    url.searchParams.set('sessionId', sessionId)
+    let response: Response
+    try {
+      response = await fetch(url, {
+        method: 'GET', redirect: 'manual', headers: this.headers(), signal: this.signal(30_000),
+      })
+    } catch (error) {
+      if (this.#lifetime.signal.aborted) throw new DshConnectionError('cancelled', 'The session export was cancelled.')
+      // Native fetch failures may quote the request URL; never forward them.
+      throw new DshConnectionError('transport-error', 'The session export did not complete. Check the connection before retrying.')
+    }
+    if (!response.ok) {
+      await response.body?.cancel()
+      if (response.status === 401 || response.status === 403) {
+        this.#cookie = undefined
+        throw new DshConnectionError('authentication-required', 'DSH authentication expired or was refused. Reconnect the runtime.', response.status)
+      }
+      if (response.status === 404) {
+        throw new DshConnectionError('session-export-unavailable', 'This runtime does not provide session Markdown export.', response.status)
+      }
+      throw new DshConnectionError('http-error', `DSH session export failed: HTTP ${String(response.status)}.`, response.status)
+    }
+    const contentType = (response.headers.get('content-type') ?? '').toLowerCase()
+    if (!contentType.startsWith('text/markdown')) {
+      await response.body?.cancel()
+      throw new DshConnectionError('invalid-response', 'DSH session export returned an unexpected content type.')
+    }
+    const declared = Number(response.headers.get('content-length') ?? '')
+    if (Number.isFinite(declared) && declared > MAX_SESSION_MARKDOWN_BYTES) {
+      await response.body?.cancel()
+      throw new DshConnectionError('invalid-response', `DSH session export returned a response larger than ${String(MAX_SESSION_MARKDOWN_BYTES)} bytes.`)
+    }
+    return readLimitedBody(response, 'session.markdown', MAX_SESSION_MARKDOWN_BYTES)
   }
 
   /** The stream multiplexer is the only credential-bearing WebSocket target. */

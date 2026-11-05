@@ -219,6 +219,7 @@ function testClient() {
       blank: true, running: false, agentAvailable: true, agentPreset: 'standard', projections: { values: { ...projections } } })) })),
     openSession: vi.fn(async () => ({ events: [], hasMore: false, projections: { ...projections }, isCurrent: () => true, activate() {} })),
     createSession: vi.fn(async () => ({ sessionId: 'created' })),
+    sessionMarkdown: vi.fn(async () => '# Session markdown\n\nComplete history.\n'),
     models: vi.fn(async () => models()), currentModels: vi.fn(() => models()),
     listCommands: vi.fn(async () => [{ name: 'plan', description: 'Plan' }]),
     listSkills: vi.fn(async (): Promise<SkillDescriptor[]> => []),
@@ -1217,6 +1218,58 @@ describe('host surface wiring', () => {
       h.send({ type: 'copy-session-id', sessionId: 'a' })
       await vi.waitFor(() => expect(messages(h).some(message => message.role === 'notice'
         && String(message.text).includes('clipboard is unavailable'))).toBe(true))
+    })
+
+    const notices = (h: { posts: () => Array<Record<string, any>> }): Array<Record<string, any>> =>
+      h.posts().filter(packet => packet.type === 'session-notice')
+
+    it('copies the complete conversation as Markdown and notifies the Webview', async () => {
+      const h = await activated()
+      const clipboard = (await import('vscode')).env.clipboard.writeText as ReturnType<typeof vi.fn>
+      clipboard.mockClear()
+      h.client.sessionMarkdown.mockClear()
+      h.send({ type: 'copy-session-markdown', sessionId: 'a' })
+      await vi.waitFor(() => expect(clipboard).toHaveBeenCalledWith('# Session markdown\n\nComplete history.\n'))
+      expect(h.client.sessionMarkdown).toHaveBeenCalledWith('a')
+      await vi.waitFor(() => expect(notices(h).at(-1)?.text).toBe('Session copied as Markdown.'))
+      // The transcript goes to the clipboard only: no view state and no output.
+      expect(JSON.stringify(h.posts())).not.toContain('Complete history.')
+      expect(mocks.output.join('\n')).not.toContain('Complete history.')
+    })
+
+    it('ignores a Markdown copy for a conversation that is not in the list', async () => {
+      const h = await activated()
+      h.client.sessionMarkdown.mockClear()
+      h.send({ type: 'copy-session-markdown', sessionId: 'not-listed' })
+      await vi.waitFor(() => expect(notices(h).at(-1)?.text).toBe('This conversation is no longer available.'))
+      expect(h.client.sessionMarkdown).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['session-export-unavailable', 'This runtime does not support session Markdown export.'],
+      ['authentication-required', 'DSH authentication expired. Reconnect the runtime and try again.'],
+      ['invalid-response', 'The session could not be copied as Markdown. Try again.'],
+      ['transport-error', 'The session could not be copied as Markdown. Try again.'],
+    ])('maps a %s export failure to fixed copy without the raw failure', async (code, expected) => {
+      const h = await activated()
+      mocks.output.length = 0
+      h.client.sessionMarkdown.mockRejectedValueOnce(new DshConnectionError(code, 'raw failure at /Users/secret/session.jsonl'))
+      h.send({ type: 'copy-session-markdown', sessionId: 'a' })
+      await vi.waitFor(() => expect(notices(h).at(-1)?.text).toBe(expected))
+      // Neither the notice nor the output channel echoes the transport's text or
+      // an original log path.
+      expect(JSON.stringify(h.posts())).not.toContain('secret')
+      expect(mocks.output.join('\n')).not.toContain('secret')
+      expect(mocks.output.join('\n')).toContain('[session-markdown] copy failed (')
+    })
+
+    it('reports an unavailable clipboard without echoing the failure', async () => {
+      const h = await activated()
+      const clipboard = (await import('vscode')).env.clipboard.writeText as ReturnType<typeof vi.fn>
+      clipboard.mockRejectedValueOnce(new Error('clipboard daemon at /Users/secret/clipboard.sock'))
+      h.send({ type: 'copy-session-markdown', sessionId: 'a' })
+      await vi.waitFor(() => expect(notices(h).at(-1)?.text).toBe('The clipboard is unavailable.'))
+      expect(JSON.stringify(h.posts())).not.toContain('secret')
     })
 
     it('treats a non-finite boundary as a bare menu fork', async () => {

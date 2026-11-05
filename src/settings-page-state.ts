@@ -124,6 +124,75 @@ export function publicBundles(value: unknown): BundleView[] {
   })
 }
 
+/** Control characters are unsafe in display text; other script systems are not. */
+const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/g
+
+/** Bounded display text from runtime package metadata; control characters are dropped. */
+function bundleText(value: unknown, limit: number): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.replace(CONTROL_CHARACTERS, '').trim()
+  return text === '' ? undefined : text.slice(0, limit)
+}
+
+/** One published version of an updatable third-party bundle, reduced for display. */
+export interface BundleVersionView {
+  version: string
+  publishedAt?: string
+  prerelease: boolean
+  deprecated?: string
+  /** Whether the version declares a bundle; false means it cannot replace the installed one. */
+  bundle: boolean
+  /** One rejected package, as the rc.1 `PluginVersion` contract reports it. */
+  incompatible?: { name: string; version: string; runtimeVersion: string }
+}
+
+/**
+ * `pluginManager/listVersions` reduced to the facts the settings page may show.
+ *
+ * The Wire row also carries registry URLs, dist-tags, deprecation text and
+ * package-manager diagnostics; this projection is the security boundary, so
+ * unknown properties are dropped and every retained string is bounded and
+ * stripped of control characters. A refused read returns `undefined`; the panel
+ * owns its classified copy.
+ */
+export interface BundleVersionListView {
+  installed: string
+  versions: BundleVersionView[]
+  omitted: number
+}
+
+const BUNDLE_VERSION_TEXT = /^[0-9A-Za-z.+_-]{1,128}$/
+const BUNDLE_PUBLISHED_AT = /^\d{4}-\d{2}-\d{2}T[0-9:.]+Z?$/
+export function publicBundleVersions(value: unknown): BundleVersionListView | undefined {
+  if (!record(value) || value.status !== 'listed') return undefined
+  const installed = typeof value.installed === 'string' ? bundleText(value.installed, 128) : undefined
+  if (installed === undefined) return undefined
+  const seen = new Set<string>()
+  const versions = (Array.isArray(value.versions) ? value.versions : []).filter(record).flatMap((row): BundleVersionView[] => {
+    const version = typeof row.version === 'string' && BUNDLE_VERSION_TEXT.test(row.version) ? row.version : undefined
+    if (version === undefined || seen.has(version)) return []
+    seen.add(version)
+    const publishedAt = typeof row.publishedAt === 'string' && BUNDLE_PUBLISHED_AT.test(row.publishedAt) ? row.publishedAt.slice(0, 64) : undefined
+    const deprecated = bundleText(row.deprecated, 300)
+    // One object per the rc.1 contract; `requirements` is display-only prose and
+    // is not forwarded because the page shows the runtime version instead.
+    const item = record(row.incompatible) ? row.incompatible : undefined
+    const name = bundleText(item?.name, 300), itemVersion = bundleText(item?.version, 128), runtimeVersion = bundleText(item?.runtimeVersion, 128)
+    const incompatible = name === undefined || itemVersion === undefined || runtimeVersion === undefined
+      ? undefined : { name, version: itemVersion, runtimeVersion }
+    return [{
+      version,
+      prerelease: row.prerelease === true,
+      bundle: row.bundle === true,
+      ...(publishedAt === undefined ? {} : { publishedAt }),
+      ...(deprecated === undefined ? {} : { deprecated }),
+      ...(incompatible === undefined ? {} : { incompatible }),
+    }]
+  }).slice(0, 100)
+  const omitted = typeof value.omitted === 'number' && Number.isSafeInteger(value.omitted) && value.omitted >= 0 ? value.omitted : 0
+  return { installed, versions, omitted }
+}
+
 /** Project the read-only roster without configuration, conditions, paths, or errors. */
 export function publicPluginInventory(value: unknown): NonNullable<SettingsPageState['inventory']> {
   if (!record(value) || !Array.isArray(value.entries)) return []

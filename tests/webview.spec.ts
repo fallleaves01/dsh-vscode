@@ -104,7 +104,7 @@ describe('chat webview', () => {
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
     const html = chatHtml(webview, mark)
 
-    expect(html).toContain('placeholder="Search titles and message history"')
+    expect(html).toContain('placeholder="Search titles, IDs and message history"')
     expect(html).toContain('id="viewAllSessions"')
     expect(html).toContain('id="homeSessionList"')
     expect(html).toContain('id="sessionActions"')

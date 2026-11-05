@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { mountSettingsPage } from '../src/settings-page.mjs'
 import { settingsPageHtml } from '../src/settings-page-html.js'
-import { bundlePageState, experimentalPageState, pageState, searchPageState } from './settings-page.fixture.js'
+import { bundlePageState, experimentalPageState, pageState, searchPageState, updatableBundlePageState } from './settings-page.fixture.js'
 import type { SettingsPageState } from '../src/settings-page-state.js'
 
 let dispose: (() => void) | undefined
@@ -343,21 +343,140 @@ describe('dedicated DSH settings surface', () => {
     // No dead-end pointer to the DSH plugin manager for a bundle this page can switch.
     expect(document.body.textContent).not.toContain('Enable it from the DSH plugin manager')
   })
-  it('does not advertise an unreachable update path or a stale verified version', () => {
+  it('offers the update path only for installed updatable bundles and never a stale verified version', () => {
     const state = bundlePageState()
     state.bundles = [...state.bundles,
-      { name: '@deepseek-ai/dsh-updatable-bundle', official: true, availability: 'installation', version: '0.2.2-alpha.2', title: 'Update-capable', enabled: false, installed: true, optional: true, removable: false, listedByDefault: true, updatable: true },
+      { name: '@acme/dsh-updatable-bundle', official: false, availability: 'profile', version: '0.2.2-alpha.2', title: 'Update-capable', enabled: true, installed: true, optional: false, removable: false, listedByDefault: true, updatable: true },
+      { name: '@acme/dsh-uninstalled-bundle', official: false, availability: 'profile', version: '0.2.2-alpha.2', title: 'Not-installed update candidate', enabled: false, installed: false, optional: false, removable: false, listedByDefault: true, updatable: true },
+      { name: '@acme/dsh-static-bundle', official: false, availability: 'profile', version: '0.2.2-alpha.2', title: 'Not-updatable third-party', enabled: true, installed: true, optional: false, removable: false, listedByDefault: true, updatable: false },
     ]
     const h = harness(state); h.click('Built-in plugins')
-    expect(document.body.textContent).toContain('Optional runtime capabilities shipped with DSH')
-    expect(document.body.textContent).not.toContain('0.2.1-rc.3')
-    expect(document.body.textContent).not.toContain('Updatable')
+    const text = document.body.textContent!
+    expect(text).toContain('Optional runtime capabilities shipped with DSH')
+    expect(text).not.toContain('0.2.1-rc.3')
+    // The dedicated block replaces the obsolete unverified pointer: only a
+    // bundle that is both installed and updatable gets the real update entry.
+    expect(text).toContain('Third-party bundles')
+    expect(text).toContain('Update-capable')
+    expect(text).toContain('Check for updates')
+    expect(text).not.toContain('Not-installed update candidate')
+    expect(text).not.toContain('Not-updatable third-party')
   })
   it('hides bundle toggles on an attach-only runtime and explains why', () => {
     const state = bundlePageState(); state.writable = false; state.reason = 'This external runtime is attach-only. Its settings are available for inspection.'
     const h = harness(state); h.click('Built-in plugins')
     expect(document.querySelector('[data-focus-key^="bundle:"]')).toBeNull()
     expect(document.body.textContent).toContain('attach-only')
+  })
+  it('lists only installed third-party bundles and places the update block after the experimental bundles', () => {
+    const h = harness(updatableBundlePageState()); h.click('Built-in plugins')
+    const text = document.body.textContent!
+    expect(text).toContain('Acme Notes')
+    expect(text).not.toContain('Legacy third-party plugin')
+    expect(text).not.toContain('Queued third-party plugin')
+    expect(document.body.textContent).toContain('v0.3.0')
+    expect(h.button('Check for updates').disabled).toBe(false)
+  })
+  it('places the third-party update block after the experimental bundles', () => {
+    const combined = bundlePageState()
+    combined.bundles = [...combined.bundles!, ...updatableBundlePageState().bundles!]
+    const h = harness(combined); h.click('Built-in plugins')
+    const text = document.body.textContent!
+    expect(text).toContain('Experimental bundles')
+    expect(text.indexOf('Experimental bundles')).toBeLessThan(text.indexOf('Third-party bundles'))
+  })
+  it('checks a third-party bundle and renders every listed version fact as text', () => {
+    const h = harness(updatableBundlePageState()); h.click('Built-in plugins')
+    h.click('Check for updates')
+    expect(h.posts.at(-1)).toMatchObject({ type: 'check-bundle-versions', name: '@acme/dsh-notes-bundle', scope: 'runtime-a' })
+    expect(h.button('Checking for updates…').disabled).toBe(true)
+    h.result({ ok: true, installed: '0.3.0', omitted: 2, versions: [
+      { version: '0.4.0', publishedAt: '2026-02-01T00:00:00.000Z', prerelease: false, bundle: true },
+      { version: '0.5.0-rc.1', publishedAt: '2026-03-01T00:00:00Z', prerelease: true, deprecated: 'Use 0.5.0', bundle: true,
+        incompatible: { name: '@acme/dsh-notes-bundle', version: '0.5.0-rc.1', runtimeVersion: '0.2.1', requirements: { 'engines.dsh': '>=0.3.0' } } },
+      { version: '<img src=x onerror=bad()>', prerelease: false, bundle: true },
+    ] })
+    const text = document.body.textContent!
+    for (const expected of ['0.4.0', '2026-02-01', '0.5.0-rc.1', 'Prerelease', 'Deprecated', 'Incompatible', '2 more versions are not shown.']) {
+      expect(text).toContain(expected)
+    }
+    // The single-object contract is rendered as one marker naming the runtime it needs.
+    const incompatible = [...document.querySelectorAll<HTMLElement>('.bundle-version span')].find(marker => marker.title.startsWith('@acme/dsh-notes-bundle@0.5.0-rc.1'))
+    expect(incompatible?.title).toBe('@acme/dsh-notes-bundle@0.5.0-rc.1 requires runtime 0.2.1')
+    // Version rows are text, never parsed markup.
+    expect(document.querySelector('.choices img')).toBeNull()
+    expect(text).toContain('<img src=x onerror=bad()>')
+    // Every update control keeps a hover and accessible name.
+    for (const control of [...document.querySelectorAll<HTMLButtonElement>('.bundle-version')]) {
+      expect(control.title).toContain('Update to version ')
+      expect(control.getAttribute('aria-label')).toBe(control.title)
+    }
+    const row = [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.getAttribute('aria-label') === 'Update to version 0.4.0')
+    expect(row).toBeDefined(); row!.click()
+    expect(h.posts.at(-1)).toMatchObject({ type: 'update-bundle', name: '@acme/dsh-notes-bundle', version: '0.4.0' })
+    expect(document.body.textContent).toContain('Updating to 0.4.0…')
+    expect(h.button('Check for updates').disabled).toBe(true)
+  })
+  it('reports a refused version check in the bundle card', () => {
+    const h = harness(updatableBundlePageState()); h.click('Built-in plugins')
+    h.click('Check for updates')
+    h.result({ ok: false, error: 'The plugin registry could not be reached. Check the network connection and try again.' })
+    expect(document.body.textContent).toContain('plugin registry could not be reached')
+    expect(h.button('Check for updates').disabled).toBe(false)
+  })
+  it.each([
+    [{ ok: true, outcome: 'updated', step: 'install', from: '0.3.0', to: '0.4.0' }, 'Updated 0.3.0 → 0.4.0.'],
+    [{ ok: true, outcome: 'restart-required', step: 'install', from: '0.3.0', to: '0.4.0' }, 'Restart the DeepSeek Harness runtime to apply the change.'],
+    [{ ok: false, outcome: 'restored', step: 'install', from: '0.3.0', to: '0.4.0', restoreApplication: 'applied', error: 'The runtime could not change this bundle.' }, 'previous version 0.3.0 was reinstalled'],
+    [{ ok: false, outcome: 'unrestored', step: 'install', from: '0.3.0', to: '0.4.0', error: 'The runtime could not change this bundle.' }, 'could not be restored'],
+  ])('renders update outcome %# inside the bundle card', (result, expected) => {
+    const h = harness(updatableBundlePageState()); h.click('Built-in plugins'); h.click('Check for updates')
+    h.result({ ok: true, installed: '0.3.0', versions: [{ version: '0.4.0', prerelease: false, bundle: true }], omitted: 0 })
+    document.querySelector<HTMLButtonElement>('[aria-label="Update to version 0.4.0"]')!.click()
+    h.result(result)
+    expect(document.body.textContent).toContain(expected)
+  })
+  it.each([
+    ['check', 'This bundle is not compatible with the running DSH version.', 'was not accepted'],
+    ['remove', 'The runtime could not change this bundle.', 'did not start'],
+    ['install', 'The runtime could not change this bundle.', 'remains installed'],
+  ])('does not claim a failed restore for a %s step that left the bundle unchanged', (step, error, expected) => {
+    const h = harness(updatableBundlePageState()); h.click('Built-in plugins'); h.click('Check for updates')
+    h.result({ ok: true, installed: '0.3.0', versions: [{ version: '0.4.0', prerelease: false, bundle: true }], omitted: 0 })
+    document.querySelector<HTMLButtonElement>('[aria-label="Update to version 0.4.0"]')!.click()
+    h.result({ ok: false, outcome: 'unchanged', step, from: step === 'check' && error.includes('not compatible') ? '' : '0.3.0', to: '0.4.0', error })
+    const text = document.body.textContent!
+    expect(text).toContain(expected)
+    expect(text).toContain(error)
+    expect(text).not.toContain('could not be restored')
+    expect(text).not.toContain('was reinstalled')
+  })
+  it('disables a listed version that declares no bundle and explains why', () => {
+    const h = harness(updatableBundlePageState()); h.click('Built-in plugins'); h.click('Check for updates')
+    h.result({ ok: true, installed: '0.3.0', versions: [{ version: '0.4.0', prerelease: false, bundle: false }], omitted: 0 })
+    const row = [...document.querySelectorAll<HTMLButtonElement>('.bundle-version')].find(item => item.textContent?.includes('0.4.0'))!
+    expect(row.disabled).toBe(true)
+    expect(row.title).toBe('Version 0.4.0 does not declare a plugin bundle, so it cannot replace this bundle.')
+    expect(row.getAttribute('aria-label')).toBe(row.title)
+    row.click()
+    expect(h.posts.some(post => post.type === 'update-bundle')).toBe(false)
+  })
+  it('leaves no result behind when the update confirmation is dismissed', () => {
+    const h = harness(updatableBundlePageState()); h.click('Built-in plugins'); h.click('Check for updates')
+    h.result({ ok: true, installed: '0.3.0', versions: [{ version: '0.4.0', prerelease: false, bundle: true }], omitted: 0 })
+    document.querySelector<HTMLButtonElement>('[aria-label="Update to version 0.4.0"]')!.click()
+    h.result({ ok: false, cancelled: true })
+    const text = document.body.textContent!
+    expect(text).not.toContain('was reinstalled')
+    expect(text).not.toContain('Updated 0.3.0')
+    expect(h.button('Check for updates').disabled).toBe(false)
+  })
+  it('disables the third-party update controls on a read-only runtime', () => {
+    const h = harness({ ...updatableBundlePageState(), writable: false, reason: 'This external runtime is attach-only. Its settings are available for inspection.' })
+    h.click('Built-in plugins')
+    expect(document.body.textContent).toContain('Third-party bundles')
+    expect(document.body.textContent).toContain('attach-only')
+    expect(h.button('Check for updates').disabled).toBe(true)
   })
   it('renders and saves the three experimental settings sections', () => {
     const h = harness(experimentalPageState()); h.click('Built-in plugins')

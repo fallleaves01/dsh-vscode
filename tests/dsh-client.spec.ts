@@ -1527,3 +1527,148 @@ describe('DSH alpha.3 plugin market and on-demand bundles', () => {
     ])
   })
 })
+
+describe('DSH rc.1 third-party bundle updates', () => {
+  const pkg = '@scope/notes-bundle'
+  const version = (overrides: Record<string, unknown> = {}) => ({
+    version: '0.4.0', publishedAt: '2026-02-01T00:00:00.000Z', tags: ['latest'], prerelease: false,
+    deprecated: '\u5df2\u5f03\u7528\uff0c\u8bf7\u5347\u7ea7', bundle: true, ...overrides,
+  })
+
+  it('lists versions with the wire name only and a registry-sized timeout', async () => {
+    const h = harness()
+    h.results['pluginManager/listVersions'] = {
+      status: 'listed', installed: '0.3.0', registry: 'https://user:hidden-marker@registry.example',
+      attempts: [{ registry: 'https://registry.example', reason: 'hidden-marker' }, { registry: null, problem: 'network', reason: 'hidden-marker' }],
+      versions: [version({ incompatible: { name: pkg, version: '0.4.0', runtimeVersion: '0.2.1', requirements: { 'engines.dsh': '>=0.3.0' } } })],
+      omitted: 2,
+    }
+    expect(await h.client.listBundleVersions(pkg)).toEqual({
+      status: 'listed', installed: '0.3.0', omitted: 2,
+      versions: [{
+        version: '0.4.0', publishedAt: '2026-02-01T00:00:00.000Z', tags: ['latest'], prerelease: false,
+        // The rc.1 contract's single object; non-ASCII deprecation text is display-safe.
+        deprecated: '\u5df2\u5f03\u7528\uff0c\u8bf7\u5347\u7ea7', bundle: true,
+        incompatible: { name: pkg, version: '0.4.0', runtimeVersion: '0.2.1', requirements: { 'engines.dsh': '>=0.3.0' } },
+      }],
+    })
+    const request = vi.mocked(h.connection.call).mock.calls.find(([endpoint]) => endpoint === 'pluginManager/listVersions')
+    expect(request?.[1]).toEqual({ name: pkg })
+    // A registry read can outlast a fast RPC; the caller must not time it out early.
+    expect(request?.[2]).toBe(60_000)
+    expect(JSON.stringify(h.results['pluginManager/listVersions'])).toContain('hidden-marker')
+    expect(JSON.stringify(await h.client.listBundleVersions(pkg))).not.toContain('hidden-marker')
+  })
+
+  it('drops registry wiring, attempts, reasons and diagnostics from a version list', async () => {
+    const h = harness()
+    h.results['pluginManager/listVersions'] = {
+      status: 'listed', installed: '0.3.0', registry: 'https://hidden-marker', attempts: [{ registry: 'https://hidden-marker', reason: 'hidden-marker' }],
+      versions: [version({
+        registry: 'https://hidden-marker', attempts: [{ reason: 'hidden-marker' }], reason: 'hidden-marker',
+        diagnostic: 'hidden-marker', packageResult: { output: 'hidden-marker', logPath: '/srv/hidden-marker' },
+      })],
+      omitted: 0,
+    }
+    const list = await h.client.listBundleVersions(pkg)
+    expect(list).toEqual({
+      status: 'listed', installed: '0.3.0', omitted: 0,
+      versions: [{
+        version: '0.4.0', publishedAt: '2026-02-01T00:00:00.000Z', tags: ['latest'], prerelease: false,
+        deprecated: '\u5df2\u5f03\u7528\uff0c\u8bf7\u5347\u7ea7', bundle: true,
+      }],
+    })
+    const printed = JSON.stringify(list)
+    for (const forbidden of ['hidden-marker', 'registry', 'attempts', 'reason', 'diagnostic', 'packageResult', 'logPath']) {
+      expect(printed).not.toContain(forbidden)
+    }
+  })
+
+  it.each(['network', 'unknown', 'not-found', 'not-updatable'])('keeps only a %s refusal problem', async problem => {
+    const h = harness()
+    h.results['pluginManager/listVersions'] = { status: 'refused', problem, reason: 'hidden-marker', attempts: [{ registry: 'https://hidden-marker', reason: 'hidden-marker' }] }
+    expect(await h.client.listBundleVersions(pkg)).toEqual({ status: 'refused', problem })
+  })
+
+  it('refuses a malformed version list instead of presenting it', async () => {
+    const h = harness()
+    h.results['pluginManager/listVersions'] = { status: 'listed', installed: '0.3.0', versions: { entries: [] } }
+    await expect(h.client.listBundleVersions(pkg)).rejects.toMatchObject({ code: 'invalid-response' })
+    // A pre-rc.1 array `incompatible` is not the contract and is dropped, not misread.
+    h.results['pluginManager/listVersions'] = { status: 'listed', installed: '0.3.0', versions: [version({ incompatible: [{ name: pkg, version: '0.4.0', runtimeVersion: '0.2.1' }] })], omitted: 0 }
+    const list = await h.client.listBundleVersions(pkg)
+    expect(list).toMatchObject({ status: 'listed', versions: [expect.not.objectContaining({ incompatible: expect.anything() })] })
+  })
+
+  it('decodes a refused target check whose from is empty', async () => {
+    const h = harness()
+    h.results['pluginManager/updateBundle'] = {
+      from: '', to: '0.5.0', step: 'check',
+      result: { changed: false, application: 'failed', stage: 'install', target: pkg, error: { code: 'incompatible-version', diagnostic: 'hidden-marker' } },
+    }
+    expect(await h.client.updateBundle(pkg, '0.5.0')).toEqual({
+      from: '', to: '0.5.0', step: 'check',
+      result: { changed: false, application: 'failed', stage: 'install', target: pkg, error: { code: 'incompatible-version' } },
+    })
+    const request = vi.mocked(h.connection.call).mock.calls.find(([endpoint]) => endpoint === 'pluginManager/updateBundle')
+    expect(request?.[1]).toEqual({ name: pkg, version: '0.5.0' })
+    expect(request?.[2]).toBe(300_000)
+  })
+
+  it('decodes the remove step and a recovery reinstallation', async () => {
+    const h = harness()
+    h.results['pluginManager/updateBundle'] = {
+      from: '0.3.0', to: '0.4.0', step: 'remove',
+      result: { changed: false, application: 'failed', stage: 'remove', target: pkg, error: { code: 'operation-error' } },
+    }
+    expect(await h.client.updateBundle(pkg, '0.4.0')).toEqual({
+      from: '0.3.0', to: '0.4.0', step: 'remove',
+      result: { changed: false, application: 'failed', stage: 'remove', target: pkg, error: { code: 'operation-error' } },
+    })
+    h.results['pluginManager/updateBundle'] = {
+      from: '0.3.0', to: '0.4.0', step: 'install',
+      result: { changed: false, application: 'failed', stage: 'install', target: pkg, error: { code: 'operation-error' } },
+      restore: { changed: true, application: 'restart-required', stage: 'enable', target: pkg, restartReason: 'package-moved' },
+    }
+    expect(await h.client.updateBundle(pkg, '0.4.0')).toEqual({
+      from: '0.3.0', to: '0.4.0', step: 'install',
+      result: { changed: false, application: 'failed', stage: 'install', target: pkg, error: { code: 'operation-error' } },
+      restore: { changed: true, application: 'restart-required', stage: 'enable', target: pkg, restartReason: 'package-moved' },
+    })
+  })
+
+  it('drops package output and unknown failure codes from both update outcomes', async () => {
+    const h = harness()
+    h.results['pluginManager/updateBundle'] = {
+      from: '0.3.0', to: '0.4.0', step: 'install',
+      result: { changed: false, application: 'failed', stage: 'install', target: pkg,
+        error: { code: 'invented-code', diagnostic: 'hidden-marker' },
+        packageResult: { output: 'hidden-marker', logPath: '/srv/hidden-marker' } },
+      restore: { changed: false, application: 'failed', stage: 'install', target: pkg, error: { code: 'operation-error', diagnostic: 'hidden-marker' } },
+    }
+    const result = await h.client.updateBundle(pkg, '0.4.0')
+    expect(result).toMatchObject({
+      result: { application: 'failed', stage: 'install', target: pkg },
+      restore: { application: 'failed', stage: 'install', error: { code: 'operation-error' } },
+    })
+    expect(result.result.error).toBeUndefined()
+    const printed = JSON.stringify(result)
+    for (const forbidden of ['hidden-marker', 'diagnostic', 'packageResult', 'logPath', 'invented-code']) {
+      expect(printed).not.toContain(forbidden)
+    }
+  })
+
+  it('refuses an update result with an unknown step', async () => {
+    const h = harness()
+    h.results['pluginManager/updateBundle'] = { from: '0.3.0', to: '0.4.0', step: 'restoring', result: { changed: true, application: 'applied' } }
+    await expect(h.client.updateBundle(pkg, '0.4.0')).rejects.toMatchObject({ code: 'invalid-response' })
+  })
+
+  it('delegates the Markdown export to the connection route', async () => {
+    const readSessionMarkdown = vi.fn(async (_sessionId: string) => '# Transcript')
+    const client = new DshClient({ readSessionMarkdown } as unknown as DshConnection)
+    clients.push(client)
+    await expect(client.sessionMarkdown('session-1')).resolves.toBe('# Transcript')
+    expect(readSessionMarkdown).toHaveBeenCalledWith('session-1')
+  })
+})

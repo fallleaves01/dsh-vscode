@@ -119,3 +119,23 @@ export function bundlePageState(): SettingsPageState {
   state.bundles = publicBundles(bundleFixture())
   return state
 }
+/**
+ * Raw `pluginManager/listBundles` rows for the third-party update flow.
+ *
+ * A third-party profile dependency is an ordinary dependency (`optional: false`)
+ * that the runtime marks `updatable` once a newer release is published. The
+ * second and third rows are the negative controls: not updatable, and not
+ * installed respectively.
+ */
+export function updatableBundleFixture(): Record<string, unknown>[] {
+  return [
+    { name: '@acme/dsh-notes-bundle', official: false, availability: 'profile', version: '0.3.0', enabled: true, installed: true, optional: false, removable: false, updatable: true, meta: { title: 'Acme Notes', description: 'A third-party notes plugin.' } },
+    { name: '@acme/dsh-legacy-bundle', official: false, availability: 'profile', version: '0.1.0', enabled: true, installed: true, optional: false, removable: false, updatable: false, meta: { title: 'Legacy third-party plugin' } },
+    { name: '@acme/dsh-queued-bundle', official: false, availability: 'profile', version: '0.2.0', enabled: false, installed: false, optional: false, removable: false, updatable: true, meta: { title: 'Queued third-party plugin' } },
+  ]
+}
+export function updatableBundlePageState(): SettingsPageState {
+  const state = pageState()
+  state.bundles = publicBundles(updatableBundleFixture())
+  return state
+}

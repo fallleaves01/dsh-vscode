@@ -6,7 +6,7 @@ import type { SettingsDescription, SettingsNamespace, SettingsMutation } from '.
 import { runtimeIsOurs } from './runtime-change.js'
 import { redactDshSecrets } from './runtime-output.js'
 import { settingsPageHtml } from './settings-page-html.js'
-import { at, credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerProfile, providerViews, publicBundles, publicPluginInventory, reasoningLevels, record, searchSettings, searchSelectionMutations, SEARCH_PROFILES, settingsForms, validProviderId,
+import { at, credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerProfile, providerViews, publicBundles, publicBundleVersions, publicPluginInventory, reasoningLevels, record, searchSettings, searchSelectionMutations, SEARCH_PROFILES, settingsForms, validProviderId,
   type ConfigurableProvider, type CredentialState, type ModelDiscoveryRequest, type SettingsPageState } from './settings-page-state.js'
 
 type Host = Pick<DshChatController, 'state' | 'cwd' | 'runtimeIdentity' | 'runtimeOwnership' | 'onDidChangeState' | 'onDidChangeRuntimeSettings' | 'settings' | 'settingsClient' | 'mutateSettings' | 'start'>
@@ -37,6 +37,16 @@ function bundleFailure(result: DshBundleChange): string {
   if (code !== undefined) return `The runtime refused the bundle change (${code}).`
   return 'The runtime could not change this bundle. Refresh and try again.'
 }
+
+/** Explain a refused version read, without forwarding registry URLs or raw reasons. */
+function bundleVersionFailure(problem: 'network' | 'unknown' | 'not-found' | 'not-updatable'): string {
+  if (problem === 'network') return 'The plugin registry could not be reached. Check the network connection and try again.'
+  if (problem === 'not-found') return 'This bundle was not found in the plugin registry.'
+  if (problem === 'not-updatable') return 'This bundle cannot be updated from this runtime.'
+  return 'The runtime could not read the plugin registry. Try again later.'
+}
+
+const ATTACH_ONLY_BUNDLE_MESSAGE = 'This external runtime is attach-only. Change its plugin bundles from the runtime that owns them.'
 
 /** One settings surface, bound to a runtime client rather than the selected chat. */
 export class SettingsPanelManager implements vscode.Disposable {
@@ -82,6 +92,8 @@ export class SettingsPanelManager implements vscode.Disposable {
     let catalog: SettingsPageState['catalog'] = [], error: string | undefined, modelsError: string | undefined
     let inventory: NonNullable<SettingsPageState['inventory']> = []
     let bundles: NonNullable<SettingsPageState['bundles']> = []
+    /** Versions the page last listed per bundle; only those may be installed. */
+    const listedBundleVersions = new Map<string, Set<string>>()
     let timer: NodeJS.Timeout | undefined, lifetime = new AbortController()
     const clean = (value: unknown, secrets: string[] = []): string => redactDshSecrets(text(value), secrets).slice(0, 1500)
     const connected = (): boolean => {
@@ -140,12 +152,12 @@ export class SettingsPanelManager implements vscode.Disposable {
       const request = ++generation
       let next: DshClient
       try { next = this.host.settingsClient() } catch (cause) {
-        if (client) { lifetime.abort(); lifetime = new AbortController(); client = undefined; scope = randomUUID(); description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; catalog = []; inventory = []; bundles = [] }
+        if (client) { lifetime.abort(); lifetime = new AbortController(); client = undefined; scope = randomUUID(); description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; catalog = []; inventory = []; bundles = []; listedBundleVersions.clear() }
         error = clean(cause); loading = false; post(); return
       }
       if (next !== client || this.host.runtimeIdentity !== identity || this.host.cwd !== cwd) {
         lifetime.abort(); lifetime = new AbortController(); client = next; identity = this.host.runtimeIdentity; cwd = this.host.cwd; scope = randomUUID()
-        description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; registered = []; credentials = {}; catalog = []; inventory = []; bundles = []
+        description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; registered = []; credentials = {}; catalog = []; inventory = []; bundles = []; listedBundleVersions.clear()
       }
       const readScope = scope
       loading = true; error = undefined; modelsError = undefined; post()
@@ -236,7 +248,7 @@ export class SettingsPanelManager implements vscode.Disposable {
         const current = assertCurrent()
         const keyInput = apiKey(message.apiKey)
         if (message.type === 'set-bundle') {
-          if (!runtimeIsOurs(this.host.runtimeOwnership)) throw new Error('This external runtime is attach-only. Change its plugin bundles from the runtime that owns them.')
+          if (!runtimeIsOurs(this.host.runtimeOwnership)) throw new Error(ATTACH_ONLY_BUNDLE_MESSAGE)
           requireWrite()
           // A running task is not a reason to refuse the change: the runtime
           // owns that decision and answers with `applied` or `restart-required`,
@@ -266,6 +278,90 @@ export class SettingsPanelManager implements vscode.Disposable {
           void panel.webview.postMessage({ type: 'result', requestId, ok, application: result.application,
             restartRequired: result.application === 'restart-required',
             ...(ok ? {} : { error: bundleFailure(result), ...(result.error?.code === undefined ? {} : { code: result.error.code }) }) })
+          return
+        }
+        if (message.type === 'check-bundle-versions') {
+          if (!runtimeIsOurs(this.host.runtimeOwnership)) throw new Error(ATTACH_ONLY_BUNDLE_MESSAGE)
+          requireWrite()
+          const name = message.name
+          if (typeof name !== 'string' || name === '' || name.length > 512) throw new Error('Invalid bundle from this settings page.')
+          const bundle = bundles.find(item => item.name === name && item.updatable === true)
+          if (!bundle) throw new Error('This bundle cannot be updated from this runtime. Refresh settings and try again.')
+          const list = await requireWrite().listBundleVersions(name)
+          assertCurrent()
+          if (list.status === 'refused') {
+            void panel.webview.postMessage({ type: 'result', requestId, ok: false, error: bundleVersionFailure(list.problem) })
+            return
+          }
+          const listed = publicBundleVersions(list)
+          if (listed === undefined) throw new Error('DSH returned an unexpected bundle version list. Reload settings before retrying.')
+          // Only the newest answer is authoritative: the page may not install a
+          // version that a later read did not list again.
+          listedBundleVersions.set(name, new Set(listed.versions.map(version => version.version)))
+          void panel.webview.postMessage({ type: 'result', requestId, ok: true, installed: listed.installed,
+            versions: listed.versions, omitted: listed.omitted })
+          return
+        }
+        if (message.type === 'update-bundle') {
+          if (!runtimeIsOurs(this.host.runtimeOwnership)) throw new Error(ATTACH_ONLY_BUNDLE_MESSAGE)
+          requireWrite()
+          const name = message.name, version = message.version
+          if (typeof name !== 'string' || name === '' || name.length > 512) throw new Error('Invalid bundle update.')
+          if (typeof version !== 'string' || version === '' || version.length > 128) throw new Error('Invalid bundle version.')
+          const bundle = bundles.find(item => item.name === name && item.updatable === true)
+          if (!bundle) throw new Error('This bundle cannot be updated from this runtime. Refresh settings and try again.')
+          // The page may only install a version this page listed: a forged or
+          // stale version is refused before any profile write.
+          const listed = listedBundleVersions.get(name)
+          if (!listed || !listed.has(version)) throw new Error('Check for updates again before choosing a version.')
+          const label = (bundle.title ?? name).slice(0, 300)
+          const action = 'Update bundle'
+          const choice = await vscode.window.showWarningMessage(`Update ${label} to ${version}?`, {
+            modal: true,
+            detail: 'This changes the shared DSH web profile for every project and window that uses it. '
+              + 'Plugins loaded through hot module replacement may stop during the update. '
+              + 'The runtime attempts to reinstall the previous version if the update fails. '
+              + 'This operation requires a network connection.',
+          }, action)
+          requireWrite()
+          if (choice !== action) { void panel.webview.postMessage({ type: 'result', requestId, ok: false, cancelled: true }); return }
+          const update = await requireWrite().updateBundle(name, version)
+          await refresh(true); assertCurrent()
+          if (!update || typeof update.from !== 'string' || typeof update.to !== 'string'
+            || typeof update.result?.application !== 'string'
+            || (update.step !== 'check' && update.step !== 'remove' && update.step !== 'install')) {
+            throw new Error('DSH did not confirm the bundle update. Reload settings before retrying.')
+          }
+          const step = update.step, result = update.result, application = result.application
+          const base = { requestId, from: update.from, to: update.to, step, application }
+          const failure = { error: bundleFailure(result), ...(result.error?.code === undefined ? {} : { code: result.error.code }) }
+          // `check`: the target was refused before anything changed. `remove`:
+          // the old version could not be removed, so it is still installed.
+          // Neither step leaves a recovery reinstallation to report.
+          if (step === 'check' || step === 'remove') {
+            void panel.webview.postMessage({ type: 'result', ...base, ok: false, outcome: 'unchanged', ...failure })
+            return
+          }
+          // Success is only an installation the runtime applied.
+          if (application === 'applied' || application === 'restart-required') {
+            void panel.webview.postMessage({ type: 'result', ...base, ok: true,
+              outcome: application === 'restart-required' ? 'restart-required' : 'updated',
+              restartRequired: application === 'restart-required' })
+            return
+          }
+          const restore = update.restore
+          // Without hot-module replacement a failed installation leaves the
+          // installed version in place: nothing was removed, so no restore
+          // failure may be reported. Only a recovery the runtime actually ran
+          // can succeed or fail.
+          if ((application !== 'failed' && application !== 'cancelled') || restore === undefined) {
+            void panel.webview.postMessage({ type: 'result', ...base, ok: false, outcome: 'unchanged', ...failure })
+            return
+          }
+          const restored = restore.application !== 'failed' && restore.application !== 'cancelled'
+          void panel.webview.postMessage({ type: 'result', ...base, ok: false,
+            outcome: restored ? 'restored' : 'unrestored', restoreApplication: restore.application,
+            ...failure })
           return
         }
         if (message.type === 'save-search') {
@@ -470,7 +566,7 @@ export class SettingsPanelManager implements vscode.Disposable {
         const accountChanged = lastAccountText !== this.host.state.accountNotice
         lastPhase = this.host.state.phase; lastSignedIn = this.host.state.account?.signedIn; lastAccountText = this.host.state.accountNotice
         if (!connected() && client) {
-          ++generation; lifetime.abort(); client = undefined; scope = randomUUID(); description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; catalog = []; inventory = []; bundles = []; post(); schedule()
+          ++generation; lifetime.abort(); client = undefined; scope = randomUUID(); description = { writable: false, hasDocument: false, namespaces: [] }; directory = []; catalog = []; inventory = []; bundles = []; listedBundleVersions.clear(); post(); schedule()
         } else if (changed || (!client && lastPhase === 'ready')) { post(); if (lastPhase === 'ready') schedule() }
         else if (accountChanged) post()
       }),

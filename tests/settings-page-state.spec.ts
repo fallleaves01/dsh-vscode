@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerViews, publicBundles, publicPluginInventory, reasoningLevels, searchSelectionMutations, searchSettings, settingsForms, validProviderId } from '../src/settings-page-state.js'
+import { credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerViews, publicBundles, publicBundleVersions, publicPluginInventory, reasoningLevels, searchSelectionMutations, searchSettings, settingsForms, validProviderId } from '../src/settings-page-state.js'
 import { cotTranslationNamespace, experimentalPageState, fixture, pluginMarketNamespace, searchFixture } from './settings-page.fixture.js'
 
 describe('official settings form boundaries', () => {
@@ -214,5 +214,67 @@ describe('experimental settings and bundle projection', () => {
     const ns = cotTranslationNamespace()
     expect(() => fieldMutations(ns, { targetLanguage: 'x'.repeat(1025) })).toThrow('under 1024')
     expect(fieldMutations(ns, { targetLanguage: 'zh-CN' })).toEqual([{ op: 'set', path: ['targetLanguage'], value: 'zh-CN' }])
+  })
+})
+
+describe('third-party bundle version projection', () => {
+  it('projects only whitelisted version facts and drops registries, attempts and diagnostics', () => {
+    const projected = publicBundleVersions({
+      status: 'listed', installed: '0.3.0', omitted: 2,
+      versions: [
+        { version: '0.4.0', publishedAt: '2026-02-01T00:00:00.000Z', tags: ['latest'], prerelease: false, bundle: true,
+          deprecated: '\u5df2\u5f03\u7528\uff0c\u8bf7\u5347\u7ea7',
+          registry: 'https://user:hidden-marker@registry.example', reason: 'hidden-marker', attempts: [{ reason: 'hidden-marker' }],
+          diagnostic: 'hidden-marker', packageResult: { output: 'hidden-marker', logPath: '/srv/hidden-marker' }, error: { diagnostic: 'hidden-marker' } },
+        { version: '0.5.0-rc.1', publishedAt: '2026-03-01T00:00:00Z', prerelease: true, deprecated: 'Use 0.5.0 instead', tags: [], bundle: false,
+          incompatible: { name: '@acme/dsh-notes-bundle', version: '0.5.0-rc.1', runtimeVersion: '0.2.1',
+            requirements: { 'engines.dsh': '>=0.3.0' }, reason: 'hidden-marker', registry: 'https://hidden-marker' } },
+      ],
+    })
+    // The rc.1 `incompatible` shape is one object; `requirements` is display
+    // prose the page never shows, so the projection drops it with the rest of
+    // the unused wire fields. Non-ASCII deprecation text is display-safe now.
+    expect(projected).toEqual({ installed: '0.3.0', omitted: 2, versions: [
+      { version: '0.4.0', publishedAt: '2026-02-01T00:00:00.000Z', prerelease: false, bundle: true, deprecated: '\u5df2\u5f03\u7528\uff0c\u8bf7\u5347\u7ea7' },
+      { version: '0.5.0-rc.1', publishedAt: '2026-03-01T00:00:00Z', prerelease: true, bundle: false, deprecated: 'Use 0.5.0 instead',
+        incompatible: { name: '@acme/dsh-notes-bundle', version: '0.5.0-rc.1', runtimeVersion: '0.2.1' } },
+    ] })
+    for (const forbidden of ['hidden-marker', 'registry', 'attempts', 'diagnostic', 'packageResult', 'logPath', 'requirements']) {
+      expect(JSON.stringify(projected)).not.toContain(forbidden)
+    }
+  })
+  it('bounds retained text, rejects malformed rows and refuses a refused read', () => {
+    const projected = publicBundleVersions({ status: 'listed', installed: 'y'.repeat(500), omitted: -1, versions: [
+      { version: 'x'.repeat(200), prerelease: false, bundle: true },
+      { version: '1.0.0', deprecated: 'bad\u0000deprecation ' + 'x'.repeat(5000), prerelease: 'yes', bundle: true },
+      { version: '<img src=x onerror=bad()>', prerelease: false, bundle: true },
+      { version: '1.0.0', prerelease: false, bundle: true },
+      { version: '2.0.0', bundle: false, incompatible: 'not-an-object' },
+      // A pre-rc.1 array shape is not the contract and is not presented as a verdict.
+      { version: '3.0.0', bundle: true, incompatible: [{ name: '@acme/a', version: '3.0.0', runtimeVersion: '0.1.0' }] },
+    ] })
+    expect(projected).toBeDefined()
+    expect(projected!.installed).toHaveLength(128)
+    expect(projected!.omitted).toBe(0)
+    expect(projected!.versions.map(version => version.version)).toEqual(['1.0.0', '2.0.0', '3.0.0'])
+    expect(projected!.versions[0]!.deprecated).not.toContain('\u0000')
+    expect(projected!.versions[0]!.deprecated!.length).toBeLessThanOrEqual(300)
+    expect(projected!.versions[0]!.prerelease).toBe(false)
+    expect(projected!.versions[0]!.bundle).toBe(true)
+    expect(projected!.versions[1]!.bundle).toBe(false)
+    expect(projected!.versions[1]!.incompatible).toBeUndefined()
+    expect(projected!.versions[2]!.incompatible).toBeUndefined()
+    expect(publicBundleVersions({ status: 'refused', problem: 'network' })).toBeUndefined()
+    expect(publicBundleVersions(undefined)).toBeUndefined()
+    expect(publicBundleVersions({ status: 'listed' })).toBeUndefined()
+    expect(publicBundleVersions({ status: 'listed', installed: '', versions: [] })).toBeUndefined()
+  })
+  it('keeps order, caps the page size and deduplicates repeated versions', () => {
+    const versions: Record<string, unknown>[] = Array.from({ length: 150 }, (_value, index) => ({ version: `1.0.${String(index)}`, prerelease: false, bundle: true }))
+    versions.push({ version: '1.0.0', prerelease: true, bundle: true })
+    const projected = publicBundleVersions({ status: 'listed', installed: '0.9.0', versions })
+    expect(projected!.versions).toHaveLength(100)
+    expect(projected!.versions.filter(version => version.version === '1.0.0')).toHaveLength(1)
+    expect(projected!.versions[0]!.prerelease).toBe(false)
   })
 })

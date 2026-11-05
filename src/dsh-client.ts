@@ -299,6 +299,187 @@ export interface DshBundleChange {
   error?: { code?: string }
 }
 
+/** Control characters are unsafe in display text; other script systems are not. */
+const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/g
+
+/** Bounded display text from runtime package metadata; control characters are dropped. */
+function bundleText(value: unknown, limit: number): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.replace(CONTROL_CHARACTERS, '').trim()
+  return text === '' ? undefined : text.slice(0, limit)
+}
+
+/** Bound a wire version string, preserving an intentionally empty value (`updateBundle.from`). */
+function bundleVersionText(value: unknown, limit: number): string | undefined {
+  return typeof value === 'string' ? value.replace(CONTROL_CHARACTERS, '').trim().slice(0, limit) : undefined
+}
+
+/**
+ * Read one `IncompatiblePlugin` the wire reports as a single object.
+ *
+ * The contract's `requirements` map is retained bounded for callers that show
+ * the rejected ranges; registry and diagnostic fields are absent from the wire
+ * object and never fabricated here.
+ */
+function incompatiblePluginOf(value: unknown): DshIncompatiblePlugin | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const row = value as Record<string, unknown>
+  const name = bundleText(row.name, 300), version = bundleText(row.version, 128), runtimeVersion = bundleText(row.runtimeVersion, 128)
+  if (name === undefined || version === undefined || runtimeVersion === undefined) return undefined
+  let requirements: Record<string, string> | undefined
+  if (typeof row.requirements === 'object' && row.requirements !== null && !Array.isArray(row.requirements)) {
+    const entries = Object.entries(row.requirements as Record<string, unknown>).flatMap(([key, range]): [string, string][] => {
+      const label = key.replace(CONTROL_CHARACTERS, '').trim(), value = typeof range === 'string' ? range.replace(CONTROL_CHARACTERS, '').trim() : ''
+      return label === '' || value === '' || label === '__proto__' || label === 'constructor' || label === 'prototype' ? [] : [[label.slice(0, 200), value.slice(0, 200)]]
+    }).slice(0, 20)
+    if (entries.length > 0) requirements = Object.fromEntries(entries)
+  }
+  return { name, version, runtimeVersion, ...(requirements === undefined ? {} : { requirements }) }
+}
+
+/** Read one mutation outcome, keeping only the bounded, known error code. */
+function bundleChangeOf(value: unknown): DshBundleChange | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  const application = row.application
+  if (application !== 'applied' && application !== 'restart-required' && application !== 'overridden'
+    && application !== 'failed' && application !== 'cancelled') return undefined
+  let error: DshBundleChange['error']
+  if (row.error !== undefined) {
+    if (typeof row.error !== 'object' || row.error === null) return undefined
+    const cause = row.error as Record<string, unknown>
+    const code = bundleText(cause.code, 64)
+    if (cause.code !== undefined && code === undefined) return undefined
+    if (code !== undefined && INSTALL_ERROR_CODES.has(code)) error = { code }
+  }
+  const restartReason = bundleText(row.restartReason, 100)
+  const stage = bundleText(row.stage, 40)
+  const target = bundleText(row.target, 500)
+  const failedAt = row.failedAt
+  return { changed: typeof row.changed === 'boolean' ? row.changed : application === 'applied',
+    application,
+    ...(stage === undefined ? {} : { stage }),
+    ...(target === undefined ? {} : { target }),
+    ...(restartReason === undefined ? {} : { restartReason }),
+    ...(typeof row.enabled === 'boolean' ? { enabled: row.enabled } : {}),
+    ...(failedAt === 'registry' || failedAt === 'spec-host' ? { failedAt } : {}),
+    ...(error === undefined ? {} : { error }) }
+}
+
+/** Read one published-version row; registry URLs and raw reasons never enter it. */
+function bundleVersionOf(value: unknown): DshBundleVersion | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  const version = bundleText(row.version, 128)
+  if (version === undefined || !/^[0-9A-Za-z.+_-]+$/.test(version)) return undefined
+  const publishedAt = typeof row.publishedAt === 'string' && /^\d{4}-\d{2}-\d{2}T[0-9:.]+Z?$/.test(row.publishedAt)
+    ? row.publishedAt.slice(0, 64) : undefined
+  const tags = Array.isArray(row.tags)
+    ? row.tags.flatMap((tag): string[] => { const text = bundleText(tag, 64); return text === undefined ? [] : [text] }).slice(0, 20)
+    : []
+  const deprecated = bundleText(row.deprecated, 300)
+  // The rc.1 wire schema declares one object, not an array; a legacy array is
+  // not a shape this client may present as a compatibility verdict.
+  const incompatible = incompatiblePluginOf(row.incompatible)
+  return { version, tags, prerelease: row.prerelease === true, bundle: row.bundle === true,
+    ...(publishedAt === undefined ? {} : { publishedAt }),
+    ...(deprecated === undefined ? {} : { deprecated }),
+    ...(incompatible === undefined ? {} : { incompatible }) }
+}
+
+/** Read a version list; a refused read keeps only its classified problem. */
+function bundleVersionListOf(value: unknown): DshBundleVersionList | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  if (row.status === 'refused') {
+    const problem = row.problem
+    if (problem !== 'network' && problem !== 'unknown' && problem !== 'not-found' && problem !== 'not-updatable') return undefined
+    return { status: 'refused', problem }
+  }
+  if (row.status !== 'listed') return undefined
+  const installed = bundleText(row.installed, 128)
+  if (installed === undefined || !Array.isArray(row.versions)) return undefined
+  const versions = row.versions.flatMap((entry): DshBundleVersion[] => { const parsed = bundleVersionOf(entry); return parsed === undefined ? [] : [parsed] })
+  const omitted = typeof row.omitted === 'number' && Number.isSafeInteger(row.omitted) && row.omitted >= 0 ? row.omitted : 0
+  return { status: 'listed', installed, versions, omitted }
+}
+
+/** Read an update outcome, including the recovery reinstallation when present. */
+function bundleUpdateResultOf(value: unknown): DshBundleUpdateResult | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  // A refused target check reports `from: ''` because no installed version was
+  // resolved; that is a valid answer, not a malformed one.
+  const from = bundleVersionText(row.from, 128)
+  const to = bundleVersionText(row.to, 128)
+  const step = row.step
+  if (from === undefined || to === undefined || (step !== 'remove' && step !== 'check' && step !== 'install')) return undefined
+  const result = bundleChangeOf(row.result)
+  if (result === undefined) return undefined
+  const restore = row.restore === undefined ? undefined : bundleChangeOf(row.restore)
+  return { from, to, step, result, ...(restore === undefined ? {} : { restore }) }
+}
+
+/** One package the running DSH version rejects, as `PluginVersion` reports it. */
+export interface DshIncompatiblePlugin {
+  name: string
+  version: string
+  runtimeVersion: string
+  /** Only the requirements the running version does not satisfy, keyed `engines.dsh` or by DSH peer name. */
+  requirements?: Record<string, string>
+}
+
+/**
+ * One published version of an updatable third-party bundle, reduced to the
+ * facts a picker may show.
+ *
+ * The wire row also carries dist-tags, a deprecation message, and compatibility
+ * requirements; registry URLs, attempt reasons and raw package-manager output
+ * are deliberately absent, because they may quote local paths and are never
+ * needed to choose a version.
+ */
+export interface DshBundleVersion {
+  version: string
+  publishedAt?: string
+  tags: string[]
+  prerelease: boolean
+  deprecated?: string
+  /** Whether the version declares a `dsh.bundle`; a version without one cannot replace a bundle. */
+  bundle: boolean
+  /** Present when the version's engines/peers reject the running DSH version. */
+  incompatible?: DshIncompatiblePlugin
+}
+
+/**
+ * `pluginManager/listVersions`: versions newer than the installed one, or why
+ * the registry read was refused.
+ */
+export type DshBundleVersionList =
+  | { status: 'listed'; installed: string; versions: DshBundleVersion[]; omitted: number }
+  | { status: 'refused'; problem: 'network' | 'unknown' | 'not-found' | 'not-updatable' }
+
+/** Optional arguments shared by `listVersions` and `updateBundle`. */
+export interface DshBundleUpdateOptions {
+  registry?: string
+  requestId?: string
+}
+
+/**
+ * The update outcome `pluginManager/updateBundle` reports.
+ *
+ * `restore` is the reinstallation of the previous version the runtime performs
+ * when an HMR profile update fails or is cancelled; it is present exactly when
+ * that recovery ran. Diagnostics and package-manager output stay out of this
+ * type for the same reason as {@link DshBundleInstallResult}.
+ */
+export interface DshBundleUpdateResult {
+  from: string
+  to: string
+  step: 'remove' | 'check' | 'install'
+  result: DshBundleChange
+  restore?: DshBundleChange
+}
+
 export interface ModelSelection {
   provider: string
   model: string
@@ -865,6 +1046,18 @@ export class DshClient {
     return value.sessionId
   }
 
+  /**
+   * Read the complete transcript as Markdown from the runtime's export route.
+   *
+   * The runtime formats the document, so the output matches its own copy
+   * command, including the original log path. The read is an authenticated GET
+   * outside the RPC contract; a runtime that does not serve it raises
+   * `session-export-unavailable`, which the caller presents as "not supported".
+   */
+  async sessionMarkdown(sessionId: string): Promise<string> {
+    return this.connection.readSessionMarkdown(sessionId)
+  }
+
   async pluginInventory(): Promise<PluginInventorySnapshot> {
     const value = await this.call<PluginInventorySnapshot>('pluginInventory/list', {})
     // A runtime that renamed or dropped the array would otherwise throw a
@@ -887,6 +1080,43 @@ export class DshClient {
     } catch {
       return undefined
     }
+  }
+  /**
+   * List the published versions newer than one installed third-party bundle.
+   *
+   * Only a bundle `listBundles` marks `updatable` accepts this read; the
+   * runtime answers `refused/not-updatable` for anything else instead of
+   * failing, so the caller can show that refusal as copy. The registry that
+   * answered is not published to the caller: it is infrastructure detail and
+   * its URL may carry credentials.
+   */
+  async listBundleVersions(name: string): Promise<DshBundleVersionList> {
+    if (!/^[A-Za-z0-9@/_.:+~-]{1,512}$/.test(name)) throw new DshConnectionError('invalid-spec', 'Invalid bundle name.')
+    const value = await this.call<unknown>('pluginManager/listVersions', { name }, 60_000)
+    const list = bundleVersionListOf(value)
+    if (list === undefined) throw new DshConnectionError('invalid-response', 'DSH pluginManager/listVersions returned an unexpected result.')
+    return list
+  }
+  /**
+   * Replace one installed third-party bundle with a published version.
+   *
+   * The runtime checks the target first and, on an HMR profile, reinstalls the
+   * previous version when the installation fails or is cancelled; `restore`
+   * reports that recovery. The caller must confirm before invoking this: the
+   * request changes the shared web profile and may stop running plugins.
+   */
+  async updateBundle(name: string, version: string, options: DshBundleUpdateOptions = {}): Promise<DshBundleUpdateResult> {
+    if (!/^[A-Za-z0-9@/_.:+~-]{1,512}$/.test(name)) throw new DshConnectionError('invalid-spec', 'Invalid bundle name.')
+    if (!/^[0-9A-Za-z.+_-]{1,128}$/.test(version)) throw new DshConnectionError('invalid-spec', 'Invalid bundle version.')
+    const wire = {
+      ...(options.registry === undefined || options.registry === '' ? {} : { registry: options.registry }),
+      ...(options.requestId === undefined || options.requestId === '' ? {} : { requestId: options.requestId }),
+    }
+    const value = await this.call<unknown>('pluginManager/updateBundle',
+      { name, version, ...(Object.keys(wire).length === 0 ? {} : { options: wire }) }, BUNDLE_INSTALL_TIMEOUT_MS)
+    const result = bundleUpdateResultOf(value)
+    if (result === undefined) throw new DshConnectionError('invalid-response', 'DSH pluginManager/updateBundle returned an unexpected result.')
+    return result
   }
   /**
    * Select or deselect one bundle layer while retaining its installed files.

@@ -373,6 +373,38 @@ export function translationFailureText(error: unknown): string {
   return detail === '' ? 'Translation failed' : detail
 }
 
+/**
+ * Why a session-Markdown copy failed, as the user reads it.
+ *
+ * Only the transport's classified codes are translated. Anything else — an
+ * unexpected exception, a clipped response, a local path in a fetch message —
+ * maps to the same neutral sentence, because none of that text may be shown.
+ */
+function sessionMarkdownFailureText(code: string | undefined): string {
+  if (code === 'session-export-unavailable') return 'This runtime does not support session Markdown export.'
+  if (code === 'authentication-required') return 'DSH authentication expired. Reconnect the runtime and try again.'
+  return 'The session could not be copied as Markdown. Try again.'
+}
+
+/**
+ * The failure class the output channel may name.
+ *
+ * The transport's codes are short, fixed tokens; every other code stays
+ * `unknown` so a runtime or native error cannot leak its wording into the log.
+ */
+function sessionMarkdownFailureClass(code: string | undefined): string {
+  switch (code) {
+    case 'session-export-unavailable': return 'not-supported'
+    case 'authentication-required': return 'authentication'
+    case 'invalid-session': return 'invalid-session-id'
+    case 'invalid-response': return 'invalid-response'
+    case 'http-error': return 'http'
+    case 'transport-error': return 'transport'
+    case 'cancelled': return 'cancelled'
+    default: return 'unknown'
+  }
+}
+
 function stateUpdate(previous: ChatViewState, next: ChatViewState): ChatViewStateUpdate | undefined {
   const patch: Partial<Omit<ChatViewState, 'messages'>> = {}
   const previousRecord = previous as unknown as Record<string, unknown>
@@ -1848,6 +1880,38 @@ export class DshChatController implements vscode.Disposable {
   /** Copy a conversation id to the clipboard; the Webview confirms the action. */
   async copySessionId(sessionId: string): Promise<void> {
     await vscode.env.clipboard.writeText(sessionId)
+  }
+
+  /**
+   * Copy one conversation's complete Markdown transcript to the clipboard.
+   *
+   * The runtime exports the whole history, including turns this window has not
+   * loaded (the sidebar transcript is only the loaded window). The document is
+   * written only to the clipboard: it never enters view state, the output
+   * channel, or a file, and a failure is reported by class so the response
+   * body, an original log path and the transport's wording stay out of the
+   * notice.
+   */
+  async copySessionAsMarkdown(sessionId: string): Promise<{ ok: boolean; text: string }> {
+    this.requireReady()
+    const known = this._state.sessions.some(item => item.id === sessionId)
+      || this._state.archivedSessions.some(item => item.id === sessionId)
+    if (!known) return { ok: false, text: 'This conversation is no longer available.' }
+    const client = this.requireClient()
+    let markdown: string
+    try {
+      markdown = await client.sessionMarkdown(sessionId)
+    } catch (error) {
+      const code = dshFailure(error).code
+      this.output.appendLine(`[session-markdown] copy failed (${sessionMarkdownFailureClass(code)})`)
+      return { ok: false, text: sessionMarkdownFailureText(code) }
+    }
+    try {
+      await vscode.env.clipboard.writeText(markdown)
+    } catch {
+      return { ok: false, text: 'The clipboard is unavailable.' }
+    }
+    return { ok: true, text: 'Session copied as Markdown.' }
   }
 
   /**
@@ -5457,6 +5521,14 @@ class DshSurface implements vscode.Disposable {
             } catch (error) {
               this.controller.report(error, value.sessionId)
             }
+          }
+          return
+        case 'copy-session-markdown':
+          // The export is asynchronous, so its outcome comes back as a Host
+          // notice rather than the Webview's local confirmation for an id copy.
+          if (typeof value.sessionId === 'string') {
+            const result = await this.controller.copySessionAsMarkdown(value.sessionId)
+            await this.webview.postMessage({ type: 'session-notice', text: result.text })
           }
           return
         case 'rename-session':

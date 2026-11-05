@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-rc.1.3**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-rc.1.4**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 > [!IMPORTANT]
 > **自动维护说明。** 当前本 fork 的全部维护工作均由 **deepseek-flash** 模型生成的自动更新完成。代码修改、DSH 适配、测试、文档和发布准备均由该自动流程产出。因此，本仓库是按自动更新模式维护的项目，而不是由人工发布团队维护的项目。生产使用前请审查每个版本。
@@ -31,8 +31,8 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 - **会话与历史。** 通过官方 DSH runtime 接收流式回复、检查工具调用、处理审批与问题，并加载较早的消息。
 - **失败回复恢复与重试。** 请求失败时保留已接收内容，在聊天页和子代理详情页显示错误码与可读原因；重新打开历史时恢复已保存的失败尝试。重试尝试折叠为一行（“Retrying model request (1/3) · 1s”“Retried model request”“Model request retry cancelled”），可展开查看重试延迟与失败原因；因输出 token 上限被截断的一轮会显示 DSH 的截断提示。重试分别保留；未能保存的输出明确标注仅在当前视图中可用。
-- **完整会话目录。** 目录用于浏览和搜索最近或已归档会话，执行重命名、归档、撤销归档和恢复。点击新建会话进入完整对话页，可选择模型、推理强度、代理组合与权限。顶部列表用于切换主会话；子代理保留在所属会话的 Tasks 面板。
-- **会话操作。** 可在会话菜单中置顶/取消置顶、重命名、分叉、归档/恢复和复制会话 ID。分叉已完成轮次时使用该轮自身的边界，后续停止或失败内容不会被复制。
+- **完整会话目录。** 目录用于浏览和搜索最近或已归档会话，执行重命名、归档、撤销归档和恢复。本地过滤对会话标题或会话 ID 执行大小写不敏感子串匹配；启用历史搜索时同时搜索消息正文。点击新建会话进入完整对话页，可选择模型、推理强度、代理组合与权限。顶部列表用于切换主会话；子代理保留在所属会话的 Tasks 面板。
+- **会话操作。** 可在会话菜单中置顶/取消置顶、重命名、分叉、归档/恢复和复制会话 ID。当本窗口中打开的会话未归档时，同一菜单可把完整历史复制为 Markdown。分叉已完成轮次时使用该轮自身的边界，后续停止或失败内容不会被复制。
 - **独立子代理详情。** 点击工具调用卡片中的子代理名称进入子会话，或点击右侧箭头在主会话旁打开独立详情，查看实时状态、完整记录、工具输出、耗时和 token 用量。支持审批、回答问题和停止；父代理允许继续时可发送 Queue 或 Steer 消息，单次执行的子代理输入区为只读。外部执行按官方方式显示为信息行，没有本地会话记录。
 - **后台任务与任务服务。** 查看有长度限制的进程输出、Goal 状态与轮次上限、Schedule 提醒与投递历史，以及 Workflow 阶段和任务日志。功能取决于 runtime 提供的服务；启用历史搜索后可搜索消息正文。
 - **显式文件上下文。** 点击 `+` 搜索并添加工作区文件或目录，用 `×` 逐项移除；也可输入 `@` 引用或执行 **Add Selection to Chat**。当前编辑文件和选区是可选建议。可在 Explorer 中选中资源后从右键菜单执行 **DeepSeek Harness: Add to Chat**；可用 **Upload from this computer…** 上传本机文件；也可把操作系统文件拖入输入框（若 VS Code 拦截拖放，请按住 Shift）。参见[将文件添加到输入框](#将文件添加到输入框)。
@@ -40,7 +40,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 - **会话控制与队列。** 选择代理组合、Permission、Plan、模型和推理强度；排队发送后续消息，向运行中的任务发送 Steer，并检查或删除等待执行的斜杠命令。
 - **紧凑的变更审阅。** 默认折叠显示文件数与增删行数；展开查看文件，或通过 Review 打开 VS Code Diff Editor。Keep/Revert 保留逐回合快照，并校验来源会话和项目；确认回退后再次检查目标。
 - **DeepSeek 认证。** 配置 API key 或使用浏览器登录，查看账户状态与余额并退出。远程登录通过 VS Code 端口转发完成。
-- **runtime 插件与配置。** 查找和管理 Tools、Skills、MCP、Memory 与 Agent Hooks。聊天工具栏齿轮打开对话内设置弹窗，包含模型提供商、Shell、Agent 循环、子代理、网页搜索和通用设置。支持模型目录编辑及只写凭据管理。
+- **runtime 插件与配置。** 查找和管理 Tools、Skills、MCP、Memory 与 Agent Hooks。聊天工具栏齿轮打开对话内设置弹窗，包含模型提供商、Shell、Agent 循环、子代理、网页搜索和通用设置。支持模型目录编辑及只写凭据管理。已安装且可更新的第三方 profile bundle 可在 Plugins 设置页查看已发布版本，并在确认后更新。
 - **runtime 恢复。** 多个 VS Code 窗口复用受管 runtime，支持重连、会话占用诊断，以及停止已验证身份的遗留受管进程。已保存的外部 runtime 仅用于连接。
 - **runtime 管理器。** 运行 **DeepSeek Harness: Manage Runtimes**，或点击 **External**/**DSH**/**Shared** 状态块，查看当前连接、已保存的外部 runtime 以及本扩展启动的 runtime 记录。可启动受管 runtime、通过启动 URL 连接、重启、重连、断开当前连接、停止已验证身份的扩展启动 runtime、忘记已保存 runtime，或打开会话占用诊断。由你自己启动且从未 connect/saved 的 runtime 不会显示在列表中。
 - **原生调试与键盘操作。** 可对 `.vscode/launch.json` 启用自主调试，管理断点、单步执行、调用栈和变量。`Cmd/Ctrl+Alt+D` 打开会话，`Cmd/Ctrl+Alt+E` 在编辑器标签页打开，`Cmd/Ctrl+Alt+L` 添加选区，`Cmd/Ctrl+Alt+F` 请求修复文件。会话与任务详情支持深色、浅色和高对比度主题。
@@ -92,6 +92,16 @@ pnpm run package
 `artifacts/dsh-sidebar-<version>.vsix`。其他设置包括
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
+
+### 升级到 0.2.2-rc.1.4
+
+0.2.2-rc.1.4 增加三项 DeepSeek Harness `0.2.2-rc.1` 能力。会话操作菜单新增 **Copy Session as Markdown**：当本窗口中打开的会话未归档时，该操作请求 runtime 导出完整历史，并把返回的 Markdown 写入剪贴板。文档由 runtime 格式化，包含 runtime 提供的原始日志路径；因此内容覆盖完整历史，而不限于本窗口已加载的转录范围，并与 runtime 自身的导出结果一致。导出路由（`GET /api/session.markdown`）属于 DSH Web profile 的 HTTP 面，不属于 RPC 契约：不提供该路由的 runtime（旧版本 runtime，或未挂载导出 bundle 的 profile）返回 404，侧栏报告该 runtime 不支持会话 Markdown 导出；认证过期时提示重新连接 runtime。响应超过 32 MiB 时拒绝处理；会话不是本窗口当前打开的会话时，该操作禁用。Markdown 只写入剪贴板：不进入 Webview 状态、Output 通道或文件；失败时仅显示固定分类文案，不回显响应体、本机路径或异常原文。
+
+Settings → Plugins 新增 **Third-party bundles** 区块，仅对 runtime 标记为 `updatable` 的已安装 profile bundle 显示。**Check for updates** 列出已发布版本，并显示发布时间、预发布、弃用与不兼容标记；不显示 registry URL、尝试原因、runtime 诊断或包管理器输出。选定版本后弹出模态确认，说明共享 web profile、使用该 profile 的其他窗口、热模块替换（HMR）期间插件可能停止、失败时会尝试重装旧版本以及网络要求。结果分为五类：更新成功、需要重启、更新失败且旧版本已恢复、更新失败且旧版本未恢复（显式告警），以及未改变（unchanged）——更新未被接受，已安装版本保持原样。未改变覆盖三种情况：目标检查被拒绝、旧版本移除失败或被取消、非 HMR 安装失败但旧版本仍在；仅当恢复重装确实失败时才报告“旧版本无法恢复”。未声明 plugin bundle 的已发布版本显示为禁用并给出原因。attach-only 外部 runtime 与只读 profile 禁用这些控件；只有最近一次版本列表中的版本可被安装，过期或伪造的版本在写入 profile 前被拒绝。
+
+会话搜索现在对标题或会话 ID 执行大小写不敏感子串匹配；启用历史搜索时仍搜索消息正文。同一变更修正 README 与适配记录：bundle 版本列表与更新、Schedule 任务删除与清除已结束任务、引用文本插入此前被描述为未实现，其中前两项已实现，第三项自 0.2.2-alpha.2.7 起提供；插件详情文档与市场条目详情仍未实现。
+
+DeepSeek Harness `0.2.2-rc.1` 仍是最新候选版本，已在 npm 与 GitHub 核验，无更新版本，因此本版本不要求升级 runtime。新增导出路由与两个 plugin-manager 方法由 HTTP mock 单元测试覆盖；本版本未对真实 DSH runtime 执行端到端运行。更新后请重新加载 VS Code 窗口。
 
 ### 升级到 0.2.2-rc.1.3
 
@@ -284,11 +294,11 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 以下 alpha.2 能力属于 Web 端，本侧边栏未实现：Live Share、Forge、Computer
 Use 与个性化推荐面板；Statistics 标签页；creation、文件拖拽与插件推荐卡片。
 其工具使用通用工具卡；action card 提议（`propose_action`）同样以通用工具卡
-显示，不提供卡片按钮。插件详情文档、版本列表、bundle 升级
-（`pluginManager/readBundleDetail`、`listVersions`、`updateBundle`）与市场条目
-详情（`pluginMarket/readEntryDetail`）未实现，请使用 DSH Web 插件页。未安装的
-on-demand bundle 不在此页列出，请先从 DSH 插件管理器安装。引用消息按 Markdown blockquote 显示；Web 的
-选中文本引用控件不在侧边栏输入区提供。Auto review 审批原因跟随编辑器语言；
+显示，不提供卡片按钮。插件详情文档（`pluginManager/readBundleDetail`）与市场条目
+详情（`pluginMarket/readEntryDetail`）未实现，请使用 DSH Web 插件页；可更新第三方
+profile bundle 的版本列表与更新已在 Plugins 设置页实现。未安装的
+on-demand bundle 不在此页列出，请先从 DSH 插件管理器安装。引用消息按 Markdown blockquote 显示；
+**Quote text** 把摘录作为 chip 加入输入框正文之前，而不是作为光标处的内联节点。Auto review 审批原因跟随编辑器语言；
 Auto review 的失败（`AUTO_REVIEW_FAILED`）按普通工具失败呈现。Web 外观设置
 （`ui-theme`、`ui-settings`、`ui-conversation`、`ui-chat`（含 `foldedReplies`）与
 `locale`）以及 Web 的默认模型/默认权限设置不适用于 VS Code；模型 badge 不显示；
@@ -296,19 +306,18 @@ Auto review 的失败（`AUTO_REVIEW_FAILED`）按普通工具失败呈现。Web
 与 runtime 自带的 CUA native 二进制；缺失时 bundle 开关会报告平台/操作失败，
 而不是显示为已启用。
 
-以下 DSH Web 管理界面同样未在侧栏实现：Schedule 任务删除与批量清理
-（`schedule/delete`、`schedule/deleteInactive`）；运行中会话的“停止并归档”
+以下 DSH Web 管理界面同样未在侧栏实现：运行中会话的“停止并归档”
 （`workspace/archiveSession` 的 `stopActivity`）；通用 slash command 选项风险确认；
-以及 Task Details 的命令行与完整保留输出链接。Live Share 停止分享确认与 Forge
-合并确认仍随其 Web 面板一起属于 Web-only。后台任务本身已在上文 **Background jobs**
-菜单中实现。
+以及 Task Details 的命令行与完整保留输出链接。Schedule 任务删除与清除已结束任务
+已在 Schedule 面板实现。Live Share 停止分享确认与 Forge 合并确认仍随其 Web
+面板一起属于 Web-only。后台任务本身已在上文 **Background jobs** 菜单中实现。
 
 - **Auto review 权限预设。** 权限选择器读取 `permissionPresets/catalog`；auto-review 集成挂载后，选择器出现实验性 `auto` 预设并标注 `EXP`。无论从菜单选择还是键入 `/permission auto`，切换前都要求显式确认：该预设不使用沙箱，由同一模型逐次复审每个工具调用，可能误放行或误拒绝操作，并额外消耗 token。运行时不提供该目录时，继续使用内置三档预设。
 被 Auto review 拒绝的工具调用在折叠行显示 “Rejected by Auto review”，展开后显示 “Tool was not executed. Reason: …”；缺少原因时回退为 “Auto review did not authorize this action”。
 - **Agent Teams。** 存在 `agentTeam` Session 投影时，Tasks 面板显示持久团队名册（生命周期阶段、Lead/Teammate 角色）与共享任务板（状态、就绪、blocked-by、owner、write scopes）。成员行可打开对应会话；Team 工具卡在成员名与投影匹配后链接到该成员。任务板为只读：任务状态由运行时持有，通过 Team 工具写入。
 成员行显示生命周期阶段，并根据会话列表显示 Running、Inactive、Failed 或 Provisioning；投影中的 `phase` 本身只记录成员记录存在。
 - **会话标题实时刷新。** 随对话更新标题的提供者沿用既有 `title` 投影与 `session/title` 事件；侧边栏本就从该投影刷新标题栏与会话列表，因此标题无需重新加载列表即可更新。
-- **实验性设置与 bundle 管理。** 设置页在 Plugins → Experimental bundles 下列出运行时的可选 bundle（启用状态、版本、描述）；当运行时由本扩展管理时，可通过 `pluginManager/setBundleEnabled` 启停。运行中的任务不会阻止修改：该决定由运行时作出，它返回 `applied` 或 `restart-required`，页面如实呈现而不是假装已经生效。切换在以下情况会被拒绝：附加到外部运行时，或 runtime 不允许写入设置；页面会在变更前要求确认。运行时提供相应设置 namespace 时，同一页面还呈现 Reasoning translation（`cot-translation`：提供方、目标语言）、Voice input（`speech-to-text`：提供方、语言）与 Plugin market（`plugin-market`：索引 URL 列表）；未挂载的 bundle 会隐藏对应卡片。挂载翻译 bundle 后，展开的思考内容会经 `cotTranslation/limits` 与 `cotTranslation/translate` 就地翻译，默认显示译文，可切换到原文；所选服务不可用时显示 Retry。展开的思考内容会发送给该翻译服务，可能包含私有代码或对话细节。
+- **实验性设置与 bundle 管理。** 设置页在 Plugins → Experimental bundles 下列出运行时的可选 bundle（启用状态、版本、描述）；当运行时由本扩展管理时，可通过 `pluginManager/setBundleEnabled` 启停。运行中的任务不会阻止修改：该决定由运行时作出，它返回 `applied` 或 `restart-required`，页面如实呈现而不是假装已经生效。切换在以下情况会被拒绝：附加到外部运行时，或 runtime 不允许写入设置；页面会在变更前要求确认。运行时提供相应设置 namespace 时，同一页面还呈现 Reasoning translation（`cot-translation`：提供方、目标语言）、Voice input（`speech-to-text`：提供方、语言）与 Plugin market（`plugin-market`：索引 URL 列表）；未挂载的 bundle 会隐藏对应卡片。挂载翻译 bundle 后，展开的思考内容会经 `cotTranslation/limits` 与 `cotTranslation/translate` 就地翻译，默认显示译文，可切换到原文；所选服务不可用时显示 Retry。展开的思考内容会发送给该翻译服务，可能包含私有代码或对话细节。同一页面在 **Third-party bundles** 下列出 runtime 标记为 `updatable` 的已安装第三方 profile bundle：**Check for updates** 显示已发布版本及其发布时间、预发布、弃用与不兼容标记，选定版本后仅在模态确认后安装。页面不显示 registry URL、尝试原因与包管理器诊断；结果分为更新成功、需要重启、已恢复、未恢复与未改变（unchanged，已安装版本保持原样）五类，未声明 plugin bundle 的版本显示为禁用并说明原因，attach-only 外部 runtime 与只读 runtime 禁用这些控件。
 
 其余实验性 bundle 的现状（完整矩阵与证据见 [alpha.2 适配记录](docs/DSH-0.2.2-ALPHA2-ADAPTATION.md)；此前的 [rc.3 记录](docs/DSH-0.2.1-RC3-ADAPTATION.md) 保留作对照）：
 
@@ -340,7 +349,9 @@ Auto review 的失败（`AUTO_REVIEW_FAILED`）按普通工具失败呈现。Web
 
 从 Explorer 或编辑器标签拖入文件只会添加路径引用；侧栏不读取文件内容，也不会把文件内容随提示词发送。拖入操作系统文件会把字节复制到运行时附件库 `<DSH_HOME>/attachments/v1`，运行时将其保留在磁盘上，不会自动删除。引用会把原路径暴露给模型；上传则暴露文件名与字节。
 
-[alpha.2 适配记录](docs/DSH-0.2.2-ALPHA2-ADAPTATION.md)、较早的 [rc.3 记录](docs/DSH-0.2.1-RC3-ADAPTATION.md) 与[复核记录](docs/RELEASE-REVIEW-2026-10-15.md) 列出实现证据、隐私检查、测试覆盖与验证限制。开发阶段使用的 `braces` 依赖仍有基于版本的安全告警；本地深度限制补丁覆盖已报告的递归失败，该依赖不进入 VSIX。
+**Copy Session as Markdown** 读取 runtime 导出的完整会话，并且只写入剪贴板。该文档包含 runtime 提供的原始日志路径与完整历史，应把剪贴板内容视为敏感数据；侧栏不把该文档写入 Webview 状态、Output 通道、临时文件或遥测；复制失败时显示固定分类文案，Output 通道只记录有界失败分类。第三方 bundle 更新由 runtime 执行，runtime 会访问已配置的插件 registry 并改写共享 web profile；侧栏不显示也不记录 registry URL、原始拒绝原因或包管理器输出。
+
+[rc.1 适配记录](docs/DSH-0.2.2-RC1-ADAPTATION.md)、[alpha.2 适配记录](docs/DSH-0.2.2-ALPHA2-ADAPTATION.md)、较早的 [rc.3 记录](docs/DSH-0.2.1-RC3-ADAPTATION.md) 与[复核记录](docs/RELEASE-REVIEW-2026-10-15.md) 列出实现证据、隐私检查、测试覆盖与验证限制。开发阶段使用的 `braces` 依赖仍有基于版本的安全告警；本地深度限制补丁覆盖已报告的递归失败，该依赖不进入 VSIX。
 
 缺陷报告与功能建议请提交至 [GitHub Issues](https://github.com/fallleaves01/dsh-vscode/issues)。
 

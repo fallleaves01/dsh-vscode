@@ -836,7 +836,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       <div id="sessionControl" class="session-control">
         <button id="sessionTrigger" class="session-trigger" title="Project conversations" aria-label="Project conversations" aria-haspopup="dialog" aria-expanded="false"><span id="sessionTriggerTitle" class="session-trigger-title">New conversation</span><span id="sessionAttentionCount" class="session-attention-count hidden"></span><svg viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5"/></svg></button>
         <div id="sessionMenu" class="session-menu hidden" role="dialog" aria-label="Project conversations">
-          <input id="sessionSearch" class="session-search" type="search" placeholder="Search titles and message history" aria-label="Search conversations">
+          <input id="sessionSearch" class="session-search" type="search" placeholder="Search titles, IDs and message history" aria-label="Search conversations">
           <div id="sessionList" class="session-list" role="list" aria-label="Recent conversations"></div>
           <div class="session-menu-footer"><button id="viewAllSessions" class="session-directory-link" type="button" title="View all conversations" aria-label="View all conversations"><span>View all conversations</span><span id="sessionTotal"></span></button></div>
         </div>
@@ -1424,7 +1424,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           if (type === 'copy-session-id') showSessionNotice('Session ID copied');
         }); elements.sessionActions.append(button);
       };
-      // DSH's own order: Pin/Unpin, Rename, Fork, Archive/Restore, Copy Session ID.
+      // DSH's own order: Pin/Unpin, Rename, Fork, Archive/Restore, Copy Session
+      // ID, Copy Session as Markdown.
       if (!archived && state && state.pinningAvailable === true) {
         const pinned = Array.isArray(state.pinnedSessionIds) && state.pinnedSessionIds.includes(session.id);
         append(pinned ? 'Unpin' : 'Pin', pinned ? 'unpin-session' : 'pin-session');
@@ -1452,6 +1453,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           : undefined);
       }
       append('Copy Session ID', 'copy-session-id');
+      // The export route addresses the conversation the runtime has open here.
+      // For any other row there is nothing to export in this window, so say what
+      // to do instead; the result arrives as a Host notice, not a local guess.
+      const markdownHere = state !== undefined && session.id === state.sessionId && !archived;
+      append('Copy Session as Markdown', 'copy-session-markdown', markdownHere ? undefined : {
+        disabled: true, title: 'Open this conversation to copy it as Markdown',
+      });
       elements.sessionActions.setAttribute('aria-label', 'Actions for ' + string(session.title));
       elements.sessionActions.classList.remove('hidden'); positionSessionActions();
       if (focus) elements.sessionActions.querySelector('button:not(:disabled)')?.focus();
@@ -1558,15 +1566,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         }
         return (Number(right.updatedAt) || 0) - (Number(left.updatedAt) || 0);
       };
-      const matching = source.filter(session => !query || string(session.title).toLocaleLowerCase().includes(query))
+      // DSH matches the query as a case-insensitive substring of either the
+      // title or the session id. The merged list keeps its order and its
+      // deduplication: one row per conversation, whichever field matched.
+      const matchesQuery = session => query === ''
+        || string(session.title).toLocaleLowerCase().includes(query)
+        || string(session.id).toLocaleLowerCase().includes(query);
+      const matching = source.filter(matchesQuery)
         .sort(byPinnedThenUpdated)
         .slice(0, list === elements.sessionList && !query ? 12 : source.length);
       list.replaceChildren();
       let group;
       for (const session of matching) {
         // Without a search, pinned conversations get their own leading group;
-        // a search keeps DSH's single "Title matches" heading.
-        const next = query ? 'Title matches'
+        // a search keeps DSH's single heading, now covering both fields the
+        // local filter matches: title and session id.
+        const next = query ? 'Title or ID matches'
           : pinIndexOf(session) === undefined ? sessionTimeGroup(session.updatedAt) : 'Pinned';
         if (next !== group) { list.append(node('div', 'session-group', next)); group = next; }
         list.append(sessionRow(session, current, activity, archivedOnly, undefined, selectedRootId));
@@ -6725,6 +6740,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     window.addEventListener('message', event => {
       if (event.data && event.data.type === 'open-subagent-result') for (const entry of subagentLinkViews.values()) entry.view.reply(event.data);
       if (!event.data) return;
+      // Host-driven notices name an action's outcome the Webview cannot know
+      // locally (a clipboard write completes after the menu closes).
+      if (event.data.type === 'session-notice' && typeof event.data.text === 'string') showSessionNotice(event.data.text);
       if (event.data.type === 'conversation-created' && pendingConversationCreation && event.data.requestId === pendingConversationCreation.requestId && event.data.cwd === pendingConversationCreation.cwd) {
         if (typeof event.data.sessionId === 'string' && !event.data.error) {
           pendingConversationCreation.sessionId = event.data.sessionId;

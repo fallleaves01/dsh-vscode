@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { bundleFixture, fixture, searchFixture } from './settings-page.fixture.js'
+import { bundleFixture, fixture, searchFixture, updatableBundleFixture } from './settings-page.fixture.js'
 import { at } from '../src/settings-page-state.js'
 
 const mocks = vi.hoisted(() => ({ panels: [] as any[], warning: vi.fn(), command: vi.fn() }))
@@ -51,6 +51,14 @@ async function harness(ownership: string = 'managed', data = fixture()) {
       if (row !== undefined) row.enabled = enabled
       changes.fire()
       return { changed: true, application: 'applied', stage: enabled ? 'enable' : 'remove', target: name, enabled }
+    }),
+    listBundleVersions: vi.fn(async () => ({ status: 'listed', installed: '0.0.0', versions: [], omitted: 0 })),
+    updateBundle: vi.fn(async (name: string, version: string) => {
+      const row = ((data as any).bundles as any[] | undefined)?.find(item => item.name === name)
+      const from = typeof row?.version === 'string' ? row.version : '0.0.0'
+      if (row !== undefined) { row.version = version; row.installed = true }
+      changes.fire()
+      return { from, to: version, step: 'install', result: { changed: true, application: 'applied' } }
     }),
   })
   let client = createClient()
@@ -382,5 +390,183 @@ describe('experimental bundle management', () => {
     h.panel.send({ type: 'refresh' })
     await vi.waitFor(() => expect(h.state().bundles).toBeUndefined())
     expect(h.state().forms.length).toBeGreaterThan(0)
+  })
+})
+
+describe('third-party bundle updates', () => {
+  const NAME = '@acme/dsh-notes-bundle'
+  const listed = (versions: Record<string, unknown>[] = [
+    { version: '0.4.0', publishedAt: '2026-02-01T00:00:00.000Z', tags: ['latest'], prerelease: false, bundle: true },
+    { version: '0.5.0-rc.1', tags: [], prerelease: true, bundle: true, deprecated: 'Use 0.4.0' },
+  ], overrides: Record<string, unknown> = {}) => ({ status: 'listed', installed: '0.3.0', versions, omitted: 0, ...overrides })
+  async function updatableHarness(ownership = 'managed') {
+    const data = fixture() as any; data.bundles = updatableBundleFixture()
+    return { data, h: await harness(ownership, data) }
+  }
+  /** A managed harness whose first version check listed the default two versions. */
+  async function primed() {
+    const { data, h } = await updatableHarness()
+    h.client.listBundleVersions.mockResolvedValueOnce(listed())
+    expect((await h.result(h.send({ type: 'check-bundle-versions', name: NAME }))).ok).toBe(true)
+    return { data, h }
+  }
+
+  it('refuses to check a bundle the runtime does not mark updatable', async () => {
+    const { h } = await updatableHarness()
+    for (const name of ['@acme/dsh-legacy-bundle', '@acme/dsh-unknown-bundle']) {
+      const reply = await h.result(h.send({ type: 'check-bundle-versions', name }))
+      expect(reply.ok).toBe(false)
+      expect(reply.error).toContain('cannot be updated from this runtime')
+    }
+    expect(h.client.listBundleVersions).not.toHaveBeenCalled()
+  })
+  it('refuses checks and updates on an attach-only runtime before any write', async () => {
+    const { h } = await updatableHarness('external')
+    const check = await h.result(h.send({ type: 'check-bundle-versions', name: NAME }))
+    expect(check.ok).toBe(false); expect(check.error).toContain('attach-only')
+    const update = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(update.ok).toBe(false); expect(update.error).toContain('attach-only')
+    expect(h.client.listBundleVersions).not.toHaveBeenCalled()
+    expect(h.client.updateBundle).not.toHaveBeenCalled()
+    expect(mocks.warning).not.toHaveBeenCalled()
+  })
+  it('refuses checks and updates on a read-only profile before any write', async () => {
+    const data = fixture() as any; data.bundles = updatableBundleFixture(); data.description.writable = false
+    const h = await harness('managed', data)
+    const check = await h.result(h.send({ type: 'check-bundle-versions', name: NAME }))
+    expect(check.ok).toBe(false); expect(check.error).toContain('read-only')
+    const update = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(update.ok).toBe(false); expect(update.error).toContain('read-only')
+    expect(h.client.listBundleVersions).not.toHaveBeenCalled()
+    expect(h.client.updateBundle).not.toHaveBeenCalled()
+  })
+  it('forwards only whitelisted version facts from a check', async () => {
+    const { h } = await updatableHarness()
+    h.client.listBundleVersions.mockResolvedValueOnce(listed([{ version: '0.4.0', publishedAt: '2026-02-01T00:00:00.000Z', tags: ['latest'], prerelease: false, bundle: true,
+      registry: 'https://user:hidden-marker@registry.example', reason: 'hidden-marker', attempts: [{ reason: 'hidden-marker' }],
+      diagnostic: 'hidden-marker', packageResult: { output: 'hidden-marker', logPath: '/srv/hidden-marker' } }], { omitted: 1 }))
+    const reply = await h.result(h.send({ type: 'check-bundle-versions', name: NAME }))
+    expect(reply).toMatchObject({ ok: true, installed: '0.3.0', omitted: 1, versions: [{ version: '0.4.0', publishedAt: '2026-02-01T00:00:00.000Z', prerelease: false, bundle: true }] })
+    for (const forbidden of ['hidden-marker', 'registry', 'attempts', 'diagnostic', 'packageResult', 'logPath']) {
+      expect(JSON.stringify(h.packets())).not.toContain(forbidden)
+    }
+  })
+  it.each([['network', 'network'], ['unknown', 'could not read'], ['not-found', 'was not found'], ['not-updatable', 'cannot be updated']])(
+    'maps a %s version-read refusal to copy', async (problem, expected) => {
+      const { h } = await updatableHarness()
+      h.client.listBundleVersions.mockResolvedValueOnce({ status: 'refused', problem })
+      const reply = await h.result(h.send({ type: 'check-bundle-versions', name: NAME }))
+      expect(reply.ok).toBe(false)
+      expect(String(reply.error).toLowerCase()).toContain(expected)
+    })
+  it('requires a fresh version list before an update and writes nothing', async () => {
+    const { h } = await updatableHarness()
+    const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(reply.ok).toBe(false); expect(reply.error).toContain('Check for updates again')
+    expect(h.client.updateBundle).not.toHaveBeenCalled(); expect(mocks.warning).not.toHaveBeenCalled()
+  })
+  it('validates the target version against the most recent listing', async () => {
+    const { h } = await primed()
+    const stale = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '9.9.9' }))
+    expect(stale.error).toContain('Check for updates again')
+    h.client.listBundleVersions.mockResolvedValueOnce(listed([{ version: '0.6.0', tags: [], prerelease: false, bundle: true }]))
+    await h.result(h.send({ type: 'check-bundle-versions', name: NAME }))
+    const superseded = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(superseded.error).toContain('Check for updates again')
+    expect(h.client.updateBundle).not.toHaveBeenCalled()
+  })
+  it('confirms a shared-profile update and refreshes the roster afterwards', async () => {
+    const { h } = await primed(); mocks.warning.mockResolvedValueOnce('Update bundle')
+    const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(reply).toMatchObject({ ok: true, outcome: 'updated', step: 'install', from: '0.3.0', to: '0.4.0', application: 'applied' })
+    expect(h.client.updateBundle).toHaveBeenCalledWith(NAME, '0.4.0')
+    expect(mocks.warning).toHaveBeenCalledOnce()
+    const [title, options] = mocks.warning.mock.calls[0] as [string, any]
+    expect(title).toBe('Update Acme Notes to 0.4.0?')
+    expect(options).toMatchObject({ modal: true })
+    for (const expected of ['shared DSH web profile', 'hot module replacement', 'previous version', 'network connection']) expect(options.detail).toContain(expected)
+    expect(h.state().bundles.find((bundle: any) => bundle.name === NAME).version).toBe('0.4.0')
+  })
+  it('keeps the bundle unchanged when the update confirmation is dismissed', async () => {
+    const { h } = await primed(); mocks.warning.mockResolvedValueOnce(undefined)
+    const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(reply).toMatchObject({ ok: false, cancelled: true })
+    expect(h.client.updateBundle).not.toHaveBeenCalled()
+    expect(h.data.bundles[0].version).toBe('0.3.0')
+  })
+  it('reports a restart-required update without claiming it is already live', async () => {
+    const { h } = await primed(); mocks.warning.mockResolvedValueOnce('Update bundle')
+    h.client.updateBundle.mockResolvedValueOnce({ from: '0.3.0', to: '0.4.0', step: 'install', result: { changed: true, application: 'restart-required', restartReason: 'package-moved' } })
+    const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(reply).toMatchObject({ ok: true, outcome: 'restart-required', step: 'install', restartRequired: true, application: 'restart-required', from: '0.3.0', to: '0.4.0' })
+  })
+  it('reports an HMR failure whose previous version was restored', async () => {
+    const { h } = await primed(); mocks.warning.mockResolvedValueOnce('Update bundle')
+    h.client.updateBundle.mockResolvedValueOnce({ from: '0.3.0', to: '0.4.0', step: 'install',
+      result: { changed: false, application: 'failed', error: { code: 'operation-error' } }, restore: { changed: true, application: 'applied' } })
+    const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(reply).toMatchObject({ ok: false, outcome: 'restored', step: 'install', from: '0.3.0', to: '0.4.0', application: 'failed', restoreApplication: 'applied' })
+    expect(reply.error).toContain('runtime refused')
+  })
+  it('treats a restart-required recovery as a restored bundle', async () => {
+    const { h } = await primed(); mocks.warning.mockResolvedValueOnce('Update bundle')
+    h.client.updateBundle.mockResolvedValueOnce({ from: '0.3.0', to: '0.4.0', step: 'install',
+      result: { changed: false, application: 'failed' }, restore: { changed: true, application: 'restart-required' } })
+    const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(reply).toMatchObject({ ok: false, outcome: 'restored', restoreApplication: 'restart-required' })
+  })
+  it('reports a failed recovery as an explicit unrestored failure', async () => {
+    const { h } = await primed(); mocks.warning.mockResolvedValueOnce('Update bundle')
+    h.client.updateBundle.mockResolvedValueOnce({ from: '0.3.0', to: '0.4.0', step: 'install',
+      result: { changed: false, application: 'failed', error: { code: 'operation-error' } }, restore: { changed: false, application: 'failed', error: { code: 'operation-error' } } })
+    const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(reply).toMatchObject({ ok: false, outcome: 'unrestored', step: 'install', restoreApplication: 'failed' })
+    expect(reply.error).toBeTruthy()
+  })
+  it('reports a refused target check as unchanged with the incompatible-version copy', async () => {
+    const { h } = await primed(); mocks.warning.mockResolvedValueOnce('Update bundle')
+    h.client.updateBundle.mockResolvedValueOnce({ from: '', to: '0.4.0', step: 'check',
+      result: { changed: false, application: 'failed', stage: 'install', target: NAME, error: { code: 'incompatible-version' } } })
+    const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(reply).toMatchObject({ ok: false, outcome: 'unchanged', step: 'check', from: '', to: '0.4.0', application: 'failed' })
+    expect(reply.error).toContain('not compatible with the running DSH version')
+    expect(reply.restoreApplication).toBeUndefined()
+    expect(reply.outcome).not.toBe('unrestored')
+  })
+  it('reports a failed removal as unchanged without a restore claim', async () => {
+    const { h } = await primed(); mocks.warning.mockResolvedValueOnce('Update bundle')
+    h.client.updateBundle.mockResolvedValueOnce({ from: '0.3.0', to: '0.4.0', step: 'remove',
+      result: { changed: false, application: 'failed', stage: 'remove', target: NAME, error: { code: 'operation-error' } } })
+    const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(reply).toMatchObject({ ok: false, outcome: 'unchanged', step: 'remove', from: '0.3.0', to: '0.4.0' })
+    expect(reply.error).toBeTruthy()
+    expect(reply.restoreApplication).toBeUndefined()
+  })
+  it('reports a non-HMR install failure as unchanged because the old version is kept', async () => {
+    const { h } = await primed(); mocks.warning.mockResolvedValueOnce('Update bundle')
+    h.client.updateBundle.mockResolvedValueOnce({ from: '0.3.0', to: '0.4.0', step: 'install',
+      result: { changed: false, application: 'failed', stage: 'install', target: NAME, error: { code: 'operation-error' } } })
+    const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(reply).toMatchObject({ ok: false, outcome: 'unchanged', step: 'install', from: '0.3.0', to: '0.4.0' })
+    expect(reply.restoreApplication).toBeUndefined()
+    expect(reply.error).toContain('runtime refused')
+  })
+  it('treats a cancelled installation recovered by the runtime as restored', async () => {
+    const { h } = await primed(); mocks.warning.mockResolvedValueOnce('Update bundle')
+    h.client.updateBundle.mockResolvedValueOnce({ from: '0.3.0', to: '0.4.0', step: 'install',
+      result: { changed: false, application: 'cancelled', stage: 'install', target: NAME }, restore: { changed: true, application: 'applied' } })
+    const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(reply).toMatchObject({ ok: false, outcome: 'restored', step: 'install', restoreApplication: 'applied' })
+  })
+  it('rejects a second bundle operation while one is in flight', async () => {
+    const { h } = await updatableHarness()
+    const read = Promise.withResolvers<any>()
+    h.client.listBundleVersions.mockReturnValueOnce(read.promise)
+    const first = h.send({ type: 'check-bundle-versions', name: NAME })
+    await vi.waitFor(() => expect(h.client.listBundleVersions).toHaveBeenCalledOnce())
+    const second = await h.result(h.send({ type: 'check-bundle-versions', name: NAME }))
+    expect(second.error).toContain('Wait')
+    read.resolve({ status: 'listed', installed: '0.3.0', versions: [], omitted: 0 })
+    expect((await h.result(first)).ok).toBe(true)
   })
 })
