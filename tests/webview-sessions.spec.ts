@@ -392,3 +392,91 @@ describe('pinned conversations front both session lists', () => {
     expect(groups(h, '#sessionList')).toEqual(['Title matches'])
   })
 })
+
+describe('runtime connection block opens the runtime manager', () => {
+  const block = (h: Harness) => h.document.getElementById('runtimeConnection') as HTMLButtonElement
+  const label = (h: Harness) => h.document.getElementById('runtimeConnectionLabel')?.textContent
+  const chevron = (h: Harness) => h.document.querySelector('#runtimeConnection .runtime-chevron')
+  async function state(h: Harness, overrides: Record<string, unknown>): Promise<void> {
+    h.sendState(overrides)
+    await h.settle()
+  }
+  function expectManagerOnly(h: Harness): void {
+    h.click('#runtimeConnection')
+    expect(h.posts.at(-1)).toEqual({ type: 'manage-runtimes' })
+    expect(h.posts.some(post => post.type === 'reconnect' || post.type === 'connect-existing-runtime')).toBe(false)
+  }
+
+  it.each([
+    ['managed', 'DSH', 'Runtime connected (managed). Click to manage runtimes.'],
+    ['adopted', 'Shared', 'Shared DSH runtime connected. Click to manage runtimes.'],
+    ['external', 'External', 'External DSH runtime connected. Click to manage runtimes.'],
+    ['attached', 'External', 'External DSH runtime connected. Click to manage runtimes.'],
+  ])('describes a ready %s connection and opens the manager', async (ownership, expectedLabel, expectedTitle) => {
+    const h = open()
+    await state(h, { phase: 'ready', runtimeConnection: { ownership, pid: 43210 } })
+    expect(label(h)).toBe(expectedLabel)
+    expect(block(h).title).toBe(expectedTitle)
+    expect(block(h).getAttribute('aria-label')).toBe(expectedTitle)
+    expect(block(h).getAttribute('aria-haspopup')).toBe('dialog')
+    expect(block(h).disabled).toBe(false)
+    expect(chevron(h)?.textContent).toBe('▾')
+    expect(chevron(h)?.getAttribute('aria-hidden')).toBe('true')
+    expect(h.document.getElementById('runtimeIndicator')?.getAttribute('aria-label')).toContain('PID 43210')
+    expectManagerOnly(h)
+  })
+
+  it('treats a ready runtime without a published ownership as managed', async () => {
+    const h = open()
+    await state(h, { phase: 'ready', runtimeConnection: null })
+    expect(label(h)).toBe('DSH')
+    expect(block(h).title).toBe('Runtime connected (managed). Click to manage runtimes.')
+  })
+
+  it('names the failure on the block while keeping the runtime-auth reason and buttons', async () => {
+    const h = open()
+    await state(h, { phase: 'error', setup: 'runtime-auth', statusText: 'Authentication failed for the existing runtime', runtimeConnection: null })
+    expect(label(h)).toBe('Retry')
+    expect(block(h).title).toBe('Runtime connection failed. Click to manage runtimes.')
+    expect(block(h).disabled).toBe(false)
+    expect(h.document.getElementById('conversationStatus')?.textContent).toContain('Authentication failed')
+    const buttons = [...h.document.querySelectorAll<HTMLButtonElement>('#conversationStatus button')]
+    const connect = buttons.find(button => button.textContent === 'Connect Existing Runtime')!
+    expect(connect.title).toContain('launch URL')
+    expect(connect.getAttribute('aria-label')).toBe(connect.title)
+    expect(buttons.find(button => button.textContent === 'Show Output')?.title).toContain('output channel')
+    expectManagerOnly(h)
+  })
+
+  it('opens the manager from the idle state instead of connecting directly', async () => {
+    const h = open()
+    await state(h, { phase: 'idle', statusText: 'Connect to DSH to open your conversations.', runtimeConnection: null })
+    expect(label(h)).toBe('Connect')
+    expect(block(h).title).toBe('Runtime not connected. Click to manage runtimes.')
+    expect(block(h).disabled).toBe(false)
+    expectManagerOnly(h)
+  })
+
+  it('keeps the block disabled while connecting and names the stage', async () => {
+    const h = open()
+    await state(h, { phase: 'loading', statusText: 'Connecting to the existing shared DSH runtime (PID 43210)…', runtimeConnection: null })
+    expect(block(h).title).toBe('Connecting to DSH…')
+    expect(block(h).getAttribute('aria-label')).toBe('Connecting to DSH…')
+    expect(block(h).disabled).toBe(true)
+    expect(h.document.getElementById('runtimeIndicator')?.dataset.phase).toBe('loading')
+    block(h).click()
+    expect(h.posts.some(post => post.type === 'manage-runtimes')).toBe(false)
+  })
+
+  it('keeps the restart and reconnect recovery buttons explicit', async () => {
+    const h = open()
+    await state(h, { phase: 'error', statusText: 'The runtime failed.', canReconnect: true, runtimeConnection: { ownership: 'managed' } })
+    const buttons = [...h.document.querySelectorAll<HTMLButtonElement>('#conversationStatus button')]
+    const reconnect = buttons.find(button => button.textContent === 'Reconnect')!
+    expect(reconnect.title).toContain('running DSH runtime')
+    const restart = buttons.find(button => button.textContent === 'Restart Runtime')!
+    expect(restart.title).toContain('Stop and start')
+    const output = buttons.find(button => button.textContent === 'Show Output')!
+    expect(output.title).toContain('output channel')
+  })
+})

@@ -956,20 +956,24 @@ try {
     await page('Emulation.setDeviceMetricsOverride',{width,height:800,deviceScaleFactor:1,mobile:false})
     await evaluate(`showState({...baseline,runtimeConnection:{ownership:'adopted',pid:43210}});tick()`)
     assert.equal(await evaluate(`elements.runtimeConnectionLabel.textContent`),'Shared')
-    assert.equal(await evaluate(`elements.runtimeConnection.title.includes('PID 43210')`),true)
+    assert.equal(await evaluate(`elements.runtimeConnection.title`),'Shared DSH runtime connected. Click to manage runtimes.')
+    assert.equal(await evaluate(`elements.runtimeConnection.getAttribute('aria-haspopup')`),'dialog')
+    assert.equal(await evaluate(`document.querySelector('#runtimeConnection .runtime-chevron').textContent`),'▾')
+    assert.equal(await evaluate(`elements.runtimeIndicator.title.includes('PID 43210')`),true)
     assert.equal(await evaluate(`elements.newSession.getBoundingClientRect().right<=innerWidth`),true)
     assert.equal(await evaluate(`elements.runtimeConnection.getBoundingClientRect().height>=24`),true)
     if(process.env.DSH_TASK_SCREENSHOT_DIR&&width===320){const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'shared-connection-320.png'),Buffer.from(data,'base64'))}
   }
   await evaluate(`elements.runtimeConnection.click()`)
-  assert.equal(await evaluate(`sent.at(-1).type`),'reconnect')
+  assert.equal(await evaluate(`sent.at(-1).type`),'manage-runtimes')
   await page('Emulation.setDeviceMetricsOverride',{width:320,height:800,deviceScaleFactor:1,mobile:false})
   await evaluate(`showState({...baseline,phase:'loading',runtimeConnection:null,statusText:'Connecting to the existing shared DSH runtime (PID 43210)…'});tick()`)
   assert.equal(await evaluate(`elements.runtimeConnection.disabled`),true)
+  assert.equal(await evaluate(`elements.runtimeConnection.title`),'Connecting to DSH…')
   assert.equal(await evaluate(`elements.newSession.getBoundingClientRect().right<=innerWidth`),true)
   assert.equal(await evaluate(`elements.conversationStatus.textContent.includes('Show Output')`),true)
   if(process.env.DSH_TASK_SCREENSHOT_DIR){const {data}=await page('Page.captureScreenshot',{format:'png'});await writeFile(join(process.env.DSH_TASK_SCREENSHOT_DIR,'shared-connecting-320.png'),Buffer.from(data,'base64'))}
-  console.log('PASS: shared connection displays PID, retries without restart, fits narrow sidebars, and exposes loading-stage diagnostics')
+  console.log('PASS: shared connection displays PID, opens the runtime manager without restart, fits narrow sidebars, and exposes loading-stage diagnostics')
 
   assert.deepEqual(await evaluate('webviewErrors'),[], 'The production webview emitted an uncaught error')
 

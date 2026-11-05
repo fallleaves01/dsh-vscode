@@ -9,6 +9,36 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-rc.1.1] - 2026-11-05
+
+### Added
+
+- **DeepSeek Harness: Manage Runtimes**, a native runtime list opened from the
+  command palette or the **External**/**DSH**/**Shared** status control. It shows
+  the current managed, shared, attached or external connection, saved external
+  runtimes, and runtimes this extension started, together with their ownership,
+  working directory, PID and host. Available actions start a managed runtime,
+  connect with a launch URL, restart, reconnect, disconnect the current
+  connection, end a verified extension-started runtime, forget a saved runtime,
+  or open session-occupancy diagnostics. Runtime listing is limited to runtimes
+  this extension started or saved; a runtime started outside the extension and
+  never connected or saved is not visible.
+- The **External**/**DSH**/**Shared** status control now opens the runtime
+  manager and carries a dynamic hover/accessible label describing the current
+  ownership. The view-title restart action now states that it stops and starts
+  DSH, and the recovery buttons spell out reconnect, restart, connect and show
+  output instead of relying on a generic refresh icon.
+
+### Changed
+
+- Support matrix updated for DeepSeek Harness `0.2.2-rc.1`. That release has the
+  same wire surface as `0.2.2-alpha.3`; its repository delta is limited to
+  package versions and vendor version labels. The conversation event-stream
+  client and Schedule are verified against `0.2.2-alpha.2`,
+  `0.2.2-alpha.3` and `0.2.2-rc.1`.
+- DSH `0.2.2-rc.1` requires Node.js 24.9 or newer. A runtime below that
+  threshold may still work but is outside its supported range.
+
 ## [0.2.2-alpha.3.3] - 2026-11-04
 
 ### Added

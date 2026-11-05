@@ -126,7 +126,8 @@ vi.mock('vscode', () => {
 
 vi.mock('../src/runtime.js', () => ({
   DshRuntime: class {
-    state = { kind: 'ready' as const }
+    state: any = { kind: 'ready' as const, localUri: { toString: () => 'http://127.0.0.1:3080' } }
+    releasedSessions = 0
     connection: any
     listener: ((state: any) => void) | undefined
     constructor() {
@@ -248,6 +249,10 @@ describe('host surface wiring', () => {
     mocks.command.mockResolvedValue(undefined)
     mocks.input.mockReset()
     mocks.input.mockResolvedValue(undefined)
+    mocks.info.mockReset()
+    mocks.info.mockResolvedValue(undefined)
+    mocks.error.mockReset()
+    mocks.error.mockResolvedValue(undefined)
     mocks.pick.mockReset()
     mocks.pick.mockResolvedValue(undefined)
     mocks.progress.mockReset()
@@ -1910,6 +1915,128 @@ describe('host surface wiring', () => {
       panel.send({ type: 'native-action', action: 'install-official-plugin', scope: 'scope' })
       expect(mocks.command).toHaveBeenCalledWith('deepseekHarness.discoverPlugins')
       expect(mocks.command).toHaveBeenCalledWith('deepseekHarness.installOfficialPlugin')
+    })
+  })
+
+  describe('runtime manager wiring', () => {
+    const manager = async (): Promise<void> => { await mocks.commands.get('deepseekHarness.manageRuntimes')!() }
+    const pickCurrent = (): void => { mocks.pick.mockImplementationOnce(async (items: any[]) => items.find(item => item.action === 'current')) }
+    const pickAction = (action: string): void => { mocks.pick.mockImplementationOnce(async (items: any[]) => items.find(item => item.action === action)) }
+
+    it('registers the manager and lists the current connection without a launch token', async () => {
+      await activated()
+      expect(mocks.commands.has('deepseekHarness.manageRuntimes')).toBe(true)
+      pickCurrent()
+      mocks.pick.mockResolvedValueOnce(undefined)
+      await manager()
+      const items = mocks.pick.mock.calls[0]![0] as any[]
+      expect(items.find(item => item.action === 'current')).toMatchObject({
+        label: '$(plug) Current connection: Ready', description: 'unknown · 127.0.0.1:3080',
+      })
+      expect(JSON.stringify(items)).not.toContain('token=')
+      // List → current row's action submenu dismissed → refreshed list dismissed.
+      expect(mocks.pick).toHaveBeenCalledTimes(3)
+    })
+
+    it('disconnects the current runtime through the controller and reports the outcome', async () => {
+      await activated()
+      const stop = vi.spyOn(mocks.runtime, 'stop')
+      pickCurrent(); pickAction('disconnect'); mocks.pick.mockResolvedValueOnce(undefined)
+      mocks.warning.mockResolvedValueOnce('Disconnect')
+      await manager()
+      expect(stop).toHaveBeenCalledTimes(1)
+      expect(mocks.warning.mock.calls[0]![0]).toContain('Disconnect from the DSH runtime?')
+      expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('Disconnected'))
+      expect(mocks.command).not.toHaveBeenCalledWith('deepseekHarness.endLeftoverRuntime')
+    })
+
+    it('describes an external runtime disconnect as detach-only', async () => {
+      await activated()
+      mocks.runtime.state = { kind: 'ready', ownership: 'external', localUri: { toString: () => 'http://127.0.0.1:3099' } }
+      const stop = vi.spyOn(mocks.runtime, 'stop')
+      pickCurrent(); pickAction('disconnect'); mocks.pick.mockResolvedValueOnce(undefined)
+      mocks.warning.mockResolvedValueOnce('Disconnect')
+      await manager()
+      expect(stop).toHaveBeenCalledTimes(1)
+      expect(String(mocks.warning.mock.calls[0]![1]?.detail)).toContain('external runtime keeps running')
+      expect(mocks.info).toHaveBeenCalledWith('Disconnected. The external DSH runtime keeps running.')
+      expect(mocks.command).not.toHaveBeenCalledWith('deepseekHarness.endLeftoverRuntime')
+    })
+
+    it('turns an intentional external disconnect into idle instead of a runtime failure', async () => {
+      const h = await activated()
+      const runtime = mocks.runtime
+      runtime.state = { kind: 'ready', ownership: 'external', localUri: { toString: () => 'http://127.0.0.1:3099' } }
+      runtime.listener?.({ ...runtime.state })
+      runtime.stop = vi.fn(async () => { runtime.listener?.({ kind: 'stopped' }) })
+      pickCurrent(); pickAction('disconnect'); mocks.pick.mockResolvedValueOnce(undefined)
+      mocks.warning.mockResolvedValueOnce('Disconnect')
+      await manager()
+      await vi.waitFor(() => expect(h.mergedState().phase).toBe('idle'))
+      const state = h.mergedState()
+      expect(state.statusText).toContain('external DSH runtime')
+      expect(state.statusText).not.toBe('DeepSeek Harness stopped.')
+    })
+
+    it('dispatches restart to the existing command after confirmation', async () => {
+      await activated()
+      pickCurrent(); pickAction('restart'); mocks.pick.mockResolvedValueOnce(undefined)
+      mocks.warning.mockResolvedValueOnce('Restart Runtime')
+      await manager()
+      expect(mocks.warning.mock.calls[0]![0]).toContain('Restart the current DSH runtime?')
+      expect(mocks.command).toHaveBeenCalledWith('deepseekHarness.restart')
+    })
+
+    it('does nothing when the list is dismissed', async () => {
+      await activated()
+      const stop = vi.spyOn(mocks.runtime, 'stop')
+      await manager()
+      expect(stop).not.toHaveBeenCalled()
+      expect(mocks.command).not.toHaveBeenCalled()
+      expect(mocks.warning).not.toHaveBeenCalled()
+    })
+
+    it('dispatches diagnose and start-managed to their existing commands', async () => {
+      await activated()
+      mocks.pick.mockResolvedValueOnce({ label: '$(inspect) Diagnose session occupancy', action: 'diagnose' }).mockResolvedValueOnce(undefined)
+      await manager()
+      expect(mocks.command).toHaveBeenCalledWith('deepseekHarness.diagnoseOccupancy')
+
+      mocks.command.mockClear()
+      mocks.pick.mockResolvedValueOnce({ label: '$(play) Start new managed runtime', action: 'start-managed' }).mockResolvedValueOnce(undefined)
+      await manager()
+      expect(mocks.command).toHaveBeenCalledWith('deepseekHarness.startManagedRuntime')
+    })
+  })
+
+  describe('webview runtime controls', () => {
+    it('opens the runtime manager from the Webview message without crossing a token', async () => {
+      const h = await activated()
+      h.send({ type: 'manage-runtimes' })
+      await vi.waitFor(() => expect(mocks.command).toHaveBeenCalledWith('deepseekHarness.manageRuntimes'))
+      expect(JSON.stringify(h.posts())).not.toContain('token')
+    })
+
+    it('documents restart and runtime-manager copy in the manifest', async () => {
+      const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+        activationEvents?: string[]
+        contributes?: { commands?: Array<Record<string, unknown>>; menus?: Record<string, Array<Record<string, unknown>>> }
+      }
+      expect(manifest.contributes?.commands).toContainEqual({
+        command: 'deepseekHarness.restart',
+        title: 'DeepSeek Harness: Restart Runtime (stop and start DSH)',
+        shortTitle: 'DeepSeek Harness: Restart Runtime',
+        icon: '$(debug-restart)',
+      })
+      expect(manifest.contributes?.commands).toContainEqual({
+        command: 'deepseekHarness.manageRuntimes',
+        title: 'DeepSeek Harness: Manage Runtimes',
+        icon: '$(server-process)',
+      })
+      expect(manifest.contributes?.menus?.['view/title']).toContainEqual({
+        command: 'deepseekHarness.restart', when: 'view == deepseekHarness.chat', group: 'navigation@2',
+      })
+      expect(manifest.activationEvents).toContain('onCommand:deepseekHarness.manageRuntimes')
     })
   })
 

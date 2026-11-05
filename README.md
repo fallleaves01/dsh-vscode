@@ -11,7 +11,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
-The current source version is **0.2.2-alpha.3.3**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.2.2-rc.1.1**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md)
 
@@ -40,6 +40,7 @@ The current source version is **0.2.2-alpha.3.3**. See [CHANGELOG.md](CHANGELOG.
 - **DeepSeek authentication.** Configure an API key or use browser account sign-in, inspect account state and balance, and sign out. Remote sign-in uses VS Code port forwarding.
 - **Runtime plugins and configuration.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks. Open the settings gear for Models, Shell, Agent loop, Subagents, Web search and General settings. Add providers, edit model catalogs and manage write-only credentials through DSH.
 - **Runtime recovery.** Reuse a managed runtime across VS Code windows, reconnect, diagnose conversation ownership, and end a verified leftover managed runtime. Saved external runtimes are attach-only.
+- **Runtime manager.** Run **DeepSeek Harness: Manage Runtimes**, or click the **External**/**DSH**/**Shared** status control, to list the current connection, saved external runtimes, and runtimes this extension started. Start a managed runtime, connect by launch URL, restart, reconnect, disconnect, end a verified extension-started runtime, forget a saved runtime, or open occupancy diagnostics. A runtime you started yourself and never connected or saved is not visible here.
 - **Native debugging and keyboard access.** Enable autonomous debugging for `.vscode/launch.json`, including breakpoints, stepping, stack frames, and variables. `Cmd/Ctrl+Alt+D` opens chat, `Cmd/Ctrl+Alt+E` opens it in an editor tab, `Cmd/Ctrl+Alt+L` adds the selection, and `Cmd/Ctrl+Alt+F` requests a file fix. Chat and task details support dark, light, and high-contrast themes.
 
 ## 🧭 Reliability and diagnostics
@@ -85,7 +86,7 @@ Install the official DeepSeek Harness CLI:
 npm install -g @deepseek-ai/dsh
 ```
 
-Install DSH on the host where the extension runs. For Remote SSH, this is the remote host. DeepSeek Harness `0.1.2-rc.1` or newer is required. History search and Schedule need `0.2.0-rc.2` or newer; the conversation event-stream client is verified against `0.2.2-alpha.2` and `0.2.2-alpha.3`, while the experimental bundles are verified against `0.2.2-alpha.2`; `0.2.1-rc.2` and `0.2.1-rc.3` remain supported. Schedule supports both `0.2.2-alpha.2` and `0.2.2-alpha.3` catalogs and history. The alpha CLI itself requires Node.js 24.9 or newer.
+Install DSH on the host where the extension runs. For Remote SSH, this is the remote host. DeepSeek Harness `0.1.2-rc.1` or newer is required. History search and Schedule need `0.2.0-rc.2` or newer; the conversation event-stream client is verified against `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1`, while the experimental bundles are verified against `0.2.2-alpha.2`; `0.2.1-rc.2` and `0.2.1-rc.3` remain supported. Schedule supports the `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1` catalogs and history. The alpha CLI itself requires Node.js 24.9 or newer.
 
 ### Published release
 
@@ -114,6 +115,10 @@ For a full local check run `pnpm run check`; `./build.sh` writes
 `artifacts/dsh-sidebar-<version>.vsix`. Other settings include
 `reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
 `startupTimeout` and `searchBaseUrl`.
+
+### Upgrading to 0.2.2-rc.1.1
+
+0.2.2-rc.1.1 aligns the extension with DeepSeek Harness `0.2.2-rc.1`. That release has the same wire surface as `0.2.2-alpha.3` (its repository diff is limited to package versions and vendor version labels), so no protocol migration is required. This build adds **DeepSeek Harness: Manage Runtimes**, a native list of the current managed, shared, attached or external connection, saved external runtimes, and runtime records started by this extension. It can start a managed runtime, connect with a launch URL, restart, reconnect, disconnect the current connection, end a verified extension-started runtime, forget a saved runtime, or open session-occupancy diagnostics. The **External**/**DSH**/**Shared** status control now opens this list and explains its state on hover; the view-title restart action now says that it stops and starts DSH. Runtime listing is intentionally limited to runtimes this extension started or saved: a `dsh web` you started yourself and never connected or saved is invisible here. DSH `0.2.2-rc.1` requires Node.js 24.9 or newer; a runtime below that threshold keeps working in practice but is outside its supported range.
 
 ### Upgrading to 0.2.2-alpha.3.3
 
@@ -224,7 +229,8 @@ its user configuration, write output logs, or automatically restart DSH.
 The toolbar shows **Shared** when this window has connected to an existing managed
 instance; hover to see its PID. **DSH** identifies an instance started by this
 window, and **External** identifies an explicitly attached runtime. Click this
-control to reconnect this window. If no connection is established, **Connect** or
+control to open the runtime manager; its hover text names the current ownership
+and the available action. If no connection is established, **Connect** or
 **Retry Connection** checks the saved runtime before starting a new one. Loading
 shows the current connection, event-stream or history stage, with **Show Output**
 available throughout. Logs include elapsed connection times without credentials.
@@ -325,7 +331,7 @@ page, and this repository and its VSIX exclude the credential file and backups.
 
 ### DSH 0.2.2-alpha.2 and alpha.3 experimental features
 
-The conversation event-stream client is verified against the official DeepSeek Harness `0.2.2-alpha.2` and `0.2.2-alpha.3` runtimes; `0.2.1-rc.2` and `0.2.1-rc.3` remain supported. The experimental bundles are still verified against `0.2.2-alpha.2`; Schedule is verified against both `0.2.2-alpha.2` and `0.2.2-alpha.3`. Experimental bundles remain opt-in in the runtime profile; the sidebar does not enable them automatically (the Plugins page can switch them when the runtime allows writes), and each feature appears only when the runtime exposes its contract. A runtime without the feature keeps the previous behavior. The alpha release adds Web-first optional bundles (Live Share, Forge, Computer Use and personalized recommendations); they appear in the Plugins list with their platform and installation state, but this sidebar does not implement their Web panels.
+The conversation event-stream client is verified against the official DeepSeek Harness `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1` runtimes; `0.2.1-rc.2` and `0.2.1-rc.3` remain supported. The experimental bundles are still verified against `0.2.2-alpha.2`; Schedule is verified against `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1`. Experimental bundles remain opt-in in the runtime profile; the sidebar does not enable them automatically (the Plugins page can switch them when the runtime allows writes), and each feature appears only when the runtime exposes its contract. A runtime without the feature keeps the previous behavior. The alpha release adds Web-first optional bundles (Live Share, Forge, Computer Use and personalized recommendations); they appear in the Plugins list with their platform and installation state, but this sidebar does not implement their Web panels.
 
 The following alpha.2 surfaces are Web-only and are not implemented in this
 sidebar: Live Share, Forge, Computer Use and personalized-recommendation panels;

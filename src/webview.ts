@@ -80,6 +80,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .runtime-connection { flex: none; display: flex; align-items: center; gap: 4px; padding: 4px; border: 0; border-radius: 4px; background: transparent; color: var(--dsh-muted); font-size: 10px; line-height: 18px; }
     .runtime-connection:hover:not(:disabled) { background: var(--dsh-hover); color: var(--vscode-foreground); }
     .runtime-connection:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+    .runtime-chevron { flex: none; margin-left: -1px; font-size: 8px; line-height: 1; opacity: .75; }
     .session-control { min-width: 0; flex: 1; }
     .session-trigger { width: 100%; min-width: 0; height: 28px; padding: 0 6px; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; background: transparent; font-size: 13px; line-height: 18px; font-weight: 500; text-align: left; }
     .session-trigger:hover, .session-trigger[aria-expanded="true"] { background: var(--vscode-toolbar-hoverBackground); }
@@ -848,7 +849,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         <button id="accountTrigger" class="icon-button account-trigger" title="DeepSeek account" aria-label="DeepSeek account" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg><span class="account-dot"></span></button>
         <div id="accountMenu" class="account-menu hidden" role="menu" aria-label="DeepSeek account"></div>
       </div>
-      <button id="runtimeConnection" class="runtime-connection" type="button" title="Connect to DSH" aria-label="Connect to DSH"><span id="runtimeIndicator" class="runtime-indicator" role="img" aria-label="Runtime disconnected"></span><span id="runtimeConnectionLabel">Connect</span></button>
+      <button id="runtimeConnection" class="runtime-connection" type="button" title="Runtime not connected. Click to manage runtimes." aria-label="Runtime not connected. Click to manage runtimes." aria-haspopup="dialog"><span id="runtimeIndicator" class="runtime-indicator" role="img" aria-label="Runtime disconnected"></span><span id="runtimeConnectionLabel">Connect</span><span class="runtime-chevron" aria-hidden="true">▾</span></button>
       <button id="openSettings" class="icon-button" title="Settings" aria-label="Settings" aria-haspopup="dialog" aria-expanded="false">${settingsIcon('general')}</button>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     </header>
@@ -3371,6 +3372,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function renderStatus(current) {
       const setup = current.setup;
       const box = node('div', 'status' + (setup ? ' setup' : (current.phase === 'error' ? ' error' : '')));
+      // Runtime and connection controls carry their function in hover text: the
+      // same-looking icon in the header is Restart, so no recovery button may be
+      // left without an explicit title/accessible name.
+      const titled = (control, title) => {
+        control.title = title;
+        control.setAttribute('aria-label', title);
+        return control;
+      };
       if (setup === 'workspace') {
         box.append(node('div', 'setup-title', 'Open a project to get started'), node('div', 'setup-detail', 'DeepSeek Harness works inside a trusted VS Code project folder.'));
       } else if (setup === 'dsh') {
@@ -3384,11 +3393,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       if (current.phase === 'idle') {
         const actions = node('div', 'actions');
-        const connect = node('button', 'primary', 'Connect to DSH'); connect.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(connect);
+        const connect = titled(node('button', 'primary', 'Connect to DSH'), 'Connect to DSH; reuses a compatible saved runtime or starts one'); connect.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(connect);
         box.append(actions);
       } else if (current.phase === 'loading') {
         const actions = node('div', 'actions');
-        const output = node('button', 'secondary', 'Show Output'); output.addEventListener('click', () => vscode.postMessage({ type: 'output' })); actions.append(output);
+        const output = titled(node('button', 'secondary', 'Show Output'), 'Show the DeepSeek Harness output channel'); output.addEventListener('click', () => vscode.postMessage({ type: 'output' })); actions.append(output);
         box.append(actions);
       } else if (current.phase === 'error') {
         const actions = node('div', 'actions');
@@ -3399,15 +3408,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         } else if (setup === 'api-key') {
           const configure = node('button', 'primary', 'Configure API Key'); configure.addEventListener('click', () => vscode.postMessage({ type: 'configure-api-key' })); actions.append(configure);
         } else if (setup === 'runtime-auth') {
-          const connect = node('button', 'primary', 'Connect Existing Runtime'); connect.addEventListener('click', () => vscode.postMessage({ type: 'connect-existing-runtime' })); actions.append(connect);
-          const managed = node('button', 'secondary', 'Start Managed Runtime'); managed.addEventListener('click', () => vscode.postMessage({ type: 'start-managed-runtime' })); actions.append(managed);
+          const connect = titled(node('button', 'primary', 'Connect Existing Runtime'), 'Connect to a DSH runtime you started, using its launch URL'); connect.addEventListener('click', () => vscode.postMessage({ type: 'connect-existing-runtime' })); actions.append(connect);
+          const managed = titled(node('button', 'secondary', 'Start Managed Runtime'), 'Start a DSH runtime managed by this extension'); managed.addEventListener('click', () => vscode.postMessage({ type: 'start-managed-runtime' })); actions.append(managed);
         } else {
           // A failed open is retried in place: the conversation list remains
           // usable in every phase, but the broken conversation itself needs its
           // own way back. Without it a single held conversation leaves only a
           // runtime restart, which in a shared runtime stops every window.
           if (current.sessionId !== undefined && current.sessionId !== '') {
-            const retryConversation = node('button', 'primary', 'Retry Conversation');
+            const retryConversation = titled(node('button', 'primary', 'Retry Conversation'), 'Retry opening this conversation');
             retryConversation.addEventListener('click', () => {
               if (typeof current.occupancyNotice === 'string' && current.occupancyNotice !== '') {
                 // Held: re-check the ownership before reopening the conversation.
@@ -3419,19 +3428,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
             actions.append(retryConversation);
           }
           if (current.canReconnect) {
-            const retry = node('button', 'secondary', 'Reconnect'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(retry);
+            const retry = node('button', 'secondary', 'Reconnect'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); titled(retry, 'Reconnect this window to the running DSH runtime'); actions.append(retry);
           } else {
-            const retry = node('button', 'secondary', 'Retry Connection'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(retry);
+            const retry = titled(node('button', 'secondary', 'Retry Connection'), 'Retry the DSH connection; reuses a compatible saved runtime'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(retry);
           }
           // Only a runtime this window owns may be restarted from here: adopted
           // and external runtimes are shared with other windows, so restarting
           // would stop their turns too.
           const connection = current.runtimeConnection;
           if (connection !== null && connection !== undefined && connection.ownership === 'managed') {
-            const restart = node('button', 'secondary', 'Restart Runtime'); restart.addEventListener('click', () => vscode.postMessage({ type: 'restart' })); actions.append(restart);
+            const restart = node('button', 'secondary', 'Restart Runtime'); restart.addEventListener('click', () => vscode.postMessage({ type: 'restart' })); titled(restart, 'Stop and start the DSH runtime this extension started; interrupts its running conversations'); actions.append(restart);
           }
         }
-        if (setup !== 'workspace') { const output = node('button', 'secondary', 'Show Output'); output.addEventListener('click', () => vscode.postMessage({ type: 'output' })); actions.append(output); }
+        if (setup !== 'workspace') { const output = titled(node('button', 'secondary', 'Show Output'), 'Show the DeepSeek Harness output channel'); output.addEventListener('click', () => vscode.postMessage({ type: 'output' })); actions.append(output); }
         box.append(actions);
       }
       return box;
@@ -5171,15 +5180,27 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const connected = connection || current.phase === 'ready';
       const runtimeLabel = current.phase === 'ready' ? (shared ? 'Shared DSH connected' : external ? 'External DSH connected' : 'Runtime connected')
         : current.phase === 'error' ? 'Runtime connection failed' : current.phase === 'loading' ? (current.statusText || 'Connecting to DSH…') : 'Runtime disconnected';
-      elements.runtimeIndicator.title = runtimeLabel; elements.runtimeIndicator.setAttribute('aria-label', runtimeLabel);
       elements.runtimeConnectionLabel.textContent = current.phase === 'loading' ? (connected ? 'Loading' : 'Connecting')
         : current.phase === 'error' ? 'Retry' : current.phase === 'idle' ? 'Connect' : shared ? 'Shared' : external ? 'External' : 'DSH';
       const identity = connection && Number.isSafeInteger(connection.pid) && connection.pid > 0 ? ' · PID ' + connection.pid : '';
-      const action = current.setup === 'runtime-auth' ? 'Connect to the existing runtime using its launch URL'
-        : current.phase === 'ready' ? 'Reconnect this window' : current.phase === 'loading' ? 'See the current stage or Show Output below' : 'Connect to DSH; reuse a compatible saved runtime';
-      elements.runtimeConnection.title = runtimeLabel + identity + '. ' + action;
-      elements.runtimeConnection.setAttribute('aria-label', elements.runtimeConnection.title);
-      elements.runtimeConnection.disabled = current.phase === 'loading' || current.setup === 'workspace';
+      // The indicator keeps the concrete runtime identity (including its PID,
+      // which is the only safe process fact published to the Webview).
+      elements.runtimeIndicator.title = runtimeLabel + identity;
+      elements.runtimeIndicator.setAttribute('aria-label', runtimeLabel + identity);
+      // The block is the entry to the runtime manager, not a reconnect button:
+      // its hover text states the connection kind and where a click leads.
+      const managementTitle = current.phase === 'ready'
+        ? shared ? 'Shared DSH runtime connected. Click to manage runtimes.'
+          : external ? 'External DSH runtime connected. Click to manage runtimes.'
+            : 'Runtime connected (managed). Click to manage runtimes.'
+        : current.phase === 'error' ? 'Runtime connection failed. Click to manage runtimes.'
+          : current.phase === 'loading' ? 'Connecting to DSH…'
+            : 'Runtime not connected. Click to manage runtimes.';
+      elements.runtimeConnection.title = managementTitle;
+      elements.runtimeConnection.setAttribute('aria-label', managementTitle);
+      // Only a connection in progress is not worth managing: everything else,
+      // including an unattached window, opens the manager.
+      elements.runtimeConnection.disabled = current.phase === 'loading';
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
       state = current;
       // Archived conversations keep no local upload state: thumbnails, cards,
@@ -6567,7 +6588,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     elements.refreshTasks.addEventListener('click', () => vscode.postMessage({ type: 'refresh-tasks' }));
     elements.configureTaskServices.addEventListener('click', () => vscode.postMessage({ type: 'configure-task-services' }));
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
-    elements.runtimeConnection.addEventListener('click', () => vscode.postMessage({ type: state && state.setup === 'runtime-auth' ? 'connect-existing-runtime' : 'reconnect' }));
+    elements.runtimeConnection.addEventListener('click', () => vscode.postMessage({ type: 'manage-runtimes' }));
     elements.openSettings.addEventListener('click', () => { elements.openSettings.setAttribute('aria-busy', 'true'); vscode.postMessage({ type: 'open-settings' }); });
     elements.conversationHome.addEventListener('click', () => {
       if (pendingConversationCreation) return;

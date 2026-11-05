@@ -3,7 +3,7 @@
   "displayName": "DSH Sidebar",
   "description": "A project-aware VS Code chat sidebar powered by the official DeepSeek Harness runtime.",
   "icon": "media/deepseek.png",
-  "version": "0.2.2-alpha.3.3",
+  "version": "0.2.2-rc.1.1",
   "private": true,
   "publisher": "fallleaves01",
   "license": "MIT",
@@ -49,6 +49,7 @@
     "onCommand:deepseekHarness.reconnect",
     "onCommand:deepseekHarness.connectExistingRuntime",
     "onCommand:deepseekHarness.startManagedRuntime",
+    "onCommand:deepseekHarness.manageRuntimes",
     "onCommand:deepseekHarness.managePlugins",
     "onCommand:deepseekHarness.openSettings",
     "onCommand:deepseekHarness.configureApiKey",
@@ -97,7 +98,8 @@
       },
       {
         "command": "deepseekHarness.restart",
-        "title": "DeepSeek Harness: Restart Runtime",
+        "title": "DeepSeek Harness: Restart Runtime (stop and start DSH)",
+        "shortTitle": "DeepSeek Harness: Restart Runtime",
         "icon": "$(debug-restart)"
       },
       {
@@ -116,6 +118,11 @@
         "command": "deepseekHarness.openSettings",
         "title": "DeepSeek Harness: Open Settings",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "deepseekHarness.manageRuntimes",
+        "title": "DeepSeek Harness: Manage Runtimes",
+        "icon": "$(server-process)"
       },
       {
         "command": "deepseekHarness.managePlugins",

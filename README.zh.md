@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-alpha.3.3**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-rc.1.1**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -39,6 +39,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 - **DeepSeek 认证。** 配置 API key 或使用浏览器登录，查看账户状态与余额并退出。远程登录通过 VS Code 端口转发完成。
 - **runtime 插件与配置。** 查找和管理 Tools、Skills、MCP、Memory 与 Agent Hooks。聊天工具栏齿轮打开对话内设置弹窗，包含模型提供商、Shell、Agent 循环、子代理、网页搜索和通用设置。支持模型目录编辑及只写凭据管理。
 - **runtime 恢复。** 多个 VS Code 窗口复用受管 runtime，支持重连、会话占用诊断，以及停止已验证身份的遗留受管进程。已保存的外部 runtime 仅用于连接。
+- **runtime 管理器。** 运行 **DeepSeek Harness: Manage Runtimes**，或点击 **External**/**DSH**/**Shared** 状态块，查看当前连接、已保存的外部 runtime 以及本扩展启动的 runtime 记录。可启动受管 runtime、通过启动 URL 连接、重启、重连、断开当前连接、停止已验证身份的扩展启动 runtime、忘记已保存 runtime，或打开会话占用诊断。由你自己启动且从未 connect/saved 的 runtime 不会显示在列表中。
 - **原生调试与键盘操作。** 可对 `.vscode/launch.json` 启用自主调试，管理断点、单步执行、调用栈和变量。`Cmd/Ctrl+Alt+D` 打开会话，`Cmd/Ctrl+Alt+E` 在编辑器标签页打开，`Cmd/Ctrl+Alt+L` 添加选区，`Cmd/Ctrl+Alt+F` 请求修复文件。会话与任务详情支持深色、浅色和高对比度主题。
 
 ## 🧭 可靠性与诊断
@@ -59,7 +60,7 @@ Runtime 到侧边栏的状态投递是有界的：同一时刻最多一个视图
 npm install -g @deepseek-ai/dsh
 ```
 
-DSH 应安装在扩展实际运行的主机上；使用 Remote SSH 时，应安装在远程主机上。需要 DeepSeek Harness `0.1.2-rc.1` 或更新版本；历史搜索与 Schedule 需要 `0.2.0-rc.2` 或更新版本，对话事件流客户端已在 `0.2.2-alpha.2` 与 `0.2.2-alpha.3` 上验证，实验性 bundle 仍在 `0.2.2-alpha.2` 上验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。Schedule 同时支持 `0.2.2-alpha.2` 与 `0.2.2-alpha.3` 的 catalog 与 history。alpha CLI 本身要求 Node.js 24.9 或更新版本。
+DSH 应安装在扩展实际运行的主机上；使用 Remote SSH 时，应安装在远程主机上。需要 DeepSeek Harness `0.1.2-rc.1` 或更新版本；历史搜索与 Schedule 需要 `0.2.0-rc.2` 或更新版本，对话事件流客户端已在 `0.2.2-alpha.2`、`0.2.2-alpha.3` 与 `0.2.2-rc.1` 上验证，实验性 bundle 仍在 `0.2.2-alpha.2` 上验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。Schedule 支持 `0.2.2-alpha.2`、`0.2.2-alpha.3` 与 `0.2.2-rc.1` 的 catalog 与 history。alpha CLI 本身要求 Node.js 24.9 或更新版本。
 
 ### 发布版
 
@@ -88,6 +89,10 @@ pnpm run package
 `artifacts/dsh-sidebar-<version>.vsix`。其他设置包括
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
+
+### 升级到 0.2.2-rc.1.1
+
+0.2.2-rc.1.1 对齐 DeepSeek Harness `0.2.2-rc.1`。该版本与 `0.2.2-alpha.3` 的 wire 面一致（仓库差异仅限包版本与 vendor 版本标签），因此不需要协议迁移。本版本新增 **DeepSeek Harness: Manage Runtimes**：以原生列表显示当前受管/共享/附加/外部连接、已保存的外部 runtime，以及由本扩展启动的 runtime 记录。可启动受管 runtime、通过启动 URL 连接、重启、重连、断开当前连接、停止已验证身份的扩展启动 runtime、忘记已保存 runtime，或打开会话占用诊断。**External**/**DSH**/**Shared** 状态块现在用于打开该列表，并在悬停时说明状态；视图标题中的重启操作会明确说明它将停止并启动 DSH。列表只覆盖本扩展启动或保存的 runtime：由你自己启动且从未 connect/saved 的 `dsh web` 不会显示。DSH `0.2.2-rc.1` 要求 Node.js 24.9 或更新版本；低于该版本的 runtime 在实践中仍可能运行，但不在支持范围内。
 
 ### 升级到 0.2.2-alpha.3.3
 
@@ -259,7 +264,7 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 
 ### DSH 0.2.2-alpha.2 与 alpha.3 实验性功能
 
-对话事件流客户端已针对官方 DeepSeek Harness `0.2.2-alpha.2` 与 `0.2.2-alpha.3` 运行时完成验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。实验性 bundle 仍只在 `0.2.2-alpha.2` 上验证；Schedule 同时支持 `0.2.2-alpha.2` 与 `0.2.2-alpha.3`。实验性 bundle 仍需在运行时 profile 中按需启用；插件不会自动代为启用（runtime 允许写入时，插件页可显式切换），只在运行时暴露相应契约时显示对应界面。运行时缺少该能力时，界面保持原有行为。alpha 版本新增以 Web 端为先的可选 bundle（Live Share、Forge、Computer Use 与个性化推荐）；它们会出现在插件清单中并显示平台/安装状态，但本侧边栏未实现其 Web 面板。
+对话事件流客户端已针对官方 DeepSeek Harness `0.2.2-alpha.2`、`0.2.2-alpha.3` 与 `0.2.2-rc.1` 运行时完成验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。实验性 bundle 仍只在 `0.2.2-alpha.2` 上验证；Schedule 支持 `0.2.2-alpha.2`、`0.2.2-alpha.3` 与 `0.2.2-rc.1`。实验性 bundle 仍需在运行时 profile 中按需启用；插件不会自动代为启用（runtime 允许写入时，插件页可显式切换），只在运行时暴露相应契约时显示对应界面。运行时缺少该能力时，界面保持原有行为。alpha 版本新增以 Web 端为先的可选 bundle（Live Share、Forge、Computer Use 与个性化推荐）；它们会出现在插件清单中并显示平台/安装状态，但本侧边栏未实现其 Web 面板。
 
 以下 alpha.2 能力属于 Web 端，本侧边栏未实现：Live Share、Forge、Computer
 Use 与个性化推荐面板；Statistics 标签页；creation、文件拖拽与插件推荐卡片。

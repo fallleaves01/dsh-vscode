@@ -91,6 +91,7 @@ import { pageConversationMessage } from './tool-output-page.js'
 import { chatHtml } from './webview.js'
 import { DshPluginManager } from './plugin-manager.js'
 import { discoverPlugins, installOfficialPlugin, type PluginMarketHost } from './plugin-market.js'
+import { manageRuntimes, runtimeManagerSnapshot, type RuntimeManagerCommandAction, type RuntimeManagerHost, type RuntimeManagerObservation } from './runtime-manager.js'
 import { SettingsPanelManager } from './settings-panel.js'
 import { runtimeIsNotOurs } from './runtime-change.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
@@ -546,6 +547,17 @@ export class DshChatController implements vscode.Disposable {
   private generation = 0
   private runtimeSwitchRevision = 0
   private disposed = false
+  /**
+   * Ownership of a connection the user deliberately detached from.
+   *
+   * A normal stop publishes a failure phase so a crashed or lost runtime is
+   * visible. An explicit Disconnect is not a failure: it keeps the window idle
+   * and explains whether the process was the user's external runtime (still
+   * running) or an extension-started runtime (stopped). Kept until a non-stopped
+   * state arrives, because a stop can emit more than one stopped notification;
+   * without that, the later one would replace the idle copy with a failure.
+   */
+  private intentionalDisconnect: RuntimeOwnership | undefined
   private activityRevision = 0
   private readonly runtimeActivity = new Map<string, { running: boolean; revision: number }>()
   private sessionLoadGeneration = 0
@@ -1099,6 +1111,25 @@ export class DshChatController implements vscode.Disposable {
   }
 
   observeRuntime(state: RuntimeState): void {
+    if (state.kind !== 'stopped') this.intentionalDisconnect = undefined
+    if (state.kind === 'stopped' && this.intentionalDisconnect !== undefined) {
+      const ownership = this.intentionalDisconnect
+      this.cancelRecovery()
+      ++this.generation
+      this.disconnectClient()
+      for (const summary of this.summaries) summary.running = false
+      this.clearLiveControls()
+      const statusText = ownership === 'external' || ownership === 'attached'
+        ? 'Disconnected from the external DSH runtime. It is still running outside this window.'
+        : ownership === 'adopted'
+          ? 'Disconnected from the shared DSH runtime. Another window may still be using it.'
+          : ownership === 'managed'
+            ? 'Disconnected from DeepSeek Harness. Its managed runtime was stopped.'
+            : 'Disconnected from DeepSeek Harness.'
+      this.publish({ phase: 'idle', statusText, setup: null, canReconnect: false, runtimeConnection: null,
+        ...this.runningPatch(false), messages: this.resetToDurableMessages() })
+      return
+    }
     if (state.kind === 'stopped' || state.kind === 'failed') {
       this.cancelRecovery()
       ++this.generation
@@ -1373,6 +1404,28 @@ export class DshChatController implements vscode.Disposable {
     this.publish({ phase: 'loading', setup: null, statusText: 'Switching DeepSeek Harness runtime…' })
     await this.restart(target)
     if (target.kind === 'external') await this.offerToRememberExternalRuntime()
+  }
+
+  /**
+   * Disconnect this window without starting a replacement.
+   *
+   * The runtime's own stop semantics decide what happens to the process: an
+   * attach-only runtime is never stopped, and an extension-started runtime that
+   * another window still uses is left running for that window. State publication
+   * and client disposal happen through `onDidChangeState`, exactly as for Restart.
+   */
+  async disconnectRuntime(): Promise<void> {
+    if (this.disposed) return
+    ++this.runtimeSwitchRevision
+    this.cancelRecovery()
+    this.intentionalDisconnect = this.runtime.state.kind === 'ready' ? this.runtime.state.ownership : this._state.runtimeConnection?.ownership
+    this.publish({ phase: 'loading', statusText: 'Disconnecting from DeepSeek Harness…', canReconnect: false })
+    try {
+      await this.runtime.stop()
+    } catch (error) {
+      this.intentionalDisconnect = undefined
+      throw error
+    }
   }
 
   /**
@@ -5226,6 +5279,11 @@ class DshSurface implements vscode.Disposable {
         case 'start-managed-runtime':
           await vscode.commands.executeCommand('deepseekHarness.startManagedRuntime')
           return
+        case 'manage-runtimes':
+          // The Webview names the command only; no runtime URL or token crosses
+          // the message boundary. The manager reads live state in the Host.
+          await vscode.commands.executeCommand('deepseekHarness.manageRuntimes')
+          return
         case 'output': this.output.show(true); return
         case 'open-settings': this.settingsPanel.openEmbedded(this.webview); return
         case 'open-workspace': await this.chooseWorkspace(); return
@@ -6323,6 +6381,79 @@ export function activate(context: vscode.ExtensionContext): void {
       ? `That DSH runtime did not answer with its own launch token, so it was left alone — the process with pid ${String(descriptor.pid)} may not be it any more. "DSH: Diagnose Session Occupancy" reports what holds a conversation now.`
       : `The runtime was asked to end but pid ${String(descriptor.pid)} is still there. See the DeepSeek Harness output for details.`)
   }))
+
+  /**
+   * Native runtime manager.
+   *
+   * The list is display data only: every mutation delegates to the command that
+   * already implements it, and a disconnect goes through the controller so the
+   * runtime's stop semantics (shared windows keep the process, attach-only
+   * runtimes are never stopped) are not re-implemented here.
+   */
+  const runtimeManagerHost: RuntimeManagerHost = {
+    get workspaceOpen() { return workspace !== undefined },
+    snapshot: async () => {
+      const descriptor = broker?.readDescriptor()
+      let recorded: RuntimeManagerObservation['recorded']
+      // A record inspection takes the broker transition lock; while a start or
+      // stop holds it the list must still open, so that state is skipped rather
+      // than waited on. A broken record likewise must not hide the current
+      // connection.
+      if (broker !== undefined && runtime.state.kind !== 'starting') {
+        try {
+          const inspected = await inspectRecordedRuntime(broker, resolveDshHome())
+          if (inspected.state === 'ready') {
+            recorded = { ...(inspected.descriptor.pid === undefined ? {} : { pid: inspected.descriptor.pid }),
+              cwd: inspected.descriptor.cwd, launchUrl: inspected.descriptor.launchUrl,
+              held: inspected.held, heldIsLowerBound: inspected.heldIsLowerBound }
+          }
+        } catch { /* the current connection and saved runtime still render */ }
+      }
+      return runtimeManagerSnapshot({
+        runtime: runtime.state,
+        cwd: controller.cwd,
+        ...(descriptor === undefined || descriptor.manageable ? {} : { saved: { launchUrl: descriptor.launchUrl } }),
+        ...(recorded === undefined ? {} : { recorded }),
+      })
+    },
+    disconnectCurrent: async (): Promise<string> => {
+      const before = runtime.state
+      const ownership = before.kind === 'ready' ? before.ownership : undefined
+      const pid = before.kind === 'ready' ? before.pid : undefined
+      await controller.disconnectRuntime()
+      if (ownership === 'external' || ownership === 'attached') {
+        return 'Disconnected. The external DSH runtime keeps running.'
+      }
+      if (broker !== undefined && pid !== undefined) {
+        const descriptor = broker.readDescriptor()
+        if (descriptor !== undefined && descriptor.manageable && descriptor.pid === pid
+          && await broker.isRecordRunning(pid, descriptor.processStartTime)) {
+          const others = (await broker.liveLeases()).filter(lease => lease.runtimePid === undefined || lease.runtimePid === pid)
+          return others.length > 0
+            ? 'Disconnected this window. Another VS Code window is still using the runtime, so it keeps running.'
+            : 'Disconnected, but the runtime process is still running. Use Show Output for details.'
+        }
+      }
+      const released = controller.releasedSessions
+      return released > 0
+        ? `Disconnected and stopped the DSH runtime, releasing ${String(released)} conversation(s).`
+        : 'Disconnected and stopped the DSH runtime this window was using.'
+    },
+    execute: async (action: RuntimeManagerCommandAction): Promise<void> => {
+      const commands: Record<RuntimeManagerCommandAction, string> = {
+        'start-managed': 'deepseekHarness.startManagedRuntime',
+        'connect-external': 'deepseekHarness.connectExistingRuntime',
+        restart: 'deepseekHarness.restart',
+        reconnect: 'deepseekHarness.reconnect',
+        'end-recorded': 'deepseekHarness.endLeftoverRuntime',
+        'forget-saved': 'deepseekHarness.forgetSavedRuntime',
+        diagnose: 'deepseekHarness.diagnoseOccupancy',
+      }
+      await vscode.commands.executeCommand(commands[action])
+    },
+    showOutput: () => output.show(true),
+  }
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.manageRuntimes', () => manageRuntimes(runtimeManagerHost)))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.reconnect', async () => {
     await controller.reconnect().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
   }))

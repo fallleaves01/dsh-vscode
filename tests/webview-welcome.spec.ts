@@ -21,13 +21,16 @@ describe('welcome and runtime status', () => {
     expect(h.document.getElementById('runtimeIndicator')?.getAttribute('aria-label')).toBe('Runtime connection failed')
   })
 
-  it('shows a shared connection and PID and reconnects without issuing restart', async () => {
+  it('shows a shared connection and PID and opens the runtime manager without issuing restart', async () => {
     h = harness(); h.sendState({ runtimeConnection: { ownership: 'adopted', pid: 43210 } }); await h.settle()
     expect(h.document.getElementById('runtimeConnectionLabel')?.textContent).toBe('Shared')
-    expect(h.document.getElementById('runtimeConnection')?.title).toContain('PID 43210')
+    expect(h.document.getElementById('runtimeConnection')?.title).toBe('Shared DSH runtime connected. Click to manage runtimes.')
+    expect(h.document.getElementById('runtimeIndicator')?.getAttribute('aria-label')).toContain('PID 43210')
+    expect(h.document.querySelector('#runtimeConnection .runtime-chevron')?.textContent).toBe('▾')
+    expect(h.document.getElementById('runtimeConnection')?.getAttribute('aria-haspopup')).toBe('dialog')
     h.click('#runtimeConnection')
-    expect(h.posts.at(-1)).toEqual({ type: 'reconnect' })
-    expect(h.posts.some(post => post.type === 'restart')).toBe(false)
+    expect(h.posts.at(-1)).toEqual({ type: 'manage-runtimes' })
+    expect(h.posts.some(post => post.type === 'restart' || post.type === 'reconnect')).toBe(false)
   })
 
   it('offers a connection when automatic startup is disabled', async () => {
@@ -40,8 +43,15 @@ describe('welcome and runtime status', () => {
 
   it('keeps external authentication failures on the explicit launch-URL path', async () => {
     h = harness(); h.sendState({ phase: 'error', setup: 'runtime-auth', statusText: 'Authentication failed' }); await h.settle()
+    // The reason and the explicit recovery buttons stay in the status block…
+    expect(h.document.getElementById('conversationStatus')?.textContent).toContain('Authentication failed')
+    expect(h.document.getElementById('conversationStatus')?.textContent).toContain('Connect Existing Runtime')
+    expect([...h.document.querySelectorAll<HTMLButtonElement>('#conversationStatus button')]
+      .find(button => button.textContent === 'Connect Existing Runtime')?.title)
+      .toContain('launch URL')
+    // …while the header block is the runtime-manager entry, not a silent reconnect.
     h.click('#runtimeConnection')
-    expect(h.posts.at(-1)).toEqual({ type: 'connect-existing-runtime' })
+    expect(h.posts.at(-1)).toEqual({ type: 'manage-runtimes' })
   })
 
   it('shows the current stage and output access while connecting', async () => {
