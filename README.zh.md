@@ -12,6 +12,9 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 当前源码版本为 **0.2.2-rc.1.3**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
+> [!IMPORTANT]
+> **自动维护说明。** 当前本 fork 的全部维护工作均由 **deepseek-flash** 模型生成的自动更新完成。代码修改、DSH 适配、测试、文档和发布准备均由该自动流程产出。因此，本仓库是按自动更新模式维护的项目，而不是由人工发布团队维护的项目。生产使用前请审查每个版本。
+
 [English](README.md) | **简体中文**
 
 [GitHub](https://github.com/fallleaves01/dsh-vscode)
