@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   warning: vi.fn(async (..._args: any[]) => undefined as any),
   info: vi.fn(async (..._args: any[]) => undefined as any),
   error: vi.fn(async (..._args: any[]) => undefined as any),
+  input: vi.fn(async (..._args: any[]) => undefined as any),
 }))
 
 vi.mock('vscode', () => ({
@@ -14,12 +15,14 @@ vi.mock('vscode', () => ({
     showWarningMessage: mocks.warning,
     showInformationMessage: mocks.info,
     showErrorMessage: mocks.error,
+    showInputBox: mocks.input,
   },
 }))
 
 import {
   manageRuntimes,
   runtimeHostLabel,
+  startManagedRuntimeFlow,
   runtimeManagerSnapshot,
   type RuntimeManagerHost,
   type RuntimeManagerSnapshot,
@@ -31,6 +34,7 @@ afterEach(() => {
   mocks.warning.mockReset(); mocks.warning.mockResolvedValue(undefined)
   mocks.info.mockReset(); mocks.info.mockResolvedValue(undefined)
   mocks.error.mockReset(); mocks.error.mockResolvedValue(undefined)
+  mocks.input.mockReset(); mocks.input.mockResolvedValue(undefined)
 })
 
 function snapshot(overrides: Partial<RuntimeManagerSnapshot> = {}): RuntimeManagerSnapshot {
@@ -307,5 +311,299 @@ describe('runtime manager helpers', () => {
       title: 'DeepSeek Harness: Manage Runtimes',
       icon: '$(server-process)',
     })
+  })
+})
+
+describe('multi-connection runtime manager', () => {
+  const multiSnapshot = (overrides: Partial<RuntimeManagerSnapshot> = {}): RuntimeManagerSnapshot => ({
+    current: { phase: 'ready', ownership: 'external', cwd: '/workspace', host: '127.0.0.1:4000', pid: 123 },
+    connections: [
+      { id: 'c1', label: 'Primary', host: '127.0.0.1:4000', connected: true },
+      { id: 'c2', label: 'Secondary', host: '127.0.0.1:5000', connected: false },
+    ],
+    saved: { host: '127.0.0.1:9999', key: 'legacy:1' },
+    ...overrides,
+  })
+
+  function multiHost(overrides: Partial<RuntimeManagerHost> = {}): RuntimeManagerHost {
+    return host({
+      snapshot: vi.fn(async () => multiSnapshot()),
+      startManaged: vi.fn(async () => {}),
+      saveSaved: vi.fn(async () => ({ label: '127.0.0.1:9999', host: '127.0.0.1:9999' })),
+      connectSaved: vi.fn(async () => {}),
+      addConnection: vi.fn(async (input: { launchUrl: string; label?: string }) =>
+        ({ id: 'new-conn', label: input.label ?? '127.0.0.1:7000', host: '127.0.0.1:7000' })),
+      connectConnection: vi.fn(async () => {}),
+      removeConnection: vi.fn(async () => ({ label: 'Secondary', host: '127.0.0.1:5000' })),
+      ...overrides,
+    })
+  }
+
+  const pickRow = (id: string): void => {
+    mocks.pick.mockImplementationOnce(async (items: any[]) => items.find(item => item.action === 'connection' && item.connection.id === id))
+  }
+
+  it('lists every saved connection with its connected state and the add action', async () => {
+    const h = multiHost()
+    mocks.pick.mockResolvedValueOnce(undefined)
+    await manageRuntimes(h)
+    const items = offered()
+    const rows = items.filter(item => item.action === 'connection')
+    expect(rows.map(row => row.connection.id)).toEqual(['c1', 'c2'])
+    expect(rows[0]).toMatchObject({ label: '$(server) Primary', description: '127.0.0.1:4000 · Connected' })
+    expect(rows[1]).toMatchObject({ label: '$(server) Secondary', description: '127.0.0.1:5000 · Not connected' })
+    expect(items.some(item => item.action === 'add-connection')).toBe(true)
+    expect(JSON.stringify(items)).not.toContain('token=')
+  })
+
+  it('only reports a connection as connected for an external/attached current host', async () => {
+    const h = multiHost({ snapshot: vi.fn(async () => multiSnapshot({
+      current: { phase: 'ready', ownership: 'managed', cwd: '/workspace', host: '127.0.0.1:4000', pid: 123 },
+      connections: [{ id: 'c1', label: 'Primary', host: '127.0.0.1:4000', connected: false }],
+    })) })
+    mocks.pick.mockResolvedValueOnce(undefined)
+    await manageRuntimes(h)
+    const rows = offered().filter(item => item.action === 'connection')
+    expect(rows[0]?.description).toBe('127.0.0.1:4000 · Not connected')
+  })
+
+  it('connects to a saved connection after confirmation', async () => {
+    const h = multiHost()
+    pickRow('c2'); mocks.pick.mockResolvedValueOnce(pickAction('connect-connection')).mockResolvedValueOnce(undefined)
+    mocks.warning.mockResolvedValueOnce('Connect')
+    await manageRuntimes(h)
+    expect(h.connectConnection).toHaveBeenCalledWith('c2')
+    expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('Connected to “Secondary”'))
+  })
+
+  it('does not reconnect an already connected entry', async () => {
+    const h = multiHost()
+    pickRow('c1'); mocks.pick.mockResolvedValueOnce(pickAction('connect-connection')).mockResolvedValueOnce(undefined)
+    await manageRuntimes(h)
+    expect(h.connectConnection).not.toHaveBeenCalled()
+    expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('already connected'))
+  })
+
+  it('deletes a saved connection only after confirmation and never ends the process', async () => {
+    const h = multiHost()
+    pickRow('c2'); mocks.pick.mockResolvedValueOnce(pickAction('delete-connection')).mockResolvedValueOnce(undefined)
+    mocks.warning.mockResolvedValueOnce('Delete')
+    await manageRuntimes(h)
+    expect(mocks.warning.mock.calls[0]![0]).toContain('Delete saved runtime connection')
+    expect(h.removeConnection).toHaveBeenCalledWith('c2')
+    expect(h.execute).not.toHaveBeenCalled()
+    expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('keeps running'))
+
+    mocks.pick.mockReset()
+    const cancelHost = multiHost()
+    pickRow('c2'); mocks.pick.mockResolvedValueOnce(pickAction('delete-connection')).mockResolvedValueOnce(undefined)
+    await manageRuntimes(cancelHost)
+    expect(cancelHost.removeConnection).not.toHaveBeenCalled()
+  })
+
+  it('adds a connection from a password URL plus optional label and offers to connect', async () => {
+    const h = multiHost()
+    mocks.pick.mockResolvedValueOnce(pickAction('add-connection')).mockResolvedValueOnce(undefined)
+    mocks.input.mockResolvedValueOnce('http://127.0.0.1:7000/?token=secret-token').mockResolvedValueOnce('Work laptop')
+    mocks.info.mockResolvedValueOnce('Connect')
+    await manageRuntimes(h)
+    expect(JSON.stringify(offered())).not.toContain('secret-token')
+    expect(h.addConnection).toHaveBeenCalledWith({ launchUrl: 'http://127.0.0.1:7000/?token=secret-token', label: 'Work laptop' })
+    expect(h.connectConnection).toHaveBeenCalledWith('new-conn')
+    expect(String(mocks.info.mock.calls[0]![0])).toContain('127.0.0.1:7000')
+    expect(String(mocks.info.mock.calls[0]![0])).not.toContain('secret-token')
+  })
+
+  it('keeps a saved connection without connecting when the prompt is declined', async () => {
+    const h = multiHost()
+    mocks.pick.mockResolvedValueOnce(pickAction('add-connection')).mockResolvedValueOnce(undefined)
+    mocks.input.mockResolvedValueOnce('http://127.0.0.1:7000/?token=secret-token').mockResolvedValueOnce('')
+    await manageRuntimes(h)
+    expect(h.addConnection).toHaveBeenCalledWith({ launchUrl: 'http://127.0.0.1:7000/?token=secret-token' })
+    expect(h.connectConnection).not.toHaveBeenCalled()
+  })
+
+  it('refuses a saved external runtime when one is already connected managed', async () => {
+    const h = multiHost({ snapshot: vi.fn(async () => multiSnapshot({
+      current: { phase: 'ready', ownership: 'managed', cwd: '/workspace', pid: 123, host: '127.0.0.1:4000' },
+    })) })
+    mocks.pick.mockResolvedValueOnce(pickAction('start-managed')).mockResolvedValueOnce(undefined)
+    await manageRuntimes(h)
+    expect(h.startManaged).not.toHaveBeenCalled()
+    expect(mocks.warning.mock.calls[0]![0]).toContain('A managed DSH runtime is already connected')
+    expect(h.execute).not.toHaveBeenCalledWith('start-managed')
+  })
+
+  it('offers Restart instead of spawning another runtime when managed is already connected', async () => {
+    const h = multiHost({ snapshot: vi.fn(async () => multiSnapshot({
+      current: { phase: 'ready', ownership: 'managed', cwd: '/workspace', pid: 123, host: '127.0.0.1:4000' },
+      saved: undefined,
+    })) })
+    mocks.pick.mockResolvedValueOnce(pickAction('start-managed')).mockResolvedValueOnce(undefined)
+    mocks.warning.mockResolvedValueOnce('Restart Runtime').mockResolvedValueOnce('Restart Runtime')
+    await manageRuntimes(h)
+    expect(h.startManaged).not.toHaveBeenCalled()
+    expect(h.execute).toHaveBeenCalledWith('restart')
+  })
+
+  it('connects an idle window to a saved connection without a switch confirmation', async () => {
+    const h = multiHost({ snapshot: vi.fn(async () => multiSnapshot({
+      current: { phase: 'stopped', cwd: '/workspace' }, saved: undefined,
+      connections: [{ id: 'c2', label: 'Secondary', host: '127.0.0.1:5000', connected: false }],
+    })) })
+    pickRow('c2'); mocks.pick.mockResolvedValueOnce(pickAction('connect-connection')).mockResolvedValueOnce(undefined)
+    await manageRuntimes(h)
+    expect(mocks.warning).not.toHaveBeenCalled()
+    expect(h.connectConnection).toHaveBeenCalledWith('c2')
+  })
+
+  it('warns before clearing a legacy saved external runtime and starts a real managed runtime', async () => {
+    const h = multiHost()
+    mocks.pick.mockResolvedValueOnce(pickAction('start-managed')).mockResolvedValueOnce(undefined)
+    mocks.warning.mockResolvedValueOnce('Start Without Saving')
+    await manageRuntimes(h)
+    const warning = mocks.warning.mock.calls[0]!
+    expect(String(warning[0])).toContain('Start a separate managed DSH runtime?')
+    expect(String(warning[1]?.detail)).toContain('clears that saved record')
+    expect(String(warning[1]?.detail)).toContain('external process keeps running')
+    expect(h.saveSaved).not.toHaveBeenCalled()
+    expect(h.startManaged).toHaveBeenCalledWith({ legacyKey: 'legacy:1' })
+    expect(h.execute).not.toHaveBeenCalledWith('start-managed')
+    expect(mocks.info).toHaveBeenCalledWith('Started a new managed DSH runtime.')
+  })
+
+  it('saves the legacy runtime to connections before starting when asked', async () => {
+    const h = multiHost()
+    mocks.pick.mockResolvedValueOnce(pickAction('start-managed')).mockResolvedValueOnce(undefined)
+    mocks.warning.mockResolvedValueOnce('Save and Start')
+    await manageRuntimes(h)
+    expect(h.saveSaved).toHaveBeenCalledTimes(1)
+    expect(h.startManaged).toHaveBeenCalledWith({ legacyKey: 'legacy:1' })
+    expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('Saved the external DSH runtime'))
+  })
+
+  it('still starts when the legacy runtime is already saved under connections', async () => {
+    const h = multiHost({ saveSaved: vi.fn(async () => { throw new Error('That launch URL is already saved as “127.0.0.1:9999”.') }) })
+    mocks.pick.mockResolvedValueOnce(pickAction('start-managed')).mockResolvedValueOnce(undefined)
+    mocks.warning.mockResolvedValueOnce('Save and Start')
+    await manageRuntimes(h)
+    expect(h.startManaged).toHaveBeenCalledWith({ legacyKey: 'legacy:1' })
+    expect(mocks.error).not.toHaveBeenCalled()
+    expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('already saved'))
+  })
+
+  it('does nothing when the legacy start warning is dismissed', async () => {
+    const h = multiHost()
+    mocks.pick.mockResolvedValueOnce(pickAction('start-managed')).mockResolvedValueOnce(undefined)
+    await manageRuntimes(h)
+    expect(h.startManaged).not.toHaveBeenCalled()
+    expect(h.saveSaved).not.toHaveBeenCalled()
+  })
+
+  it('starts directly when no legacy saved runtime exists', async () => {
+    const h = multiHost({ snapshot: vi.fn(async () => multiSnapshot({
+      current: { phase: 'stopped', cwd: '/workspace' }, saved: undefined, connections: [],
+    })) })
+    mocks.pick.mockResolvedValueOnce(pickAction('start-managed')).mockResolvedValueOnce(undefined)
+    await manageRuntimes(h)
+    expect(h.startManaged).toHaveBeenCalledWith({})
+    expect(mocks.warning).not.toHaveBeenCalled()
+  })
+
+  it('reports a failed managed start and re-reads the list', async () => {
+    const h = multiHost({ startManaged: vi.fn(async () => { throw new Error('saved record changed; http://127.0.0.1:9999/?token=secret-token') }) })
+    mocks.pick.mockResolvedValueOnce(pickAction('start-managed')).mockResolvedValueOnce(undefined)
+    mocks.warning.mockResolvedValueOnce('Start Without Saving')
+    await manageRuntimes(h)
+    const message = String(mocks.error.mock.calls[0]![0])
+    expect(message).toContain('Could not start the managed DSH runtime')
+    expect(message).not.toContain('secret-token')
+    expect(message).toContain('[redacted]')
+    expect(h.snapshot).toHaveBeenCalledTimes(2)
+  })
+
+  it('connects and saves the legacy saved runtime from its row', async () => {
+    const h = multiHost()
+    mocks.pick.mockResolvedValueOnce(pickAction('saved')).mockResolvedValueOnce(pickAction('connect-saved')).mockResolvedValueOnce(undefined)
+    await manageRuntimes(h)
+    expect(h.connectSaved).toHaveBeenCalledTimes(1)
+
+    mocks.pick.mockReset()
+    mocks.pick.mockResolvedValueOnce(pickAction('saved')).mockResolvedValueOnce(pickAction('save-saved')).mockResolvedValueOnce(undefined)
+    await manageRuntimes(h)
+    expect(h.saveSaved).toHaveBeenCalledTimes(1)
+    expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('saved DSH record was kept'))
+  })
+})
+
+describe('start managed runtime flow (command entry point)', () => {
+  const flowSnapshot = (overrides: Partial<RuntimeManagerSnapshot> = {}): RuntimeManagerSnapshot => ({
+    current: { phase: 'ready', ownership: 'external', cwd: '/workspace', host: '127.0.0.1:4000', pid: 123 },
+    saved: { host: '127.0.0.1:9999', key: 'legacy:1' },
+    ...overrides,
+  })
+
+  function flowHost(overrides: Partial<RuntimeManagerHost> = {}): RuntimeManagerHost {
+    return host({
+      snapshot: vi.fn(async () => flowSnapshot()),
+      startManaged: vi.fn(async () => {}),
+      saveSaved: vi.fn(async () => ({ label: '127.0.0.1:9999', host: '127.0.0.1:9999' })),
+      ...overrides,
+    })
+  }
+
+  it('runs the legacy warning and record-clearing start without opening the list', async () => {
+    const h = flowHost()
+    mocks.warning.mockResolvedValueOnce('Start Without Saving')
+    await startManagedRuntimeFlow(h)
+    expect(mocks.pick).not.toHaveBeenCalled()
+    expect(h.startManaged).toHaveBeenCalledWith({ legacyKey: 'legacy:1' })
+    expect(h.execute).not.toHaveBeenCalledWith('start-managed')
+    expect(mocks.info).toHaveBeenCalledWith('Started a new managed DSH runtime.')
+  })
+
+  it('offers Restart instead of spawning when a managed runtime is already connected', async () => {
+    const h = flowHost({ snapshot: vi.fn(async () => flowSnapshot({
+      current: { phase: 'ready', ownership: 'managed', cwd: '/workspace', pid: 123, host: '127.0.0.1:4000' },
+      saved: undefined,
+    })) })
+    mocks.warning.mockResolvedValueOnce(undefined)
+    await startManagedRuntimeFlow(h)
+    expect(h.startManaged).not.toHaveBeenCalled()
+    expect(String(mocks.warning.mock.calls[0]![0])).toContain('A managed DSH runtime is already connected')
+  })
+
+  it('dispatches Restart when the existing managed runtime is confirmed', async () => {
+    const h = flowHost({ snapshot: vi.fn(async () => flowSnapshot({
+      current: { phase: 'ready', ownership: 'managed', cwd: '/workspace', pid: 123, host: '127.0.0.1:4000' },
+      saved: undefined,
+    })) })
+    mocks.warning.mockResolvedValueOnce('Restart Runtime').mockResolvedValueOnce('Restart Runtime')
+    await startManagedRuntimeFlow(h)
+    expect(h.startManaged).not.toHaveBeenCalled()
+    expect(h.execute).toHaveBeenCalledWith('restart')
+  })
+
+  it('does nothing when the warning is dismissed', async () => {
+    const h = flowHost()
+    await startManagedRuntimeFlow(h)
+    expect(h.startManaged).not.toHaveBeenCalled()
+    expect(h.saveSaved).not.toHaveBeenCalled()
+  })
+
+  it('refuses without a workspace before starting', async () => {
+    const h = flowHost({ workspaceOpen: false })
+    await startManagedRuntimeFlow(h)
+    expect(mocks.warning).toHaveBeenCalledWith(expect.stringContaining('Open a folder'))
+    expect(h.startManaged).not.toHaveBeenCalled()
+  })
+
+  it('reports a snapshot failure with redaction and starts nothing', async () => {
+    const h = flowHost({ snapshot: vi.fn(async () => { throw new Error('record failed for http://127.0.0.1:4000/?token=secret-token') }) })
+    await startManagedRuntimeFlow(h)
+    const message = String(mocks.error.mock.calls[0]![0])
+    expect(message).toContain('Could not read DSH runtimes')
+    expect(message).not.toContain('secret-token')
+    expect(h.startManaged).not.toHaveBeenCalled()
   })
 })

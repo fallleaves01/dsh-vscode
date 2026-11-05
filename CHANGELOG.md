@@ -9,6 +9,30 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-rc.1.3] - 2026-11-05
+
+### Added
+
+- The runtime manager is now a multi-connection list. **Add runtime connection…**
+  saves an external launch URL under a display name; the URL is kept only in
+  VS Code Secret Storage, while the list shows the label, host and whether this
+  window is connected. Each saved connection can be connected or deleted;
+  deletion detaches this window and never stops the external process.
+- Legacy saved external runtimes gain **Connect to this saved runtime** and
+  **Save to runtime connections** actions, so they can be retained before a
+  managed runtime replaces the saved record.
+
+### Fixed
+
+- **Start new managed runtime** no longer silently adopts a recorded attach-only
+  external runtime. When such a record exists, the action warns that the saved
+  record will be cleared, offers Save and Start to keep a reconnect entry first,
+  and then starts a real managed process. The Command Palette command and the
+  Webview button now share this flow; a managed runtime that is already
+  connected offers Restart instead of starting a duplicate.
+- The manager and the start-managed command share one snapshot/error path, and
+  saved connection URLs never enter QuickPick items, logs, output or view state.
+
 ## [0.2.2-rc.1.2] - 2026-11-05
 
 ### Added

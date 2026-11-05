@@ -11,7 +11,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
-The current source version is **0.2.2-rc.1.2**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
+The current source version is **0.2.2-rc.1.3**. See [CHANGELOG.md](CHANGELOG.md) for version changes. The original extension was created by [Lixxx1](https://github.com/Lixxx1).
 
 **English** | [简体中文](README.zh.md)
 
@@ -115,6 +115,14 @@ For a full local check run `pnpm run check`; `./build.sh` writes
 `artifacts/dsh-sidebar-<version>.vsix`. Other settings include
 `reuseExistingRuntime`, `rememberExternalRuntime`, `executable`, `arguments`,
 `startupTimeout` and `searchBaseUrl`.
+
+### Upgrading to 0.2.2-rc.1.3
+
+0.2.2-rc.1.3 turns the runtime manager into a multi-connection list. **Add runtime connection…** stores an external launch URL under a display name; the launch URL is kept in VS Code Secret Storage and never appears in the list, logs or state. The list shows every saved connection with its host and whether this window is connected, and each row can connect or delete the saved entry. Deleting a connection detaches this window only; the external process is never stopped. **Connect to runtime URL…** remains available for a one-off URL.
+
+**Start new managed runtime** now starts a real managed process. DSH normally reuses a recorded attach-only external runtime; when such a record exists, the command warns that it will clear that saved record, starts the managed runtime, and leaves the external process running. Choose **Save and Start** to keep a reconnect entry first. If a managed runtime is already connected, the command offers Restart instead of pretending to create a second one. The Command Palette command and the Webview button use the same flow, so neither can silently adopt the saved external runtime again.
+
+The manager still has one active connection per window and one managed runtime per DSH home. Saved external connections are entries to switch between, not concurrent chat connections. A managed runtime started this way may use a different DSH session store from the external process; connect back to the saved external connection when you need that runtime's conversations.
 
 ### Upgrading to 0.2.2-rc.1.2
 

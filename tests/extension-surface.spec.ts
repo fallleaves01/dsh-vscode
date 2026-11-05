@@ -33,6 +33,8 @@ const mocks = vi.hoisted(() => ({
   runtime: undefined as any,
   broker: undefined as any,
   brokerState: { descriptor: undefined as any, running: false, leases: [] as any[] },
+  globalValues: new Map<string, unknown>(),
+  secretValues: new Map<string, string>(),
 }))
 
 vi.mock('vscode', () => {
@@ -157,7 +159,7 @@ vi.mock('../src/runtime-broker.js', () => {
     async stop() { return true }
     takeLease() { return Promise.resolve() }
     clearLease() {}
-    clearDescriptor() {}
+    clearDescriptor() { mocks.brokerState.descriptor = undefined }
     publishOwnedRuntime() { return Promise.resolve() }
   }
   return {
@@ -291,6 +293,8 @@ describe('host surface wiring', () => {
     mocks.brokerState.descriptor = undefined
     mocks.brokerState.running = false
     mocks.brokerState.leases = []
+    mocks.globalValues.clear()
+    mocks.secretValues.clear()
     mocks.panels.length = 0
     mocks.commands.clear()
     ;(vscode.env as { language: string }).language = 'en'
@@ -313,8 +317,17 @@ describe('host surface wiring', () => {
       extension: { packageJSON: { version: '0.1.16' } },
       globalStorageUri: options.storagePath === undefined ? undefined : { fsPath: options.storagePath },
       workspaceState: { get: () => [], update: async () => {} },
-      globalState: { get: () => true, update: async () => {} },
-      secrets: { get: async () => undefined, store: async () => {}, delete: async () => {} },
+      globalState: {
+        get: (key: string, fallback?: unknown) => mocks.globalValues.has(key)
+          ? mocks.globalValues.get(key)
+          : key === 'deepseekHarness.welcome.openChat.v1' ? true : fallback,
+        update: async (key: string, value: unknown) => { mocks.globalValues.set(key, value) },
+      },
+      secrets: {
+        get: async (key: string) => mocks.secretValues.get(key),
+        store: async (key: string, value: string) => { mocks.secretValues.set(key, value) },
+        delete: async (key: string) => { mocks.secretValues.delete(key) },
+      },
     }
     activate(context)
     mocks.contexts.push(context)
@@ -2061,10 +2074,228 @@ describe('host surface wiring', () => {
       expect(mocks.command).toHaveBeenCalledWith('deepseekHarness.diagnoseOccupancy')
 
       mocks.command.mockClear()
+      const start = vi.spyOn(mocks.runtime, 'start')
       mocks.pick.mockResolvedValueOnce({ label: '$(play) Start new managed runtime', action: 'start-managed' }).mockResolvedValueOnce(undefined)
       await manager()
-      expect(mocks.command).toHaveBeenCalledWith('deepseekHarness.startManagedRuntime')
+      // Start new is a real managed start, not a dispatch to the legacy picker
+      // (which could silently adopt a saved external runtime).
+      expect(start).toHaveBeenCalled()
+      expect(start.mock.calls[0]?.[1]).toEqual({ kind: 'managed' })
+      expect(mocks.command).not.toHaveBeenCalledWith('deepseekHarness.startManagedRuntime')
     })
+    it('runs the shared manager flow from the startManagedRuntime command', async () => {
+      await activated({ storagePath: '/tmp/dsh-sidebar-command-test' })
+      mocks.brokerState.descriptor = {
+        schema: 1, origin: 'dsh-sidebar', manageable: false, instanceId: 'legacy-window', startedAt: 1234,
+        cwd: '/workspace', launchUrl: 'http://127.0.0.1:3099/?token=legacy-secret-token',
+      }
+      mocks.runtime.state = { kind: 'ready', ownership: 'external', localUri: { toString: () => 'http://127.0.0.1:3099' } }
+      const start = vi.spyOn(mocks.runtime, 'start')
+      mocks.runtime.stop = vi.fn(async () => { mocks.runtime.state = { kind: 'stopped' }; mocks.runtime.listener?.({ kind: 'stopped' }) })
+      mocks.warning.mockResolvedValueOnce('Start Without Saving')
+      await mocks.commands.get('deepseekHarness.startManagedRuntime')!()
+      expect(mocks.warning.mock.calls[0]![0]).toContain('Start a separate managed DSH runtime?')
+      expect(mocks.brokerState.descriptor).toBeUndefined()
+      expect(start.mock.calls[0]?.[1]).toEqual({ kind: 'managed' })
+      expect(mocks.output.join('\n')).not.toContain('Connecting to the saved external DSH runtime')
+      expect(mocks.output.join('\n')).not.toContain('legacy-secret-token')
+    })
+
+    it('starts directly from the startManagedRuntime command without opening a runtime picker', async () => {
+      await activated()
+      mocks.runtime.state = { kind: 'stopped' }
+      mocks.warning.mockClear()
+      mocks.pick.mockClear()
+      const start = vi.spyOn(mocks.runtime, 'start')
+      await mocks.commands.get('deepseekHarness.startManagedRuntime')!()
+      expect(mocks.pick).not.toHaveBeenCalled()
+      expect(mocks.warning).not.toHaveBeenCalled()
+      expect(start).toHaveBeenCalled()
+      expect(start.mock.calls[0]?.[1]).toEqual({ kind: 'managed' })
+    })
+
+    it('routes the Webview start-managed-runtime message to the command', async () => {
+      const h = await activated()
+      h.send({ type: 'start-managed-runtime' })
+      await vi.waitFor(() => expect(mocks.command).toHaveBeenCalledWith('deepseekHarness.startManagedRuntime'))
+    })
+
+    it('refuses the startManagedRuntime command without a workspace', async () => {
+      const folders = vscode.workspace.workspaceFolders
+      ;(vscode.workspace as unknown as { workspaceFolders: unknown[] }).workspaceFolders = []
+      try {
+        const context: any = {
+          subscriptions: [] as Array<{ dispose(): void }>,
+          extensionUri: { fsPath: '/extension' },
+          extension: { packageJSON: { version: '0.1.16' } },
+          globalStorageUri: undefined,
+          workspaceState: { get: () => [], update: async () => {} },
+          globalState: {
+            get: (key: string, fallback?: unknown) => mocks.globalValues.has(key)
+              ? mocks.globalValues.get(key)
+              : key === 'deepseekHarness.welcome.openChat.v1' ? true : fallback,
+            update: async (key: string, value: unknown) => { mocks.globalValues.set(key, value) },
+          },
+          secrets: {
+            get: async (key: string) => mocks.secretValues.get(key),
+            store: async (key: string, value: string) => { mocks.secretValues.set(key, value) },
+            delete: async (key: string) => { mocks.secretValues.delete(key) },
+          },
+        }
+        activate(context)
+        mocks.contexts.push(context)
+        mocks.warning.mockClear()
+        const start = vi.spyOn(mocks.runtime, 'start')
+        await mocks.commands.get('deepseekHarness.startManagedRuntime')!()
+        expect(mocks.warning).toHaveBeenCalledWith(expect.stringContaining('Open a folder'))
+        expect(start).not.toHaveBeenCalled()
+      } finally {
+        ;(vscode.workspace as unknown as { workspaceFolders: unknown[] }).workspaceFolders = folders as unknown[]
+      }
+    })
+
+    it('clears the saved attach-only record before starting a new managed runtime', async () => {
+      const h = await activated({ storagePath: '/tmp/dsh-sidebar-manager-test' })
+      expect(mocks.broker).toBeDefined()
+      mocks.brokerState.descriptor = {
+        schema: 1, origin: 'dsh-sidebar', manageable: false, instanceId: 'legacy-window', startedAt: 1234,
+        cwd: '/workspace', launchUrl: 'http://127.0.0.1:3099/?token=legacy-secret-token',
+      }
+      mocks.runtime.state = { kind: 'ready', ownership: 'external', localUri: { toString: () => 'http://127.0.0.1:3099' } }
+      const start = vi.spyOn(mocks.runtime, 'start')
+      const stop = vi.fn(async () => { mocks.runtime.state = { kind: 'stopped' }; mocks.runtime.listener?.({ kind: 'stopped' }) })
+      mocks.runtime.stop = stop
+      mocks.pick.mockImplementationOnce(async (items: any[]) => items.find(item => item.action === 'start-managed')).mockResolvedValueOnce(undefined)
+      mocks.warning.mockResolvedValueOnce('Start Without Saving')
+      await manager()
+      expect(String(mocks.warning.mock.calls[0]![0])).toContain('Start a separate managed DSH runtime?')
+      expect(String(mocks.warning.mock.calls[0]![1]?.detail)).toContain('clears that saved record')
+      expect(mocks.brokerState.descriptor).toBeUndefined()
+      expect(stop).toHaveBeenCalled()
+      expect(start).toHaveBeenCalled()
+      expect(start.mock.calls[0]?.[1]).toEqual({ kind: 'managed' })
+      expect(mocks.info).toHaveBeenCalledWith('Started a new managed DSH runtime.')
+      expect(mocks.output.join('\n')).not.toContain('Connecting to the saved external DSH runtime')
+      expect(JSON.stringify(h.posts())).not.toContain('legacy-secret-token')
+    })
+
+    it('saves the legacy record to connections before starting when asked', async () => {
+      await activated({ storagePath: '/tmp/dsh-sidebar-manager-test' })
+      mocks.brokerState.descriptor = {
+        schema: 1, origin: 'dsh-sidebar', manageable: false, instanceId: 'legacy-window', startedAt: 1234,
+        cwd: '/workspace', launchUrl: 'http://127.0.0.1:3099/?token=legacy-secret-token',
+      }
+      mocks.runtime.state = { kind: 'ready', ownership: 'external', localUri: { toString: () => 'http://127.0.0.1:3099' } }
+      const start = vi.spyOn(mocks.runtime, 'start')
+      mocks.runtime.stop = vi.fn(async () => { mocks.runtime.state = { kind: 'stopped' }; mocks.runtime.listener?.({ kind: 'stopped' }) })
+      mocks.pick.mockImplementationOnce(async (items: any[]) => items.find(item => item.action === 'start-managed')).mockResolvedValueOnce(undefined)
+      mocks.warning.mockResolvedValueOnce('Save and Start')
+      await manager()
+      const stored = mocks.secretValues.get('deepseekHarness.runtimeConnection.' + String(
+        (mocks.globalValues.get('deepseekHarness.runtimeConnections.v1') as any[])[0]?.id))
+      expect(stored).toBe('http://127.0.0.1:3099/?token=legacy-secret-token')
+      const metadata = JSON.stringify(mocks.globalValues.get('deepseekHarness.runtimeConnections.v1'))
+      expect(metadata).toContain('127.0.0.1:3099')
+      expect(metadata).not.toContain('legacy-secret-token')
+      expect(mocks.brokerState.descriptor).toBeUndefined()
+      expect(start.mock.calls[0]?.[1]).toEqual({ kind: 'managed' })
+    })
+
+    it('keeps the current connection when the saved record changed after the list was read', async () => {
+      await activated({ storagePath: '/tmp/dsh-sidebar-manager-test' })
+      const original = {
+        schema: 1, origin: 'dsh-sidebar', manageable: false, instanceId: 'legacy-window', startedAt: 1234,
+        cwd: '/workspace', launchUrl: 'http://127.0.0.1:3099/?token=legacy-secret-token',
+      }
+      mocks.brokerState.descriptor = original
+      mocks.runtime.state = { kind: 'ready', ownership: 'external', localUri: { toString: () => 'http://127.0.0.1:3099' } }
+      const start = vi.spyOn(mocks.runtime, 'start')
+      const stop = vi.spyOn(mocks.runtime, 'stop')
+      mocks.pick.mockImplementationOnce(async (items: any[]) => items.find(item => item.action === 'start-managed')).mockResolvedValueOnce(undefined)
+      mocks.warning.mockImplementationOnce(async () => {
+        mocks.brokerState.descriptor = { ...original, startedAt: 9999 }
+        return 'Start Without Saving'
+      })
+      await manager()
+      expect(start).not.toHaveBeenCalled()
+      expect(stop).not.toHaveBeenCalled()
+      expect(mocks.brokerState.descriptor).toMatchObject({ startedAt: 9999 })
+      expect(String(mocks.error.mock.calls[0]![0])).toContain('changed')
+    })
+
+    it('refuses to spawn another managed runtime when one is already connected', async () => {
+      await activated()
+      mocks.runtime.state = { kind: 'ready', ownership: 'managed', pid: 42, localUri: { toString: () => 'http://127.0.0.1:3080' } }
+      const start = vi.spyOn(mocks.runtime, 'start')
+      mocks.pick.mockImplementationOnce(async (items: any[]) => items.find(item => item.action === 'start-managed')).mockResolvedValueOnce(undefined)
+      await manager()
+      expect(start).not.toHaveBeenCalled()
+      expect(String(mocks.warning.mock.calls[0]![0])).toContain('A managed DSH runtime is already connected')
+    })
+
+    it('adds a runtime connection, stores the URL only in Secret Storage, and connects', async () => {
+      await activated()
+      const start = vi.spyOn(mocks.runtime, 'start')
+      mocks.pick.mockResolvedValueOnce({ label: '$(add) Add runtime connection…', action: 'add-connection' }).mockResolvedValueOnce(undefined)
+      mocks.input.mockResolvedValueOnce('http://127.0.0.1:7000/?token=add-secret-token').mockResolvedValueOnce('Work laptop')
+      mocks.info.mockResolvedValueOnce('Connect')
+      await manager()
+      const metadata = mocks.globalValues.get('deepseekHarness.runtimeConnections.v1') as any[]
+      expect(metadata).toHaveLength(1)
+      expect(metadata[0]).toMatchObject({ label: 'Work laptop', host: '127.0.0.1:7000' })
+      expect(JSON.stringify(metadata)).not.toContain('add-secret-token')
+      expect(Array.from(mocks.secretValues.values())).toEqual(['http://127.0.0.1:7000/?token=add-secret-token'])
+      expect(start.mock.calls[0]?.[1]).toMatchObject({ kind: 'external' })
+      expect(JSON.stringify(mocks.pick.mock.calls[1]?.[0] ?? [])).not.toContain('add-secret-token')
+      expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('Connected to'))
+    })
+
+    it('deletes a saved connection without ending the external process', async () => {
+      mocks.globalValues.set('deepseekHarness.runtimeConnections.v1', [
+        { id: 'conn-1', label: 'Dev box', host: '127.0.0.1:3099', createdAt: 10 },
+      ])
+      mocks.secretValues.set('deepseekHarness.runtimeConnection.conn-1', 'http://127.0.0.1:3099/?token=delete-secret-token')
+      await activated()
+      mocks.runtime.state = { kind: 'ready', ownership: 'external', localUri: { toString: () => 'http://127.0.0.1:3099' } }
+      const stop = vi.spyOn(mocks.runtime, 'stop')
+      mocks.pick.mockImplementationOnce(async (items: any[]) => items.find(item => item.action === 'connection'))
+        .mockImplementationOnce(async (items: any[]) => items.find(item => item.action === 'delete-connection'))
+        .mockResolvedValueOnce(undefined)
+      mocks.warning.mockResolvedValueOnce('Delete')
+      await manager()
+      expect(stop).toHaveBeenCalled()
+      expect(mocks.secretValues.has('deepseekHarness.runtimeConnection.conn-1')).toBe(false)
+      expect(mocks.globalValues.get('deepseekHarness.runtimeConnections.v1')).toEqual([])
+      expect(mocks.command).not.toHaveBeenCalledWith('deepseekHarness.endLeftoverRuntime')
+      expect(mocks.output.join('\n')).not.toContain('delete-secret-token')
+    })
+
+    it('connects to and saves the legacy saved runtime from its row', async () => {
+      await activated({ storagePath: '/tmp/dsh-sidebar-manager-test' })
+      mocks.brokerState.descriptor = {
+        schema: 1, origin: 'dsh-sidebar', manageable: false, instanceId: 'legacy-window', startedAt: 1234,
+        cwd: '/workspace', launchUrl: 'http://127.0.0.1:3099/?token=legacy-secret-token',
+      }
+      mocks.runtime.state = { kind: 'ready', ownership: 'external', localUri: { toString: () => 'http://127.0.0.1:3099' } }
+      const start = vi.spyOn(mocks.runtime, 'start')
+      mocks.pick.mockImplementationOnce(async (items: any[]) => items.find(item => item.action === 'saved'))
+        .mockImplementationOnce(async (items: any[]) => items.find(item => item.action === 'connect-saved'))
+        .mockResolvedValueOnce(undefined)
+      await manager()
+      expect(start.mock.calls[0]?.[1]).toMatchObject({ kind: 'external' })
+      expect(mocks.output.join('\n')).not.toContain('legacy-secret-token')
+
+      mocks.command.mockClear()
+      mocks.pick.mockReset()
+      mocks.pick.mockImplementationOnce(async (items: any[]) => items.find(item => item.action === 'saved'))
+        .mockImplementationOnce(async (items: any[]) => items.find(item => item.action === 'save-saved'))
+        .mockResolvedValueOnce(undefined)
+      await manager()
+      expect(mocks.secretValues.size).toBe(1)
+      expect(mocks.brokerState.descriptor).toBeDefined()
+      expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining('saved DSH record was kept'))
+    })
+
   })
 
   describe('webview runtime controls', () => {

@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-rc.1.2**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-rc.1.3**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 [English](README.md) | **简体中文**
 
@@ -89,6 +89,14 @@ pnpm run package
 `artifacts/dsh-sidebar-<version>.vsix`。其他设置包括
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
+
+### 升级到 0.2.2-rc.1.3
+
+0.2.2-rc.1.3 将 Runtime 管理器升级为多连接列表。**Add runtime connection…** 用一个显示名称保存外部 runtime 的 launch URL；URL 只写入 VS Code Secret Storage，列表、日志和状态中都不会出现。列表显示每个已保存连接的 host 以及本窗口是否已连接，每行可 Connect 或 Delete。Delete 只断开本窗口，不会停止外部进程。一次性连接仍可使用 **Connect to runtime URL…**。
+
+**Start new managed runtime** 现在会启动真实 managed 进程。DSH 默认会复用已记录的 attach-only external runtime；存在该记录时，命令会明确警告：清除该 saved record、启动 managed runtime，外部进程继续运行。选择 **Save and Start** 可先保留重连入口。若已有 managed runtime，命令只提供 Restart，不会假装创建第二个实例。Command Palette 与 Webview 按钮共用同一流程，不再静默 adopt 回保存的 external runtime。
+
+管理器仍保持每个窗口一个活动连接、每个 DSH home 一个 managed runtime。保存的 external 连接是用于切换的条目，不是并发聊天连接。这样启动的 managed runtime 可能使用与外部进程不同的 DSH 会话存储；需要原会话时请从已保存连接 Connect 回 external runtime。
 
 ### 升级到 0.2.2-rc.1.2
 

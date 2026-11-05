@@ -12,6 +12,7 @@ import {
   sessionLockPaths,
 } from './runtime-broker.js'
 import { endRecordedRuntime, inspectRecordedRuntime } from './runtime-recovery.js'
+import { RuntimeConnectionStore } from './runtime-connections.js'
 import type { SubagentCatalogRead } from './subagent-catalog-state.js'
 import { resolveDshHome } from './plugin-profile.js'
 import type { TurnTokenUsage } from './token-usage.js'
@@ -91,7 +92,7 @@ import { pageConversationMessage } from './tool-output-page.js'
 import { chatHtml } from './webview.js'
 import { DshPluginManager } from './plugin-manager.js'
 import { discoverPlugins, installOfficialPlugin, type PluginMarketHost } from './plugin-market.js'
-import { manageRuntimes, runtimeManagerSnapshot, type RuntimeManagerCommandAction, type RuntimeManagerHost, type RuntimeManagerObservation } from './runtime-manager.js'
+import { manageRuntimes, runtimeHostLabel, runtimeManagerSnapshot, startManagedRuntimeFlow, type RuntimeManagerCommandAction, type RuntimeManagerHost, type RuntimeManagerObservation, type RuntimeManagerSnapshot } from './runtime-manager.js'
 import { SettingsPanelManager } from './settings-panel.js'
 import { runtimeIsNotOurs } from './runtime-change.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
@@ -127,7 +128,7 @@ import { wireRecord } from './dsh-streams.js'
 import type { DshConnection } from './dsh-connection.js'
 import { canRetryConnection, reconnectAttempts } from './dsh-reconnect.js'
 import { ExistingRuntimeConnectionError, existingRuntimeUrl, type RuntimeTarget } from './runtime-target.js'
-import { pickExistingRuntime, pickManagedRuntime } from './runtime-picker.js'
+import { pickExistingRuntime } from './runtime-picker.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -6212,6 +6213,11 @@ function problemLocationFromArguments(args: readonly unknown[]): { filePath?: st
   }
 }
 
+/** A non-secret record identity: lets a caller prove the descriptor did not change. */
+function runtimeDescriptorKey(descriptor: { instanceId: string; startedAt: number }): string {
+  return descriptor.instanceId + ':' + String(descriptor.startedAt)
+}
+
 async function chooseProblem(editorContext: EditorContextBridge, args: readonly unknown[] = []): Promise<IdeContextReference | undefined> {
   const location = problemLocationFromArguments(args)
   const direct = location.filePath === undefined
@@ -6248,6 +6254,10 @@ export function activate(context: vscode.ExtensionContext): void {
       ...(process.platform === 'linux' && vscode.env.remoteName === 'ssh-remote'
         ? { serverOwner: () => findVsCodeServer(nodeProcessProbe()) } : {}) })
     : undefined
+  // Multi-connection listing: non-secret metadata lives in global state, each
+  // launch URL only in Secret Storage. The manager can therefore list and label
+  // connections without ever handling a token.
+  const runtimeConnections = new RuntimeConnectionStore(context.globalState, context.secrets)
   // Stale-record sweeping needs the transition lock, which the first start also
   // takes; running it after the first ready keeps the lock out of the startup
   // chain without skipping the cleanup. Activation without a ready runtime runs
@@ -6436,9 +6446,58 @@ export function activate(context: vscode.ExtensionContext): void {
    * runtime's stop semantics (shared windows keep the process, attach-only
    * runtimes are never stopped) are not re-implemented here.
    */
+  /**
+   * Clear a legacy attach-only broker record under the transition lock.
+   *
+   * DSH reuses a recorded attach-only external runtime instead of spawning, so
+   * a genuine "Start new managed" has to remove that record first. A changed or
+   * vanished record aborts before anything is disconnected or cleared.
+   */
+  const clearLegacySavedRecord = async (legacyKey?: string): Promise<void> => {
+    if (broker === undefined) {
+      if (legacyKey !== undefined) {
+        throw new Error('This window keeps no runtime record, so the saved external runtime cannot be cleared. Nothing was started; reopen Manage Runtimes.')
+      }
+      return
+    }
+    const lock = await broker.acquireTransition()
+    try {
+      const descriptor = broker.readDescriptor()
+      if (descriptor === undefined) {
+        if (legacyKey !== undefined) {
+          throw new Error('The saved DSH runtime record changed or disappeared. Nothing was started; reopen Manage Runtimes and try again.')
+        }
+        return
+      }
+      if (descriptor.manageable) {
+        throw new Error('An extension-started DSH runtime is already recorded. Use Restart Runtime to replace it instead of starting another.')
+      }
+      if (legacyKey === undefined) {
+        throw new Error('A saved external DSH runtime appeared after the list was read. Nothing was started; reopen Manage Runtimes and confirm again.')
+      }
+      if (runtimeDescriptorKey(descriptor) !== legacyKey) {
+        throw new Error('The saved DSH runtime record changed. Nothing was started; reopen Manage Runtimes and try again.')
+      }
+      // Only after every check succeeded: this is the point of no return for the
+      // saved record, so a failure above leaves the current connection intact.
+      broker.clearDescriptor()
+      output.appendLine('[runtime] cleared the saved external DSH record so an independent managed runtime can start')
+    } finally { lock.release() }
+  }
+
+  const startManagedRuntime = async (options: { legacyKey?: string } = {}): Promise<void> => {
+    const ownership = runtime.state.kind === 'ready' ? runtime.state.ownership : undefined
+    if (ownership === 'managed' || ownership === 'adopted') {
+      throw new Error('A managed DSH runtime is already connected. Use Restart Runtime to stop and start it instead of starting another.')
+    }
+    await clearLegacySavedRecord(options.legacyKey)
+    if (ownership === 'external' || ownership === 'attached') await controller.disconnectRuntime()
+    await controller.selectRuntime({ kind: 'managed' })
+  }
+
   const runtimeManagerHost: RuntimeManagerHost = {
     get workspaceOpen() { return workspace !== undefined },
-    snapshot: async () => {
+    snapshot: async (): Promise<RuntimeManagerSnapshot> => {
       const descriptor = broker?.readDescriptor()
       let recorded: RuntimeManagerObservation['recorded']
       // A record inspection takes the broker transition lock; while a start or
@@ -6455,12 +6514,20 @@ export function activate(context: vscode.ExtensionContext): void {
           }
         } catch { /* the current connection and saved runtime still render */ }
       }
-      return runtimeManagerSnapshot({
+      const projected = runtimeManagerSnapshot({
         runtime: runtime.state,
         cwd: controller.cwd,
-        ...(descriptor === undefined || descriptor.manageable ? {} : { saved: { launchUrl: descriptor.launchUrl } }),
+        ...(descriptor === undefined || descriptor.manageable
+          ? {} : { saved: { launchUrl: descriptor.launchUrl, key: runtimeDescriptorKey(descriptor) } }),
         ...(recorded === undefined ? {} : { recorded }),
       })
+      const external = projected.current.ownership === 'external' || projected.current.ownership === 'attached'
+      const currentHost = projected.current.host
+      const connections = runtimeConnections.list().map(profile => ({
+        id: profile.id, label: profile.label, host: profile.host,
+        connected: external && currentHost === profile.host,
+      }))
+      return { ...projected, connections }
     },
     disconnectCurrent: async (): Promise<string> => {
       const before = runtime.state
@@ -6502,26 +6569,74 @@ export function activate(context: vscode.ExtensionContext): void {
       await vscode.commands.executeCommand(commands[action])
     },
     showOutput: () => output.show(true),
+    addConnection: async input => {
+      const profile = await runtimeConnections.add(input)
+      return { id: profile.id, label: profile.label, host: profile.host }
+    },
+    connectConnection: async (id: string): Promise<void> => {
+      const launchUrl = await runtimeConnections.getLaunchUrl(id)
+      if (launchUrl === undefined) {
+        throw new Error('The saved runtime connection has no stored launch URL. Delete it and add it again.')
+      }
+      await controller.selectRuntime({ kind: 'external', launchUrl: existingRuntimeUrl(launchUrl) })
+      await runtimeConnections.markUsed(id)
+    },
+    removeConnection: async (id: string) => {
+      const profile = runtimeConnections.list().find(item => item.id === id)
+      if (profile === undefined) return undefined
+      const connected = runtime.state.kind === 'ready'
+        && (runtime.state.ownership === 'external' || runtime.state.ownership === 'attached')
+        && runtimeHostLabel(runtime.state.localUri.toString()) === profile.host
+      // Deleting a record never signals the external process: only this window's
+      // connection is dropped when it is the one being deleted.
+      if (connected) await controller.disconnectRuntime()
+      const removed = await runtimeConnections.remove(id)
+      return removed === undefined ? undefined : { label: removed.label, host: removed.host }
+    },
+    connectSaved: async (): Promise<void> => {
+      const descriptor = broker?.readDescriptor()
+      if (descriptor === undefined || descriptor.manageable) {
+        throw new Error('No saved external DSH runtime is on record. The saved record may have changed; reopen Manage Runtimes.')
+      }
+      await controller.selectRuntime({ kind: 'external', launchUrl: existingRuntimeUrl(descriptor.launchUrl) })
+    },
+    saveSaved: async () => {
+      const descriptor = broker?.readDescriptor()
+      if (descriptor === undefined || descriptor.manageable) {
+        throw new Error('No saved external DSH runtime is on record. The saved record may have changed; reopen Manage Runtimes.')
+      }
+      const profile = await runtimeConnections.add({ launchUrl: descriptor.launchUrl, label: runtimeHostLabel(descriptor.launchUrl) })
+      return { label: profile.label, host: profile.host }
+    },
+    startManaged: startManagedRuntime,
   }
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.manageRuntimes', () => manageRuntimes(runtimeManagerHost)))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.reconnect', async () => {
     await controller.reconnect().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
   }))
   let runtimePickerBusy = false
-  const chooseRuntime = async (kind: 'external' | 'managed'): Promise<void> => {
+  const chooseExistingRuntime = async (): Promise<void> => {
     if (runtimePickerBusy) return
     runtimePickerBusy = true
     try {
-      if (kind === 'external') await pickExistingRuntime(controller)
-      else await pickManagedRuntime(controller)
+      await pickExistingRuntime(controller)
     } catch (error) {
       void vscode.window.showErrorMessage(error instanceof Error ? error.message : 'Could not select the DSH runtime.')
     } finally {
       runtimePickerBusy = false
     }
   }
-  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.connectExistingRuntime', () => chooseRuntime('external')))
-  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.startManagedRuntime', () => chooseRuntime('managed')))
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.connectExistingRuntime', () => chooseExistingRuntime()))
+  // Both the Command Palette and the Webview button reach this command, so they
+  // must share the manager flow: it warns about and clears a legacy attach-only
+  // record before the runtime's default reuse decision can adopt it.
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.startManagedRuntime', async () => {
+    try {
+      await startManagedRuntimeFlow(runtimeManagerHost)
+    } catch (error) {
+      void vscode.window.showErrorMessage(error instanceof Error ? error.message : 'Could not start the managed DSH runtime.')
+    }
+  }))
   if (workspace !== undefined) {
     context.subscriptions.push(watchDebugConfiguration(controller, workspace.uri, output))
   }
