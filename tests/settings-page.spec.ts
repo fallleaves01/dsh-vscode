@@ -437,6 +437,54 @@ describe('dedicated DSH settings surface', () => {
     expect(document.body.textContent).toContain(expected)
   })
   it.each([
+    ['no-hmr', 'This runtime has hot module replacement disabled'],
+    ['package-moved', 'resolves to another directory'],
+    ['host-module', 'modules the runtime itself loaded'],
+    ['unmanaged-plugin', 'running outside the plugin list'],
+    ['module-comparison', 'could not compare the loaded plugins'],
+  ])('explains restart reason %s from the closed runtime set', (restartReason, expected) => {
+    const h = harness(updatableBundlePageState()); h.click('Built-in plugins'); h.click('Check for updates')
+    h.result({ ok: true, installed: '0.3.0', versions: [{ version: '0.4.0', prerelease: false, bundle: true }], omitted: 0 })
+    document.querySelector<HTMLButtonElement>('[aria-label="Update to version 0.4.0"]')!.click()
+    h.result({ ok: true, outcome: 'restart-required', step: 'install', from: '0.3.0', to: '0.4.0', restartReason })
+    const text = document.body.textContent!
+    expect(text).toContain('Restart the DeepSeek Harness runtime to apply the change.')
+    expect(text).toContain(expected)
+  })
+  it.each(['invented-reason', '<img src=x onerror=bad()>'])('falls back to the generic restart sentence for reason %s', restartReason => {
+    const h = harness(updatableBundlePageState()); h.click('Built-in plugins'); h.click('Check for updates')
+    h.result({ ok: true, installed: '0.3.0', versions: [{ version: '0.4.0', prerelease: false, bundle: true }], omitted: 0 })
+    document.querySelector<HTMLButtonElement>('[aria-label="Update to version 0.4.0"]')!.click()
+    h.result({ ok: true, outcome: 'restart-required', step: 'install', from: '0.3.0', to: '0.4.0', restartReason })
+    const text = document.body.textContent!
+    expect(text).toContain('Restart the DeepSeek Harness runtime to apply the change.')
+    expect(text).not.toContain(restartReason)
+    expect(document.querySelector('.bundle-card img')).toBeNull()
+  })
+  it.each(['check', 'remove', 'install'])('uses a neutral unchanged sentence when the %s target has no version', step => {
+    const h = harness(updatableBundlePageState()); h.click('Built-in plugins'); h.click('Check for updates')
+    h.result({ ok: true, installed: '0.3.0', versions: [{ version: '0.4.0', prerelease: false, bundle: true }], omitted: 0 })
+    document.querySelector<HTMLButtonElement>('[aria-label="Update to version 0.4.0"]')!.click()
+    h.result({ ok: false, outcome: 'unchanged', step, from: '', to: '0.4.0', error: 'The runtime refused the bundle change (invalid-spec).' })
+    const text = document.body.textContent!
+    expect(text).toContain('the installed bundle is unchanged')
+    expect(text).not.toContain('remains installed')
+    expect(text).not.toContain('was not removed')
+    expect(text).not.toContain('could not be restored')
+  })
+  it('clears the previous update result when a new version check succeeds', () => {
+    const h = harness(updatableBundlePageState()); h.click('Built-in plugins'); h.click('Check for updates')
+    h.result({ ok: true, installed: '0.3.0', versions: [{ version: '0.4.0', prerelease: false, bundle: true }], omitted: 0 })
+    document.querySelector<HTMLButtonElement>('[aria-label="Update to version 0.4.0"]')!.click()
+    h.result({ ok: false, outcome: 'restored', step: 'install', from: '0.3.0', to: '0.4.0', restoreApplication: 'applied', error: 'The runtime could not change this bundle.' })
+    expect(document.body.textContent).toContain('was reinstalled')
+    h.click('Check for updates')
+    h.result({ ok: true, installed: '0.3.0', versions: [{ version: '0.5.0', prerelease: false, bundle: true }], omitted: 0 })
+    const text = document.body.textContent!
+    expect(text).not.toContain('was reinstalled')
+    expect(text).toContain('0.5.0')
+  })
+  it.each([
     ['check', 'This bundle is not compatible with the running DSH version.', 'was not accepted'],
     ['remove', 'The runtime could not change this bundle.', 'did not start'],
     ['install', 'The runtime could not change this bundle.', 'remains installed'],

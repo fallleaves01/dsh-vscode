@@ -269,6 +269,18 @@ describe('third-party bundle version projection', () => {
     expect(publicBundleVersions({ status: 'listed' })).toBeUndefined()
     expect(publicBundleVersions({ status: 'listed', installed: '', versions: [] })).toBeUndefined()
   })
+  it('strips C1 controls and bidi overrides from projected display text', () => {
+    const projected = publicBundleVersions({
+      status: 'listed', installed: '0.3.0', versions: [{
+        version: '0.4.0', bundle: true, prerelease: false,
+        deprecated: '\u5df2\u5f03\u7528\u202E\u0085',
+        incompatible: { name: '@acme/\u202Eevil', version: '0.4.0', runtimeVersion: '0.2.1' },
+      }], omitted: 0,
+    })
+    expect(projected!.versions[0]!.deprecated).toBe('\u5df2\u5f03\u7528')
+    expect(projected!.versions[0]!.incompatible).toEqual({ name: '@acme/evil', version: '0.4.0', runtimeVersion: '0.2.1' })
+    expect(JSON.stringify(projected)).not.toMatch(/[\u0080-\u009F\u200B\u202A-\u202E]/u)
+  })
   it('keeps order, caps the page size and deduplicates repeated versions', () => {
     const versions: Record<string, unknown>[] = Array.from({ length: 150 }, (_value, index) => ({ version: `1.0.${String(index)}`, prerelease: false, bundle: true }))
     versions.push({ version: '1.0.0', prerelease: true, bundle: true })

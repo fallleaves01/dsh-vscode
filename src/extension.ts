@@ -381,7 +381,9 @@ export function translationFailureText(error: unknown): string {
  * maps to the same neutral sentence, because none of that text may be shown.
  */
 function sessionMarkdownFailureText(code: string | undefined): string {
-  if (code === 'session-export-unavailable') return 'This runtime does not support session Markdown export.'
+  if (code === 'session-export-unavailable') {
+    return 'The conversation could not be copied as Markdown. The runtime may not support this export, or the conversation may no longer exist.'
+  }
   if (code === 'authentication-required') return 'DSH authentication expired. Reconnect the runtime and try again.'
   return 'The session could not be copied as Markdown. Try again.'
 }
@@ -5526,9 +5528,10 @@ class DshSurface implements vscode.Disposable {
         case 'copy-session-markdown':
           // The export is asynchronous, so its outcome comes back as a Host
           // notice rather than the Webview's local confirmation for an id copy.
+          // A failure keeps the notice longer and marks it as an error.
           if (typeof value.sessionId === 'string') {
             const result = await this.controller.copySessionAsMarkdown(value.sessionId)
-            await this.webview.postMessage({ type: 'session-notice', text: result.text })
+            await this.webview.postMessage({ type: 'session-notice', text: result.text, ...(result.ok ? {} : { tone: 'error' }) })
           }
           return
         case 'rename-session':
@@ -5930,6 +5933,8 @@ class DshSurface implements vscode.Disposable {
         case 'open-file':
           if (typeof value.path === 'string') {
             if ('sessionId' in value && (value.sessionId !== this.controller.state.sessionId || value.cwd !== this.controller.state.cwd)) return
+            // rc.1 parity: the link carries its start line only; anything that
+            // is not a number is opened without a selection.
             await this.controller.openFile(
               value.path,
               typeof value.line === 'number' && Number.isInteger(value.line) ? value.line : undefined,

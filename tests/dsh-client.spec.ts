@@ -1658,6 +1658,37 @@ describe('DSH rc.1 third-party bundle updates', () => {
     }
   })
 
+  it('refuses an update result with an empty target version', async () => {
+    const h = harness()
+    // `from` may be empty for a refused target check, but `to` always names the version.
+    h.results['pluginManager/updateBundle'] = { from: '', to: '', step: 'check', result: { changed: false, application: 'failed', stage: 'install', target: pkg } }
+    await expect(h.client.updateBundle(pkg, '0.4.0')).rejects.toMatchObject({ code: 'invalid-response' })
+    h.results['pluginManager/updateBundle'] = { from: '0.3.0', to: '', step: 'install', result: { changed: true, application: 'applied' } }
+    await expect(h.client.updateBundle(pkg, '0.4.0')).rejects.toMatchObject({ code: 'invalid-response' })
+  })
+
+  it('strips C1 controls and Unicode format characters from display text', async () => {
+    const h = harness()
+    h.results['pluginManager/listVersions'] = {
+      status: 'listed', installed: '0.3.0', omitted: 0,
+      versions: [version({
+        tags: ['lat\u202Eest', 'zero\u200Bwidth'],
+        deprecated: 'safe\u202Etext\u0085\u202C',
+        incompatible: { name: '@acme/\u202Eevil', version: '0.4.0', runtimeVersion: '0.2.1', requirements: { 'engines.dsh': '>=0.3.0\u202E' } },
+      })],
+    }
+    const list = await h.client.listBundleVersions(pkg)
+    expect(list).toMatchObject({
+      status: 'listed',
+      versions: [{
+        tags: ['latest', 'zerowidth'],
+        deprecated: 'safetext',
+        incompatible: { name: '@acme/evil', version: '0.4.0', runtimeVersion: '0.2.1', requirements: { 'engines.dsh': '>=0.3.0' } },
+      }],
+    })
+    expect(JSON.stringify(list)).not.toMatch(/[\u0080-\u009F\u200B\u202A-\u202E]/u)
+  })
+
   it('refuses an update result with an unknown step', async () => {
     const h = harness()
     h.results['pluginManager/updateBundle'] = { from: '0.3.0', to: '0.4.0', step: 'restoring', result: { changed: true, application: 'applied' } }

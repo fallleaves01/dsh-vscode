@@ -126,6 +126,9 @@ export const settingsPageCss = `
   .dsh-settings .bundle-card .switch-row { margin-top: 4px; }
   .dsh-settings .bundle-description { overflow-wrap: anywhere; }
   .dsh-settings .bundle-status { font-size: 12px; color: var(--dsh-muted); }
+  .dsh-settings .bundle-version { display: flex; width: 100%; align-items: center; gap: 8px; min-height: 30px; padding: 4px 8px; border-radius: 8px; text-align: left; }
+  .dsh-settings .bundle-version .version-number { flex: none; font: 12px/18px var(--vscode-editor-font-family, monospace); }
+  .dsh-settings .bundle-version .hint { flex: none; }
   .dsh-settings .choice-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dsh-settings .notice { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: var(--dsh-hover); font-size: 12px; overflow-wrap: anywhere; }
   .dsh-settings .empty { padding: 16px 0; color: var(--dsh-muted); font-size: 13px; }

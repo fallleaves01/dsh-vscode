@@ -122,8 +122,15 @@ function escapeHtml(text: string): string {
  *
  * A model writes the file it means as the destination and puts any label on
  * the link, so the destination — not the label text — is the path to open.
- * URLs, fragments, queries, malformed escapes and line ranges DSH does not
- * accept are rejected rather than guessed at.
+ * URLs, queries and malformed escapes are rejected rather than guessed at, and
+ * the sidebar's existing path rules (control characters, shared paths, URL
+ * schemes) stay in force.
+ *
+ * DSH 0.2.2-rc.1 parity: a hash fragment names the start line only
+ * (`#L5` or `#L5-L9`; the range end is not propagated), a colon suffix names
+ * the same start line (`path:5`, `path:5:3`, `path:5-9`; the column and the
+ * range end only take part in the match), and an invalid fragment or suffix
+ * opens the file without a selection instead of dropping the link.
  */
 export function parseFileLink(value: string): { path: string; line?: number } | undefined {
   const hash = value.indexOf('#')
@@ -135,15 +142,32 @@ export function parseFileLink(value: string): { path: string; line?: number } | 
   } catch {
     return undefined
   }
+  // A known non-file scheme is rejected before the suffix is stripped, because
+  // `mailto:5` or `tel:123` would otherwise lose the scheme together with the
+  // numeric suffix and turn into a bare local file name. Relative project forms
+  // such as `a.ts:42` carry no such scheme and still parse.
+  if (/^(?:https?|ftps?|file|mailto|tel|callto|sms|cid|xmpp|data|javascript|blob|wss?):/i.test(path)) return undefined
+  // The suffix is stripped before the sidebar's path validation: a bare project
+  // filename such as `a.ts:42` is a legitimate sidebar link, while rc.1's own
+  // parser, which requires an absolute spelling, rejects the same bare form.
+  let suffixLine: number | undefined
+  if (hash < 0) {
+    const suffix = /:(\d+)(?::\d+|-(\d+))?$/.exec(path)
+    if (suffix !== null) {
+      path = path.slice(0, -suffix[0].length)
+      const start = Number(suffix[1]), end = suffix[2] === undefined ? start : Number(suffix[2])
+      if (path !== '' && Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= 1 && end >= start) {
+        suffixLine = start
+      }
+    }
+  }
   if (path === '' || /[\u0000-\u001f\u007f]/.test(path) || /^[\\/]{2}/.test(path)
     || (/^[a-z][a-z\d+.-]*:/i.test(path) && !/^[a-z]:[\\/]/i.test(path))) return undefined
-  if (hash < 0) return { path }
-  const fragment = value.slice(hash + 1)
-  const match = /^L([1-9]\d*)(?:-L([1-9]\d*))?$/.exec(fragment)
-  if (match === null) return undefined
-  const line = Number(match[1])
-  const end = match[2] === undefined ? line : Number(match[2])
-  if (!Number.isSafeInteger(line) || !Number.isSafeInteger(end) || end < line) return undefined
+  if (hash < 0) return suffixLine === undefined ? { path } : { path, line: suffixLine }
+  const match = /^L(\d+)(?:-L(\d+))?$/.exec(value.slice(hash + 1))
+  if (match === null) return { path }
+  const line = Number(match[1]), end = match[2] === undefined ? line : Number(match[2])
+  if (!Number.isSafeInteger(line) || !Number.isSafeInteger(end) || line < 1 || end < line) return { path }
   return { path, line }
 }
 

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as realMarkdown from '../src/markdown.mjs'
 import { harness, type Harness } from './webview-harness.js'
 
 const live: Harness[] = []
@@ -35,6 +36,34 @@ describe('main conversation directory and quick switcher', () => {
   it('keeps independent conversations visible and orders them by last update', () => {
     const h = open(); h.sendState({ sessionId: 'parent', sessions: [parent, { id: 'fork', title: 'Independent fork', updatedAt: Date.now() + 1000 }, child] })
     h.click('#sessionTrigger'); expect(ids(h)).toEqual(['fork', 'parent'])
+  })
+  it('shows a reported working directory in the row tooltip and accessible label', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [{ ...parent, cwd: '/workspace/project' }, { id: 'other', title: 'Other work', updatedAt: 1 }] })
+    h.click('#sessionTrigger')
+    const row = h.document.querySelector('#sessionList .session-row[data-session-id="parent"] .session-main')!
+    const detail = row.querySelector('.session-meta')!.textContent
+    expect(row.getAttribute('title')).toBe('Main task · /workspace/project · ' + detail)
+    expect(row.getAttribute('aria-label')).toBe('Main task — /workspace/project — ' + detail)
+  })
+  it('keeps the row tooltip unchanged when no working directory is reported', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent] })
+    h.click('#sessionTrigger')
+    const row = h.document.querySelector('#sessionList .session-row[data-session-id="parent"] .session-main')!
+    const detail = row.querySelector('.session-meta')!.textContent
+    expect(row.getAttribute('title')).toBe('Main task · ' + detail)
+    expect(row.getAttribute('aria-label')).toBe('Main task — ' + detail)
+  })
+  it('adds the working directory to an archived row restoration tooltip', () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions: [parent],
+      archivedSessions: [{ id: 'archived', title: 'Completed work', cwd: '/workspace/old' }] })
+    h.click('#conversationHome')
+    h.click('#homeArchiveToggle')
+    const archived = h.document.querySelector('#homeSessionList .session-row[data-session-id="archived"] .session-main')!
+    expect(archived.getAttribute('title')).toBe('Restore “Completed work” · /workspace/old')
+    expect(archived.getAttribute('aria-label')).toBe('Restore Completed work — /workspace/old')
   })
   it('reports descendant attention on its parent and counts each other main conversation once', () => {
     const h = open(); h.sendState({ sessionId: 'other', sessions: [{ id: 'other', title: 'Current' }, parent, { ...child, running: true, attention: { approvals: 1, questions: 1 } }, { ...child, id: 'leaf', parentId: 'kid', attention: { approvals: 2, questions: 0 } }] })
@@ -124,8 +153,38 @@ describe('main conversation directory and quick switcher', () => {
     expect(notice.textContent).toBe('Session copied as Markdown.')
     expect(notice.classList.contains('hidden')).toBe(false)
     // A Host failure notice replaces the same element instead of adding a banner.
-    h.send({ type: 'session-notice', text: 'This runtime does not support session Markdown export.' })
-    expect(notice.textContent).toBe('This runtime does not support session Markdown export.')
+    h.send({ type: 'session-notice', text: 'The conversation could not be copied as Markdown. The runtime may not support this export, or the conversation may no longer exist.', tone: 'error' })
+    expect(notice.textContent).toBe('The conversation could not be copied as Markdown. The runtime may not support this export, or the conversation may no longer exist.')
+    expect(notice.classList.contains('error')).toBe(true)
+  })
+
+  it('keeps an error-tone notice longer than a confirmation and marks it as failed', () => {
+    vi.useFakeTimers()
+    try {
+      const h = open()
+      h.sendState({ sessionId: 'parent', sessions: [parent] })
+      const notice = h.document.getElementById('sessionNotice')!
+      h.send({ type: 'session-notice', text: 'The session could not be copied as Markdown. Try again.', tone: 'error' })
+      expect(notice.textContent).toBe('The session could not be copied as Markdown. Try again.')
+      expect(notice.classList.contains('error')).toBe(true)
+      expect(notice.classList.contains('hidden')).toBe(false)
+      // 1600 ms is the confirmation lifetime; an error must outlive it.
+      vi.advanceTimersByTime(1600)
+      expect(notice.classList.contains('hidden')).toBe(false)
+      vi.advanceTimersByTime(2400)
+      expect(notice.classList.contains('hidden')).toBe(true)
+      // A later confirmation reuses the element without the error marking and
+      // leaves after the default lifetime.
+      h.send({ type: 'session-notice', text: 'Session copied as Markdown.' })
+      expect(notice.classList.contains('error')).toBe(false)
+      expect(notice.textContent).toBe('Session copied as Markdown.')
+      vi.advanceTimersByTime(1599)
+      expect(notice.classList.contains('hidden')).toBe(false)
+      vi.advanceTimersByTime(1)
+      expect(notice.classList.contains('hidden')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('disables Copy Session as Markdown on rows that are not the open conversation', () => {
@@ -546,5 +605,51 @@ describe('runtime connection block opens the runtime manager', () => {
     expect(restart.title).toContain('Stop and start')
     const output = buttons.find(button => button.textContent === 'Show Output')!
     expect(output.title).toContain('output channel')
+  })
+})
+
+describe('Markdown file links carry their rc.1 start line', () => {
+  function openWithRealMarkdown(): Harness {
+    const instance = harness()
+    live.push(instance)
+    ;(window as unknown as Record<string, unknown>).dshMarkdown = realMarkdown
+    return instance
+  }
+  function answer(h: Harness, text: string): void {
+    h.sendState({ sessionId: 'session-a', messages: [{ id: 'm1', role: 'assistant', text }] })
+  }
+  const fileLinks = (h: Harness): HTMLButtonElement[] =>
+    [...h.document.querySelectorAll<HTMLButtonElement>('button.file-link')]
+
+  it('posts the start line of a hash range, rc.1 parity: hash line only', async () => {
+    const h = openWithRealMarkdown()
+    answer(h, 'The fix is in [the fix](src/a.ts#L7-L9).')
+    await h.settle()
+    h.posts.length = 0
+    const link = fileLinks(h)[0]!
+    // A range names its start line only; the end is not propagated downstream.
+    expect(link.getAttribute('title')).toBe('Open src/a.ts:7')
+    link.dispatchEvent(new Event('click', { bubbles: true }))
+    expect(h.posts).toEqual([{ type: 'open-file', path: 'src/a.ts', line: 7 }])
+  })
+
+  it('tolerates a colon suffix as the start line and an invalid fragment as the file alone', async () => {
+    const h = openWithRealMarkdown()
+    answer(h, '[suffix](src/a.ts:5:3) and [bad](src/b.ts#L5:3) and [zero](src/c.ts#L0) and [section](src/d.ts#heading)')
+    await h.settle()
+    h.posts.length = 0
+    const links = fileLinks(h)
+    // rc.1 parity: colon suffix tolerated; invalid fragment opens the file
+    // without a selection.
+    expect(links.map(link => link.getAttribute('title'))).toEqual([
+      'Open src/a.ts:5', 'Open src/b.ts', 'Open src/c.ts', 'Open src/d.ts',
+    ])
+    for (const link of links) link.dispatchEvent(new Event('click', { bubbles: true }))
+    expect(h.posts).toEqual([
+      { type: 'open-file', path: 'src/a.ts', line: 5 },
+      { type: 'open-file', path: 'src/b.ts' },
+      { type: 'open-file', path: 'src/c.ts' },
+      { type: 'open-file', path: 'src/d.ts' },
+    ])
   })
 })

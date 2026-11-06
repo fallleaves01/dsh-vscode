@@ -9,6 +9,57 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-rc.1.5] - 2026-11-06
+
+### Added
+
+- Conversation rows show the working directory the runtime reports in the row
+  tooltip and accessible name, so conversations with the same title or no
+  project group can be told apart. The directory is display-only: a row without
+  one keeps its previous tooltip, and the value is not logged or persisted.
+- Answer file links adopt the DeepSeek Harness `0.2.2-rc.1` fragment syntax
+  while keeping the sidebar's existing path rules. A
+  hash fragment accepts `#L5` and `#L5-L9`; a colon suffix accepts `path:5`,
+  `path:5:3` and `path:5-9`. The range end and the column are validated only:
+  the file opens at the start line, so no range is selected and no column is
+  applied. An invalid fragment or suffix (for example `#L5:3`, `#L0`,
+  `#L2-L1` or `#5`) opens the file without a selection instead of dropping the
+  link. Path, URL and shared-path rules are unchanged.
+
+### Changed
+
+- The npm `latest` dist-tag now points at `0.2.2-rc.1` (previously
+  `0.2.1-rc.5`); `next` and `alpha` are unchanged, and no new version was
+  published. A default `npm install -g @deepseek-ai/dsh` therefore installs the
+  current runtime baseline, which the existing support matrix already covers;
+  no runtime upgrade or protocol change is required.
+
+### Fixed
+
+- Session Markdown export failure no longer asserts that the runtime lacks the
+  feature. A `404` from the export route now reports that the runtime may not
+  support the export or that the conversation may no longer exist, without
+  echoing the response body, a path or an exception. The failure notice keeps
+  an error style and stays visible for about four seconds instead of the
+  1.6-second confirmation.
+- Third-party bundle updates explain a restart with the runtime's closed set of
+  restart reasons (`no-hmr`, `package-moved`, `host-module`,
+  `unmanaged-plugin`, `module-comparison`); an unknown reason falls back to the
+  generic restart sentence. An update whose installed version could not be
+  resolved (`from` is empty) now says that the installed bundle is unchanged
+  instead of claiming a version "remains installed", the client rejects an
+  update result with an empty target version, and runtime display text strips
+  C1 controls and Unicode format characters (including bidirectional overrides)
+  in addition to C0 controls and DEL. A successful version check clears the
+  previous update result, and version rows align with a monospaced version
+  number.
+
+### Notes
+
+- The new behaviour is covered by unit tests; this build was not run end to end
+  against a live DSH runtime, and no manual smoke test was performed in a real
+  VS Code extension host.
+
 ## [0.2.2-rc.1.4] - 2026-11-05
 
 ### Added

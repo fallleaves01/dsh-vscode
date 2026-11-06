@@ -193,6 +193,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .session-action:disabled { opacity: .5; }
     .session-notice { position: absolute; z-index: 51; top: 8px; left: 50%; transform: translateX(-50%); padding: 4px 10px; border-radius: 6px; border: 1px solid var(--dsh-border); background: var(--vscode-menu-background, var(--dsh-surface)); color: var(--vscode-foreground); font-size: 11px; box-shadow: 0 4px 14px var(--vscode-widget-shadow); }
     .session-notice.hidden { display: none; }
+    .session-notice.error { border-color: var(--vscode-inputValidation-errorBorder, #be1100); color: var(--vscode-errorForeground, #f48771); }
     .icon-button { width: 28px; height: 28px; min-width: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--vscode-icon-foreground); }
     .icon-button:hover { background: var(--vscode-toolbar-hoverBackground); }
     #openSettings { width: 36px; min-width: 36px; height: 36px; border-radius: 12px; }
@@ -1386,16 +1387,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       document.querySelectorAll('.session-more[aria-expanded="true"]').forEach(button => button.setAttribute('aria-expanded', 'false'));
       if (focus && previous && previous.anchor.isConnected) previous.anchor.focus();
     }
-    /** Transient confirmation for a local-only action (copying an id). */
-    function showSessionNotice(text) {
+    /**
+     * Transient confirmation for a local-only action, or one outcome the Host
+     * reports. An error tone stays about four seconds: a failure the user is
+     * told to retry must not disappear at the pace of a confirmation.
+     */
+    function showSessionNotice(text, tone) {
       if (!elements.sessionNotice) return;
+      const failed = tone === 'error';
       elements.sessionNotice.textContent = text;
+      elements.sessionNotice.classList.toggle('error', failed);
       elements.sessionNotice.classList.remove('hidden');
       if (sessionNoticeTimer !== undefined) clearTimeout(sessionNoticeTimer);
       sessionNoticeTimer = setTimeout(() => {
         elements.sessionNotice.classList.add('hidden');
         sessionNoticeTimer = undefined;
-      }, 1600);
+      }, failed ? 4000 : 1600);
     }
     function positionSessionActions() {
       if (!sessionAction) return;
@@ -1494,8 +1501,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const indicator = node('span', 'session-indicator' + (waiting ? ' attention' : status.running ? ' running' : status.unread ? ' unread' : ''));
       indicator.title = waiting || (status.running ? 'Running' : status.unread ? 'New activity' : ''); indicator.setAttribute('aria-hidden', 'true');
       const title = string(session.title, 'New conversation');
-      main.title = archived ? 'Restore “' + title + '”' : title + (detail ? ' · ' + detail : '');
-      main.setAttribute('aria-label', archived ? 'Restore ' + title : title + (detail ? ' — ' + detail : ''));
+      // The runtime may report where each conversation runs; a row without one
+      // keeps exactly the tooltip it had before. The directory is tooltip and
+      // label material only — never a log line.
+      const cwd = typeof session.cwd === 'string' ? session.cwd.trim().slice(0, 1000) : '';
+      main.title = archived
+        ? 'Restore “' + title + '”' + (cwd === '' ? '' : ' · ' + cwd)
+        : [title, cwd, detail].filter(Boolean).join(' · ');
+      main.setAttribute('aria-label', archived
+        ? 'Restore ' + title + (cwd === '' ? '' : ' — ' + cwd)
+        : [title, cwd, detail].filter(Boolean).join(' — '));
       main.append(indicator, node('span', 'session-name', title), node('span', 'session-meta', archived && snippet !== undefined ? 'Archived' : detail));
       if (snippet !== undefined) main.append(node('span', 'session-snippet', string(snippet)));
       main.addEventListener('click', () => {
@@ -1823,6 +1838,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     }
     function fileButton(path, line, label, className) {
       const button = node('button', 'file-link' + (className ? ' ' + className : ''), label || path);
+      // rc.1 parity: a link names its start line only; the tooltip and the
+      // message say exactly the same thing.
       button.type = 'button'; button.title = 'Open ' + path + (line ? ':' + String(line) : '');
       button.setAttribute('aria-label', button.title);
       button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); vscode.postMessage({ type: 'open-file', path, ...(line ? { line } : {}) }); });
@@ -6742,7 +6759,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (!event.data) return;
       // Host-driven notices name an action's outcome the Webview cannot know
       // locally (a clipboard write completes after the menu closes).
-      if (event.data.type === 'session-notice' && typeof event.data.text === 'string') showSessionNotice(event.data.text);
+      if (event.data.type === 'session-notice' && typeof event.data.text === 'string') {
+        showSessionNotice(event.data.text, typeof event.data.tone === 'string' ? event.data.tone : undefined);
+      }
       if (event.data.type === 'conversation-created' && pendingConversationCreation && event.data.requestId === pendingConversationCreation.requestId && event.data.cwd === pendingConversationCreation.cwd) {
         if (typeof event.data.sessionId === 'string' && !event.data.error) {
           pendingConversationCreation.sessionId = event.data.sessionId;

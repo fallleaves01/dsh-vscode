@@ -169,7 +169,8 @@ describe('Markdown rendering', () => {
 
   it('opens the destination a local link names, not its label', () => {
     const files: Array<{ path: string; line?: number }> = []
-    const root = renderMarkdown('See [rdma.cuh](csrc/kernels/rdma.cuh#L42), [the fix](src/a.ts#L7-L9) and [MIT](LICENSE).', {
+    const root = renderMarkdown('See [rdma.cuh](csrc/kernels/rdma.cuh#L42), [the fix](src/a.ts#L7-L9), '
+      + '[trace](src/c.ts#L5:3), [suffix](src/b.ts:5:3) and [MIT](LICENSE).', {
       appendFileText(parent, text) { parent.append(document.createTextNode(text)) },
       inlineCode(text) { const button = document.createElement('button'); button.textContent = text; return button },
       link(href) { const anchor = document.createElement('a'); anchor.href = href; return anchor },
@@ -181,13 +182,18 @@ describe('Markdown rendering', () => {
       },
     })
     // The label is what the reader sees; the destination is what the click opens.
+    // rc.1 parity: a hash range names its start line only, an unusable hash
+    // fragment opens the file without a selection, and a colon suffix names the
+    // start line while its column only takes part in the match.
     expect(files).toEqual([
       { path: 'csrc/kernels/rdma.cuh', line: 42 },
       { path: 'src/a.ts', line: 7 },
+      { path: 'src/c.ts' },
+      { path: 'src/b.ts', line: 5 },
       { path: 'LICENSE' },
     ])
     expect([...root.querySelectorAll('button.file-link')].map(button => button.textContent))
-      .toEqual(['rdma.cuh', 'the fix', 'MIT'])
+      .toEqual(['rdma.cuh', 'the fix', 'trace', 'suffix', 'MIT'])
     expect(root.querySelector('a')).toBeNull()
   })
 
@@ -264,7 +270,7 @@ describe('Markdown rendering', () => {
     expect(root.textContent?.trim()).toBe('fix other bad mail')
   })
 
-  it('decodes an escaped destination and refuses a fragment, query or URL that is not a file', () => {
+  it('decodes an escaped destination, keeps a tolerantly-read file link, and refuses a query or URL that is not a file', () => {
     const files: string[] = []
     const root = renderMarkdown('[spaced](My%20Project/src/a.ts) [section](#heading) [scheme](mailto:a@b.com) '
       + '[url](https://example.com/a.ts) [bad](src/a.ts#L0)', {
@@ -278,9 +284,28 @@ describe('Markdown rendering', () => {
         return button
       },
     })
-    expect(files).toEqual(['My Project/src/a.ts'])
+    // An unusable fragment still names the file, so the link opens it without a
+    // selection rather than disappearing.
+    expect(files).toEqual(['My Project/src/a.ts', 'src/a.ts'])
     // Everything else stays inert text: no dead link for the user to click.
     expect(root.textContent?.trim()).toBe('spaced section scheme url bad')
+  })
+
+  it('reads rc.1 file links: hash line only; colon suffix tolerated; invalid fragment opens the file without a selection', () => {
+    // The authoritative rc.1 parser accepts `#L<n>`/`#L<n>-L<m>` and the colon
+    // suffixes `:n`, `:n:c`, `:n-m`; only the start line reaches the caller.
+    expect(parseFileLink('a.ts#L42')).toEqual({ path: 'a.ts', line: 42 })
+    expect(parseFileLink('a.ts#L42-L50')).toEqual({ path: 'a.ts', line: 42 })
+    expect(parseFileLink('a.ts:42')).toEqual({ path: 'a.ts', line: 42 })
+    expect(parseFileLink('a.ts:42:7')).toEqual({ path: 'a.ts', line: 42 })
+    expect(parseFileLink('a.ts:42-50')).toEqual({ path: 'a.ts', line: 42 })
+    expect(parseFileLink('C:/x.ts')).toEqual({ path: 'C:/x.ts' })
+    expect(parseFileLink('C:/x.ts:42')).toEqual({ path: 'C:/x.ts', line: 42 })
+    // Unusable positions keep the file: the link opens it without a selection.
+    for (const href of ['a.ts#L0', 'a.ts#L2-L1', 'a.ts#L5:3', 'a.ts#1', 'a.ts#section',
+      'a.ts:0', 'a.ts:42-7']) {
+      expect(parseFileLink(href), href).toEqual({ path: 'a.ts' })
+    }
   })
 
   it.each([
@@ -293,9 +318,6 @@ describe('Markdown rendering', () => {
     ['C:/x.ts', { path: 'C:/x.ts' }],
     ['C:x.ts', undefined],
     ['#L1', undefined],
-    ['a.ts#L0', undefined],
-    ['a.ts#L2-L1', undefined],
-    ['a.ts#1', undefined],
     ['a.ts?x=1', undefined],
     ['//host/share/a.ts', undefined],
     ['file:///etc/passwd', undefined],
@@ -303,6 +325,35 @@ describe('Markdown rendering', () => {
     ['mailto:a@b.com', undefined],
     ['%ZZ', undefined],
     ['a%00b.ts', undefined],
+    // Colon suffixes (rc.1 parity): the start line is returned, the column and
+    // the range end only take part in the match.
+    ['a.ts:42', { path: 'a.ts', line: 42 }],
+    ['a.ts:42:7', { path: 'a.ts', line: 42 }],
+    ['a.ts:42-50', { path: 'a.ts', line: 42 }],
+    ['src/a.ts:42', { path: 'src/a.ts', line: 42 }],
+    ['C:/x.ts:42', { path: 'C:/x.ts', line: 42 }],
+    ['a.ts:0', { path: 'a.ts' }],
+    ['a.ts:42-7', { path: 'a.ts' }],
+    ['a.ts:99999999999999999999', { path: 'a.ts' }],
+    ['a.ts:abc', undefined],
+    // A known non-file scheme is refused before the suffix is stripped, so it
+    // cannot turn into a bare local file name.
+    ['mailto:5', undefined],
+    ['tel:123', undefined],
+    ['javascript:1', undefined],
+    ['ftps:5', undefined],
+    ['sms:123', undefined],
+    ['xmpp:5', undefined],
+    ['https://example.com/a.ts:42', undefined],
+    ['//host/share/a.ts:42', undefined],
+    // An unusable hash fragment opens the file without a selection: rc.1 parity.
+    ['a.ts#L0', { path: 'a.ts' }],
+    ['a.ts#L2-L1', { path: 'a.ts' }],
+    ['a.ts#L5:3', { path: 'a.ts' }],
+    ['a.ts#1', { path: 'a.ts' }],
+    ['a.ts#', { path: 'a.ts' }],
+    ['a.ts#section', { path: 'a.ts' }],
+    ['a.ts#L99999999999999999999', { path: 'a.ts' }],
   ])('parses %s the way DSH does', (href, expected) => {
     expect(parseFileLink(href)).toEqual(expected)
   })

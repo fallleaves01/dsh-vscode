@@ -48,6 +48,14 @@ function bundleVersionFailure(problem: 'network' | 'unknown' | 'not-found' | 'no
 
 const ATTACH_ONLY_BUNDLE_MESSAGE = 'This external runtime is attach-only. Change its plugin bundles from the runtime that owns them.'
 
+/**
+ * The runtime's closed set of restart reasons (`RestartReason`).
+ *
+ * Only these codes may reach the Webview; the page maps each to its own copy,
+ * so a new runtime value cannot put arbitrary text on screen.
+ */
+const RESTART_REASON_CODES: ReadonlySet<string> = new Set(['no-hmr', 'package-moved', 'host-module', 'unmanaged-plugin', 'module-comparison'])
+
 /** One settings surface, bound to a runtime client rather than the selected chat. */
 export class SettingsPanelManager implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined
@@ -344,9 +352,14 @@ export class SettingsPanelManager implements vscode.Disposable {
           }
           // Success is only an installation the runtime applied.
           if (application === 'applied' || application === 'restart-required') {
+            // A restart-required result may name why the change waits; forward
+            // only a whitelisted code so the page owns the copy, never the wire text.
+            const restartReason = typeof result.restartReason === 'string' && RESTART_REASON_CODES.has(result.restartReason)
+              ? result.restartReason.slice(0, 64) : undefined
             void panel.webview.postMessage({ type: 'result', ...base, ok: true,
               outcome: application === 'restart-required' ? 'restart-required' : 'updated',
-              restartRequired: application === 'restart-required' })
+              restartRequired: application === 'restart-required',
+              ...(restartReason === undefined ? {} : { restartReason }) })
             return
           }
           const restore = update.restore

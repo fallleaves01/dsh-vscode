@@ -14,6 +14,21 @@ interface ProviderDraft {
 }
 type Message = Record<string, unknown>
 
+/**
+ * DSH restart reasons and their operator-facing explanation.
+ *
+ * The runtime reports a closed set (`RestartReason`); an unknown value is not
+ * rendered, so a new runtime value cannot smuggle arbitrary text into the page.
+ */
+const RESTART_REASON_TEXT: Readonly<Record<string, string>> = {
+  'no-hmr': 'This runtime has hot module replacement disabled, so changes apply only at startup.',
+  'package-moved': 'An installed package now resolves to another directory, or the change replaces a package the DSH installation provides.',
+  'host-module': 'The change reaches modules the runtime itself loaded.',
+  'unmanaged-plugin': 'The change reaches a plugin running outside the plugin list.',
+  'module-comparison': 'The runtime could not compare the loaded plugins with their files.',
+}
+const RESTART_REASON_KEYS: ReadonlySet<string> = new Set(Object.keys(RESTART_REASON_TEXT))
+
 /** Settings drafts live only in this Webview's memory. Secrets are never persisted. */
 export function mountSettingsPage(document: Document, api: Api, options: { root?: HTMLElement; externalMessages?: boolean; onClose?: () => void } = {}): { dispose(): void; receive(value: unknown): void } {
   const root = options.root ?? document.getElementById('settingsRoot')!
@@ -40,7 +55,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
     ok: boolean
     outcome?: 'updated' | 'restart-required' | 'restored' | 'unrestored' | 'unchanged'
     step?: 'check' | 'remove' | 'install'
-    from?: string; to?: string; restoreApplication?: string; error?: string
+    from?: string; to?: string; restoreApplication?: string; restartReason?: string; error?: string
   }
   const bundleResults = new Map<string, BundleUpdateView>()
   const announcedToasts = new Set<string>()
@@ -562,20 +577,27 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
   }
   /** Phrase one update outcome for the bundle card, never for a toast alone. */
   const bundleUpdateCopy = (result: BundleUpdateView): { text: string; className: string } => {
-    const from = result.from !== undefined && result.from !== '' ? result.from : 'the previous version'
-    const installed = result.from !== undefined && result.from !== '' ? `version ${result.from}` : 'the installed version'
+    // `from` is empty only when the runtime refused the target check before
+    // resolving an installed version; then the outcome must not say that some
+    // version "remains installed".
+    const from = result.from !== undefined && result.from !== '' ? result.from : undefined
     const to = result.to !== undefined && result.to !== '' ? result.to : 'the chosen version'
     const detail = result.error !== undefined && result.error !== '' ? ' ' + result.error : ''
-    if (result.ok && result.outcome === 'restart-required') return { text: `Updated ${from} → ${to}. Restart the DeepSeek Harness runtime to apply the change.`, className: 'success' }
-    if (result.ok) return { text: `Updated ${from} → ${to}.`, className: 'success' }
+    const unchanged = 'the installed bundle is unchanged'
+    const previous = from === undefined ? 'the previous version' : `the previous version ${from}`
+    if (result.ok && result.outcome === 'restart-required') {
+      const reason = result.restartReason !== undefined ? RESTART_REASON_TEXT[result.restartReason] : undefined
+      return { text: `Updated ${from ?? 'the previous version'} → ${to}. Restart the DeepSeek Harness runtime to apply the change.${reason === undefined ? '' : ' ' + reason}`, className: 'success' }
+    }
+    if (result.ok) return { text: `Updated ${from ?? 'the previous version'} → ${to}.`, className: 'success' }
     // A failed restore is only possible after the removal step, so only the
     // install step may say that the previous version could not be restored.
-    if (result.outcome === 'restored') return { text: `The update to ${to} failed. The previous version ${from} was reinstalled${result.restoreApplication === 'restart-required' ? '; restart the runtime to finish restoring it' : ''}.`, className: 'error' }
-    if (result.outcome === 'unrestored') return { text: `The update to ${to} failed and the previous version ${from} could not be restored. Repair the profile with the DSH plugin manager before continuing.`, className: 'error' }
+    if (result.outcome === 'restored') return { text: `The update to ${to} failed. ${previous} was reinstalled${result.restoreApplication === 'restart-required' ? '; restart the runtime to finish restoring it' : ''}.`, className: 'error' }
+    if (result.outcome === 'unrestored') return { text: `The update to ${to} failed and ${previous} could not be restored. Repair the profile with the DSH plugin manager before continuing.`, className: 'error' }
     if (result.outcome === 'unchanged') {
-      if (result.step === 'check') return { text: `The update to ${to} was not accepted; ${installed} remains installed.${detail}`, className: 'error' }
-      if (result.step === 'remove') return { text: `The update to ${to} did not start; ${installed} was not removed.${detail}`, className: 'error' }
-      return { text: `The update to ${to} failed; ${installed} remains installed.${detail}`, className: 'error' }
+      if (result.step === 'check') return { text: `The update to ${to} was not accepted; ${from === undefined ? unchanged : `version ${from} remains installed`}.${detail}`, className: 'error' }
+      if (result.step === 'remove') return { text: `The update to ${to} did not start; ${from === undefined ? unchanged : `version ${from} was not removed`}.${detail}`, className: 'error' }
+      return { text: `The update to ${to} failed; ${from === undefined ? unchanged : `version ${from} remains installed`}.${detail}`, className: 'error' }
     }
     return { text: result.error !== undefined && result.error !== '' ? result.error : 'The bundle update failed.', className: 'error' }
   }
@@ -810,6 +832,9 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
         bundleLists.set(request.bundle, { installed: displayText(value.installed, 128), versions: receivedBundleVersions(value.versions),
           omitted: typeof value.omitted === 'number' && Number.isSafeInteger(value.omitted) && value.omitted > 0 ? value.omitted : 0 })
         bundleCheckErrors.delete(request.bundle)
+        // The new list supersedes any earlier update outcome: showing both would
+        // describe a version list the old result no longer refers to.
+        bundleResults.delete(request.bundle)
       } else if (!value.cancelled) bundleCheckErrors.set(request.bundle, displayText(value.error, 1500) || 'The runtime could not list bundle versions.')
     } else if (request.type === 'update-bundle' && request.bundle !== undefined) {
       if (value.cancelled) bundleResults.delete(request.bundle)
@@ -822,6 +847,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
           ...(typeof value.from === 'string' ? { from: value.from.slice(0, 128) } : {}),
           ...(typeof value.to === 'string' ? { to: value.to.slice(0, 128) } : {}),
           ...(typeof value.restoreApplication === 'string' ? { restoreApplication: value.restoreApplication.slice(0, 64) } : {}),
+          ...(typeof value.restartReason === 'string' && RESTART_REASON_KEYS.has(value.restartReason) ? { restartReason: value.restartReason } : {}),
           ...(typeof value.error === 'string' ? { error: value.error.slice(0, 1500) } : {}),
         })
         // The installed version changed; a further click must re-read the list.

@@ -1231,7 +1231,7 @@ describe('host surface wiring', () => {
       h.send({ type: 'copy-session-markdown', sessionId: 'a' })
       await vi.waitFor(() => expect(clipboard).toHaveBeenCalledWith('# Session markdown\n\nComplete history.\n'))
       expect(h.client.sessionMarkdown).toHaveBeenCalledWith('a')
-      await vi.waitFor(() => expect(notices(h).at(-1)?.text).toBe('Session copied as Markdown.'))
+      await vi.waitFor(() => expect(notices(h).at(-1)).toEqual({ type: 'session-notice', text: 'Session copied as Markdown.' }))
       // The transcript goes to the clipboard only: no view state and no output.
       expect(JSON.stringify(h.posts())).not.toContain('Complete history.')
       expect(mocks.output.join('\n')).not.toContain('Complete history.')
@@ -1246,7 +1246,8 @@ describe('host surface wiring', () => {
     })
 
     it.each([
-      ['session-export-unavailable', 'This runtime does not support session Markdown export.'],
+      ['session-export-unavailable',
+        'The conversation could not be copied as Markdown. The runtime may not support this export, or the conversation may no longer exist.'],
       ['authentication-required', 'DSH authentication expired. Reconnect the runtime and try again.'],
       ['invalid-response', 'The session could not be copied as Markdown. Try again.'],
       ['transport-error', 'The session could not be copied as Markdown. Try again.'],
@@ -1256,6 +1257,8 @@ describe('host surface wiring', () => {
       h.client.sessionMarkdown.mockRejectedValueOnce(new DshConnectionError(code, 'raw failure at /Users/secret/session.jsonl'))
       h.send({ type: 'copy-session-markdown', sessionId: 'a' })
       await vi.waitFor(() => expect(notices(h).at(-1)?.text).toBe(expected))
+      // A failure keeps the notice longer, and still names no transport text.
+      expect(notices(h).at(-1)?.tone).toBe('error')
       // Neither the notice nor the output channel echoes the transport's text or
       // an original log path.
       expect(JSON.stringify(h.posts())).not.toContain('secret')
@@ -1268,7 +1271,7 @@ describe('host surface wiring', () => {
       const clipboard = (await import('vscode')).env.clipboard.writeText as ReturnType<typeof vi.fn>
       clipboard.mockRejectedValueOnce(new Error('clipboard daemon at /Users/secret/clipboard.sock'))
       h.send({ type: 'copy-session-markdown', sessionId: 'a' })
-      await vi.waitFor(() => expect(notices(h).at(-1)?.text).toBe('The clipboard is unavailable.'))
+      await vi.waitFor(() => expect(notices(h).at(-1)).toEqual({ type: 'session-notice', text: 'The clipboard is unavailable.', tone: 'error' }))
       expect(JSON.stringify(h.posts())).not.toContain('secret')
     })
 

@@ -124,8 +124,12 @@ export function publicBundles(value: unknown): BundleView[] {
   })
 }
 
-/** Control characters are unsafe in display text; other script systems are not. */
-const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/g
+/**
+ * Control characters and Unicode format characters are unsafe in display text:
+ * C0/C1 controls can break layout, and `Cf` embeds bidirectional overrides that
+ * can reorder the visible copy. Other script systems are preserved.
+ */
+const CONTROL_CHARACTERS = /[\p{Cc}\p{Cf}]/gu
 
 /** Bounded display text from runtime package metadata; control characters are dropped. */
 function bundleText(value: unknown, limit: number): string | undefined {

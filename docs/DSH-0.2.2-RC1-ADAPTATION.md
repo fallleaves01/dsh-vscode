@@ -175,7 +175,7 @@ A 类 10 条的覆盖状态：
 |---|---|
 | 本轮实现差异 | `git diff`（相对 HEAD `8ff45ab`）：7 个 `src/` 文件、8 个 spec 文件与 1 个 fixture |
 | 导出连接层 | `src/dsh-connection.ts:14`、`:235` |
-| 导出客户端封装 | `src/dsh-client.ts:1057` |
+| 导出客户端封装 | `src/dsh-client.ts:1062` |
 | 导出宿主动作 | `src/extension.ts:383`、`:395`、`:1895`、`:5526` |
 | 菜单与搜索过滤 | `src/webview.ts:1460`、`:1572` |
 | 插件版本解码与 RPC | `src/dsh-client.ts:313`、`:324`、`:370`、`:408`、`:424`、`:441`、`:457`、`:475`、`:1093`、`:1108` |
@@ -186,3 +186,91 @@ A 类 10 条的覆盖状态：
 | 版本核验原始报告 | `artifacts/team/maintenance-2026-11-05/version-feature-map.md`（第 2、3 节） |
 | 功能面映射原始报告 | 同上第 3 节；`gap-map.md` 第 2–6 节 |
 | 历史适配记录 | `docs/DSH-0.2.2-ALPHA2-ADAPTATION.md`、`docs/DSH-0.2.1-RC3-ADAPTATION.md` |
+
+## 9. 维护轮次 2026-11-06（侧栏 0.2.2-rc.1.5）
+
+### 9.1 版本核验
+
+| 项目 | 值 |
+|---|---|
+| 核验日期 | 2026-11-06（Asia/Shanghai） |
+| 本轮 npm 复核 | `npm --cache /tmp/dsh-npm-cache view @deepseek-ai/dsh dist-tags --json` → `{"latest":"0.2.2-rc.1","alpha":"0.2.2-alpha.3","next":"0.2.2-rc.1"}` |
+| npm 发布时间 | `0.2.2-rc.1` = 2026-11-04T09:20:32.310Z（未变） |
+| packument `time.modified` | 2026-11-05T13:21:52.829Z（2026-11-05 21:21:52 +08:00） |
+| GitHub Release | `dsh-v0.2.2-rc.1`，published_at 2026-11-04T13:07:14Z（未变） |
+| 最新 rc / 是否存在 rc.2 | 0.2.2-rc.1 / 否 |
+| 版本漂移 | 无 |
+
+**`latest` 通道变化说明。** 上一轮（2026-11-05）dist-tags 为 `latest=0.2.1-rc.5`、`next=0.2.2-rc.1`；本轮 `latest` 提升为 0.2.2-rc.1。版本清单仍为 42 项且末项仍为 0.2.2-rc.1，`time` 中 rc.1 的发布时间未变，GitHub 无新 release，因此判定为 dist-tag 通道提升，不是新版本发布。用户影响：`npm install -g @deepseek-ai/dsh` 解析 `latest`，默认安装现为 0.2.2-rc.1（此前为 0.2.1-rc.5）。侧栏支持矩阵已覆盖 rc.1，因此不需要 runtime 升级或协议变更。命令与完整输出见 `artifacts/team/maintenance-2026-11-06/round-analysis.md` 第 2 节。
+
+### 9.2 实施项与代码触点
+
+本轮实施 2026-11-05 审核报告与轮次分析确认的残留项，分为 Batch A（会话/文件链接/通知）与 Batch B（第三方 bundle 更新）。
+
+**A. 会话行工作目录（F）**
+
+- `src/session-center.ts:34` 的 `SessionItem` 增加可选 `cwd`；`:191` 的 `toSessionItem` 只在 `SessionSummary.cwd` 为非空字符串时投影，缺省或空白字符串不写入。
+- `src/webview.ts:1507` 的会话行在存在 `cwd` 时把工作目录加入 `main.title` 与 `aria-label`（归档行的恢复提示同样携带）；无 `cwd` 时保持原 tooltip 与无障碍名称。
+- VS Code 侧不实现自绘悬浮卡；原生 `title` 工具提示与无障碍名称为等价承载面。该值仅用于本地显示，不写入日志、Output 通道、遥测或持久化状态。
+
+**B. 文件链接语义（I，按 rc.1 parity）**
+
+- `src/markdown.mts:135` 的 `parseFileLink` 按 DSH `0.2.2-rc.1` 参考解析器语义处理：
+  - 哈希片段仅接受 `#L5`、`#L5-L9`；结束行只参与合法性校验，不向下游传播。
+  - 冒号后缀接受 `path:5`、`path:5:3`、`path:5-9`；列与范围终点只参与匹配与校验，不向下游传播。
+  - 无效片段或无效值（`#L5:3`、`#L0`、`#L2-L1`、`#5` 等）容忍为打开原文件、不选中，链接不丢失。
+  - 路径、URL、共享路径与控制字符规则不变：含 `?` 的目标拒绝；decode 失败拒绝；控制字符拒绝；`//` 或 `\\` 共享路径拒绝；非 Windows 盘符的 URL scheme 拒绝。
+- 与 rc.1 解析器的次序差异：侧栏在路径校验之前剥除冒号后缀（`src/markdown.mts:148`），因此裸相对路径 `a.ts:42` 可作为合法链接；rc.1 解析器要求绝对拼写并拒绝同一形式。该差异由代码注释说明，属于既有规则次序。
+- 下行链路只传播起始行：`src/webview.ts:1839` 的 `fileButton` 仅发送 `line`；`src/extension.ts:5933` 的 `open-file` 分发只接受整数 `line`；`src/diff-review.ts:547` 的 `openFile` 在起始行定位，不选中范围、不定位列。本轮不实现范围选中与列定位，与 rc.1 参考解析器只传播起始行的语义一致。
+
+**C. 会话 Markdown 导出失败文案（Minor-1）**
+
+- `src/extension.ts:383` 的 `sessionMarkdownFailureText` 对 `session-export-unavailable`（HTTP 404）改为中性文案："The conversation could not be copied as Markdown. The runtime may not support this export, or the conversation may no longer exist."。该文案取代第 4.1 节失败映射表中 0.2.2-rc.1.4 的旧 404 文案。
+- 失败时 `src/extension.ts:5534` 向 Webview 发送 `session-notice` 并携带 `tone: 'error'`。
+
+**D. 失败通知停留时长（Minor-2）**
+
+- `src/webview.ts:1395` 的 `showSessionNotice(text, tone)`：`tone === 'error'` 时停留 4000 ms，默认 1600 ms；`src/webview.ts:196` 新增 `.session-notice.error` 样式；宿主消息处理在 `src/webview.ts:6762` 透传 `tone`。
+
+**E. 第三方 bundle 更新残留清理（Minor-3/4/5/6/7/8）**
+
+- Minor-3：`src/settings-panel.ts:57` 定义封闭重启原因集合，成功分支（`:357`）仅下传白名单内、长度受限的 `restartReason`；`src/settings-page.mts:23` 的 `RESTART_REASON_TEXT` 按官方含义映射五种原因，未知值不显示，回退通用重启句。
+- Minor-4：`src/settings-page.mts:586` 起，unchanged 文案在 `from` 为空时使用 "the installed bundle is unchanged"，check/remove/install 三个分支一致，不再出现重复的 "remains installed"。
+- Minor-5：`src/dsh-client.ts:421` 的 `bundleUpdateResultOf` 要求 `to` 非空，空值返回 `invalid-response`；`from` 仍允许空串（目标检查被拒路径）。
+- Minor-6：`src/dsh-client.ts:307` 与 `src/settings-page-state.ts:132` 的过滤正则改为 `/[\p{Cc}\p{Cf}]/gu`，覆盖 C0、C1 与 Unicode 格式字符（含双向覆盖），保留非 ASCII 文本与长度上限。
+- Minor-7：`src/settings-page.mts:837` 在版本检查成功后删除该 bundle 的旧 `bundleResults`，避免新版本列表与旧更新结果并存。
+- Minor-8：`src/settings-ui.ts:129-131` 为 `.bundle-version` 与 `.version-number` 增加 flex 对齐、间距与等宽版本号样式，不引入外部资源。
+
+### 9.3 隐私与安全
+
+1. `cwd` 仅作为本地 tooltip 与无障碍名称内容，不进入日志、Output 通道、遥测或持久化状态；无 `cwd` 时行为不变。
+2. 文件链接的容错不扩大路径校验面：无效片段只影响“是否携带起始行”，目标路径仍经同一 URL/共享路径/控制字符/decode 校验；下游只接受整数起始行，越界由既有 `openFile` 夹取逻辑处理。
+3. 导出 404 的中性文案不回显响应体、本机路径或异常原文；Output 通道仍只记录白名单短分类（见第 5 节第 1 条）。
+4. C1/Cf 过滤移除双向覆盖字符，避免 runtime 提供的显示文本重排界面；重启原因只接受封闭集合，页面文案由页面自身持有，wire 文本不进入界面。
+5. 本轮不新增网络出口、持久化或遥测。
+
+### 9.4 验证记录
+
+2026-11-06T14:51–14:54+08:00（本机最终工作树；含提交前 Minor 修复与文档措辞定稿后的复跑）：
+
+| 命令 | 结果 |
+|---|---|
+| `npx tsc -p tsconfig.json --noEmit` | 通过（退出码 0） |
+| `node scripts/build.mjs` | 通过；输出 `dist/extension.js`、`dist/runtime-host.js` 与 Webview bundles |
+| `CI=true npx vitest run --config vitest.config.ts` | **131 个测试文件通过；2516 passed / 1 skipped / 0 failed（2517 个用例）** |
+
+- 工作树改动（相对 HEAD `6dfe717`）：代码层为 10 个 `src/` 文件、8 个已修改 spec 文件与 1 个新增 spec 文件（`tests/settings-ui.spec.ts`）；连同 6 个文档与版本文件，共 24 个已修改文件 + 1 个新增文件。
+- 测试增量：9 个 spec 文件（8 个修改、1 个新增）共新增 19 个 `it` 声明（含 3 个 `it.each` 参数化声明），并在既有解析表中补充 6 个用例；展开后共 32 个新增执行用例。
+- 覆盖要点：会话行 `cwd` 投影（有值/缺省/子代理）；tooltip 与 aria（有值/无值/归档）；失败通知的 error tone 与 4000 ms 停留；文件链接解析表（哈希起始行、冒号后缀、无效片段容忍、URL/查询拒绝、裸相对路径次序）；`dsh-client` 空 `to` 拒绝与 Cc/Cf 过滤；版本投影 C1/bidi 过滤；重启原因五种映射与两种回退；`from` 为空时三种 step 的中性 unchanged 文案；检查成功清除旧结果；重启原因白名单下传；版本行 CSS 断言。
+- **边界声明**：本轮未对真实 DSH runtime 执行端到端运行，未在真实 VS Code 扩展宿主中手工冒烟；文件链接语义与 rc.1 参考解析器的一致性由单元测试与 rc.1 前端包（`dsh-web-frontend` 的解析函数）交叉核对；未运行 `tests/settings-page.browser.mjs` 等 Chromium 浏览器检查。
+
+### 9.5 残余与后续
+
+| 项目 | 说明 |
+|---|---|
+| 导出 404 二义性 | 侧栏无法区分“runtime 不支持导出”与“会话已不存在”；彻底消除需 runtime 在导出路由提供可区分的状态码或错误码 |
+| 失败提示常驻 | 失败通知仍为约 4 秒后自动隐藏；常驻提示需要新的 UI 承载与关闭交互设计 |
+| 范围选中与列定位 | 本轮与 rc.1 参考解析器一致，只打开起始行；如需范围选中或列定位，属侧栏增强，需要扩展 Webview→宿主→打开文件的消息形状并重新评估 |
+| 第 7 节未实施项 | 图片进入输入框即上传与 50 MiB 对齐（M–L，需端到端探针）、工作步骤收起/仅最终回答（L，渲染架构）、`readBundleDetail`、`pluginMarket/readEntryDetail`、Web-only 面板、统一右键菜单与内嵌文件树（有意不做）、WebSocket 压缩（loopback 收益低）保持不变。第 7 节所列“会话悬浮卡显示工作目录”与“聊天文件链接的行范围终点”已在本轮以最小等价面处理：原生 tooltip/无障碍名称；范围终点与列仅校验、下游只打开起始行。 |
+
+第 1–8 节记录 2026-11-05 轮次的事实，本节为增量记录；上一轮结论与功能映射分类表不因本轮而改变。

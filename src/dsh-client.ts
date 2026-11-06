@@ -299,8 +299,12 @@ export interface DshBundleChange {
   error?: { code?: string }
 }
 
-/** Control characters are unsafe in display text; other script systems are not. */
-const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/g
+/**
+ * Control characters and Unicode format characters are unsafe in display text:
+ * C0/C1 controls can break layout, and `Cf` embeds bidirectional overrides that
+ * can reorder the visible copy. Other script systems are preserved.
+ */
+const CONTROL_CHARACTERS = /[\p{Cc}\p{Cf}]/gu
 
 /** Bounded display text from runtime package metadata; control characters are dropped. */
 function bundleText(value: unknown, limit: number): string | undefined {
@@ -409,11 +413,12 @@ function bundleUpdateResultOf(value: unknown): DshBundleUpdateResult | undefined
   if (typeof value !== 'object' || value === null) return undefined
   const row = value as Record<string, unknown>
   // A refused target check reports `from: ''` because no installed version was
-  // resolved; that is a valid answer, not a malformed one.
+  // resolved; that is a valid answer, not a malformed one. The target version
+  // itself is always named, so an empty `to` is a malformed answer.
   const from = bundleVersionText(row.from, 128)
   const to = bundleVersionText(row.to, 128)
   const step = row.step
-  if (from === undefined || to === undefined || (step !== 'remove' && step !== 'check' && step !== 'install')) return undefined
+  if (from === undefined || to === undefined || to === '' || (step !== 'remove' && step !== 'check' && step !== 'install')) return undefined
   const result = bundleChangeOf(row.result)
   if (result === undefined) return undefined
   const restore = row.restore === undefined ? undefined : bundleChangeOf(row.restore)

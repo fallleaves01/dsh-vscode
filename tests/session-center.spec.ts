@@ -72,6 +72,23 @@ describe('session center state', () => {
     ])
   })
 
+  it('projects a working directory only when it is a non-empty string', () => {
+    const items = sessionItems([
+      summary({ sessionId: 'with-cwd', cwd: '/workspace/project' }),
+      summary({ sessionId: 'no-cwd' }),
+      summary({ sessionId: 'blank-cwd', cwd: '   ' }),
+      summary({ sessionId: 'padded-cwd', cwd: '  /workspace/padded  ' }),
+      summary({ sessionId: 'long-cwd', cwd: 'x'.repeat(1200) }),
+    ], new Set(), 'with-cwd', new Set())
+    expect(items.find(item => item.id === 'with-cwd')?.cwd).toBe('/workspace/project')
+    expect(items.find(item => item.id === 'no-cwd')).not.toHaveProperty('cwd')
+    expect(items.find(item => item.id === 'blank-cwd')).not.toHaveProperty('cwd')
+    expect(items.find(item => item.id === 'padded-cwd')?.cwd).toBe('/workspace/padded')
+    expect(items.find(item => item.id === 'long-cwd')?.cwd).toHaveLength(1000)
+    expect(archivedSessionItems([summary({ sessionId: 'archived-cwd', cwd: '/workspace/old' })],
+      new Set(['archived-cwd']), new Set())).toEqual([expect.objectContaining({ id: 'archived-cwd', cwd: '/workspace/old' })])
+  })
+
   it('searches titles case-insensitively without changing recency order', () => {
     const items = sessionItems([
       summary({ sessionId: 'one', updatedAt: 20, projections: { values: { title: 'Fix Windows paths' } } }),

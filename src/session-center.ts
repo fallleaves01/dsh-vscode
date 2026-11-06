@@ -26,6 +26,12 @@ export interface SessionItem {
   id: string
   agentAvailable?: boolean
   title: string
+  /**
+   * The working directory this conversation runs in, when the runtime reports
+   * one. Present only as a non-empty string: a row without it keeps the plain
+   * title tooltip, so a runtime that omits `cwd` changes nothing.
+   */
+  cwd?: string
   updatedAt: number
   running: boolean
   blank: boolean
@@ -182,11 +188,14 @@ function toSessionItem(
   childCount: number,
 ): SessionItem {
   const waiting = attention.get(summary.sessionId)
+  const reportedCwdText = typeof summary.cwd === 'string' ? summary.cwd.trim() : ''
+  const reportedCwd = reportedCwdText === '' ? undefined : reportedCwdText.slice(0, 1000)
   return {
     id: summary.sessionId,
     ...(summary.agentAvailable === undefined ? {} : { agentAvailable: summary.agentAvailable }),
     title: typeof summary.projections?.values?.title === 'string' || parentId === undefined
       ? sessionTitle(summary) : subagent?.label ?? summary.sessionId,
+    ...(reportedCwd === undefined ? {} : { cwd: reportedCwd }),
     updatedAt: summary.updatedAt,
     running: summary.running,
     blank: summary.blank,

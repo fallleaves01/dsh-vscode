@@ -543,6 +543,9 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
    * of a file several directories down (`rdma.cuh`). Resolving only the literal
    * project spelling made every such link read as "not available on this
    * machine", so the project's own index answers for a name the roots cannot.
+   *
+   * DSH 0.2.2-rc.1 parity: a link names its start line and only that line; the
+   * editor is positioned there and no range or column is applied.
    */
   async openFile(cwd: string, value: string, line?: number): Promise<void> {
     const candidates = await this.openCandidates(cwd, value)

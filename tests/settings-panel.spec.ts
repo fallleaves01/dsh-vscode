@@ -496,9 +496,21 @@ describe('third-party bundle updates', () => {
   })
   it('reports a restart-required update without claiming it is already live', async () => {
     const { h } = await primed(); mocks.warning.mockResolvedValueOnce('Update bundle')
-    h.client.updateBundle.mockResolvedValueOnce({ from: '0.3.0', to: '0.4.0', step: 'install', result: { changed: true, application: 'restart-required', restartReason: 'package-moved' } })
+    h.client.updateBundle.mockResolvedValueOnce({ from: '0.3.0', to: '0.4.0', step: 'install', result: { changed: true, application: 'restart-required', restartReason: 'package-moved', diagnostic: 'hidden-marker' } })
     const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
-    expect(reply).toMatchObject({ ok: true, outcome: 'restart-required', step: 'install', restartRequired: true, application: 'restart-required', from: '0.3.0', to: '0.4.0' })
+    expect(reply).toMatchObject({ ok: true, outcome: 'restart-required', step: 'install', restartRequired: true, application: 'restart-required', from: '0.3.0', to: '0.4.0', restartReason: 'package-moved' })
+    expect(JSON.stringify(reply)).not.toContain('hidden-marker')
+  })
+  it('forwards only a closed restart reason code and never the wire text', async () => {
+    const { h } = await primed(); mocks.warning.mockResolvedValueOnce('Update bundle')
+    h.client.updateBundle.mockResolvedValueOnce({ from: '0.3.0', to: '0.4.0', step: 'install',
+      result: { changed: true, application: 'restart-required', restartReason: 'invented-reason \u202E<script>' } })
+    const reply = await h.result(h.send({ type: 'update-bundle', name: NAME, version: '0.4.0' }))
+    expect(reply).toMatchObject({ ok: true, outcome: 'restart-required' })
+    expect(reply.restartReason).toBeUndefined()
+    expect(JSON.stringify(reply)).not.toContain('invented-reason')
+    expect(JSON.stringify(reply)).not.toContain('\u202E')
+    expect(JSON.stringify(reply)).not.toContain('<script>')
   })
   it('reports an HMR failure whose previous version was restored', async () => {
     const { h } = await primed(); mocks.warning.mockResolvedValueOnce('Update bundle')
