@@ -60,6 +60,22 @@ VSIX — see the README for installing one.
   against a live DSH runtime, and no manual smoke test was performed in a real
   VS Code extension host.
 
+### Security
+
+- Independent privacy and information-security review covered both maintenance
+  commits included in this release: 0 Blocker and no unresolved Major after
+  fixes. Privacy checks trace the new Session Markdown path to the clipboard
+  only, confirm that settings packets drop registry URLs, attempt reasons,
+  diagnostics and package-manager output, and confirm that displayed working
+  directories are not logged or persisted. Security checks cover ownership and
+  write gating, modal confirmation before runtime/profile mutations, input
+  validation, HTML/CSP surfaces and credential redaction.
+- `pnpm audit --prod --audit-level=high` passes. Two moderate transitive
+  production advisories remain (`qs@6.16.0` through `@modelcontextprotocol/sdk`
+  and `ip-address@10.7.3` through `express-rate-limit`); neither reaches the
+  release gate's high-severity threshold, and both are tracked for a dependency
+  update.
+
 ## [0.2.2-rc.1.4] - 2026-11-05
 
 ### Added

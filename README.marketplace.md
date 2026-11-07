@@ -45,7 +45,7 @@ npm install -g @deepseek-ai/dsh
 
 Install DSH on the extension host; for Remote SSH, install it on the remote host. You need VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`. DeepSeek Harness `0.1.2-rc.1` or newer is required; history search and Schedule need `0.2.0-rc.2` or newer, the conversation event-stream client is verified against `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1`, and the experimental bundles are verified against `0.2.2-alpha.2` (`0.2.1-rc.2` and `0.2.1-rc.3` remain supported). Schedule supports the `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1` catalogs and history. The alpha CLI requires Node.js 24.9 or newer. The npm `latest` dist-tag now resolves to `0.2.2-rc.1` (`next` names the same version), so a default install uses the current runtime baseline.
 
-Download this fork's `.vsix` from [GitHub Releases](https://github.com/fallleaves01/dsh-vscode/releases) and run **Extensions: Install from VSIX...**. Its extension ID is `fallleaves01.dsh-sidebar`. The latest release is **0.2.0**. Release assets can lag behind the source version; build from the repository with `pnpm install --frozen-lockfile && pnpm run package` when the desired version is not yet available.
+Download this fork's `.vsix` from [GitHub Releases](https://github.com/fallleaves01/dsh-vscode/releases) and run **Extensions: Install from VSIX...**. Its extension ID is `fallleaves01.dsh-sidebar`. The latest release is **0.2.2-rc.1.5**. Release assets can lag behind the source version; build from the repository with `pnpm install --frozen-lockfile && pnpm run package` when the desired version is not yet available.
 
 ## 🚀 Get started
 
