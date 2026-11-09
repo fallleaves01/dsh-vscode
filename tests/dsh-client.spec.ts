@@ -1703,3 +1703,84 @@ describe('DSH rc.1 third-party bundle updates', () => {
     expect(readSessionMarkdown).toHaveBeenCalledWith('session-1')
   })
 })
+
+describe('DSH rc.1 plugin bundle detail', () => {
+  const pkg = '@scope/notes-bundle'
+
+  it('reads a detail with the display language and no CDN source preference', async () => {
+    const h = harness()
+    h.results['pluginManager/readBundleDetail'] = { status: 'found', origin: 'locale', path: 'docs/README.zh.md', markdown: '# \u6807\u9898\n\n\u5185\u5bb9' }
+    expect(await h.client.readBundleDetail(pkg, 'zh-CN')).toEqual({
+      status: 'found', origin: 'locale', path: 'docs/README.zh.md', markdown: '# \u6807\u9898\n\n\u5185\u5bb9',
+    })
+    const request = vi.mocked(h.connection.call).mock.calls.find(([endpoint]) => endpoint === 'pluginManager/readBundleDetail')
+    // The runtime lowercases the id and validates the BCP 47 shape.
+    expect(request?.[1]).toEqual({ name: pkg, language: 'zh-cn', options: { npmFileSources: [] } })
+    expect(request?.[2]).toBe(60_000)
+  })
+
+  it('defaults the display language to English and decodes none', async () => {
+    const h = harness()
+    h.results['pluginManager/readBundleDetail'] = { status: 'none', diagnostic: 'hidden-marker' }
+    expect(await h.client.readBundleDetail(pkg)).toEqual({ status: 'none' })
+    expect(h.requests).toEqual([{ endpoint: 'pluginManager/readBundleDetail', args: { name: pkg, language: 'en', options: { npmFileSources: [] } } }])
+  })
+
+  it('normalizes a mixed-case language and trims surrounding space', async () => {
+    const h = harness()
+    h.results['pluginManager/readBundleDetail'] = { status: 'none' }
+    await h.client.readBundleDetail(pkg, ' ZH-Hans ')
+    expect(h.requests.at(-1)?.args).toEqual({ name: pkg, language: 'zh-hans', options: { npmFileSources: [] } })
+  })
+
+  it('keeps only the documented detail fields', async () => {
+    const h = harness()
+    h.results['pluginManager/readBundleDetail'] = {
+      status: 'found', origin: 'readme', path: 'README.md', markdown: '# Readme',
+      registry: 'https://user:hidden-marker@registry.example', diagnostic: 'hidden-marker',
+      packageResult: { output: 'hidden-marker', logPath: '/srv/hidden-marker' },
+    }
+    expect(await h.client.readBundleDetail(pkg, 'en')).toEqual({ status: 'found', origin: 'readme', path: 'README.md', markdown: '# Readme' })
+    expect(JSON.stringify(await h.client.readBundleDetail(pkg, 'en'))).not.toContain('hidden-marker')
+  })
+
+  it('forwards only known CDN source hints', async () => {
+    const h = harness()
+    h.results['pluginManager/readBundleDetail'] = { status: 'none' }
+    await h.client.readBundleDetail(pkg, 'en', { npmFileSources: ['unpkg', 'invented' as never] })
+    expect(h.requests.at(-1)?.args).toEqual({ name: pkg, language: 'en', options: { npmFileSources: ['unpkg'] } })
+  })
+
+  it.each([
+    ['missing status', {}],
+    ['unknown status', { status: 'read' }],
+    ['missing origin', { status: 'found', path: 'README.md', markdown: '#' }],
+    ['unknown origin', { status: 'found', origin: 'cdn', path: 'README.md', markdown: '#' }],
+    ['missing markdown', { status: 'found', origin: 'readme', path: 'README.md' }],
+    ['non-string markdown', { status: 'found', origin: 'readme', path: 'README.md', markdown: 42 }],
+    ['empty path', { status: 'found', origin: 'readme', path: '', markdown: '#' }],
+  ])('refuses a malformed detail answer: %s', async (_name, value) => {
+    const h = harness()
+    h.results['pluginManager/readBundleDetail'] = value
+    await expect(h.client.readBundleDetail(pkg, 'en')).rejects.toMatchObject({ code: 'invalid-response' })
+  })
+
+  it('bounds the Markdown body at the Host default of 1 MiB', async () => {
+    const h = harness()
+    const limit = 1024 * 1024
+    h.results['pluginManager/readBundleDetail'] = { status: 'found', origin: 'readme', path: 'README.md', markdown: 'x'.repeat(limit) }
+    await expect(h.client.readBundleDetail(pkg, 'en')).resolves.toMatchObject({ status: 'found' })
+    h.results['pluginManager/readBundleDetail'] = { status: 'found', origin: 'readme', path: 'README.md', markdown: 'x'.repeat(limit + 1) }
+    await expect(h.client.readBundleDetail(pkg, 'en')).rejects.toMatchObject({ code: 'invalid-response' })
+  })
+
+  it('rejects an invalid bundle name or display language before any request', async () => {
+    const h = harness()
+    await expect(h.client.readBundleDetail('bad name', 'en')).rejects.toMatchObject({ code: 'invalid-spec' })
+    // The runtime rejects the empty string too, so the client refuses it up front.
+    await expect(h.client.readBundleDetail(pkg, '')).rejects.toMatchObject({ code: 'invalid-spec' })
+    await expect(h.client.readBundleDetail(pkg, 'zh_CN')).rejects.toMatchObject({ code: 'invalid-spec' })
+    await expect(h.client.readBundleDetail(pkg, 'a'.repeat(65))).rejects.toMatchObject({ code: 'invalid-spec' })
+    expect(h.requests).toEqual([])
+  })
+})

@@ -1,11 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { bundleFixture, fixture, searchFixture, updatableBundleFixture } from './settings-page.fixture.js'
 import { at } from '../src/settings-page-state.js'
+import { DshConnectionError } from '../src/dsh-connection.js'
 
-const mocks = vi.hoisted(() => ({ panels: [] as any[], warning: vi.fn(), command: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  panels: [] as any[], warning: vi.fn(), command: vi.fn(),
+  providers: [] as { scheme: string; provider: { provideTextDocumentContent(uri: any): string } }[],
+  providerDispose: vi.fn(), showTextDocument: vi.fn(),
+  env: { language: 'zh-cn', openExternal: vi.fn() },
+}))
 vi.mock('vscode', () => ({
-  ViewColumn: { Active: 1 }, Uri: { joinPath: (...parts: any[]) => ({ toString: () => parts.map(part => typeof part === 'string' ? part : part.fsPath).join('/') }) },
-  window: { showWarningMessage: mocks.warning, createWebviewPanel: vi.fn(() => {
+  ViewColumn: { Active: 1 },
+  Uri: {
+    joinPath: (...parts: any[]) => ({ toString: () => parts.map(part => typeof part === 'string' ? part : part.fsPath).join('/') }),
+    parse: (value: string) => {
+      const index = value.indexOf(':'); const scheme = index < 0 ? '' : value.slice(0, index); const rest = index < 0 ? '' : value.slice(index + 1)
+      return { scheme, path: rest, toString: () => value }
+    },
+  },
+  env: mocks.env,
+  workspace: { registerTextDocumentContentProvider: (scheme: string, provider: any) => {
+    mocks.providers.push({ scheme, provider }); return { dispose: () => mocks.providerDispose(scheme) }
+  } },
+  window: { showWarningMessage: mocks.warning, showTextDocument: mocks.showTextDocument, createWebviewPanel: vi.fn(() => {
     const listeners = new Set<(value: unknown) => void>(), dispose = new Set<() => void>()
     const panel = { reveal: vi.fn(), webview: { cspSource: 'vscode-webview:', html: '', options: {}, asWebviewUri: (uri: unknown) => uri,
       postMessage: vi.fn(async () => true), onDidReceiveMessage: (fn: (value: unknown) => void) => { listeners.add(fn); return { dispose: () => listeners.delete(fn) } } },
@@ -19,7 +36,12 @@ import type { SettingsMutation, SettingsNamespace } from '../src/runtime-setting
 
 const managers: SettingsPanelManager[] = []
 afterEach(() => { managers.splice(0).forEach(manager => manager.dispose()); vi.restoreAllMocks() })
-beforeEach(() => { mocks.panels.length = 0; mocks.warning.mockReset(); mocks.command.mockReset() })
+beforeEach(() => {
+  mocks.panels.length = 0; mocks.warning.mockReset(); mocks.command.mockReset(); mocks.command.mockImplementation(async () => undefined)
+  mocks.providers.length = 0; mocks.providerDispose.mockReset()
+  mocks.showTextDocument.mockReset(); mocks.showTextDocument.mockImplementation(async () => ({}))
+  mocks.env.language = 'zh-cn'
+})
 const clone = <T>(value: T): T => structuredClone(value)
 function bus() {
   const listeners = new Set<() => void>()
@@ -53,6 +75,7 @@ async function harness(ownership: string = 'managed', data = fixture()) {
       return { changed: true, application: 'applied', stage: enabled ? 'enable' : 'remove', target: name, enabled }
     }),
     listBundleVersions: vi.fn(async () => ({ status: 'listed', installed: '0.0.0', versions: [], omitted: 0 })),
+    readBundleDetail: vi.fn(async () => ({ status: 'found', origin: 'readme', path: 'README.md', markdown: '# Notes' })),
     updateBundle: vi.fn(async (name: string, version: string) => {
       const row = ((data as any).bundles as any[] | undefined)?.find(item => item.name === name)
       const from = typeof row?.version === 'string' ? row.version : '0.0.0'
@@ -580,5 +603,129 @@ describe('third-party bundle updates', () => {
     expect(second.error).toContain('Wait')
     read.resolve({ status: 'listed', installed: '0.3.0', versions: [], omitted: 0 })
     expect((await h.result(first)).ok).toBe(true)
+  })
+})
+
+describe('bundle detail viewing', () => {
+  const data = () => { const value = fixture() as any; value.bundles = bundleFixture(); return value }
+  const NAME = '@deepseek-ai/dsh-experimental-cot-translation-bundle'
+
+  it('reads a known bundle detail and opens it in the editor preview', async () => {
+    const h = await harness('managed', data())
+    const reply = await h.result(h.send({ type: 'bundle-detail', name: NAME }))
+    expect(reply).toMatchObject({ ok: true, opened: true })
+    // The extension host reads with the VS Code display language and writes no profile.
+    expect(h.client.readBundleDetail).toHaveBeenCalledWith(NAME, 'zh-cn')
+    expect(h.host.mutateSettings).not.toHaveBeenCalled()
+    expect(mocks.command).toHaveBeenCalledWith('markdown.showPreview', expect.anything())
+    const uri = mocks.command.mock.calls.find((call: any[]) => call[0] === 'markdown.showPreview')![1]
+    expect(mocks.providers.at(-1)!.scheme).toBe('dsh-plugin-detail')
+    expect(mocks.providers.at(-1)!.provider.provideTextDocumentContent(uri)).toBe('# Notes')
+    // Neither the package path nor the document body reaches the Webview.
+    expect(JSON.stringify(h.packets())).not.toContain('README.md')
+    expect(JSON.stringify(h.packets())).not.toContain('# Notes')
+  })
+
+  it('allows detail reads on a read-only or attach-only runtime', async () => {
+    const h = await harness('external', data())
+    expect(h.state().writable).toBe(false)
+    const reply = await h.result(h.send({ type: 'bundle-detail', name: NAME }))
+    expect(reply).toMatchObject({ ok: true, opened: true })
+    expect(h.client.readBundleDetail).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a bundle that is not in the current roster', async () => {
+    const h = await harness('managed', data())
+    const reply = await h.result(h.send({ type: 'bundle-detail', name: '@acme/missing-bundle' }))
+    expect(reply.ok).toBe(false)
+    expect(reply.error).toContain('not available')
+    expect(h.client.readBundleDetail).not.toHaveBeenCalled()
+  })
+
+  it('reports a bundle without long-form details and opens nothing', async () => {
+    const h = await harness('managed', data())
+    h.client.readBundleDetail.mockResolvedValueOnce({ status: 'none' })
+    const reply = await h.result(h.send({ type: 'bundle-detail', name: NAME }))
+    expect(reply).toMatchObject({ ok: true, none: true })
+    expect(mocks.command).not.toHaveBeenCalledWith('markdown.showPreview', expect.anything())
+  })
+
+  it.each(['gateway/invocation-unavailable', 'gateway/unknown-method', 'gateway/method-not-found',
+    'gateway/not-found', 'gateway/route-not-found', 'unknown-method'])(
+    'maps an old runtime without the detail method (%s) to fixed copy without leaking its text', async code => {
+      const h = await harness('managed', data())
+      h.client.readBundleDetail.mockRejectedValueOnce(Object.assign(new Error('secret diagnostic at /srv/hidden-marker'), { code }))
+      const reply = await h.result(h.send({ type: 'bundle-detail', name: NAME }))
+      expect(reply).toMatchObject({ ok: false, error: 'This runtime does not provide plugin details.' })
+      expect(JSON.stringify(h.packets())).not.toContain('hidden-marker')
+      expect(JSON.stringify(h.packets())).not.toContain('secret diagnostic')
+    })
+
+  it('maps a missing route (HTTP 404) from a runtime without the detail method to fixed copy', async () => {
+    const h = await harness('managed', data())
+    h.client.readBundleDetail.mockRejectedValueOnce(new DshConnectionError('http-error', 'DSH pluginManager/readBundleDetail failed: HTTP 404.', 404))
+    const reply = await h.result(h.send({ type: 'bundle-detail', name: NAME }))
+    expect(reply).toMatchObject({ ok: false, error: 'This runtime does not provide plugin details.' })
+    expect(JSON.stringify(h.packets())).not.toContain('HTTP 404')
+  })
+
+  it('falls back to English when the VS Code language is empty or malformed', async () => {
+    const h = await harness('managed', data())
+    for (const language of ['', 'not a locale', 'zh_CN']) {
+      mocks.env.language = language
+      const reply = await h.result(h.send({ type: 'bundle-detail', name: NAME }))
+      expect(reply.ok, language).toBe(true)
+      expect(h.client.readBundleDetail, language).toHaveBeenLastCalledWith(NAME, 'en')
+    }
+  })
+
+  it('normalizes the VS Code language to the runtime grammar', async () => {
+    const h = await harness('managed', data())
+    mocks.env.language = 'ZH-CN'
+    expect((await h.result(h.send({ type: 'bundle-detail', name: NAME }))).ok).toBe(true)
+    expect(h.client.readBundleDetail).toHaveBeenLastCalledWith(NAME, 'zh-cn')
+  })
+
+  it('reports a bundle that left the runtime roster with fixed copy', async () => {
+    const h = await harness('managed', data())
+    h.client.readBundleDetail.mockRejectedValueOnce(Object.assign(new Error('No such bundle: /srv/hidden-marker'), { code: 'plugin-manager/unknown-bundle' }))
+    const reply = await h.result(h.send({ type: 'bundle-detail', name: NAME }))
+    expect(reply).toMatchObject({ ok: false })
+    expect(String(reply.error)).toContain('no longer in the runtime')
+    expect(JSON.stringify(h.packets())).not.toContain('hidden-marker')
+  })
+
+  it('reports an unreadable detail document as a read failure, not as a bundle without details', async () => {
+    const h = await harness('managed', data())
+    h.client.readBundleDetail.mockRejectedValueOnce(Object.assign(new Error('detail unavailable at /srv/hidden-marker'), { code: 'plugin-manager/detail-unavailable' }))
+    const reply = await h.result(h.send({ type: 'bundle-detail', name: NAME }))
+    expect(reply).toMatchObject({ ok: false, error: 'This bundle\'s detail document could not be read. Try again later.' })
+    expect(JSON.stringify(h.packets())).not.toContain('hidden-marker')
+    expect(JSON.stringify(h.packets())).not.toContain('detail unavailable')
+  })
+
+  it('maps any other read failure to a fixed sentence', async () => {
+    const h = await harness('managed', data())
+    h.client.readBundleDetail.mockRejectedValueOnce(Object.assign(new Error('wire failure detail'), { code: 'invalid-response' }))
+    const reply = await h.result(h.send({ type: 'bundle-detail', name: NAME }))
+    expect(reply).toMatchObject({ ok: false, error: 'The plugin details could not be read. Refresh and try again.' })
+    expect(JSON.stringify(h.packets())).not.toContain('wire failure')
+  })
+
+  it('reports an open failure without echoing the editor error', async () => {
+    const h = await harness('managed', data())
+    mocks.command.mockRejectedValueOnce(new Error('preview unavailable at /srv/hidden-marker'))
+    mocks.showTextDocument.mockRejectedValueOnce(new Error('editor unavailable'))
+    const reply = await h.result(h.send({ type: 'bundle-detail', name: NAME }))
+    expect(reply).toMatchObject({ ok: false, error: 'The plugin details could not be opened.' })
+    expect(JSON.stringify(h.packets())).not.toContain('hidden-marker')
+    expect(JSON.stringify(h.packets())).not.toContain('editor unavailable')
+  })
+
+  it('unregisters the virtual document provider when the surface closes', async () => {
+    const h = await harness('managed', data())
+    expect(mocks.providers).toHaveLength(1)
+    h.manager.dispose()
+    expect(mocks.providerDispose).toHaveBeenCalledWith('dsh-plugin-detail')
   })
 })

@@ -1080,6 +1080,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let sessionMenuOpen = false;
     let sessionAction;
     let sessionNoticeTimer;
+    /** Dismissal listeners; present only while an error notice is visible. */
+    let sessionNoticeDismiss;
     let homeOpen = false;
     let homeArchived = false;
     let pendingConversationCreation;
@@ -1387,23 +1389,70 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       document.querySelectorAll('.session-more[aria-expanded="true"]').forEach(button => button.setAttribute('aria-expanded', 'false'));
       if (focus && previous && previous.anchor.isConnected) previous.anchor.focus();
     }
+    const SESSION_NOTICE_MS = 1600;
+    /** A failure waits for the user; this only bounds how long it may linger. */
+    const SESSION_NOTICE_ERROR_MAX_MS = 15000;
+    /** Remove the error-only dismissal listeners; safe when none are attached. */
+    function detachSessionNoticeDismiss() {
+      if (sessionNoticeDismiss === undefined) return;
+      const handlers = sessionNoticeDismiss;
+      sessionNoticeDismiss = undefined;
+      document.removeEventListener('pointerdown', handlers.pointerdown, true);
+      document.removeEventListener('keydown', handlers.keydown, true);
+    }
+    /** Hide the notice and return the shared element to its resting state. */
+    function hideSessionNotice() {
+      const notice = elements.sessionNotice;
+      if (!notice) return;
+      if (sessionNoticeTimer !== undefined) { clearTimeout(sessionNoticeTimer); sessionNoticeTimer = undefined; }
+      detachSessionNoticeDismiss();
+      notice.classList.add('hidden');
+      notice.classList.remove('error');
+      // The element ships as a polite status; restore that after an alert so the
+      // next confirmation is announced as an ordinary status update.
+      notice.setAttribute('role', 'status');
+      notice.setAttribute('aria-live', 'polite');
+    }
     /**
      * Transient confirmation for a local-only action, or one outcome the Host
-     * reports. An error tone stays about four seconds: a failure the user is
-     * told to retry must not disappear at the pace of a confirmation.
+     * reports.
+     *
+     * A confirmation leaves after its fixed lifetime. A failure stays until the
+     * user's next pointerdown/keydown anywhere in the Webview, a replacing
+     * notice, or the 15 s safety bound, so a message that names a retry action
+     * does not disappear while the reader is deciding. Its dismissal listeners
+     * exist only while it is visible; a replacement removes the previous pair
+     * before it arranges its own, so they never stack.
      */
     function showSessionNotice(text, tone) {
-      if (!elements.sessionNotice) return;
+      const notice = elements.sessionNotice;
+      if (!notice) return;
       const failed = tone === 'error';
-      elements.sessionNotice.textContent = text;
-      elements.sessionNotice.classList.toggle('error', failed);
-      elements.sessionNotice.classList.remove('hidden');
-      if (sessionNoticeTimer !== undefined) clearTimeout(sessionNoticeTimer);
+      if (sessionNoticeTimer !== undefined) { clearTimeout(sessionNoticeTimer); sessionNoticeTimer = undefined; }
+      // Any previous notice is being replaced: its dismissal listeners go with
+      // it, so a second error never stacks a second pair.
+      detachSessionNoticeDismiss();
+      // An error is an alert rather than a status update, so a screen reader
+      // announces it once when it appears; hiding restores the default role.
+      notice.setAttribute('role', failed ? 'alert' : 'status');
+      notice.setAttribute('aria-live', failed ? 'assertive' : 'polite');
+      notice.textContent = text;
+      notice.classList.toggle('error', failed);
+      notice.classList.remove('hidden');
+      if (failed) {
+        const dismiss = () => hideSessionNotice();
+        sessionNoticeDismiss = { pointerdown: dismiss, keydown: dismiss };
+        document.addEventListener('pointerdown', dismiss, true);
+        document.addEventListener('keydown', dismiss, true);
+      }
       sessionNoticeTimer = setTimeout(() => {
-        elements.sessionNotice.classList.add('hidden');
+        // The fired timer is no longer pending; hide must not clear it again.
         sessionNoticeTimer = undefined;
-      }, failed ? 4000 : 1600);
+        hideSessionNotice();
+      }, failed ? SESSION_NOTICE_ERROR_MAX_MS : SESSION_NOTICE_MS);
     }
+    // A page hide is the Webview's dispose: no timer or listener may outlive it.
+    window.addEventListener('pagehide', hideSessionNotice, { once: true });
     function positionSessionActions() {
       if (!sessionAction) return;
       const app = document.getElementById('app').getBoundingClientRect(), anchor = sessionAction.anchor.getBoundingClientRect();

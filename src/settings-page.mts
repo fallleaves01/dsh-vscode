@@ -1,3 +1,4 @@
+import { RESTART_REASON_CODES, restartReasonText } from './settings-page-state.js'
 import type { BundleVersionListView, BundleVersionView, DiscoveredModel, ModelDraft, ProviderView, SettingsFieldView, SettingsFormView, SettingsPageState } from './settings-page-state.js'
 import { secretIcon, updateSecretIcon } from './secret-icon.mjs'
 import { settingsIcon } from './settings-ui.js'
@@ -13,21 +14,6 @@ interface ProviderDraft {
   models: EditableModel[]; inheritModels: boolean; touched: Set<string>
 }
 type Message = Record<string, unknown>
-
-/**
- * DSH restart reasons and their operator-facing explanation.
- *
- * The runtime reports a closed set (`RestartReason`); an unknown value is not
- * rendered, so a new runtime value cannot smuggle arbitrary text into the page.
- */
-const RESTART_REASON_TEXT: Readonly<Record<string, string>> = {
-  'no-hmr': 'This runtime has hot module replacement disabled, so changes apply only at startup.',
-  'package-moved': 'An installed package now resolves to another directory, or the change replaces a package the DSH installation provides.',
-  'host-module': 'The change reaches modules the runtime itself loaded.',
-  'unmanaged-plugin': 'The change reaches a plugin running outside the plugin list.',
-  'module-comparison': 'The runtime could not compare the loaded plugins with their files.',
-}
-const RESTART_REASON_KEYS: ReadonlySet<string> = new Set(Object.keys(RESTART_REASON_TEXT))
 
 /** Settings drafts live only in this Webview's memory. Secrets are never persisted. */
 export function mountSettingsPage(document: Document, api: Api, options: { root?: HTMLElement; externalMessages?: boolean; onClose?: () => void } = {}): { dispose(): void; receive(value: unknown): void } {
@@ -586,7 +572,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
     const unchanged = 'the installed bundle is unchanged'
     const previous = from === undefined ? 'the previous version' : `the previous version ${from}`
     if (result.ok && result.outcome === 'restart-required') {
-      const reason = result.restartReason !== undefined ? RESTART_REASON_TEXT[result.restartReason] : undefined
+      const reason = restartReasonText(result.restartReason)
       return { text: `Updated ${from ?? 'the previous version'} → ${to}. Restart the DeepSeek Harness runtime to apply the change.${reason === undefined ? '' : ' ' + reason}`, className: 'success' }
     }
     if (result.ok) return { text: `Updated ${from ?? 'the previous version'} → ${to}.`, className: 'success' }
@@ -616,13 +602,16 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
     content.append(el('p', 'hint', 'Third-party profile bundles the runtime can update. Updating one changes the shared DSH web profile for every window that uses it.'))
     const manage = state?.writable === true
     if (!manage) content.append(el('p', 'notice', state?.reason || 'This runtime is read-only. Update its third-party bundles from the client that manages this profile.'))
-    const fieldset = el('fieldset'); fieldset.disabled = locked() || !manage
+    // Only a pending request locks the group; the Details read stays available
+    // on a read-only or attach-only runtime.
+    const fieldset = el('fieldset'); fieldset.disabled = !!pending
     const grid = el('div', 'plugin-inventory')
     for (const bundle of updatable) {
       const card = el('article', 'inventory-card bundle-card')
       card.append(el('div', 'inventory-name', bundle.title ?? bundle.name),
         el('span', 'hint bundle-status', ['v' + (bundle.version ?? 'unknown'), 'Installed'].join(' · ')))
       if (bundle.description) card.append(el('span', 'hint bundle-description', bundle.description))
+      card.append(button('Details…', () => start({ type: 'bundle-detail', name: bundle.name }), 'quiet', !!pending))
       const checking = pending?.type === 'check-bundle-versions' && pending.bundle === bundle.name
       const updating = pending?.type === 'update-bundle' && pending.bundle === bundle.name
       card.append(button(checking ? 'Checking for updates…' : 'Check for updates', () => start({ type: 'check-bundle-versions', name: bundle.name }), 'quiet', !!pending || !manage))
@@ -689,7 +678,8 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
       content.append(el('p', 'hint', 'Optional runtime capabilities shipped with DSH. Enabling one changes the shared web profile; a runtime restart may be required.'))
       const manage = state?.writable === true
       if (!manage) content.append(el('p', 'notice', state?.reason || 'This runtime is read-only. Change its optional bundles from the client that manages this profile.'))
-      const fieldset = el('fieldset'); fieldset.disabled = locked() || !manage
+      // Only a pending request locks the group: the Details read needs no write access.
+      const fieldset = el('fieldset'); fieldset.disabled = !!pending
       const grid = el('div', 'plugin-inventory')
       for (const bundle of bundles) {
         const card = el('article', 'inventory-card bundle-card')
@@ -711,6 +701,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
             unsupported ? 'Unsupported on this platform' : '',
           ].filter(Boolean).join(' · ')))
         if (bundle.description) card.append(el('span', 'hint bundle-description', bundle.description))
+        card.append(button('Details…', () => start({ type: 'bundle-detail', name: bundle.name }), 'quiet', !!pending))
         if (manage && !onDemandMissing) card.append(toggle('Enabled', current, enabled => {
           if (enabled === current) return
           start({ type: 'set-bundle', name: bundle.name, enabled })
@@ -847,11 +838,20 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
           ...(typeof value.from === 'string' ? { from: value.from.slice(0, 128) } : {}),
           ...(typeof value.to === 'string' ? { to: value.to.slice(0, 128) } : {}),
           ...(typeof value.restoreApplication === 'string' ? { restoreApplication: value.restoreApplication.slice(0, 64) } : {}),
-          ...(typeof value.restartReason === 'string' && RESTART_REASON_KEYS.has(value.restartReason) ? { restartReason: value.restartReason } : {}),
+          ...(typeof value.restartReason === 'string' && RESTART_REASON_CODES.has(value.restartReason) ? { restartReason: value.restartReason } : {}),
           ...(typeof value.error === 'string' ? { error: value.error.slice(0, 1500) } : {}),
         })
         // The installed version changed; a further click must re-read the list.
         if (value.ok) bundleLists.delete(request.bundle)
+      }
+    } else if (request.type === 'bundle-detail') {
+      // The panel owns the read and the editor; the page only reports its outcome.
+      if (value.ok && value.opened === true) {
+        errors.delete(request.section); message = 'Plugin details opened in the editor preview.'
+      } else if (value.ok && value.none === true) {
+        errors.delete(request.section); message = 'No long-form details are available for this bundle.'
+      } else if (!value.cancelled) {
+        errors.set(request.section, displayText(value.error, 1500) || 'The plugin details could not be opened.')
       }
     } else if (request.type === 'discover-models') {
       if (value.ok && Array.isArray(value.models)) { candidates = value.models; selectedModels.clear(); modelSearch = '' }
@@ -883,7 +883,7 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
         }
       }
     } else if (request.type === 'remove-provider' && value.ok) { providerDrafts.delete(selectedProvider!); selectedProvider = undefined }
-    if (request.type === 'check-bundle-versions' || request.type === 'update-bundle') {
+    if (request.type === 'check-bundle-versions' || request.type === 'update-bundle' || request.type === 'bundle-detail') {
       // Both report inside their bundle card, so the section-level toast is unchanged.
     } else if (!value.ok && !value.cancelled) errors.set(request.section, value.error || 'The settings operation failed. Your draft was retained.')
     else { errors.delete(request.section); if (request.type !== 'discover-models' && request.type !== 'set-bundle' && !value.cancelled) message = 'Saved.' }

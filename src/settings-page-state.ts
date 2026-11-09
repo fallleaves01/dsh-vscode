@@ -125,6 +125,27 @@ export function publicBundles(value: unknown): BundleView[] {
 }
 
 /**
+ * The runtime's closed set of restart reasons (`RestartReason`) and their
+ * operator-facing explanation.
+ *
+ * The extension panel and the settings page share this one source: the panel
+ * forwards only these codes, and the page maps only these codes to copy, so an
+ * unknown runtime value can never put arbitrary text on screen.
+ */
+export const RESTART_REASON_TEXT: Readonly<Record<string, string>> = {
+  'no-hmr': 'This runtime has hot module replacement disabled, so changes apply only at startup.',
+  'package-moved': 'An installed package now resolves to another directory, or the change replaces a package the DSH installation provides.',
+  'host-module': 'The change reaches modules the runtime itself loaded.',
+  'unmanaged-plugin': 'The change reaches a plugin running outside the plugin list.',
+  'module-comparison': 'The runtime could not compare the loaded plugins with their files.',
+}
+export const RESTART_REASON_CODES: ReadonlySet<string> = new Set(Object.keys(RESTART_REASON_TEXT))
+/** The copy for one restart reason; undefined for a code outside the closed set. */
+export function restartReasonText(value: unknown): string | undefined {
+  return typeof value === 'string' && Object.hasOwn(RESTART_REASON_TEXT, value) ? RESTART_REASON_TEXT[value] : undefined
+}
+
+/**
  * Control characters and Unicode format characters are unsafe in display text:
  * C0/C1 controls can break layout, and `Cf` embeds bidirectional overrides that
  * can reorder the visible copy. Other script systems are preserved.

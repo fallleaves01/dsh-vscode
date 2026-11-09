@@ -6,7 +6,7 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, quoted message text, and native change review. This source version is **0.2.2-rc.1.5**.
+DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, quoted message text, and native change review. This source version is **0.2.2-rc.1.6**.
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
@@ -30,7 +30,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 - **Compact change review.** Expand the file-count and line-count summary, or open Review in VS Code's Diff Editor. Keep/Revert actions retain per-turn snapshots and are bound to their originating conversation and project; confirmation rechecks the target before a revert.
 - **Answer file links.** Open a file named in an answer from the start line the link carries. Hash fragments `#L5` and `#L5-L9` and colon suffixes `path:5`, `path:5:3` and `path:5-9` are accepted; the range end and column are validated only, so the file opens at the start line without selecting a range or applying a column. An invalid fragment or line (`#L5:3`, `#L0`, `#L2-L1`, `#5`) opens the file without a selection instead of dropping the link.
 - **DeepSeek authentication.** Configure an API key or use browser account sign-in, inspect account state and balance, and sign out. Remote sign-in uses VS Code port forwarding.
-- **Runtime plugins and configuration.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks. Open the settings gear for Models, Shell, Agent loop, Subagents, Web search and General settings. Add providers, edit model catalogs and manage write-only credentials through DSH.
+- **Runtime plugins and configuration.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks. Open the settings gear for Models, Shell, Agent loop, Subagents, Web search and General settings. Add providers, edit model catalogs and manage write-only credentials through DSH. The Experimental bundles and Third-party bundles cards offer **Details…**, which reads the bundle's localized long description and opens it in a read-only Markdown preview as an opaque virtual document; relative images in these documents are not rendered. The VS Code Markdown preview applies its own resource policy: a third-party detail document can reference remote images that the preview then requests, which reveals the reader's address and timing to that host. The sidebar never fetches or rewrites those resources.
 - **Runtime recovery.** Reuse a managed runtime across VS Code windows, reconnect, diagnose conversation ownership, and end a verified leftover managed runtime. Saved external runtimes are attach-only.
 - **Runtime manager.** Run **DeepSeek Harness: Manage Runtimes**, or click the **External**/**DSH**/**Shared** status control, to list the current connection, saved external runtimes and extension-started runtime records. Start a managed runtime, connect by launch URL, restart, reconnect, disconnect, end a verified extension-started runtime, forget a saved runtime, or open occupancy diagnostics. Runtimes you started yourself without connecting or saving are not listed.
 - **Native debugging and keyboard access.** Enable autonomous debugging for `.vscode/launch.json`, including breakpoints, stepping, stack frames, and variables. `Cmd/Ctrl+Alt+D` opens chat, `Cmd/Ctrl+Alt+L` adds the selection, and `Cmd/Ctrl+Alt+F` requests a file fix. Chat and task details support dark, light, and high-contrast themes.
@@ -198,11 +198,11 @@ The following alpha.2 surfaces are Web-only and are not implemented in this
 sidebar: Live Share, Forge, Computer Use and personalized-recommendation panels;
 the Statistics tab; creation, file-drag and plugin-recommendation cards. Their
 tools use the generic tool card. Action-card proposals (`propose_action`) render
-as generic tool cards without the card buttons. Plugin detail documents
-(`pluginManager/readBundleDetail`) and market entry details
+as generic tool cards without the card buttons. Market entry details
 (`pluginMarket/readEntryDetail`) are not implemented; use the DSH Web plugin
-manager. Version lists and updates of an updatable third-party profile bundle
-are implemented in the Plugins settings page. An on-demand bundle that is not
+manager. Bundle long descriptions are available through **Details…** in the
+Plugins settings page, and version lists and updates of an updatable third-party
+profile bundle are implemented there as well. An on-demand bundle that is not
 installed is not listed here; install it from the DSH plugin manager. Quoted messages render as Markdown blockquotes;
 **Quote text** adds an excerpt to the composer as a chip before the typed prompt
 rather than as an inline node at the caret. Auto review
@@ -251,7 +251,13 @@ implemented in the **Background jobs** menu above.
   updated, restart required, restored, unrestored or unchanged (the update was
   not accepted and the installed version is still in place); a listed version
   that declares no plugin bundle is shown disabled with an explanation; and the
-  controls are disabled for attach-only and read-only runtimes. Worktree
+  controls are disabled for attach-only and read-only runtimes. Both bundle
+  areas also offer **Details…**: `pluginManager/readBundleDetail` returns the
+  bundle's localized long description (its locale file or README) and opens it
+  in a read-only Markdown preview as a virtual document; read-only and
+  attach-only runtimes can use it, while relative images in those documents do
+  not render because the VS Code preview cannot authenticate the runtime's
+  detail-file route. Worktree
   `workingDirectory` is not consumed yet, and the sidebar exposes no persistent
   terminal panel. Enabling the session-search bundle with `enableHistorySearch`
   can mount two `session-query-sqlite` rows; check the runtime profile. See the

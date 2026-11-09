@@ -526,6 +526,51 @@ describe('dedicated DSH settings surface', () => {
     expect(document.body.textContent).toContain('attach-only')
     expect(h.button('Check for updates').disabled).toBe(true)
   })
+  function detailPageState() {
+    const state = bundlePageState()
+    state.bundles = [...state.bundles!, ...updatableBundlePageState().bundles!]
+    return state
+  }
+  it('offers Details on experimental and third-party bundle cards and opens the editor preview', () => {
+    const h = harness(detailPageState()); h.click('Built-in plugins')
+    const details = () => [...document.querySelectorAll<HTMLButtonElement>('button')].filter(item => item.textContent === 'Details…')
+    expect(details()).toHaveLength(3)
+    const card = [...document.querySelectorAll<HTMLElement>('article.bundle-card')].find(item => item.textContent?.includes('Acme Notes'))!
+    const button = [...card.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === 'Details…')!
+    expect(button.title).toBe('Details…')
+    expect(button.disabled).toBe(false)
+    button.click()
+    expect(h.posts.at(-1)).toMatchObject({ type: 'bundle-detail', name: '@acme/dsh-notes-bundle', scope: 'runtime-a' })
+    // A pending request locks every Details control until its result arrives.
+    expect(details().every(item => item.disabled)).toBe(true)
+    h.result({ ok: true, opened: true })
+    expect(document.body.textContent).toContain('Plugin details opened in the editor preview.')
+    expect(details().every(item => item.disabled)).toBe(false)
+  })
+  it('reports a bundle without details and a failed detail read', () => {
+    const h = harness(detailPageState()); h.click('Built-in plugins')
+    const openDetails = () => {
+      const card = [...document.querySelectorAll<HTMLElement>('article.bundle-card')].find(item => item.textContent?.includes('Acme Notes'))!
+      card.querySelector<HTMLButtonElement>('button[title="Details…"]')!.click()
+    }
+    openDetails()
+    h.result({ ok: true, none: true })
+    expect(document.body.textContent).toContain('No long-form details are available for this bundle.')
+    openDetails()
+    h.result({ ok: false, error: 'The plugin details could not be read. Refresh and try again.' })
+    expect(document.body.textContent).toContain('The plugin details could not be read')
+  })
+  it('keeps Details usable when the runtime is read-only or attach-only', () => {
+    const state = { ...detailPageState(), writable: false, reason: 'This external runtime is attach-only. Its settings are available for inspection.' }
+    const h = harness(state); h.click('Built-in plugins')
+    const details = [...document.querySelectorAll<HTMLButtonElement>('button')].filter(item => item.textContent === 'Details…')
+    expect(details).toHaveLength(3)
+    expect(details.every(item => !item.disabled)).toBe(true)
+    details[0]!.click()
+    expect(h.posts.at(-1)).toMatchObject({ type: 'bundle-detail' })
+    h.result({ ok: true, opened: true })
+    expect(document.body.textContent).toContain('Plugin details opened in the editor preview.')
+  })
   it('renders and saves the three experimental settings sections', () => {
     const h = harness(experimentalPageState()); h.click('Built-in plugins')
     h.click('Reasoning translation')

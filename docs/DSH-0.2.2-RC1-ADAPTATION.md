@@ -274,3 +274,84 @@ A 类 10 条的覆盖状态：
 | 第 7 节未实施项 | 图片进入输入框即上传与 50 MiB 对齐（M–L，需端到端探针）、工作步骤收起/仅最终回答（L，渲染架构）、`readBundleDetail`、`pluginMarket/readEntryDetail`、Web-only 面板、统一右键菜单与内嵌文件树（有意不做）、WebSocket 压缩（loopback 收益低）保持不变。第 7 节所列“会话悬浮卡显示工作目录”与“聊天文件链接的行范围终点”已在本轮以最小等价面处理：原生 tooltip/无障碍名称；范围终点与列仅校验、下游只打开起始行。 |
 
 第 1–8 节记录 2026-11-05 轮次的事实，本节为增量记录；上一轮结论与功能映射分类表不因本轮而改变。
+
+## 10. 维护轮次 2026-11-09（侧栏 0.2.2-rc.1.6）
+
+### 10.1 版本核验
+
+| 项目 | 值 |
+|---|---|
+| 核验日期 | 2026-11-09（Asia/Shanghai）；独立复核时间 2026-11-09T14:43:48+08:00 |
+| npm dist-tags | `{"latest":"0.2.2-rc.1","alpha":"0.2.2-alpha.3","next":"0.2.2-rc.1"}` |
+| npm 发布时间 | `0.2.2-rc.1` = 2026-11-04T09:20:32.310Z（未变） |
+| packument `time.modified` | 2026-11-05T13:21:52.829Z（未变） |
+| GitHub Release | `dsh-v0.2.2-rc.1`，published_at 2026-11-04T13:07:14Z（未变） |
+| GitHub tags | 38 条，首项 `dsh-v0.2.2-rc.1` |
+| npm 版本数 | 42；末项 `0.2.2-rc.1`；无 rc.2 或更高版本 |
+| 判定 | **无版本漂移**；最新候选版本仍为 0.2.2-rc.1 |
+
+本轮 dist-tags、版本集合、rc.1 发布时间、`time.modified`、GitHub Release 与 tags 均与 2026-11-06 轮次记录逐项一致；发布说明正文 SHA-256（`71662c56…`）未变。完整命令输出见 `artifacts/team/maintenance-2026-11-09/round-analysis.md` 第 2 节。因无新版本，本轮不要求 runtime 升级或协议变更。
+
+### 10.2 实施项与代码触点
+
+本轮实施 2026-11-06 审核与轮次分析确认的残留项，分 Batch A（插件长描述）与 Batch B（路径/通知/重启原因）。
+
+**A. 插件长描述（`Details…`，`pluginManager/readBundleDetail`）**
+
+- 契约（rc.1 安装树独立核验）：`readBundleDetail(name, language, options?{npmFileSources})`，结果 `{status:'found', origin:'locale'|'readme', path, markdown} | {status:'none'}`；错误码 `plugin-manager/unknown-bundle`、`invalid-language`、`detail-unavailable`。已安装 bundle 从 bundle 目录读取，无网络；官方未安装 bundle 经 npm 文件 CDN 读取；Host 不缓存；默认文档上限 `detailMaxBytes` = 1 MiB、图片上限 5 MiB、CDN 超时 15 s。
+- 客户端：`src/dsh-client.ts:1199` 的 `readBundleDetail` 先校验 bundle 名（字符集与长度）、规范化 `language`（`normalizeDisplayLanguage`，`:445`：trim + 小写 + `^[a-z]{2,8}(-[a-z0-9]{1,8})*$`，不合法返回 `undefined`），再发 `pluginManager/readBundleDetail`（60 s 超时，`options.npmFileSources` 仅转发 `jsdelivr`/`unpkg`/`npmmirror` 封闭集合）。结果经 `bundleDetailOf`（`:458`）白名单化：只保留 status/origin/path/markdown，`path` 限长 500 字符，markdown 按 UTF-8 计长并在超过 `MAX_BUNDLE_DETAIL_BYTES`（`:429`，1 MiB，与 Host 默认一致）时判为 `invalid-response`；未知字段与诊断丢弃。
+- 面板：`src/settings-panel.ts:272` 处理 `bundle-detail` 消息（`:285`）。bundle 必须属于当前 roster；`language` 取 `normalizeDisplayLanguage(vscode.env.language) ?? 'en'`（`:293`）；该读取是只读操作，不要求 `runtimeIsOurs`/`requireWrite`，因此只读 profile 与 attach-only 外部 runtime 也可查看。只有契约的 `{status:'none'}` 结果视为“无详情”；`plugin-manager/detail-unavailable`（存在文档但网络/体积/内容读取失败）经 `bundleDetailFailure`（`:65`）映射为 “This bundle's detail document could not be read. Try again later.”，不再误报为无详情。其余错误同样映射为固定文案：`unknown-bundle` → “This plugin is no longer in the runtime's bundle list. Refresh settings to update the list.”；旧 runtime 未提供方法（`DshConnectionError` 的 HTTP 404，或 `gateway/invocation-unavailable`、`gateway/method-not-found`、`gateway/not-found`、`gateway/route-not-found`、`gateway/unknown-method`、`unknown-method`）→ “This runtime does not provide plugin details.”；其他 → “The plugin details could not be read. Refresh and try again.”。编辑器打开失败 → “The plugin details could not be opened.”。不转发 runtime 诊断、包内路径或异常原文。
+- 页面：`src/settings-page.mts:614`（Third-party bundles）与 `:704`（Experimental bundles）的卡片新增 **Details…** 按钮；两个 fieldset 仅在存在 pending 请求时锁定，因此只读/attach-only runtime 的 Details 仍可用。页面结果文案：打开成功 “Plugin details opened in the editor preview.”；无详情 “No long-form details are available for this bundle.”；失败使用面板给出的固定文案。
+- 虚拟文档与预览：新增 `src/plugin-detail.ts`。自定义 scheme `dsh-plugin-detail`（`:11`）；每次打开生成不透明 token（`detail-<UUID>`），URI 形如 `dsh-plugin-detail:/plugin-details/<token>/<安全标签>.md`（`:125`），不含本机路径或包内文档路径；标签经 `\p{Cc}\p{Cf}` 剔除、路径分隔符与 `#` 替换为空格、空白折叠并截断到 80 字符（`:20`、`:23-26`），因此标题中的 `#` 不会成为 URI fragment。正文只存于内存表，最多 16 份（`:15`），超出按插入顺序淘汰，过期 URI 返回 “These plugin details are no longer available. Open the plugin details again.”（`:13`）。由于 VS Code 对同一 scheme 只保留一个内容提供者，本扩展采用进程级共享注册（`acquireDocuments` `:63` / `releaseDocuments` `:79`）：多个 `PluginDetailViewer` 共享同一 provider 注册与同一 token 表，首个 viewer 注册、最后一个 dispose 时注销并清空，重叠的设置界面可互相服务已打开文档，最后一个释放后旧 token 返回“不再可用”。`open`（`:118` 起）优先执行 `markdown.showPreview`（`:127`）；预览命令失败时回退 `window.showTextDocument(uri, { preview: true })`（`:131`）打开同一只读文档；两种编辑器都失败时删除该 token 的正文并返回错误。viewer `dispose`（`:141`）幂等，仅递减共享引用计数。
+- **已知降级**：详情文档中的相对图片由 runtime 的认证路由 `GET /api/plugin-manager/detail-file` 提供；VS Code Markdown 预览无法携带 runtime 认证，也无法解析该路由，因此图片不渲染，预览与 DSH Web 详情页不一致。Markdown 原样交给预览，不抓取、不重写为 `data:` URI、不持久化；预览自身按 VS Code 的资源策略与工作区信任模型处理文档中的外部资源。
+
+**B. 聊天文件链接路径加固（Cc/Cf）**
+
+- `src/markdown.mts:169` 的路径校验由 C0/DEL 扩展为 `/[\p{Cc}\p{Cf}]/u`：拒绝全部 Unicode 控制与格式字符（C0、C1、`Cf`，含双向覆盖符、方向隔离符与零宽字符）。校验在 `decodeURIComponent` 之后执行，因此 `%C2%85`、`%E2%80%AE` 等转义形式同样被拒绝；合法非 ASCII 文件名与 Windows 盘符例外规则不变。
+- 该加固同时覆盖哈希片段与冒号后缀两条解析路径的最终 `path`，不改变第 9.2 B 节的行号语义。
+
+**C. 会话 Markdown 导出失败通知停留策略**
+
+- `src/webview.ts:1392` 的 `SESSION_NOTICE_MS` = 1600 ms（确认提示）；`:1394` 的 `SESSION_NOTICE_ERROR_MAX_MS` = 15000 ms（失败提示的安全上限）。`showSessionNotice`（`:1427`）在失败时设置 `role="alert"` 与 `aria-live="assertive"`，提示保持可见直到用户下一次 `pointerdown`/`keydown`（捕获阶段监听）、被新通知替换或达到 15 s 上限；`hideSessionNotice`（`:1404`）清除计时器与监听器，并把角色恢复为 `status`/`polite`。监听器只在失败提示可见期间存在，替换时先移除旧监听器，避免叠加；Webview `pagehide` 时清理（`:1455`）。
+- 归属：该打磨是 2026-11-05 审核 **Minor-2** 的后续（2026-11-06 审核报告 §4.4 已记录 4 s 实现现状），不属于 2026-11-06 审核报告第 9 节 Minor 清单。第 9.2 D 节的 4 s 策略在本轮被替换。
+
+**D. 第三方 bundle 重启原因单一数据源**
+
+- 重启原因白名单与文案收敛到 `src/settings-page-state.ts:135` 的 `RESTART_REASON_TEXT` / `:142` 的 `RESTART_REASON_CODES` / `:144` 的 `restartReasonText`（`Object.hasOwn` 校验，未知键与原型键拒绝）。`src/settings-panel.ts` 改为从该模块导入 `RESTART_REASON_CODES` 下传白名单码；`src/settings-page.mts:1` 改为导入 `RESTART_REASON_CODES` 与 `restartReasonText`，`:575` 通过统一函数取文案。五条文案与白名单集合逐字未变，属内部重构，用户可见行为不变。
+
+### 10.3 隐私与安全
+
+1. 详情正文只存在于内存虚拟文档表：不写磁盘、Output 通道、Webview 状态或遥测，不持久化；URI 只含随机 token 与净化后的标签，不泄露本机路径或包内文档路径；文档表上限 16 份，由进程级共享注册维护，在最后一个使用者释放时清空。
+2. 第三方 bundle 的 Markdown 属不可信文本：仅在用户点击 **Details…** 后才读取并交给 VS Code 预览；侧栏不抓取、不预取、不重写文档中的外部资源，也不注入 HTML；预览自身的安全过滤、CSP 与工作区信任模型保持生效。需要说明的是，预览默认策略允许加载 `https:`/`data:` 图片，因此第三方文档中的远程图片可能由预览直接请求，向该主机暴露读者地址与时间信息（不涉及本地数据）；相对图片因运行时认证 detail-file 路由不可解析而不渲染。
+3. 客户端只接受封闭结果形状与白名单字段：status/origin/path/markdown；`path` 限长 500、markdown 限 1 MiB（UTF-8）；bundle 名、language、CDN 源均经校验，空/畸形 language 回退 `en`；错误只显示固定分类文案，不回显诊断、包内路径或异常原文。
+4. 路径 Cc/Cf 过滤在解码后执行，阻止不可见字符或双向重排隐藏链接实际打开的目标；URL、共享路径、控制字符与盘符规则未放宽。
+5. 重启原因集合仅来自单一共享定义，未知值被页面过滤，wire 文本不进入界面。
+6. 本轮不新增持久化、遥测或网络出口。已安装 bundle 的详情读取无网络；官方未安装 bundle 的详情读取由 runtime 经 npm 文件 CDN 完成，属用户显式触发的读取。
+
+### 10.4 验证记录
+
+2026-11-09T14:52–14:56+08:00（本机最终工作树；含提交前审核 Minor 修复；版本核验复核于 14:43:48）：
+
+| 命令 | 结果 |
+|---|---|
+| `npx tsc -p tsconfig.json --noEmit` | 通过（退出码 0） |
+| `node scripts/build.mjs` | 通过；输出 `dist/extension.js`、`dist/runtime-host.js` 与 Webview bundles |
+| `CI=true npx vitest run --config vitest.config.ts` | **132 个测试文件通过；2581 passed / 1 skipped / 0 failed（2582 个用例）** |
+
+- 代码层工作树改动（相对 HEAD `39ab491`）：6 个 `src/` 文件（其中 `src/plugin-detail.ts` 为新增）与 6 个已修改 spec 文件（另新增 `tests/plugin-detail.spec.ts`）；连同本任务 6 个文档与版本文件，工作树共 18 个已修改文件 + 2 个新增文件。
+- 测试增量：7 个 spec 文件（6 个修改、1 个新增）新增 47 个 `it` 声明（含 2 个 `it.each` 参数化声明；其中新增的 `tests/plugin-detail.spec.ts` 含 14 个），并扩展既有参数化表格（路径 Cc/Cf 行等）。
+- 覆盖要点：`readBundleDetail` 的 wire 参数/language 规范化/1 MiB 上限/`none`/恶意字段丢弃/CDN 源白名单/畸形结果拒绝；虚拟文档的 token 唯一性、每 token 单正文、16 份上限与淘汰、标签净化、预览失败回退文本编辑器、打开失败后正文遗忘、dispose 后拒绝；进程级共享 provider 注册（多 viewer 只注册一次、一个界面的文档可由另一个存活界面服务、逐个 dispose 后仍存活、最后一个释放时注销并清空表、再次创建重新注册且旧 token 失效）；设置页两个卡片均出现 Details、只读/attach-only 可用、无详情与失败文案；面板 roster 校验、`detail-unavailable`→读取失败文案、旧 runtime 的 6 类 gateway 码与 HTTP 404 → 不支持文案、空语言回退、不泄露 hidden-marker、面板关闭释放共享引用；标签中的 `#` 不进入 URI fragment；文件链接 Cc/Cf 字面与转义形式拒绝、合法非 ASCII 与盘符保持；失败提示交互关闭/15 s 上限/替换不叠加监听/页面销毁清理；重启原因单一数据源导出与原型键拒绝。
+- **边界声明**：本轮未对真实 DSH runtime 执行端到端运行，未在真实 VS Code 扩展宿主中手工冒烟；虚拟文档与 Markdown 预览由单元测试（mock `vscode`）覆盖，未验证真实预览对第三方资源的渲染结果，也未对详情图片不渲染做视觉验证；未运行 Chromium 浏览器检查。
+
+### 10.5 残余与后续
+
+| 项目 | 说明 |
+|---|---|
+| `pluginMarket/readEntryDetail` | 市场条目详情为独立 RPC（需索引 URL 与具体版本，独立结果类型与缓存语义），属市场发现流程，仍未实现 |
+| 详情图片渲染 | 需经 runtime 认证抓取 `/api/plugin-manager/detail-file` 并重写为 `data:` URI（或等价安全方案），会新增抓取、解码与注入面，需独立设计与安全评审；本轮不实施 |
+| 详情文档外部资源 | 第三方 Markdown 中的远程图片可由 VS Code 预览按默认资源策略直接加载（向第三方主机暴露地址/时间，不涉及本地数据）；侧栏不抓取、不预取、不重写。若需审计或阻断外链，需独立设计（如受控 webview 或内容净化） |
+| 预览生命周期取舍 | 最后一个设置界面关闭时共享 provider 注销并清空文档表，此时仍打开的详情预览标签页显示“不再可用”固定文案；若需预览在设置界面关闭后继续可读，可将注销延后到扩展停用（代价：scheme 注册常驻） |
+| Web 插件管理页布局/导航 | rc.1 条目中的“改善页面布局和导航行为”属 DSH Web 页面，侧栏保持设置页卡片结构，不复刻 |
+| 既有未实施项 | 第 7 节与第 9.5 节所列图片即时上传与 50 MiB 对齐、工作步骤折叠、Web-only 面板、统一右键菜单与内嵌文件树（有意不做）、WebSocket 压缩（loopback 收益低）等保持不变；本轮无新增未实施适配项 |
+
+第 9–10 节分别记录 2026-11-06 与 2026-11-09 两个维护轮次；本节为增量记录，第 1–9 节既有事实保持不变。

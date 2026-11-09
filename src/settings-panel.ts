@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import * as vscode from 'vscode'
 import type { DshChatController } from './extension.js'
-import type { DshBundleChange, DshClient } from './dsh-client.js'
+import { normalizeDisplayLanguage, type DshBundleChange, type DshClient } from './dsh-client.js'
+import { DshConnectionError } from './dsh-connection.js'
 import type { SettingsDescription, SettingsNamespace, SettingsMutation } from './runtime-settings.js'
 import { runtimeIsOurs } from './runtime-change.js'
 import { redactDshSecrets } from './runtime-output.js'
 import { settingsPageHtml } from './settings-page-html.js'
-import { at, credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerProfile, providerViews, publicBundles, publicBundleVersions, publicPluginInventory, reasoningLevels, record, searchSettings, searchSelectionMutations, SEARCH_PROFILES, settingsForms, validProviderId,
+import { PluginDetailViewer } from './plugin-detail.js'
+import { at, credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerProfile, providerViews, publicBundles, publicBundleVersions, publicPluginInventory, reasoningLevels, record, RESTART_REASON_CODES, searchSettings, searchSelectionMutations, SEARCH_PROFILES, settingsForms, validProviderId,
   type ConfigurableProvider, type CredentialState, type ModelDiscoveryRequest, type SettingsPageState } from './settings-page-state.js'
 
 type Host = Pick<DshChatController, 'state' | 'cwd' | 'runtimeIdentity' | 'runtimeOwnership' | 'onDidChangeState' | 'onDidChangeRuntimeSettings' | 'settings' | 'settingsClient' | 'mutateSettings' | 'start'>
@@ -48,13 +50,35 @@ function bundleVersionFailure(problem: 'network' | 'unknown' | 'not-found' | 'no
 
 const ATTACH_ONLY_BUNDLE_MESSAGE = 'This external runtime is attach-only. Change its plugin bundles from the runtime that owns them.'
 
+/** The classified code of a failed detail read; never the runtime's message. */
+function bundleDetailFailureCode(cause: unknown): string | undefined {
+  return record(cause) && typeof cause.code === 'string' ? cause.code : undefined
+}
+
 /**
- * The runtime's closed set of restart reasons (`RestartReason`).
+ * Explain a failed detail read without forwarding the runtime's diagnostic.
  *
- * Only these codes may reach the Webview; the page maps each to its own copy,
- * so a new runtime value cannot put arbitrary text on screen.
+ * The runtime's detail errors are classified (`unknown-bundle`,
+ * `detail-unavailable`), as is an older runtime that does not serve the method.
+ * Package paths and exception text never enter the copy.
  */
-const RESTART_REASON_CODES: ReadonlySet<string> = new Set(['no-hmr', 'package-moved', 'host-module', 'unmanaged-plugin', 'module-comparison'])
+function bundleDetailFailure(cause: unknown): string {
+  const code = bundleDetailFailureCode(cause)
+  if (code === 'plugin-manager/unknown-bundle') return 'This plugin is no longer in the runtime\'s bundle list. Refresh settings to update the list.'
+  // An older runtime does not serve the method: the missing remote reaches the
+  // client as HTTP 404, or the gateway answers first with an unknown-route code.
+  const unavailable = cause instanceof DshConnectionError && cause.status === 404
+    || code === 'gateway/invocation-unavailable' || code === 'gateway/unknown-method'
+    || code === 'gateway/method-not-found' || code === 'gateway/not-found'
+    || code === 'gateway/route-not-found' || code === 'unknown-method'
+  if (unavailable) return 'This runtime does not provide plugin details.'
+  if (code === 'plugin-manager/detail-unavailable') {
+    // The runtime's `none` result means the bundle has no document; this error
+    // means a document exists but could not be read (network, size or content).
+    return 'This bundle\'s detail document could not be read. Try again later.'
+  }
+  return 'The plugin details could not be read. Refresh and try again.'
+}
 
 /** One settings surface, bound to a runtime client rather than the selected chat. */
 export class SettingsPanelManager implements vscode.Disposable {
@@ -102,6 +126,9 @@ export class SettingsPanelManager implements vscode.Disposable {
     let bundles: NonNullable<SettingsPageState['bundles']> = []
     /** Versions the page last listed per bundle; only those may be installed. */
     const listedBundleVersions = new Map<string, Set<string>>()
+    // Each bound surface holds one reference to the shared detail provider;
+    // closing it releases only this reference, not another surface's documents.
+    const detailViewer = new PluginDetailViewer()
     let timer: NodeJS.Timeout | undefined, lifetime = new AbortController()
     const clean = (value: unknown, secrets: string[] = []): string => redactDshSecrets(text(value), secrets).slice(0, 1500)
     const connected = (): boolean => {
@@ -255,6 +282,38 @@ export class SettingsPanelManager implements vscode.Disposable {
       try {
         const current = assertCurrent()
         const keyInput = apiKey(message.apiKey)
+        if (message.type === 'bundle-detail') {
+          // Viewing a detail is a read: it needs a live runtime, not write access,
+          // so an attach-only or read-only runtime can still show its plugins.
+          const name = message.name
+          if (typeof name !== 'string' || name === '' || name.length > 512) throw new Error('Invalid bundle name.')
+          const bundle = bundles.find(item => item.name === name)
+          if (!bundle) throw new Error('This bundle is not available in the current runtime. Refresh settings and try again.')
+          // The runtime rejects an empty or malformed language, so fall back to English.
+          const language = normalizeDisplayLanguage(vscode.env.language) ?? 'en'
+          let read
+          try {
+            read = await current.readBundleDetail(name, language)
+          } catch (cause) {
+            // Every failed read is a classified sentence: the runtime's wording,
+            // a package path and an exception message never reach the page.
+            if (operationScope === scope) void panel.webview.postMessage({ type: 'result', requestId, ok: false, error: bundleDetailFailure(cause) })
+            return
+          }
+          if (read.status === 'none') {
+            if (operationScope === scope) void panel.webview.postMessage({ type: 'result', requestId, ok: true, none: true })
+            return
+          }
+          let opened: boolean
+          try {
+            opened = await detailViewer.open(read, bundle.title ?? name)
+          } catch {
+            if (operationScope === scope) void panel.webview.postMessage({ type: 'result', requestId, ok: false, error: 'The plugin details could not be opened.' })
+            return
+          }
+          if (operationScope === scope) void panel.webview.postMessage({ type: 'result', requestId, ok: true, opened })
+          return
+        }
         if (message.type === 'set-bundle') {
           if (!runtimeIsOurs(this.host.runtimeOwnership)) throw new Error(ATTACH_ONLY_BUNDLE_MESSAGE)
           requireWrite()
@@ -584,6 +643,7 @@ export class SettingsPanelManager implements vscode.Disposable {
         else if (accountChanged) post()
       }),
       panel.onDidDispose(() => { this.close?.(); this.panel = undefined }),
+      { dispose: () => detailViewer.dispose() },
     ]
     this.close = () => { if (disposed) return; disposed = true; ++generation; lifetime.abort(); if (timer) clearTimeout(timer); for (const item of disposables) item.dispose(); this.refreshPage = undefined; this.close = undefined }
   }

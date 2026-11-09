@@ -7,6 +7,9 @@ const live: Harness[] = []
 afterEach(async () => {
   await new Promise(resolve => setTimeout(resolve, 0))
   live.splice(0).forEach(instance => instance.dispose())
+  // Dismissal-listener spies are per-test; a leaked one would observe the next
+  // harness's own setup and make the call counts meaningless.
+  vi.restoreAllMocks()
   document.body.replaceChildren()
 })
 function open(): Harness { const instance = harness(); live.push(instance); return instance }
@@ -158,7 +161,11 @@ describe('main conversation directory and quick switcher', () => {
     expect(notice.classList.contains('error')).toBe(true)
   })
 
-  it('keeps an error-tone notice longer than a confirmation and marks it as failed', () => {
+  /** The document-level notice listeners this script attached after the spy. */
+  const noticeListeners = (spy: { mock: { calls: unknown[][] } }): unknown[][] =>
+    spy.mock.calls.filter(call => (call[0] === 'pointerdown' || call[0] === 'keydown') && call[2] === true)
+
+  it('keeps an error notice past four seconds until the user interacts, then restores its ARIA state', () => {
     vi.useFakeTimers()
     try {
       const h = open()
@@ -167,21 +174,122 @@ describe('main conversation directory and quick switcher', () => {
       h.send({ type: 'session-notice', text: 'The session could not be copied as Markdown. Try again.', tone: 'error' })
       expect(notice.textContent).toBe('The session could not be copied as Markdown. Try again.')
       expect(notice.classList.contains('error')).toBe(true)
-      expect(notice.classList.contains('hidden')).toBe(false)
+      expect(notice.getAttribute('role')).toBe('alert')
+      expect(notice.getAttribute('aria-live')).toBe('assertive')
       // 1600 ms is the confirmation lifetime; an error must outlive it.
-      vi.advanceTimersByTime(1600)
+      vi.advanceTimersByTime(4000)
       expect(notice.classList.contains('hidden')).toBe(false)
-      vi.advanceTimersByTime(2400)
+      // The next pointerdown anywhere in the Webview dismisses it.
+      h.document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
       expect(notice.classList.contains('hidden')).toBe(true)
-      // A later confirmation reuses the element without the error marking and
-      // leaves after the default lifetime.
-      h.send({ type: 'session-notice', text: 'Session copied as Markdown.' })
       expect(notice.classList.contains('error')).toBe(false)
-      expect(notice.textContent).toBe('Session copied as Markdown.')
+      expect(notice.getAttribute('role')).toBe('status')
+      expect(notice.getAttribute('aria-live')).toBe('polite')
+      // No listener may survive the dismissal or wait for the safety bound.
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('dismisses an error notice on the next keydown as well', () => {
+    vi.useFakeTimers()
+    try {
+      const h = open()
+      const notice = h.document.getElementById('sessionNotice')!
+      h.send({ type: 'session-notice', text: 'A failure the user must act on.', tone: 'error' })
+      expect(notice.classList.contains('hidden')).toBe(false)
+      h.document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }))
+      expect(notice.classList.contains('hidden')).toBe(true)
+      expect(notice.getAttribute('role')).toBe('status')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('bounds a lingering error notice at fifteen seconds', () => {
+    vi.useFakeTimers()
+    try {
+      const h = open()
+      const notice = h.document.getElementById('sessionNotice')!
+      h.send({ type: 'session-notice', text: 'A failure the user never acted on.', tone: 'error' })
+      vi.advanceTimersByTime(14999)
+      expect(notice.classList.contains('hidden')).toBe(false)
+      vi.advanceTimersByTime(1)
+      expect(notice.classList.contains('hidden')).toBe(true)
+      expect(notice.getAttribute('role')).toBe('status')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('replaces an error notice without stacking dismissal listeners and restarts its bound', () => {
+    vi.useFakeTimers()
+    try {
+      const h = open()
+      // A ready state ends the startup resync watchdog, so timer counts below
+      // describe this notice's own timers only.
+      h.sendState({ sessionId: 'parent', sessions: [parent] })
+      const notice = h.document.getElementById('sessionNotice')!
+      const add = vi.spyOn(document, 'addEventListener')
+      const remove = vi.spyOn(document, 'removeEventListener')
+      h.send({ type: 'session-notice', text: 'First failure.', tone: 'error' })
+      expect(noticeListeners(add)).toHaveLength(2)
+      h.send({ type: 'session-notice', text: 'Second failure.', tone: 'error' })
+      // The replaced notice's pair is removed before the new one is attached, so
+      // exactly one pair is ever live: four adds, two removes, no accumulation.
+      expect(noticeListeners(add)).toHaveLength(4)
+      expect(noticeListeners(remove)).toHaveLength(2)
+      expect(notice.textContent).toBe('Second failure.')
+      // The safety bound restarted for the replacement.
+      vi.advanceTimersByTime(14999)
+      expect(notice.classList.contains('hidden')).toBe(false)
+      vi.advanceTimersByTime(1)
+      expect(notice.classList.contains('hidden')).toBe(true)
+      expect(noticeListeners(remove)).toHaveLength(4)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves a confirmation after its default lifetime without error listeners', () => {
+    vi.useFakeTimers()
+    try {
+      const h = open()
+      const notice = h.document.getElementById('sessionNotice')!
+      const add = vi.spyOn(document, 'addEventListener')
+      h.send({ type: 'session-notice', text: 'Session copied as Markdown.' })
+      expect(noticeListeners(add)).toHaveLength(0)
+      expect(notice.getAttribute('role')).toBe('status')
       vi.advanceTimersByTime(1599)
       expect(notice.classList.contains('hidden')).toBe(false)
       vi.advanceTimersByTime(1)
       expect(notice.classList.contains('hidden')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears a visible error notice and its listeners when the Webview is disposed', () => {
+    vi.useFakeTimers()
+    try {
+      const h = open()
+      h.sendState({ sessionId: 'parent', sessions: [parent] })
+      // Flush the scheduled render frame so only the notice's own timer remains.
+      vi.advanceTimersByTime(20)
+      const notice = h.document.getElementById('sessionNotice')!
+      const add = vi.spyOn(document, 'addEventListener')
+      const remove = vi.spyOn(document, 'removeEventListener')
+      h.send({ type: 'session-notice', text: 'A failure visible at dispose.', tone: 'error' })
+      expect(noticeListeners(add)).toHaveLength(2)
+      const index = live.indexOf(h)
+      if (index >= 0) live.splice(index, 1)
+      h.dispose()
+      expect(notice.classList.contains('hidden')).toBe(true)
+      expect(notice.getAttribute('role')).toBe('status')
+      expect(noticeListeners(remove)).toHaveLength(2)
+      expect(vi.getTimerCount()).toBe(0)
     } finally {
       vi.useRealTimers()
     }

@@ -9,6 +9,65 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-rc.1.6] - 2026-11-09
+
+### Added
+
+- **Details…** on the Experimental bundles and Third-party bundles cards in
+  Settings → Plugins. The extension reads the bundle's localized long
+  description through `pluginManager/readBundleDetail`: the manifest's locale
+  detail file when the runtime has one, otherwise the package README. The
+  request uses the VS Code display language, normalized to the runtime's BCP 47
+  grammar with `en` as the fallback when the language is empty or
+  unrecognized. Installed bundles are read from the runtime's own directory;
+  an official bundle this installation does not ship is read from the npm file
+  CDN with a network request. A document is refused above the runtime's 1 MiB
+  default. The Markdown opens as a read-only virtual document in the VS Code
+  Markdown preview under an opaque token URI, with the same document in a plain
+  text editor as the fallback when the preview command fails; nothing is
+  written to disk, the Output channel, or Webview state. Viewing a detail is a
+  read, so read-only profiles and attach-only external runtimes can use it too.
+  Errors use fixed classified copy and never echo the runtime diagnostic or a
+  package-internal path.
+- Known degradation: relative images in a detail document are served by the
+  runtime's authenticated `GET /api/plugin-manager/detail-file` route. The VS
+  Code Markdown preview cannot carry runtime authentication or resolve that
+  route, so those images do not render, and the preview is not identical to the
+  DSH Web detail page. The Markdown is passed to the preview unchanged: no
+  data-URI rewriting and no content weakening.
+
+### Fixed
+
+- Chat file-link path validation now rejects every Unicode control and format
+  character (C0, C1 and `Cf`, including bidirectional overrides and zero-width
+  characters) after percent-decoding, so a literal or an escaped character
+  cannot hide or reorder the destination that the link opens. Legitimate
+  non-ASCII names and the Windows drive rule are unchanged.
+- A session Markdown export failure stays visible until the user's next pointer
+  or keyboard interaction, a replacing notice, or a 15-second safety bound,
+  instead of disappearing after four seconds. The failure is exposed as an
+  alert for assistive technology and the notice returns to a polite status
+  when hidden; its listeners and timer are removed on hide and on Webview
+  disposal. This follows up the 2026-11-05 review note on failure-notice
+  visibility.
+- The third-party bundle restart-reason whitelist and its operator copy moved
+  into one shared definition in the settings page state module. The settings
+  panel forwards only those codes and the page maps only those codes; this is
+  an internal refactor with no user-visible change.
+
+### Notes
+
+- The round's independent privacy and security review covers the
+  virtual-document mechanism, the Markdown preview's external-resource surface,
+  input validation and credential redaction.
+- The VS Code Markdown preview applies its own resource policy to a plugin's
+  detail document: a third-party document can reference remote images that
+  the preview then requests, which reveals the reader's address and timing
+  to that host. The sidebar never fetches or rewrites those resources.
+- The new behaviour is covered by unit tests; this build was not run end to
+  end against a live DSH runtime, and no manual smoke test was performed in a
+  real VS Code extension host.
+
 ## [0.2.2-rc.1.5] - 2026-11-06
 
 ### Added

@@ -308,6 +308,24 @@ describe('Markdown rendering', () => {
     }
   })
 
+  it('refuses Unicode control and format characters anywhere in a file path', () => {
+    // The old check refused only C0/DEL, so C1 controls, bidi overrides and
+    // zero-width characters could hide or reorder the destination in the link.
+    for (const href of ['a\u0085b.ts', 'a\u0080b.ts', 'a\u009fb.ts',
+      'a\u200bb.ts', 'a\u202eb.ts', 'a\u2066b.ts', 'a\ufeffb.ts']) {
+      expect(parseFileLink(href), JSON.stringify(href)).toBeUndefined()
+    }
+    // The path is decoded first, so an encoded control or format character is
+    // refused exactly like its literal form.
+    for (const href of ['a%C2%85b.ts', 'a%E2%80%8Bb.ts', 'a%E2%80%AEb.ts', 'a%EF%BB%BFb.ts']) {
+      expect(parseFileLink(href), href).toBeUndefined()
+    }
+    // Legitimate non-ASCII names and the Windows drive rule stay untouched.
+    expect(parseFileLink('%E4%B8%AD.ts')).toEqual({ path: '中.ts' })
+    expect(parseFileLink('C:/x.ts')).toEqual({ path: 'C:/x.ts' })
+    expect(parseFileLink('C:/x.ts:42')).toEqual({ path: 'C:/x.ts', line: 42 })
+  })
+
   it.each([
     ['', undefined],
     ['a.ts', { path: 'a.ts' }],
@@ -325,6 +343,16 @@ describe('Markdown rendering', () => {
     ['mailto:a@b.com', undefined],
     ['%ZZ', undefined],
     ['a%00b.ts', undefined],
+    // Unicode control (Cc) and format (Cf) characters are refused, literal or
+    // percent-encoded: NEL (C1), ZWSP, RLO, an isolate and the BOM.
+    ['a\u0085b.ts', undefined],
+    ['a\u200bb.ts', undefined],
+    ['a\u202eb.ts', undefined],
+    ['a\u2066b.ts', undefined],
+    ['a\ufeffb.ts', undefined],
+    ['a%C2%85b.ts', undefined],
+    ['a%E2%80%8Bb.ts', undefined],
+    ['a%E2%80%AEb.ts', undefined],
     // Colon suffixes (rc.1 parity): the start line is returned, the column and
     // the range end only take part in the match.
     ['a.ts:42', { path: 'a.ts', line: 42 }],

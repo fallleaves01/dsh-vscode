@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerViews, publicBundles, publicBundleVersions, publicPluginInventory, reasoningLevels, searchSelectionMutations, searchSettings, settingsForms, validProviderId } from '../src/settings-page-state.js'
+import { credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerViews, publicBundles, publicBundleVersions, publicPluginInventory, reasoningLevels, restartReasonText, RESTART_REASON_CODES, RESTART_REASON_TEXT, searchSelectionMutations, searchSettings, settingsForms, validProviderId } from '../src/settings-page-state.js'
 import { cotTranslationNamespace, experimentalPageState, fixture, pluginMarketNamespace, searchFixture } from './settings-page.fixture.js'
 
 describe('official settings form boundaries', () => {
@@ -288,5 +288,24 @@ describe('third-party bundle version projection', () => {
     expect(projected!.versions).toHaveLength(100)
     expect(projected!.versions.filter(version => version.version === '1.0.0')).toHaveLength(1)
     expect(projected!.versions[0]!.prerelease).toBe(false)
+  })
+})
+
+describe('restart reason copy source', () => {
+  it('exports one closed reason table shared by the panel and the page', () => {
+    expect(Object.keys(RESTART_REASON_TEXT).sort()).toEqual(['host-module', 'module-comparison', 'no-hmr', 'package-moved', 'unmanaged-plugin'])
+    for (const code of Object.keys(RESTART_REASON_TEXT)) expect(RESTART_REASON_CODES.has(code)).toBe(true)
+    expect(RESTART_REASON_CODES.size).toBe(5)
+    expect(restartReasonText('no-hmr')).toContain('hot module replacement')
+    expect(restartReasonText('package-moved')).toContain('another directory')
+    expect(RESTART_REASON_TEXT['no-hmr']).toBe(restartReasonText('no-hmr'))
+  })
+  it('rejects unknown codes and prototype keys', () => {
+    expect(restartReasonText('invented')).toBeUndefined()
+    expect(restartReasonText('__proto__')).toBeUndefined()
+    expect(restartReasonText('constructor')).toBeUndefined()
+    expect(restartReasonText(undefined)).toBeUndefined()
+    expect(restartReasonText(42)).toBeUndefined()
+    expect(RESTART_REASON_CODES.has('__proto__')).toBe(false)
   })
 })

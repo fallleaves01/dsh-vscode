@@ -123,8 +123,8 @@ function escapeHtml(text: string): string {
  * A model writes the file it means as the destination and puts any label on
  * the link, so the destination — not the label text — is the path to open.
  * URLs, queries and malformed escapes are rejected rather than guessed at, and
- * the sidebar's existing path rules (control characters, shared paths, URL
- * schemes) stay in force.
+ * the sidebar's existing path rules (Unicode control and format characters,
+ * shared paths, URL schemes) stay in force.
  *
  * DSH 0.2.2-rc.1 parity: a hash fragment names the start line only
  * (`#L5` or `#L5-L9`; the range end is not propagated), a colon suffix names
@@ -161,7 +161,12 @@ export function parseFileLink(value: string): { path: string; line?: number } | 
       }
     }
   }
-  if (path === '' || /[\u0000-\u001f\u007f]/.test(path) || /^[\\/]{2}/.test(path)
+  // A format or control character anywhere in the path would render as an
+  // invisible or bidi-reordering link that opens a file the reader did not see.
+  // `\p{Cf}` covers bidi overrides/isolates and zero-width characters the old
+  // C0/DEL check let through; `\p{Cc}` keeps C0, DEL and C1. The rest of the
+  // path, URL, shared-path and drive-letter rules are unchanged.
+  if (path === '' || /[\p{Cc}\p{Cf}]/u.test(path) || /^[\\/]{2}/.test(path)
     || (/^[a-z][a-z\d+.-]*:/i.test(path) && !/^[a-z]:[\\/]/i.test(path))) return undefined
   if (hash < 0) return suffixLine === undefined ? { path } : { path, line: suffixLine }
   const match = /^L(\d+)(?:-L(\d+))?$/.exec(value.slice(hash + 1))

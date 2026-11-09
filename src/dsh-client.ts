@@ -425,6 +425,49 @@ function bundleUpdateResultOf(value: unknown): DshBundleUpdateResult | undefined
   return { from, to, step, result, ...(restore === undefined ? {} : { restore }) }
 }
 
+/** The Host's default `detailMaxBytes`; larger answers are malformed, not renderable. */
+const MAX_BUNDLE_DETAIL_BYTES = 1024 * 1024
+
+/** UTF-8 length without depending on the host's Buffer binding. */
+function utf8Length(value: string): number { return new TextEncoder().encode(value).byteLength }
+
+/** The BCP 47 shape the runtime accepts after lowercasing. */
+const DISPLAY_LANGUAGE = /^[a-z]{2,8}(-[a-z0-9]{1,8})*$/
+
+/**
+ * Normalize a VS Code display language for `pluginManager/readBundleDetail`.
+ *
+ * The runtime lowercases the value and rejects anything outside a narrow BCP 47
+ * shape, including the empty string. The settings panel uses this to fall back
+ * to English; the client validates the same grammar so a malformed value never
+ * reaches the wire.
+ */
+export function normalizeDisplayLanguage(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim().toLowerCase()
+  return DISPLAY_LANGUAGE.test(normalized) ? normalized : undefined
+}
+
+/**
+ * Read one bundle detail answer, keeping only the documented fields.
+ *
+ * The wire carries the package-internal document path; callers must not forward
+ * it to the Webview. Unknown properties and oversized documents are refused
+ * rather than projected.
+ */
+function bundleDetailOf(value: unknown): DshBundleDetailRead | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  if (row.status === 'none') return { status: 'none' }
+  if (row.status !== 'found') return undefined
+  const origin = row.origin
+  if (origin !== 'locale' && origin !== 'readme') return undefined
+  const path = bundleText(row.path, 500)
+  if (path === undefined || typeof row.markdown !== 'string') return undefined
+  if (utf8Length(row.markdown) > MAX_BUNDLE_DETAIL_BYTES) return undefined
+  return { status: 'found', origin, path, markdown: row.markdown }
+}
+
 /** One package the running DSH version rejects, as `PluginVersion` reports it. */
 export interface DshIncompatiblePlugin {
   name: string
@@ -483,6 +526,28 @@ export interface DshBundleUpdateResult {
   step: 'remove' | 'check' | 'install'
   result: DshBundleChange
   restore?: DshBundleChange
+}
+
+/**
+ * One found long-description document for a bundle: a locale file the manifest
+ * names (`locale`) or the package's README (`readme`).
+ *
+ * `path` is package-internal and must not reach the Webview; it exists for a
+ * caller that wants to resolve relative images through the runtime.
+ */
+export interface DshBundleDetail {
+  status: 'found'
+  origin: 'locale' | 'readme'
+  path: string
+  markdown: string
+}
+
+/** `pluginManager/readBundleDetail`: one bundle document, or that it has none. */
+export type DshBundleDetailRead = DshBundleDetail | { status: 'none' }
+
+/** Optional source hints for an uninstalled bundle's npm CDN read. */
+export interface DshBundleDetailOptions {
+  npmFileSources?: ('jsdelivr' | 'unpkg' | 'npmmirror')[]
 }
 
 export interface ModelSelection {
@@ -1122,6 +1187,30 @@ export class DshClient {
     const result = bundleUpdateResultOf(value)
     if (result === undefined) throw new DshConnectionError('invalid-response', 'DSH pluginManager/updateBundle returned an unexpected result.')
     return result
+  }
+  /**
+   * Read one bundle's long description, or `none` when it has no detail file.
+   *
+   * Installed bundles read from disk; an official bundle this installation does
+   * not ship reads through a package CDN, which is why the read may need
+   * network access. The sidebar sends the VS Code display language and no CDN
+   * source preferences, so the runtime follows its configured order.
+   */
+  async readBundleDetail(name: string, language = 'en', options: DshBundleDetailOptions = {}): Promise<DshBundleDetailRead> {
+    if (!/^[A-Za-z0-9@/_.:+~-]{1,512}$/.test(name)) throw new DshConnectionError('invalid-spec', 'Invalid bundle name.')
+    // The runtime rejects an empty or malformed language; normalize once here so
+    // every caller sends the same shape and the panel can fall back to English.
+    const normalizedLanguage = normalizeDisplayLanguage(language)
+    if (normalizedLanguage === undefined) throw new DshConnectionError('invalid-spec', 'Invalid display language.')
+    // The sidebar has no CDN preference of its own; a caller may still name the
+    // closed set, and the runtime asks them in order before its configured one.
+    const npmFileSources = (options.npmFileSources ?? []).filter((source): source is 'jsdelivr' | 'unpkg' | 'npmmirror' =>
+      source === 'jsdelivr' || source === 'unpkg' || source === 'npmmirror').slice(0, 3)
+    const value = await this.call<unknown>('pluginManager/readBundleDetail',
+      { name, language: normalizedLanguage, options: { npmFileSources } }, 60_000)
+    const detail = bundleDetailOf(value)
+    if (detail === undefined) throw new DshConnectionError('invalid-response', 'DSH pluginManager/readBundleDetail returned an unexpected result.')
+    return detail
   }
   /**
    * Select or deselect one bundle layer while retaining its installed files.
