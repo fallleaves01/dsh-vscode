@@ -9,6 +9,102 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-rc.2.1] - 2026-11-13
+
+### Added
+
+- Support for DeepSeek Harness `0.2.2-rc.2` alongside `0.2.2-rc.1`. rc.2 is
+  published on the npm `next` channel only (`latest` still names rc.1), so it is
+  installed explicitly with `npm install -g @deepseek-ai/dsh@next` or the exact
+  `0.2.2-rc.2` version; this build works with either runtime.
+- Agent Teams selection on rc.2. The Tasks panel shows whether the team is on or
+  off and offers **Enable team**/**Disable team**, through the rc.2
+  `agentTeams/setEnabled` call. An rc.2 runtime derives teammate rows from the
+  `subagentCatalog` projection (named subagents) because the `members` array is
+  gone; an rc.1 runtime keeps its roster exactly as before.
+- Web search and fetch billing choices on rc.2. The Search / Fetch API card
+  renders the runtime's `searchBilling` and `fetchBilling` selects (Automatic,
+  Signed-in DeepSeek account, DeepSeek API key), and the API-key hint explains
+  that a signed-in account can be used when the billing setting allows it. rc.1
+  keeps its endpoint field and hides the new selects.
+- A "Gemini API" label for the `google-generative-ai` protocol in the custom
+  provider picker when the runtime lists it.
+- Readable failure copy for the rc.2 attachment and image admission codes and
+  for the plugin manager's `unexpected-package` failure; unknown codes keep the
+  existing neutral fallback.
+
+### Changed
+
+- The official rc.2 upgrade guide has 19 entries. The two protocol-level entries
+  (`plugin-update-method`, `web-search-billing`) are handled here, together with
+  the archive-worktree behaviour; the rc.2 removal of
+  `subagents/interruptByParent` is handled although the guide does not list it.
+  The remaining entries target CUA, Forge, account, terminal, Office or Web
+  surfaces that this sidebar does not implement.
+- The third-party bundle update path follows the rc.2 `BundleInfo.update`
+  contract. A `registry` bundle keeps **Check for updates**, the version list
+  and the confirmed update; a `git` bundle appears with a read-only note and is
+  updated through the DSH plugin manager because this page cannot list or
+  install Git versions; an rc.1 `updatable: true` row is read as a registry
+  source. The new `unexpected-package` code has its own explanation.
+- Stopping a subagent prefers the rc.2 `subagents/interruptByUser` call (child
+  id only) and falls back to the rc.1 `subagents/interruptByParent` shape only
+  when the runtime reports that it does not serve the new method; a transport
+  failure does not trigger the fallback.
+- Tool cards address rc.2 named subagents: `send_message` and `interrupt_agent`
+  accept the `agent` name in addition to the earlier id/target fields,
+  `list_agents` rows are read by `name`, and the open conversation's
+  `subagentCatalog` maps a name to the Session id a card links to. A name that
+  neither the team view nor the catalog resolves stays a generic card.
+- Search settings follow the runtime schema: the retired singular endpoint field
+  is hidden when the runtime does not declare it, and the rc.2 default search
+  provider is now `deepseek-search-api`; the existing enable switch keeps
+  working.
+- The compatibility matrix now lists `0.2.2-rc.2` next to `0.2.2-rc.1`. The
+  event-stream client's verified-runtime statement keeps `0.2.2-rc.1`; the rc.2
+  adaptation is covered by unit tests and isolated runtime probes
+  (`settings/describe`, `listBundles`, `agentTeams/setEnabled`, the `agentTeam`
+  projection and the new subagent interrupt RPC), not by a model-turn
+  end-to-end run.
+
+### Fixed
+
+- rc.2 no longer hides the Third-party bundles section: the projection
+  normalizes both `updatable` and `update`, so an rc.2 registry bundle keeps its
+  update entry and an rc.2 Git bundle is visible but not editable here.
+- The Agent Team panel no longer disappears on rc.2. An off team with an empty
+  board stays hidden; an enabled team, a board with tasks or a failure keeps the
+  panel visible; an rc.1 roster renders as before.
+- Named subagent tool cards resolve through the catalog instead of degrading to
+  generic cards or dead links; the rc.2 `team_task_*` tools and `wait_agent`
+  never become subagent links.
+
+### Security
+
+- On rc.2, archiving a conversation can remove a clean Git worktree that the
+  runtime created; branches and commits are preserved. The sidebar does not
+  manage worktrees and adds no confirmation step, so review the upgrade notes
+  before archiving and enable the worktree service's `retainOnArchive` setting
+  if the directory must be kept.
+- New display filters bound what reaches the Webview: the open conversation's
+  subagent catalog is projected to at most 200 rows with 300-character names,
+  and the new attachment, image and plugin-package failure codes use classified
+  copy only. No runtime diagnostic, local path or exception text is shown.
+
+### Notes
+
+- Verification: unit tests pass for both runtime shapes; a real isolated rc.2
+  runtime answered `settings/describe` (new billing fields), `listBundles` (no
+  `updatable`; `listVersions` refused for a non-updatable bundle),
+  `agentTeams/setEnabled` and the `agentTeam` `{enabled, tasks}` projection, and
+  serves `subagents/interruptByUser`. No real model conversation turn was run,
+  and no manual smoke test was performed in a real VS Code extension host.
+- Deferred: Git-spec bundle update, plugin index Star/weekly download counts,
+  model retry settings UI, worktree review UI, automatic earlier-message loading
+  in the Web chat, chat diff colouring, the Agent terminal panel, MCP dynamic
+  registration UI, account notification UI, Office/CUA/Live Share/Stagehand
+  panels, and the 50 MiB / immediate image upload work.
+
 ## [0.2.2-rc.1.6] - 2026-11-09
 
 ### Added

@@ -247,6 +247,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .feature-actions { display: flex; flex-wrap: wrap; gap: 5px; margin: 5px 0; }
     .feature-action, .job-details { border: 1px solid var(--vscode-widget-border); border-radius: 4px; background: transparent; padding: 2px 6px; font-size: 11px; line-height: 16px; }
     .feature-action:hover, .job-details:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .feature-action:disabled { opacity: .5; }
+    .team-mode { display: flex; align-items: center; gap: 8px; padding: 2px 0 5px; }
+    .team-mode-state { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .feature-hint, .search-snippet { color: var(--vscode-descriptionForeground); font-size: 10px; overflow-wrap: anywhere; white-space: pre-wrap; }
     .reminder-row, .workflow-run { padding: 5px 0; border-top: 1px solid var(--vscode-widget-border); }
     .workflow-member { display: block; width: 100%; padding: 3px 7px; border: 0; background: transparent; text-align: left; font-size: 11px; line-height: 16px; }
@@ -2208,14 +2211,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // A reviewer denial is its own outcome: the tool never ran, so its own
       // error text and output are not what the reader should see.
       const denial = autoReviewDenialOf(message);
-      // Team tools can only name their target (memberName); the Team projection
-      // is what maps a name to the session id a link needs. A name that does not
-      // resolve is dropped, so the card stays a generic tool card instead of a
-      // dead link to a session that does not exist.
+      // Team tools and rc.2 named subagents can only name their target; the
+      // Session id a link needs comes from the Team roster (rc.1) or, when the
+      // runtime publishes no roster (rc.2), from the catalog of the open
+      // conversation. A name that neither source resolves is dropped, so the
+      // card stays a generic tool card instead of a dead link.
       const teamMemberIds = new Map();
       for (const member of array(state && state.team && state.team.members)) {
         const name = string(member && member.name), id = string(member && member.id);
         if (name !== '' && id !== '') teamMemberIds.set(name, id);
+      }
+      for (const entry of array(state && state.subagentCatalogItems)) {
+        const name = string(entry && entry.name), id = string(entry && entry.id);
+        if (name !== '' && id !== '' && !teamMemberIds.has(name)) teamMemberIds.set(name, id);
       }
       const references = [];
       for (const view of [resultView, callView]) for (const entry of array(view && view.subagentLinks)) {
@@ -3251,6 +3259,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (code === 'ACCOUNT_SIGNED_OUT') return 'Stopped because you signed out of DeepSeek.';
       if (code === 'ACCOUNT_SIGN_IN_REQUIRED') return 'Sign in to DeepSeek and ensure the request destination supports account authentication.';
       if (code === 'INTERRUPTED') return 'The DSH process exited before this turn finished (for example, it was killed, crashed, or timed out while shutting down), so the turn was closed when DSH restarted. Unfinished tool calls have unknown outcomes.';
+      // DSH 0.2.2-rc.2 keeps attachment and image admission codes instead of
+      // collapsing them to UNKNOWN. The sidebar bundle cannot import the
+      // extension-side table, so the actionable copy is repeated here.
+      if (code === 'INVALID_IMAGE') return 'That image cannot be used. Attach a PNG, JPEG, WebP, or GIF image within the size and pixel limits.';
+      if (code === 'IMAGE_TOO_LARGE') return 'That image is larger than the runtime accepts. Choose a smaller image.';
+      if (typeof code === 'string' && code.startsWith('ATTACHMENT_')) return 'The attachment could not be read. Remove it and attach the file again.';
       return detail;
     }
     /** The runtime code shown beside the reason; INTERRUPTED has no chip. */
@@ -3393,16 +3407,26 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       ]);
     }
     /**
-     * The Team projection a tool card resolves member names against.
+     * The name-to-Session map a tool card resolves agent names against.
      *
-     * The projection and the event stream travel independently, so a team
-     * member update can arrive after the tool message was drawn. Keying the
-     * rendered card on exactly this map re-renders those cards when it changes,
-     * instead of leaving the link missing until the next message arrives.
+     * rc.1 publishes a Team roster with member ids; rc.2 publishes no roster and
+     * addresses agents by name, so the open conversation's catalog is the
+     * fallback that supplies the id. The projection and the event stream travel
+     * independently, so a roster or catalog update can arrive after the tool
+     * message was drawn. Keying the rendered card on exactly this map re-renders
+     * those cards when it changes, instead of leaving the link missing until the
+     * next message arrives.
      */
     function teamLinkKey() {
-      const members = array(state && state.team && state.team.members);
-      return members.map(member => string(member && member.name) + '\\u0000' + string(member && member.id)).sort().join('\\u0001');
+      const parts = [];
+      for (const member of array(state && state.team && state.team.members)) {
+        parts.push(string(member && member.name) + '\\u0000' + string(member && member.id));
+      }
+      for (const entry of array(state && state.subagentCatalogItems)) {
+        const name = string(entry && entry.name);
+        if (name !== '') parts.push(name + '\\u0000' + string(entry && entry.id));
+      }
+      return parts.sort().join('\\u0001');
     }
     function hasTeamLinks(message) {
       return [record(message.callView), record(message.resultView)]
@@ -4542,12 +4566,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const children = childTasks(current);
       const todos = array(current.todos);
       const workflows = array(current.workflows);
-      // The Team view is null unless the agentTeam projection carries a
-      // roster, a task board or a failure; an empty team renders no section.
+      // The Team view is null unless the agentTeam projection has something to
+      // render. rc.1 carries a roster; rc.2 carries the durable selection and
+      // derives teammates from the subagent catalog.
       const team = record(current.team);
       const teamMembers = array(team && team.members);
       const teamTasks = array(team && team.tasks);
       const teamFailure = string(team && team.failure);
+      // A boolean selection is the rc.2 shape; rc.1 has no such field and keeps
+      // its roster-only presentation.
+      const teamEnabled = team !== undefined && typeof team.enabled === 'boolean' ? team.enabled : undefined;
+      const teamBusy = current.teamBusy === true;
       // A member's durable phase only says whether the Team record is
       // established; it is not turn activity. Every member row — the Lead
       // included — addresses a Session, and the session list carries the live
@@ -4558,7 +4587,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // list snapshot still loading).
       const currentSessionId = string(current.sessionId);
       if (currentSessionId !== '' && !runningById.has(currentSessionId)) runningById.set(currentSessionId, current.running === true);
-      const teamVisible = team !== undefined && (teamMembers.length > 0 || teamTasks.length > 0 || teamFailure !== '');
+      // A real rc.2 conversation starts at {enabled:false, tasks:[]}: nothing
+      // to show yet, so the panel stays hidden. Once the team is on, or the
+      // board/failure has content, the selection must be visible.
+      const teamVisible = team !== undefined && (teamEnabled !== undefined
+        ? teamEnabled === true || teamTasks.length > 0 || teamFailure !== ''
+        : teamMembers.length > 0 || teamTasks.length > 0 || teamFailure !== '');
       const visible = current.phase === 'ready' && (children.length > 0 || todos.length > 0 || workflows.length > 0 || teamVisible);
       elements.taskPanel.classList.toggle('hidden', !visible);
       if (!visible) { elements.taskList.replaceChildren(); return; }
@@ -4568,10 +4602,23 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const counts = [];
       if (children.length) counts.push(children.length + ' subagents' + (live ? ' · ' + live + ' running' : ''));
       if (teamVisible) {
-        const runningMembers = teamMembers.filter(member => runningById.get(string(member && member.id)) === true).length;
-        counts.push(teamMembers.length + ' team ' + (teamMembers.length === 1 ? 'member' : 'members')
-          + (runningMembers ? ' · ' + runningMembers + ' running' : '')
-          + (teamTasks.length ? ' · ' + teamTasks.filter(task => task.status === 'completed').length + '/' + teamTasks.length + ' tasks' : ''));
+        if (teamEnabled !== undefined) {
+          // rc.2 has no roster, so the summary names the selection first and
+          // only mentions teammate rows when the catalog supplied any.
+          const parts = [teamEnabled ? 'Team on' : 'Team off'];
+          const runningMembers = teamMembers.filter(member => runningById.get(string(member && member.id)) === true).length;
+          if (teamMembers.length > 0) {
+            parts.push(teamMembers.length + ' team ' + (teamMembers.length === 1 ? 'member' : 'members')
+              + (runningMembers ? ' · ' + runningMembers + ' running' : ''));
+          }
+          if (teamTasks.length > 0) parts.push(teamTasks.filter(task => task.status === 'completed').length + '/' + teamTasks.length + ' tasks');
+          counts.push(parts.join(' · '));
+        } else {
+          const runningMembers = teamMembers.filter(member => runningById.get(string(member && member.id)) === true).length;
+          counts.push(teamMembers.length + ' team ' + (teamMembers.length === 1 ? 'member' : 'members')
+            + (runningMembers ? ' · ' + runningMembers + ' running' : '')
+            + (teamTasks.length ? ' · ' + teamTasks.filter(task => task.status === 'completed').length + '/' + teamTasks.length + ' tasks' : ''));
+        }
       }
       if (todos.length) counts.push(completed + '/' + todos.length + ' steps done');
       if (workflows.length) counts.push(workflows.length + ' workflows');
@@ -4616,6 +4663,25 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       if (teamVisible) {
         elements.taskList.append(node('div', 'task-section', 'Team'));
+        if (teamEnabled !== undefined) {
+          // rc.2 exposes the durable selection as an explicit control. The
+          // button follows the Host's busy flag so a second click cannot race
+          // the first; the label states the action, the chip states the mode.
+          const mode = node('div', 'team-mode');
+          mode.append(node('span', 'team-mode-state', teamEnabled ? 'Team is on' : 'Team is off'));
+          const toggle = featureButton(teamBusy ? 'Updating team…' : teamEnabled ? 'Disable team' : 'Enable team', () => {
+            if (teamBusy || currentSessionId === '') return;
+            vscode.postMessage({ type: 'set-team-enabled', sessionId: currentSessionId, enabled: !teamEnabled });
+          });
+          toggle.disabled = teamBusy || current.phase !== 'ready' || currentSessionId === '';
+          toggle.title = teamBusy ? 'Updating the team setting…'
+            : teamEnabled ? 'Turn off Agent Teams for this conversation'
+              : 'Turn on Agent Teams for this conversation';
+          toggle.setAttribute('aria-label', toggle.title);
+          toggle.setAttribute('aria-pressed', String(teamEnabled));
+          mode.append(toggle);
+          elements.taskList.append(mode);
+        }
         for (const member of teamMembers) {
           const phase = string(member && member.phase);
           const sessionRunning = runningById.get(string(member && member.id)) === true;
@@ -5397,6 +5463,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedChrome.usage !== current.usage) renderUsage(current);
       if (renderedChrome.jobs !== current.jobs || renderedChrome.projectJobs !== current.projectJobs || renderedChrome.jobsStatus !== current.jobsStatus || renderedChrome.phase !== current.phase || renderedChrome.sessionId !== current.sessionId) renderJobs();
       if (renderedChrome.sessions !== current.sessions || renderedChrome.todos !== current.todos || renderedChrome.team !== current.team
+        || renderedChrome.teamBusy !== current.teamBusy
         || renderedChrome.sessionId !== current.sessionId || renderedChrome.phase !== current.phase || renderedChrome.workflows !== current.workflows) renderTaskPanel(current);
       if (renderedChrome.goal !== current.goal || renderedChrome.schedules !== current.schedules || renderedChrome.childReadOnlyReason !== current.childReadOnlyReason || renderedChrome.sessionId !== current.sessionId || renderedChrome.phase !== current.phase) renderTaskFeatures(current);
       if (renderedChrome.account !== current.account || renderedChrome.accountNotice !== current.accountNotice || renderedChrome.accountFailed !== current.accountFailed) renderAccount(current);
@@ -5412,7 +5479,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         current.sessionId, current.phase, current.statusText, current.setup, current.canReconnect,
         connection && connection.ownership,
         current.hasMoreHistory, current.loadingHistory,
-        current.messages, current.messageMeta, current.messageFeedback, current.team, current.translation,
+        current.messages, current.messageMeta, current.messageFeedback, current.team,
+        current.subagentCatalogItems, current.translation,
         current.queue, current.changedFiles, current.approval, current.question,
         current.running, current.stopping, current.cancelRequested,
       ];
@@ -5480,7 +5548,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         account: current.account, accountNotice: current.accountNotice, accountFailed: current.accountFailed,
         parentSessionId: current.parentSessionId, subagentOwnerTitle: subagentOwnerTitle(current),
         goal: current.goal, schedules: current.schedules, workflows: current.workflows, projectJobs: current.projectJobs, jobsStatus: current.jobsStatus, historySearch: current.historySearch, archivedSessions: current.archivedSessions, pinnedSessionIds: current.pinnedSessionIds, childReadOnlyReason: current.childReadOnlyReason,
-        phase: current.phase, usage: current.usage, jobs: current.jobs, todos: current.todos, team: current.team, commands: current.commands, skills: current.skills,
+        phase: current.phase, usage: current.usage, jobs: current.jobs, todos: current.todos, team: current.team, teamBusy: current.teamBusy === true, commands: current.commands, skills: current.skills,
         translation: current.translation,
       };
       if (preservingHistory && current.loadingHistory !== true) {

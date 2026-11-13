@@ -321,3 +321,151 @@ describe('Agent Teams panel', () => {
     expect(lead().textContent).not.toContain('Running')
   })
 })
+
+describe('Agent Teams panel (rc.2 selection)', () => {
+  const task = {
+    id: 'task-2', revision: 2, subject: 'Verify the permission selector', description: '',
+    status: 'in_progress', blockedBy: [], writeScopes: [], ownerName: 'reviewer',
+    ready: false, writeScopeWarnings: [], blocked: false,
+  }
+  const panel = (h: Harness) => h.document.getElementById('taskPanel')!
+  const toggle = (h: Harness) => h.document.querySelector<HTMLButtonElement>('#taskList .team-mode .feature-action')!
+  const switchTo = async (h: Harness, team: Record<string, unknown>, extra: Record<string, unknown> = {}) => {
+    h.sendState({ team, ...extra }); await h.settle()
+  }
+
+  it('renders an enabled team with an empty board and its disable action', async () => {
+    const h = open()
+    await switchTo(h, { enabled: true, members: [], tasks: [], completedCount: 0, totalCount: 0 })
+    expect(panel(h).classList.contains('hidden')).toBe(false)
+    expect(h.document.getElementById('taskToggle')!.textContent).toContain('Team on')
+    expect(h.document.getElementById('taskList')!.textContent).toContain('Team is on')
+    const button = toggle(h)
+    expect(button.textContent).toBe('Disable team')
+    expect(button.getAttribute('aria-pressed')).toBe('true')
+    h.posts.length = 0
+    h.click('#taskList .team-mode .feature-action')
+    expect(h.posts.at(-1)).toEqual({ type: 'set-team-enabled', sessionId: 'session-a', enabled: false })
+  })
+
+  it('shows a disabled team only once it has a board, and offers enabling', async () => {
+    const h = open()
+    // The rc.2 default shape carries no roster and no tasks: nothing to show.
+    await switchTo(h, { enabled: false, members: [], tasks: [], completedCount: 0, totalCount: 0 })
+    expect(panel(h).classList.contains('hidden')).toBe(true)
+    await switchTo(h, { enabled: false, members: [], tasks: [task], completedCount: 0, totalCount: 1 })
+    expect(panel(h).classList.contains('hidden')).toBe(false)
+    expect(h.document.getElementById('taskToggle')!.textContent).toContain('Team off')
+    expect(h.document.getElementById('taskToggle')!.textContent).toContain('0/1 tasks')
+    const button = toggle(h)
+    expect(button.textContent).toBe('Enable team')
+    expect(button.getAttribute('aria-pressed')).toBe('false')
+    h.posts.length = 0
+    h.click('#taskList .team-mode .feature-action')
+    expect(h.posts.at(-1)).toEqual({ type: 'set-team-enabled', sessionId: 'session-a', enabled: true })
+  })
+
+  it('renders derived teammate rows and keeps their conversation links', async () => {
+    const h = open()
+    await switchTo(h, {
+      enabled: true,
+      members: [
+        { id: 'lead-session', name: 'lead', role: 'lead', phase: 'active' },
+        { id: 'mate-session', name: 'reviewer', role: 'teammate', phase: 'active' },
+      ],
+      tasks: [], completedCount: 0, totalCount: 0,
+    })
+    const row = h.document.querySelector<HTMLButtonElement>('#taskList [data-session-id="mate-session"]')!
+    expect(row).not.toBeNull()
+    expect(row.getAttribute('aria-label')).toBe('Open teammate reviewer, Inactive')
+    h.posts.length = 0
+    row.dispatchEvent(new Event('click', { bubbles: true }))
+    expect(h.posts).toContainEqual({ type: 'select-session', sessionId: 'mate-session' })
+    expect(h.document.getElementById('taskToggle')!.textContent).toContain('2 team members')
+  })
+
+  it('does not render the selection control for an rc.1 roster', async () => {
+    const h = open()
+    await switchTo(h, {
+      members: [{ id: 'lead-session', name: 'lead', role: 'lead', phase: 'active' }],
+      tasks: [], completedCount: 0, totalCount: 0,
+    })
+    expect(panel(h).classList.contains('hidden')).toBe(false)
+    expect(h.document.querySelector('#taskList .team-mode')).toBeNull()
+  })
+
+  it('disables the toggle while the Host reports a pending change', async () => {
+    const h = open()
+    await switchTo(h, { enabled: true, members: [], tasks: [], completedCount: 0, totalCount: 0 }, { teamBusy: true })
+    const button = toggle(h)
+    expect(button.textContent).toBe('Updating team…')
+    expect(button.disabled).toBe(true)
+    h.posts.length = 0
+    h.click('#taskList .team-mode .feature-action')
+    expect(h.posts).toEqual([])
+  })
+
+  it('re-enables the toggle when only a busy patch clears the pending state', async () => {
+    const h = open()
+    await switchTo(h, { enabled: true, members: [], tasks: [], completedCount: 0, totalCount: 0 })
+    expect(toggle(h).disabled).toBe(false)
+    // The Host publishes teamBusy through the same state patches the runtime
+    // projections use; the toggle must follow the patch alone, because an idle
+    // conversation produces no other redraw trigger when the RPC settles.
+    h.send({ type: 'state-update', update: { patch: { teamBusy: true } } }); await h.settle()
+    expect(toggle(h).textContent).toBe('Updating team…')
+    expect(toggle(h).disabled).toBe(true)
+    h.send({ type: 'state-update', update: { patch: { teamBusy: false } } }); await h.settle()
+    expect(toggle(h).textContent).toBe('Disable team')
+    expect(toggle(h).disabled).toBe(false)
+  })
+})
+
+describe('named subagent tool links (rc.2)', () => {
+  const card = {
+    id: 'tool:m', role: 'tool', text: 'send_message', detail: 'Completed',
+    deferredBody: true, deferredBodyRevision: 'r1',
+    resultView: { card: 'generic', subagentLinks: [{ id: 'reviewer', memberName: 'reviewer', label: 'Review auth' }] },
+    callView: { card: 'generic', subagentLabel: 'Review auth' },
+  }
+  const sessions = [
+    { id: 'parent', title: 'Parent', childCount: 1 },
+    { id: 'mate-session', title: 'Reviewer', parentId: 'parent', subagent: { mode: 'continuable' } },
+  ]
+
+  it('resolves an agent name through the catalog when no Team roster exists', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions, messages: [card],
+      subagentCatalogItems: [{ id: 'mate-session', name: 'reviewer', mode: 'continuable' }] })
+    await h.settle()
+    h.click('.subagent-tool-main')
+    expect(h.posts.at(-1)).toMatchObject({ type: 'open-subagent', sessionId: 'mate-session' })
+  })
+
+  it('keeps a generic card when neither the roster nor the catalog names the agent', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions, messages: [card] })
+    await h.settle()
+    // The name never became a Session id, so no link row and no navigation are
+    // offered; the card stays readable as a generic tool card.
+    expect(h.document.querySelector('.subagent-tool-links')).toBeNull()
+    expect(h.document.querySelector('.subagent-tool-card')).not.toBeNull()
+    expect(h.posts.some(post => post.type === 'open-subagent')).toBe(false)
+  })
+
+  it('re-resolves an already drawn card when the catalog arrives later', async () => {
+    const h = open()
+    h.sendState({ sessionId: 'parent', sessions, messages: [card] })
+    await h.settle()
+    expect(h.document.querySelector('.subagent-tool-main')).toBeNull()
+    // The catalog arrives as a state patch after the tool message, which is how
+    // the runtime stream delivers it.
+    h.send({ type: 'state-update', update: { patch: {
+      subagentCatalogItems: [{ id: 'mate-session', name: 'reviewer', mode: 'continuable' }],
+    } } })
+    await h.settle()
+    expect(h.document.querySelector('.subagent-tool-main')).not.toBeNull()
+    h.click('.subagent-tool-main')
+    expect(h.posts.at(-1)).toMatchObject({ type: 'open-subagent', sessionId: 'mate-session' })
+  })
+})

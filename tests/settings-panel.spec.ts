@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { bundleFixture, fixture, searchFixture, updatableBundleFixture } from './settings-page.fixture.js'
+import { bundleFixture, fixture, rc2BundleFixture, searchFixture, updatableBundleFixture } from './settings-page.fixture.js'
 import { at } from '../src/settings-page-state.js'
 import { DshConnectionError } from '../src/dsh-connection.js'
 
@@ -470,9 +470,11 @@ describe('third-party bundle updates', () => {
       diagnostic: 'hidden-marker', packageResult: { output: 'hidden-marker', logPath: '/srv/hidden-marker' } }], { omitted: 1 }))
     const reply = await h.result(h.send({ type: 'check-bundle-versions', name: NAME }))
     expect(reply).toMatchObject({ ok: true, installed: '0.3.0', omitted: 1, versions: [{ version: '0.4.0', publishedAt: '2026-02-01T00:00:00.000Z', prerelease: false, bundle: true }] })
-    for (const forbidden of ['hidden-marker', 'registry', 'attempts', 'diagnostic', 'packageResult', 'logPath']) {
+    for (const forbidden of ['hidden-marker', 'attempts', 'diagnostic', 'packageResult', 'logPath']) {
       expect(JSON.stringify(h.packets())).not.toContain(forbidden)
     }
+    // The word "registry" is legitimate capability data on rc.2; the URL is not.
+    expect(JSON.stringify(h.packets())).not.toContain('registry.example')
   })
   it.each([['network', 'network'], ['unknown', 'could not read'], ['not-found', 'was not found'], ['not-updatable', 'cannot be updated']])(
     'maps a %s version-read refusal to copy', async (problem, expected) => {
@@ -727,5 +729,34 @@ describe('bundle detail viewing', () => {
     expect(mocks.providers).toHaveLength(1)
     h.manager.dispose()
     expect(mocks.providerDispose).toHaveBeenCalledWith('dsh-plugin-detail')
+  })
+})
+
+describe('DSH rc.2 bundle contracts', () => {
+  it('checks an rc.2 registry bundle and refuses a Git-installed bundle', async () => {
+    const data = fixture() as any
+    data.bundles = rc2BundleFixture()
+    const h = await harness('managed', data)
+    h.client.listBundleVersions.mockResolvedValueOnce({
+      status: 'listed', installed: '1.2.0', omitted: 0,
+      versions: [{ version: '1.3.0', tags: [], prerelease: false, bundle: true }],
+    })
+    expect(await h.result(h.send({ type: 'check-bundle-versions', name: '@acme/dsh-registry-bundle' })))
+      .toMatchObject({ ok: true, installed: '1.2.0' })
+    const git = await h.result(h.send({ type: 'check-bundle-versions', name: '@acme/dsh-git-bundle' }))
+    expect(git.ok).toBe(false)
+    expect(git.error).toContain('cannot be updated')
+    expect(h.client.listBundleVersions).toHaveBeenCalledTimes(1)
+  })
+  it('explains an rc.2 unexpected-package failure without leaking diagnostics', async () => {
+    const data = fixture() as any
+    data.bundles = bundleFixture()
+    const h = await harness('managed', data)
+    mocks.warning.mockResolvedValueOnce('Enable')
+    h.client.setBundleEnabled.mockResolvedValueOnce({ changed: false, application: 'failed', error: { code: 'unexpected-package', diagnostic: 'hidden-marker' } })
+    const reply = await h.result(h.send({ type: 'set-bundle', name: '@deepseek-ai/dsh-experimental-cot-translation-bundle', enabled: true }))
+    expect(reply.ok).toBe(false)
+    expect(reply.error).toContain('different package or version')
+    expect(JSON.stringify(h.packets())).not.toContain('hidden-marker')
   })
 })

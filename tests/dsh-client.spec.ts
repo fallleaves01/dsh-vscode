@@ -1784,3 +1784,119 @@ describe('DSH rc.1 plugin bundle detail', () => {
     expect(h.requests).toEqual([])
   })
 })
+
+describe('subagent interrupt across rc.1 and rc.2', () => {
+  it('prefers the rc.2 interruptByUser wire with only the child id', async () => {
+    const h = harness()
+    h.results['subagents/interruptByUser'] = { accepted: true }
+    await expect(h.client.interruptSubagent('child-1', 'parent-1')).resolves.toEqual({ accepted: true })
+    expect(h.requests).toEqual([{ endpoint: 'subagents/interruptByUser', args: { childSessionId: 'child-1' } }])
+  })
+
+  it('refuses an rc.2 acknowledgement that is not accepted', async () => {
+    const h = harness()
+    h.results['subagents/interruptByUser'] = { accepted: false }
+    await expect(h.client.interruptSubagent('child-1', 'parent-1')).rejects.toMatchObject({ code: 'invalid-response' })
+    expect(h.requests).toHaveLength(1)
+  })
+
+  it.each([
+    ['gateway/invocation-unavailable', undefined],
+    ['gateway/unknown-method', 404],
+    ['http-error', 404],
+  ])('falls back to the rc.1 parent call when the rc.2 method is missing (%s/%s)', async (code, status) => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError(code, 'Unknown method.', status))
+    h.results['subagents/interruptByParent'] = { accepted: true }
+    await expect(h.client.interruptSubagent('child-1', 'parent-1')).resolves.toEqual({ accepted: true })
+    // The rejecting mock does not push into `h.requests`; the recorded calls still show both wire shapes.
+    expect(vi.mocked(h.connection.call).mock.calls.slice(0, 2).map(([endpoint, args]) => [endpoint, args])).toEqual([
+      ['subagents/interruptByUser', { childSessionId: 'child-1' }],
+      ['subagents/interruptByParent', { childSessionId: 'child-1', parentSessionId: 'parent-1', mode: 'continuable' }],
+    ])
+  })
+
+  it('falls back when only the error text says the method is unknown', async () => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new Error('Unknown method.'))
+    h.results['subagents/interruptByParent'] = { accepted: true }
+    await expect(h.client.interruptSubagent('child-1', 'parent-1')).resolves.toEqual({ accepted: true })
+    expect(vi.mocked(h.connection.call).mock.calls.map(([endpoint]) => endpoint)).toEqual(['subagents/interruptByUser', 'subagents/interruptByParent'])
+  })
+
+  it('does not fall back for a transport failure', async () => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError('transport-error', 'The connection did not complete.'))
+    await expect(h.client.interruptSubagent('child-1', 'parent-1')).rejects.toMatchObject({ code: 'transport-error' })
+    expect(vi.mocked(h.connection.call).mock.calls).toHaveLength(1)
+  })
+  it('falls back when the gateway reports the method unavailable', async () => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError('gateway/method-unavailable', 'The method is unavailable.'))
+    h.results['subagents/interruptByParent'] = { accepted: true }
+    await expect(h.client.interruptSubagent('child-1', 'parent-1')).resolves.toEqual({ accepted: true })
+    expect(vi.mocked(h.connection.call).mock.calls.map(([endpoint]) => endpoint)).toEqual(['subagents/interruptByUser', 'subagents/interruptByParent'])
+  })
+
+  it('does not retry the rc.1 shape after a gateway failure unrelated to the method', async () => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError('gateway/internal', 'The runtime failed.'))
+    await expect(h.client.interruptSubagent('child-1', 'parent-1')).rejects.toMatchObject({ code: 'gateway/internal' })
+    expect(vi.mocked(h.connection.call).mock.calls).toHaveLength(1)
+  })
+
+  it('does not treat a generic not-implemented message as a missing method', async () => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new Error('Operation not implemented.'))
+    await expect(h.client.interruptSubagent('child-1', 'parent-1')).rejects.toThrow('Operation not implemented.')
+    expect(vi.mocked(h.connection.call).mock.calls).toHaveLength(1)
+  })
+
+  it('refuses an rc.1 acknowledgement that is not accepted', async () => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError('gateway/invocation-unavailable', 'Unknown method.'))
+    h.results['subagents/interruptByParent'] = { accepted: 'yes' }
+    await expect(h.client.interruptSubagent('child-1', 'parent-1')).rejects.toMatchObject({ code: 'invalid-response' })
+    expect(vi.mocked(h.connection.call).mock.calls).toHaveLength(2)
+  })
+
+  it('surfaces the classified failure when both runtime shapes fail', async () => {
+    const h = harness()
+    vi.mocked(h.connection.call)
+      .mockRejectedValueOnce(new DshConnectionError('gateway/invocation-unavailable', 'Unknown method.'))
+      .mockRejectedValueOnce(new DshConnectionError('gateway/arguments-invalid', 'the rc.1 call was refused'))
+    const failure = await h.client.interruptSubagent('child-1', 'parent-1').catch((error: unknown) => error)
+    expect(failure).toMatchObject({ code: 'gateway/arguments-invalid' })
+    expect(vi.mocked(h.connection.call).mock.calls).toHaveLength(2)
+  })
+})
+
+describe('DSH rc.2 bundle update contract', () => {
+  it('passes the rc.2 update method through the bundle roster', async () => {
+    const h = harness()
+    h.results['pluginManager/listBundles'] = [
+      { name: '@acme/registry-bundle', installed: true, update: 'registry' },
+      { name: '@acme/git-bundle', installed: true, update: 'git' },
+      { name: '@acme/fixed-bundle', installed: true, updatable: false },
+    ]
+    expect(await h.client.listBundles()).toEqual([
+      { name: '@acme/registry-bundle', installed: true, update: 'registry' },
+      { name: '@acme/git-bundle', installed: true, update: 'git' },
+      { name: '@acme/fixed-bundle', installed: true, updatable: false },
+    ])
+  })
+  it('keeps the rc.2 unexpected-package code on install and toggle results', async () => {
+    const h = harness()
+    h.results['pluginManager/installBundle'] = {
+      ok: true, application: 'failed', error: { code: 'unexpected-package', diagnostic: 'hidden-marker' },
+      packageResult: { exitCode: 1, output: 'hidden-marker', truncated: false, logPath: '/srv/hidden-marker' },
+    }
+    const installed = await h.client.installBundle('@acme/registry-bundle@1.2.0')
+    expect(installed).toMatchObject({ application: 'failed', error: { code: 'unexpected-package' } })
+    h.results['pluginManager/setBundleEnabled'] = { changed: false, application: 'failed', error: { code: 'unexpected-package', diagnostic: 'hidden-marker' } }
+    expect(await h.client.setBundleEnabled('@acme/registry-bundle', true))
+      .toMatchObject({ changed: false, application: 'failed', error: { code: 'unexpected-package' } })
+    expect(JSON.stringify(installed)).not.toContain('hidden-marker')
+    expect(JSON.stringify(installed)).not.toContain('logPath')
+  })
+})

@@ -69,8 +69,10 @@ export interface BundleView {
   removable: boolean
   /** alpha2: undefined on older runtimes, where every bundle is listed. */
   listedByDefault?: boolean
-  /** alpha2: whether the bundle can be updated; false on older runtimes. */
+  /** Whether the page can list and install newer registry versions; true only for a registry update path. */
   updatable: boolean
+  /** rc.2: how the runtime replaces the bundle, from the observed `update` field. */
+  update?: 'registry' | 'git'
   /** A whitelisted failure code from the bundle row; diagnostics are never projected. */
   errorCode?: string
   readOnlyReason?: 'management-required' | 'unaddressable'
@@ -80,7 +82,7 @@ const BUNDLE_AVAILABILITY = new Set(['profile', 'installation', 'missing'])
 const BUNDLE_READ_ONLY = new Set(['management-required', 'unaddressable'])
 // Only these codes are safe to show as a classified failure; the raw error text
 // can quote paths and is deliberately dropped.
-const BUNDLE_ERROR_CODES = new Set(['management-required', 'unaddressable', 'unsupported-platform', 'incompatible-version', 'operation-error'])
+const BUNDLE_ERROR_CODES = new Set(['management-required', 'unaddressable', 'unsupported-platform', 'incompatible-version', 'unexpected-package', 'operation-error'])
 function localized(value: unknown, limit: number): string | undefined {
   if (typeof value === 'string') return value.slice(0, limit) || undefined
   if (!record(value)) return undefined
@@ -102,6 +104,10 @@ export function publicBundles(value: unknown): BundleView[] {
     const rowError = record(row.error) ? row.error : undefined
     const errorCode = typeof rowError?.code === 'string' && BUNDLE_ERROR_CODES.has(rowError.code) ? rowError.code : undefined
     const listedByDefault = typeof row.listedByDefault === 'boolean' ? row.listedByDefault : undefined
+    // rc.1 reported a boolean `updatable`; rc.2 reports the method, and only a
+    // registry method can list versions here. Both shapes project the same pair.
+    const update = row.update === 'registry' || row.update === 'git' ? row.update as BundleView['update']
+      : row.updatable === true ? 'registry' as const : undefined
     const meta = record(row.meta) ? row.meta : undefined
     const title = localized(meta?.title, 300)
     const description = localized(meta?.description, 1200) ?? (typeof row.description === 'string' ? row.description.slice(0, 1200) || undefined : undefined)
@@ -117,7 +123,8 @@ export function publicBundles(value: unknown): BundleView[] {
       optional: row.optional === true,
       removable: row.removable === true,
       ...(listedByDefault === undefined ? {} : { listedByDefault }),
-      updatable: row.updatable === true,
+      updatable: update === 'registry',
+      ...(update === undefined ? {} : { update }),
       ...(errorCode === undefined ? {} : { errorCode }),
       ...(readOnlyReason === undefined ? {} : { readOnlyReason }),
     }]
@@ -276,8 +283,12 @@ const forms: readonly SettingsFormSpec[] = [
     { key: 'maxUses', label: 'Searches per request', type: 'number', min: 1, integer: true },
   ] },
   { ns: 'web-deepseek-api', section: 'search', title: 'Search / Fetch API', fields: [
+    // rc.1 only: hidden on rc.2, whose schema names searchBaseURL/fetchBaseURL instead.
     { key: 'baseURL', label: 'Search / Fetch API base URL', type: 'string' },
     { key: 'count', label: 'Results per search', type: 'number', min: 1, max: 50, integer: true },
+    // rc.2 only: hidden on rc.1, where the schema has no such keys.
+    { key: 'searchBilling', label: 'Search billing', type: 'select', description: 'Automatic follows the conversation\'s DeepSeek account or API key; other models use the API key first, then the signed-in account.' },
+    { key: 'fetchBilling', label: 'Fetch billing', type: 'select', description: 'Automatic follows the conversation\'s DeepSeek account or API key; other models use the API key first, then the signed-in account.' },
   ] },
   // DSH 0.2.1-rc.3 experimental settings namespaces. Each appears only while
   // its optional bundle is enabled, because the Host omits inactive entries
@@ -321,6 +332,10 @@ const CHOICE_LABELS: Readonly<Record<string, string>> = {
   google: 'Google',
   'deepseek-account': 'DeepSeek Account',
   'deepseek-official': 'DeepSeek API',
+  // rc.2 web search / fetch billing choices, worded as DSH's own settings page.
+  auto: 'Automatic',
+  account: 'Signed-in DeepSeek account',
+  'api-key': 'DeepSeek API key',
 }
 
 function selectOptions(namespace: SettingsNamespace, node: SettingsSchemaNode): SettingsFieldChoice[] | undefined {

@@ -67,8 +67,14 @@ export interface DshBundleInfo {
   installTarget?: { spec: string; version: string }
   /** alpha2: whether the Host lists this bundle by default; undefined on older runtimes. */
   listedByDefault?: boolean
-  /** alpha2: whether `pluginManager/updateBundle` accepts this bundle; undefined means unknown. */
+  /** rc.1 only: whether `pluginManager/updateBundle` accepts this bundle; rc.2 replaced it with `update`. */
   updatable?: boolean
+  /**
+   * rc.2: how `updateBundle` replaces this bundle. `registry` versions are listed
+   * by `listVersions`; `git` updates to another commit of the same repository and
+   * has no version list. Absent when `updateBundle` cannot replace the bundle.
+   */
+  update?: 'registry' | 'git'
   readOnlyReason?: 'management-required' | 'unaddressable'
   meta?: { title?: unknown; description?: unknown }
   error?: { code?: string }
@@ -250,7 +256,7 @@ function marketPageOf(value: unknown): DshMarketSearchPage | undefined {
 /** Codes the bundle installer can report; unknown codes are kept bounded. */
 const INSTALL_ERROR_CODES = new Set(['management-required', 'unaddressable', 'unknown-plugin', 'invalid-spec',
   'already-installed', 'ambiguous-install', 'not-bundle', 'not-removable', 'stop-profile', 'bundle-in-use',
-  'stale-approval', 'incompatible-version', 'unsupported-platform', 'operation-error'])
+  'stale-approval', 'incompatible-version', 'unsupported-platform', 'unexpected-package', 'operation-error'])
 
 function installResultOf(value: unknown): DshBundleInstallResult | undefined {
   if (typeof value !== 'object' || value === null) return undefined
@@ -836,6 +842,29 @@ interface ModelCatalog {
 }
 
 /** The sidebar uses only authenticated 0.1.2 Remotes. */
+/** RPC codes that mean the runtime does not serve the called method. */
+const MISSING_RPC_CODES = new Set(['gateway/unknown-method', 'gateway/invocation-unavailable', 'gateway/method-unavailable', 'gateway/method-not-found', 'unknown-method'])
+
+/**
+ * Whether a failure means "this runtime does not serve that method".
+ *
+ * rc.1 and rc.2 name the removed interrupt RPC differently, and a Host that does
+ * not serve it can answer with a gateway code, an HTTP 404, or text only. Only
+ * these shapes justify the rc.1 fallback; a transport failure does not.
+ */
+function missingRpcMethod(cause: unknown): boolean {
+  if (typeof cause !== 'object' || cause === null) return false
+  const failure = cause as { code?: unknown; status?: unknown; message?: unknown }
+  if (typeof failure.code === 'string' && MISSING_RPC_CODES.has(failure.code)) return true
+  if (failure.status === 404) return true
+  return typeof failure.message === 'string' && /unknown method|method not found/i.test(failure.message)
+}
+
+/** `{accepted:true}` is the whole contract of both interrupt RPC shapes. */
+function acceptedResult(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && (value as Record<string, unknown>).accepted === true
+}
+
 export class DshClient {
   private readonly commandTransport = new DshCommandTransport((endpoint, args, timeoutMs) => this.call(endpoint, args, timeoutMs))
   private readonly api: DshRemoteApi
@@ -1117,6 +1146,22 @@ export class DshClient {
   }
 
   /**
+   * Select whether the open conversation runs with Agent Teams.
+   *
+   * DSH 0.2.2-rc.2 serves `agentTeams/setEnabled`; an older runtime answers with
+   * a missing-method failure, which callers present as "not supported" instead
+   * of a protocol error. The change is a session-level selection, not a profile
+   * write, so it needs no ownership check.
+   */
+  async setAgentTeamEnabled(sessionId: string, enabled: boolean): Promise<void> {
+    if (typeof sessionId !== 'string' || sessionId === '' || sessionId.length > 512 || /[\u0000-\u001f\u007f]/.test(sessionId)) {
+      throw new DshConnectionError('invalid-session', 'Invalid session id.')
+    }
+    if (typeof enabled !== 'boolean') throw new DshConnectionError('invalid-argument', 'Invalid team selection.')
+    await this.call<unknown>('agentTeams/setEnabled', { agentId: sessionId, enabled }, 30_000)
+  }
+
+  /**
    * Read the complete transcript as Markdown from the runtime's export route.
    *
    * The runtime formats the document, so the output matches its own copy
@@ -1341,8 +1386,26 @@ export class DshClient {
    * (`session/agent-busy`), so a child is interrupted through `subagents/*`.
    * `mode` is a required discriminator, not a claim about the child.
    */
-  interruptSubagent(childSessionId: string, parentSessionId: string): Promise<{ accepted: true }> {
-    return this.call('subagents/interruptByParent', { childSessionId, parentSessionId, mode: 'continuable' })
+  /**
+   * Interrupt a running subagent.
+   *
+   * rc.2 replaced `subagents/interruptByParent` with `subagents/interruptByUser`,
+   * which takes only the child id. The caller's signature is kept stable across
+   * both runtimes: the rc.2 call is preferred, and the rc.1 call (with the parent
+   * id and continuable mode) is used only when the runtime reports that it does
+   * not serve the rc.2 method. Either answer must confirm `{accepted: true}`.
+   */
+  async interruptSubagent(childSessionId: string, parentSessionId: string): Promise<{ accepted: true }> {
+    try {
+      const value = await this.call<unknown>('subagents/interruptByUser', { childSessionId })
+      if (!acceptedResult(value)) throw new DshConnectionError('invalid-response', 'DSH subagents/interruptByUser returned an unexpected result.')
+      return { accepted: true }
+    } catch (cause) {
+      if (!missingRpcMethod(cause)) throw cause
+    }
+    const value = await this.call<unknown>('subagents/interruptByParent', { childSessionId, parentSessionId, mode: 'continuable' })
+    if (!acceptedResult(value)) throw new DshConnectionError('invalid-response', 'DSH subagents/interruptByParent returned an unexpected result.')
+    return { accepted: true }
   }
   updateQueue(sessionId: string, itemId: string, action: QueueAction): Promise<{ accepted: true }> { return this.api.updateQueue(sessionId, itemId, action) }
   selectModel(sessionId: string, selection: ModelSelection): Promise<{ selected: ModelSelection }> {

@@ -201,6 +201,20 @@ interface WorkspacePick extends vscode.QuickPickItem {
   uri?: vscode.Uri
 }
 
+/**
+ * One named child from the open conversation's `subagentCatalog` projection.
+ *
+ * The Webview resolves a tool card's agent name to the Session id a link needs.
+ * rc.2 named subagents make the name the address (the Team roster no longer
+ * publishes member ids), and the catalog is the projection that still carries
+ * both. Bounded and plain-text only; it never carries runtime diagnostics.
+ */
+export interface SubagentCatalogItem {
+  id: string
+  name?: string
+  mode?: string
+}
+
 export interface ChatViewState extends TaskFeatureState {
   phase: 'idle' | 'loading' | 'ready' | 'error'
   statusText: string
@@ -212,6 +226,11 @@ export interface ChatViewState extends TaskFeatureState {
   cwd: string
   sessions: SessionItem[]
   subagentCatalogs: Record<string, SubagentCatalogRead>
+  /**
+   * The open conversation's catalog entries, for tool links that address an
+   * agent by its name instead of a Session id.
+   */
+  subagentCatalogItems: SubagentCatalogItem[]
   archivedSessions: SessionItem[]
   /** Pinned conversation ids, most recently pinned first. */
   pinnedSessionIds: string[]
@@ -229,12 +248,16 @@ export interface ChatViewState extends TaskFeatureState {
   parentSessionId: string | null
   todos: TodoItem[]
   /**
-   * Agent Teams roster and shared task board for this conversation.
+   * Agent Teams view for this conversation.
    *
-   * `null` (never `undefined`) when the `agentTeam` projection is absent, so the
+   * rc.1 publishes a durable roster; rc.2 publishes the durable selection and
+   * derives teammates from the subagent catalog. `null` (never `undefined`)
+   * when the projection is absent or an off team has nothing to show, so the
    * JSON transport can clear a stale team after switching conversations.
    */
   team: AgentTeamView | null
+  /** True while an rc.2 team selection change is in flight; disables the toggle. */
+  teamBusy: boolean
   /** DeepSeek account sign-in state for this runtime; carries no credential. */
   account: AccountState
   /** One human line for the account row, derived from {@link account}. */
@@ -407,6 +430,66 @@ function sessionMarkdownFailureClass(code: string | undefined): string {
   }
 }
 
+/** Longest catalog name carried to the Webview; Agent names are at most 32. */
+const MAX_CATALOG_NAME = 300
+/** Cap on catalog rows the current-conversation view carries. */
+const MAX_CATALOG_ITEMS = 200
+
+/**
+ * Project the open conversation's `subagentCatalog` for name-based tool links.
+ *
+ * rc.2 addresses a delegated agent by its name, so a tool card can only post a
+ * conversation link after the Webview maps that name to the Session id the
+ * catalog carries. Only the fields a link can use are kept, unknown keys are
+ * dropped, and every string is bounded so a forged catalog cannot inflate the
+ * state the Webview renders.
+ */
+function subagentCatalogItemsOf(projectionsValues: unknown): SubagentCatalogItem[] {
+  if (!wireRecord(projectionsValues)) return []
+  const entries = projectionsValues.subagentCatalog
+  if (!Array.isArray(entries)) return []
+  const items: SubagentCatalogItem[] = []
+  const seen = new Set<string>()
+  for (const entry of entries) {
+    if (items.length >= MAX_CATALOG_ITEMS) break
+    if (!wireRecord(entry)) continue
+    const id = typeof entry.id === 'string' && entry.id !== '' && entry.id.length <= 512 ? entry.id : undefined
+    if (id === undefined || seen.has(id)) continue
+    seen.add(id)
+    const name = typeof entry.name === 'string' && entry.name !== '' ? entry.name.slice(0, MAX_CATALOG_NAME) : undefined
+    const mode = typeof entry.mode === 'string' && entry.mode !== '' && entry.mode.length <= 40 ? entry.mode : undefined
+    // An external or unknown execution has no local conversation to open, so a
+    // name that resolves to it would be a dead link. One-shot children do have
+    // one and stay linkable; a history checkpoint without a mode is kept.
+    if (mode === 'external' || mode === 'unknown') continue
+    items.push({ id, ...(name === undefined ? {} : { name }), ...(mode === undefined ? {} : { mode }) })
+  }
+  return items
+}
+
+/**
+ * Classify a rejected rc.2 team toggle without exposing runtime diagnostics.
+ *
+ * rc.1 predates `agentTeams/setEnabled`, so the gateway answers an unknown
+ * method or a 404 HTTP error: that is a capability gap, not a fault. The
+ * conversation can also disappear between rendering the toggle and the call.
+ * Both the notice and the output line use this classification, never the raw
+ * runtime wording.
+ */
+function teamToggleFailure(error: unknown): { classification: 'unsupported' | 'not-found' | 'failed'; text: string } {
+  const failure = dshFailure(error)
+  const code = failure.code ?? ''
+  if (code === 'session/not-found' || /session\/not-found/i.test(failure.message)) {
+    return { classification: 'not-found', text: 'The conversation is no longer available.' }
+  }
+  const status = error instanceof DshConnectionError ? error.status : undefined
+  const unsupported = status === 404
+    || /unknown[\s_-]*method|method[\s_-]*not[\s_-]*found|not[\s_-]*supported/i.test(code)
+    || /unknown method|method not found|not supported|unsupported/i.test(failure.message)
+  if (unsupported) return { classification: 'unsupported', text: 'This runtime does not support the team toggle.' }
+  return { classification: 'failed', text: 'The team setting could not be changed. Try again.' }
+}
+
 function stateUpdate(previous: ChatViewState, next: ChatViewState): ChatViewStateUpdate | undefined {
   const patch: Partial<Omit<ChatViewState, 'messages'>> = {}
   const previousRecord = previous as unknown as Record<string, unknown>
@@ -454,12 +537,14 @@ function initialState(cwd: string): ChatViewState {
     cwd,
     sessions: [],
     subagentCatalogs: {},
+    subagentCatalogItems: [],
     archivedSessions: [],
     pinnedSessionIds: [],
     pinningAvailable: false,
     parentSessionId: null,
     todos: [],
     team: null,
+    teamBusy: false,
     account: unavailableAccountState(),
     accountNotice: null,
     accountFailed: false,
@@ -807,6 +892,16 @@ export class DshChatController implements vscode.Disposable {
         if (!summary) return
         if (result !== null) summary.projections = { values: { ...summary.projections?.values, ...result.values } }
         status({ status: result?.kind === 'migration-required' ? 'migration-required' : 'ready' })
+        // A catalog read is also a fresh catalog for the open conversation's
+        // named tool links and for rc.2 teammate rows.
+        if (sessionId === this._state.sessionId) {
+          this.publish({
+            subagentCatalogItems: subagentCatalogItemsOf(summary.projections?.values),
+            ...(this._state.team === null || this._state.team.enabled !== undefined
+              ? { team: agentTeamOf(summary.projections?.values) ?? null }
+              : {}),
+          })
+        }
         this.publishSessionItems()
       } catch (error) { status({ status: 'error', error: redactDshSecrets(dshErrorText(error)) }) }
     })()
@@ -1354,6 +1449,7 @@ export class DshChatController implements vscode.Disposable {
       jobs: [],
       todos: [],
       team: null,
+      teamBusy: false,
       hasMoreHistory: false,
       loadingHistory: false,
     })
@@ -1914,6 +2010,37 @@ export class DshChatController implements vscode.Disposable {
       return { ok: false, text: 'The clipboard is unavailable.' }
     }
     return { ok: true, text: 'Session copied as Markdown.' }
+  }
+
+  /**
+   * Enable or disable Agent Teams for the open conversation.
+   *
+   * rc.2 saves the selection on the root Session and republishes the `agentTeam`
+   * projection, so this method only asks the runtime; the view converges from
+   * that projection. A click that arrives while another change is in flight is
+   * ignored rather than queued, and a runtime without the RPC (rc.1) is reported
+   * as unsupported through a fixed sentence instead of its raw error.
+   */
+  async setTeamEnabled(sessionId: string, enabled: boolean): Promise<{ ok: boolean; text: string }> {
+    this.requireReady()
+    if (this._state.teamBusy) return { ok: false, text: '' }
+    if (sessionId !== this._state.sessionId) {
+      return { ok: false, text: 'Open this conversation before changing its team setting.' }
+    }
+    const client = this.requireClient()
+    this.publish({ teamBusy: true })
+    try {
+      await client.setAgentTeamEnabled(sessionId, enabled)
+      return { ok: true, text: enabled ? 'Agent team enabled.' : 'Agent team disabled.' }
+    } catch (error) {
+      const failure = teamToggleFailure(error)
+      this.output.appendLine(`[team] toggle failed (${failure.classification})`)
+      return { ok: false, text: failure.text }
+    } finally {
+      // The runtime selection and the panel both converge from the projection;
+      // this flag only re-enables the toggle.
+      this.publish({ teamBusy: false })
+    }
   }
 
   /**
@@ -2869,7 +2996,7 @@ export class DshChatController implements vscode.Disposable {
     this.jobsScanExpanded = false
     // A stop acknowledgement is a fact about a connection that is going away.
     this.clearStoppingAcknowledgement()
-    this.publish({ subagentCatalogs: {} })
+    this.publish({ subagentCatalogs: {}, subagentCatalogItems: [] })
     this.stopAccountPoll()
     this.openedSignInAttempt = undefined
     this.publish(this.accountPatch(unavailableAccountState()))
@@ -3103,6 +3230,8 @@ export class DshChatController implements vscode.Disposable {
       queue: [],
       todos: [],
       team: null,
+      teamBusy: false,
+      subagentCatalogItems: [],
       // A command held for this conversation stays held; the dock is per
       // conversation, so it is republished rather than cleared.
       queuedCommands: this.queuedCommandItems(sessionId),
@@ -3180,8 +3309,12 @@ export class DshChatController implements vscode.Disposable {
       usage: usageMeterStateOf(summary?.projections?.values),
       todos: todosOf(summary?.projections?.values?.todos),
       // The Team projection is the data source; `agentTeamOf` folds it into the
-      // sorted view the sidebar renders and rejects a malformed value.
+      // sorted view the sidebar renders and rejects a malformed value. rc.2
+      // derives teammates from the catalog, which the Webview also needs to
+      // resolve named tool links.
       team: agentTeamOf(summary?.projections?.values) ?? null,
+      teamBusy: false,
+      subagentCatalogItems: subagentCatalogItemsOf(summary?.projections?.values),
       imageLimits: imageLimitsOf(summary?.projections?.values?.imageLimits),
       permissions: permissionPresetsFromCatalog(summary?.projections?.values?.permissions, this.permissionCatalog),
       messageFeedback: (() => {
@@ -3651,9 +3784,26 @@ export class DshChatController implements vscode.Disposable {
       }
       if (payload.key === 'agentTeam' && sessionId === this._state.sessionId) {
         // Use the merged summary so an unrelated projection frame cannot clear
-        // the roster; the frame's own value is enough when no summary exists.
+        // the view; the frame's own value is enough when no summary exists. A
+        // roster (rc.1) ignores the catalog; a selection (rc.2) derives its
+        // teammate rows from it.
         this.publish({
           team: agentTeamOf(summary?.projections?.values ?? { agentTeam: payload.value }) ?? null,
+        })
+      }
+      if (payload.key === 'subagentCatalog' && sessionId === this._state.sessionId) {
+        // The catalog is the only source of rc.2 teammate names and of the
+        // name-to-Session resolution used by named tool links, so both views
+        // follow it. An rc.1 roster does not depend on either.
+        const merged = summary?.projections?.values ?? { subagentCatalog: payload.value }
+        this.publish({
+          subagentCatalogItems: subagentCatalogItemsOf(merged),
+          // Only a merged summary proves the projection state. Without one the
+          // frame names a catalog alone, and re-deriving the team would drop a
+          // rendered rc.2 selection until the next summary arrives.
+          ...(summary !== undefined && (this._state.team === null || this._state.team.enabled !== undefined)
+            ? { team: agentTeamOf(merged) ?? null }
+            : {}),
         })
       }
       if (payload.key === 'imageLimits' && sessionId === this._state.sessionId) {
@@ -5532,6 +5682,17 @@ class DshSurface implements vscode.Disposable {
           if (typeof value.sessionId === 'string') {
             const result = await this.controller.copySessionAsMarkdown(value.sessionId)
             await this.webview.postMessage({ type: 'session-notice', text: result.text, ...(result.ok ? {} : { tone: 'error' }) })
+          }
+          return
+        case 'set-team-enabled':
+          // rc.2 only: the panel's toggle. The view converges from the runtime
+          // projection, so an empty answer (a duplicate click ignored by the
+          // controller) posts nothing.
+          if (typeof value.sessionId === 'string' && typeof value.enabled === 'boolean') {
+            const result = await this.controller.setTeamEnabled(value.sessionId, value.enabled)
+            if (result.text !== '') {
+              await this.webview.postMessage({ type: 'session-notice', text: result.text, ...(result.ok ? {} : { tone: 'error' }) })
+            }
           }
           return
         case 'rename-session':

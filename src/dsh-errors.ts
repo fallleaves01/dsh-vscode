@@ -72,6 +72,29 @@ const MESSAGES: Readonly<Record<string, string>> = {
     'This subagent has already finished, so it cannot be continued. Its work is part of the conversation that started it.',
   'subagent/delivery-unavailable':
     'This subagent cannot accept a follow-up right now. Try again in a moment.',
+  // rc.2 keeps the plugin manager's package-mismatch failure instead of a
+  // generic operation error.
+  'unexpected-package':
+    'The package manager installed a different package or version than the request expected. Review the profile dependencies and try again.',
+  // rc.2 keeps attachment and image admission codes on failed turns and tool
+  // results instead of collapsing them to UNKNOWN; each is actionable.
+  ATTACHMENT_NOT_FOUND: 'That attachment is no longer available. Attach the file again.',
+  ATTACHMENT_CORRUPT: 'That attachment is damaged and could not be read. Attach the file again.',
+  ATTACHMENT_READ_FAILED: 'That attachment could not be read. Attach the file again.',
+  ATTACHMENT_WRITE_FAILED: 'That attachment could not be saved. Attach the file again.',
+  ATTACHMENT_FILES_UNSUPPORTED: 'This runtime cannot store files for that attachment. Remove it and try another way.',
+  ATTACHMENT_PROJECTION_UNSUPPORTED: 'This runtime cannot deliver that attachment to the selected model. Remove it and try another way.',
+  INVALID_IMAGE: 'That image could not be processed. Choose a different image.',
+  INVALID_IMAGE_BASE64: 'That image could not be processed. Choose a different image.',
+  IMAGE_TOO_LARGE: 'That image is too large to attach. Choose a smaller image.',
+  IMAGES_TOO_LARGE: 'The attached images are too large for one request. Remove one image before sending.',
+  UNSUPPORTED_IMAGE_TYPE: 'That image type is not supported. Choose a supported image.',
+  IMAGE_TYPE_MISMATCH: 'That file is not the image type it claims to be. Choose a different image.',
+  IMAGE_TOO_MANY_PIXELS: 'That image has too many pixels to attach. Choose a smaller image.',
+  IMAGE_DIMENSION_TOO_LARGE: 'That image is too large in one dimension. Choose a smaller image.',
+  TOO_MANY_IMAGES: 'Too many images are attached to one request. Remove one before sending.',
+  INVALID_FILE_BASE64: 'That file could not be uploaded. Choose the file again.',
+  INVALID_ATTACHMENT_REF: 'That attachment reference is no longer valid. Attach the file again.',
 }
 
 /** The one sentence the sidebar shows for a conversation it cannot write to. */

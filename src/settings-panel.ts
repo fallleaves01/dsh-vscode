@@ -34,6 +34,8 @@ function bundleFailure(result: DshBundleChange): string {
   if (code === 'management-required') return 'This runtime is managed outside this extension. Change bundles from its own plugin manager.'
   if (code === 'incompatible-version') return 'This bundle is not compatible with the running DSH version.'
   if (code === 'unsupported-platform') return 'This bundle does not support the runtime\'s operating system.'
+  // rc.2: the install run left a package or version other than the expected one.
+  if (code === 'unexpected-package') return 'The package manager installed a different package or version than the update requested. Review the profile dependencies before retrying.'
   if (result.application === 'overridden') return 'The change was saved, but a higher-priority profile layer overrides this bundle.'
   if (result.application === 'cancelled') return 'The bundle change was cancelled.'
   if (code !== undefined) return `The runtime refused the bundle change (${code}).`

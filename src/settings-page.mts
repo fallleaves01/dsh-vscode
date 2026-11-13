@@ -308,17 +308,25 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
     card.append(modeFieldset, button('Search API guide ↗', () => native('search-guide'), 'quiet'))
     const form = searchForm(), profile = view.profiles.find(item => item.ns === form?.ns)
     if (form && profile) {
+      // rc.2 has a per-capability billing setting that can fall back to the
+      // signed-in account; rc.1 has no such field, so its hint stays literal.
+      const billingSetting = form.fields.some(field => field.key === 'searchBilling')
       fieldset.append(keyControl(searchKey, value => {
         searchKey = value; captureSearchSelection()
         if (value) searchKeyTarget ??= { ns: form.ns, revision: form.revision }; else searchKeyTarget = undefined
       }, profile.credential, profile.extensionKey, () => start({ type: 'clear-key', provider: 'web-search', ns: form.ns, revision: fields.get(form.ns)?.revision ?? searchKeyTarget?.revision ?? form.revision,
         ...(view.selection ? { selectionRevision: searchSelectionRevision ?? view.selection.revision } : {}) }), searchConflict() || activeForms().some(item => fields.has(item.ns) && fields.get(item.ns)!.revision !== item.revision),
-        'No key is configured; only conversations using a DeepSeek Account model can search through the default endpoint.'))
+        billingSetting
+          ? 'No key is configured; the signed-in DeepSeek account can be used when the billing setting allows it.'
+          : 'No key is configured; only conversations using a DeepSeek Account model can search through the default endpoint.'))
       for (const field of form.fields) {
+        // Only the endpoint and count fields carry a mode-dependent hint; the
+        // rc.2 billing selects keep the description their form spec declares.
         const description = field.key === 'baseURL'
           ? enabled ? 'Include the API prefix, such as https://api.deepseek.com/v1/tools. The provider appends /search or /fetch. Leave blank to restore the default.' : 'Include the API version prefix. The provider appends /messages. Leave blank to restore the default.'
-          : enabled ? 'Results returned per query: an integer from 1 to 50, default 10. This controls result count, not search calls.' : 'Maximum searches in each Messages API request. Leave blank to restore the default.'
-        fieldset.append(fieldControl(form, { ...field, description: [field.description, description].filter(Boolean).join(' ') }))
+          : field.key === 'count' ? enabled ? 'Results returned per query: an integer from 1 to 50, default 10. This controls result count, not search calls.' : 'Maximum searches in each Messages API request. Leave blank to restore the default.'
+            : undefined
+        fieldset.append(fieldControl(form, description === undefined ? field : { ...field, description }))
       }
     } else fieldset.append(el('p', 'notice', 'The selected search provider settings are unavailable in this runtime.'))
     card.append(fieldset); content.append(card)
@@ -486,7 +494,8 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
       if (draft.ns === 'llm-pi-ai') {
         const row = el('div', 'field'), select = el('select'); select.setAttribute('aria-label', 'API protocol'); select.dataset.focusKey = 'provider-protocol'
         if (!draft.custom) select.append(new Option('Provider default', ''))
-        const labels: Record<string, string> = { 'openai-completions': 'OpenAI Chat Completions', 'openai-responses': 'OpenAI Responses', 'anthropic-messages': 'Anthropic Messages' }
+        // rc.2 adds the Gemini native protocol; rc.1 lists only the first three.
+        const labels: Record<string, string> = { 'openai-completions': 'OpenAI Chat Completions', 'openai-responses': 'OpenAI Responses', 'anthropic-messages': 'Anthropic Messages', 'google-generative-ai': 'Gemini API' }
         for (const protocol of state?.protocols ?? []) select.append(new Option(labels[protocol] ?? protocol, protocol)); select.value = draft.api
         select.addEventListener('change', () => { draft.api = select.value; draft.touched.add('api'); updateSaveButtons() }); row.append(el('span', 'field-name', 'API protocol'), select); fieldset.append(row)
       }
@@ -596,63 +605,72 @@ export function mountSettingsPage(document: Document, api: Api, options: { root?
    * sends an update request and the panel owns the modal confirmation.
    */
   const renderThirdPartyBundles = (): void => {
-    const updatable = (state?.bundles ?? []).filter(bundle => bundle.updatable === true && bundle.installed === true)
-    if (!updatable.length) return
+    // rc.1 marks registry-updatable bundles with `updatable`; rc.2 reports the
+    // update method. Git-installed bundles belong here too, with a read-only
+    // note: the runtime updates them to another commit, which this page cannot
+    // request because it has no Git spec to offer.
+    const thirdParty = (state?.bundles ?? []).filter(bundle => bundle.installed === true
+      && (bundle.updatable === true || bundle.update === 'git'))
+    if (!thirdParty.length) return
     content.append(el('h3', 'inventory-heading', 'Third-party bundles'))
-    content.append(el('p', 'hint', 'Third-party profile bundles the runtime can update. Updating one changes the shared DSH web profile for every window that uses it.'))
+    content.append(el('p', 'hint', 'Third-party profile bundles the runtime manages. A registry bundle can be checked and updated here; a Git-installed bundle is updated from the DSH plugin manager. Updating changes the shared DSH web profile for every window that uses it.'))
     const manage = state?.writable === true
     if (!manage) content.append(el('p', 'notice', state?.reason || 'This runtime is read-only. Update its third-party bundles from the client that manages this profile.'))
     // Only a pending request locks the group; the Details read stays available
     // on a read-only or attach-only runtime.
     const fieldset = el('fieldset'); fieldset.disabled = !!pending
     const grid = el('div', 'plugin-inventory')
-    for (const bundle of updatable) {
+    for (const bundle of thirdParty) {
       const card = el('article', 'inventory-card bundle-card')
       card.append(el('div', 'inventory-name', bundle.title ?? bundle.name),
         el('span', 'hint bundle-status', ['v' + (bundle.version ?? 'unknown'), 'Installed'].join(' · ')))
       if (bundle.description) card.append(el('span', 'hint bundle-description', bundle.description))
       card.append(button('Details…', () => start({ type: 'bundle-detail', name: bundle.name }), 'quiet', !!pending))
-      const checking = pending?.type === 'check-bundle-versions' && pending.bundle === bundle.name
-      const updating = pending?.type === 'update-bundle' && pending.bundle === bundle.name
-      card.append(button(checking ? 'Checking for updates…' : 'Check for updates', () => start({ type: 'check-bundle-versions', name: bundle.name }), 'quiet', !!pending || !manage))
-      if (updating) card.append(el('p', 'hint', `Updating to ${displayText(pending?.version, 128)}…`))
-      const list = bundleLists.get(bundle.name)
-      if (list) {
-        if (list.versions.length) {
-          const choices = el('div', 'choices')
-          for (const version of list.versions) {
-            // A version that declares no `dsh.bundle` cannot replace the
-            // installed bundle; the runtime would refuse the update.
-            const replaceable = version.bundle === true
-            const row = button('', () => { if (replaceable) start({ type: 'update-bundle', name: bundle.name, version: version.version }) },
-              'quiet bundle-version', !!pending || !manage || !replaceable)
-            row.title = replaceable ? `Update to version ${version.version}`
-              : `Version ${version.version} does not declare a plugin bundle, so it cannot replace this bundle.`
-            row.setAttribute('aria-label', row.title)
-            row.append(el('span', 'version-number', version.version))
-            const published = bundleVersionDate(version.publishedAt)
-            if (published) row.append(el('span', 'hint', published))
-            if (version.prerelease) row.append(el('span', 'hint', 'Prerelease'))
-            if (version.deprecated !== undefined) {
-              const marker = el('span', 'hint', 'Deprecated'); marker.title = version.deprecated; row.append(marker)
+      if (bundle.update === 'git' && bundle.updatable !== true) {
+        card.append(el('p', 'hint', 'Installed from a Git spec. Update it from the DSH plugin manager; this page cannot list or install versions for it.'))
+      } else {
+        const checking = pending?.type === 'check-bundle-versions' && pending.bundle === bundle.name
+        const updating = pending?.type === 'update-bundle' && pending.bundle === bundle.name
+        card.append(button(checking ? 'Checking for updates…' : 'Check for updates', () => start({ type: 'check-bundle-versions', name: bundle.name }), 'quiet', !!pending || !manage))
+        if (updating) card.append(el('p', 'hint', `Updating to ${displayText(pending?.version, 128)}…`))
+        const list = bundleLists.get(bundle.name)
+        if (list) {
+          if (list.versions.length) {
+            const choices = el('div', 'choices')
+            for (const version of list.versions) {
+              // A version that declares no `dsh.bundle` cannot replace the
+              // installed bundle; the runtime would refuse the update.
+              const replaceable = version.bundle === true
+              const row = button('', () => { if (replaceable) start({ type: 'update-bundle', name: bundle.name, version: version.version }) },
+                'quiet bundle-version', !!pending || !manage || !replaceable)
+              row.title = replaceable ? `Update to version ${version.version}`
+                : `Version ${version.version} does not declare a plugin bundle, so it cannot replace this bundle.`
+              row.setAttribute('aria-label', row.title)
+              row.append(el('span', 'version-number', version.version))
+              const published = bundleVersionDate(version.publishedAt)
+              if (published) row.append(el('span', 'hint', published))
+              if (version.prerelease) row.append(el('span', 'hint', 'Prerelease'))
+              if (version.deprecated !== undefined) {
+                const marker = el('span', 'hint', 'Deprecated'); marker.title = version.deprecated; row.append(marker)
+              }
+              if (version.incompatible !== undefined) {
+                const marker = el('span', 'hint', 'Incompatible')
+                marker.title = `${version.incompatible.name}@${version.incompatible.version} requires runtime ${version.incompatible.runtimeVersion}`
+                row.append(marker)
+              }
+              choices.append(row)
             }
-            if (version.incompatible !== undefined) {
-              const marker = el('span', 'hint', 'Incompatible')
-              marker.title = `${version.incompatible.name}@${version.incompatible.version} requires runtime ${version.incompatible.runtimeVersion}`
-              row.append(marker)
-            }
-            choices.append(row)
-          }
-          card.append(choices)
-        } else card.append(el('p', 'hint', 'No newer versions are available.'))
-        if (list.omitted > 0) card.append(el('p', 'hint', `${String(list.omitted)} more versions are not shown.`))
-      }
-      const checkError = bundleCheckErrors.get(bundle.name)
-      if (checkError !== undefined) card.append(el('p', 'error', checkError))
-      const result = bundleResults.get(bundle.name)
-      if (result !== undefined) {
-        const copy = bundleUpdateCopy(result)
-        card.append(el('p', copy.className, copy.text))
+            card.append(choices)
+          } else card.append(el('p', 'hint', 'No newer versions are available.'))
+          if (list.omitted > 0) card.append(el('p', 'hint', `${String(list.omitted)} more versions are not shown.`))
+        }
+        const checkError = bundleCheckErrors.get(bundle.name)
+        if (checkError !== undefined) card.append(el('p', 'error', checkError))
+        const result = bundleResults.get(bundle.name)
+        if (result !== undefined) {
+          const copy = bundleUpdateCopy(result)
+          card.append(el('p', copy.className, copy.text))
+        }
       }
       grid.append(card)
     }

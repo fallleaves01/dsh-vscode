@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { mountSettingsPage } from '../src/settings-page.mjs'
 import { settingsPageHtml } from '../src/settings-page-html.js'
-import { bundlePageState, experimentalPageState, pageState, searchPageState, updatableBundlePageState } from './settings-page.fixture.js'
+import { bundlePageState, experimentalPageState, pageState, rc2BundlePageState, rc2SearchPageState, searchPageState, updatableBundlePageState } from './settings-page.fixture.js'
 import type { SettingsPageState } from '../src/settings-page-state.js'
 
 let dispose: (() => void) | undefined
@@ -696,5 +696,51 @@ describe('settings button hover and accessible names', () => {
       expect(level.title).toMatch(/^Delete level /)
       expect(level.getAttribute('aria-label')).toBe(level.title)
     }
+  })
+  it('labels the rc.2 Gemini native protocol in the custom provider picker', () => {
+    const state = pageState(); state.protocols = [...state.protocols, 'google-generative-ai']
+    const h = harness(state); h.click('Models'); h.click('Add model provider')
+    const source = document.querySelector<HTMLSelectElement>('select[aria-label="Provider source"]')!
+    source.value = 'custom'; source.dispatchEvent(new Event('change'))
+    const protocols = document.querySelector<HTMLSelectElement>('[aria-label="API protocol"]')!
+    expect([...protocols.options].map(option => [option.value, option.textContent])).toContainEqual(['google-generative-ai', 'Gemini API'])
+  })
+  it('keeps registry updates and shows rc.2 Git installs as not updatable here', () => {
+    const h = harness(rc2BundlePageState()); h.click('Built-in plugins')
+    const text = document.body.textContent!
+    expect(text).toContain('Registry third-party plugin')
+    expect(text).toContain('Git third-party plugin')
+    expect(text).not.toContain('Fixed third-party plugin')
+    expect(text).not.toContain('Uninstalled registry plugin')
+    const cards = [...document.querySelectorAll<HTMLElement>('article.bundle-card')]
+    const registry = cards.find(card => card.textContent?.includes('Registry third-party plugin'))!
+    const git = cards.find(card => card.textContent?.includes('Git third-party plugin'))!
+    expect([...registry.querySelectorAll('button')].some(control => control.textContent === 'Check for updates')).toBe(true)
+    expect([...git.querySelectorAll('button')].some(control => control.textContent === 'Check for updates')).toBe(false)
+    expect(git.textContent).toContain('Installed from a Git spec')
+    // Long-form details remain available for both update methods.
+    expect([...git.querySelectorAll('button')].some(control => control.textContent === 'Details…')).toBe(true)
+  })
+  it('renders rc.2 search billing selects and hides the retired endpoint field', () => {
+    const h = harness(rc2SearchPageState()); h.click('Web search')
+    document.querySelector<HTMLInputElement>('[data-focus-key="search-api-mode"]')!.click()
+    const billing = document.querySelector<HTMLSelectElement>('[data-focus-key="web-deepseek-api:searchBilling"]')!
+    expect(billing).not.toBeNull()
+    expect([...billing.options].map(option => [option.value, option.textContent])).toEqual([
+      ['auto', 'Automatic'],
+      ['account', 'Signed-in DeepSeek account'],
+      ['api-key', 'DeepSeek API key'],
+    ])
+    expect(billing.value).toBe('auto')
+    expect(document.querySelector('[data-focus-key="web-deepseek-api:fetchBilling"]')).not.toBeNull()
+    // The billing control keeps its own description; only count/endpoint get the
+    // mode-dependent search hint.
+    const billingRow = billing.closest('.field')!
+    expect(billingRow.textContent).toContain('Automatic follows')
+    expect(billingRow.textContent).not.toContain('Results returned per query')
+    // rc.2 renamed the endpoint fields; the rc.1 baseURL input must not appear.
+    expect(document.querySelector('[data-focus-key="web-deepseek-api:baseURL"]')).toBeNull()
+    // The provider credential control remains reachable on the rc.2 profile.
+    expect(document.querySelector('[data-focus-key="api-key"]')).not.toBeNull()
   })
 })

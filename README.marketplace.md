@@ -6,7 +6,7 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, quoted message text, and native change review. This source version is **0.2.2-rc.1.6**.
+DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, quoted message text, and native change review. This source version is **0.2.2-rc.2.1**.
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
@@ -21,8 +21,8 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 - **Conversations and history.** Stream responses, inspect tool calls, answer approvals and questions, and load earlier messages through the official DSH runtime.
 - **Failed response recovery and retries.** Keep received output when a request fails, show its error code and a readable reason in chat and subagent details, and restore saved failed attempts when reopening history. Retried attempts collapse into one expandable row with retry delay and failure reason; a turn stopped by the output token limit shows DSH's cut-off notice. Retries remain separate; output that could not be saved is marked as available only in the current view.
 - **Conversation directory.** Use the directory for recent and archived conversation lists, search, rename, archive with Undo, and restore. The local filter matches a case-insensitive substring of the conversation title or the session ID, and message bodies are searched when history search is enabled. A row whose runtime reports a working directory shows it in the row tooltip and accessible name; a row without one keeps its previous tooltip. New conversation opens the full chat composer with model, reasoning effort, agent composition, and permission controls. The top picker switches main conversations; subagents remain in the owning conversation's Tasks panel.
-- **Conversation actions.** Pin or unpin, rename, fork, archive or restore, and copy the session ID from the conversation menu. While the conversation that is open in this window is not archived, the same menu copies its complete history as Markdown. Branching a completed turn forks at that turn's own boundary, so later stopped or failed work is not copied.
-- **Independent subagent details.** Click a subagent name in its tool card to enter the child conversation, or use the trailing arrow to open independent details. Inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer. External executions appear as informational rows without a local transcript.
+- **Conversation actions.** Pin or unpin, rename, fork, archive or restore, and copy the session ID from the conversation menu. While the conversation that is open in this window is not archived, the same menu copies its complete history as Markdown. On DeepSeek Harness `0.2.2-rc.2`, archiving can also remove a clean Git worktree created by the runtime (branches and commits are preserved); see the rc.2 upgrade notes before archiving. Branching a completed turn forks at that turn's own boundary, so later stopped or failed work is not copied.
+- **Independent subagent details.** Click a subagent name in its tool card to enter the child conversation, or use the trailing arrow to open independent details. Inspect live state, its transcript, tool output, duration, and token usage. Answer approvals and questions, stop a task, or send Queue/Steer messages when the parent agent permits continuation. One-shot children have a read-only composer. External executions appear as informational rows without a local transcript. On `0.2.2-rc.2`, stopping a subagent prefers the new user-interrupt call and falls back to the earlier parent-interrupt call only when the runtime does not serve it; a named subagent resolves its card link through the conversation's subagent catalog.
 - **Background tasks and task services.** Inspect bounded process output, Goal status and round limits, Schedule reminders and delivery history, and Workflow phases and job logs when the runtime exposes these services. Search conversation message bodies when history search is enabled.
 - **Explicit file context.** Use `+` to search and add workspace files or folders, remove each reference with `×`, or use typed `@` references and **Add Selection to Chat**. The current editor and selected lines are optional suggestions. Select resources in the Explorer and run **DeepSeek Harness: Add to Chat** from the context menu; use **Upload from this computer…** for local files; or drop operating-system files onto the composer (hold Shift if VS Code suppresses the drop). See [Adding files to the composer](https://github.com/fallleaves01/dsh-vscode#adding-files-to-the-composer).
 - **Quoted message text.** Select text in a user message or completed reply, then choose **Quote text** to add it to the composer as a link-like quote chip. Sending emits the same Markdown blockquote as DSH Web; quotes can be removed with `×` and cannot be combined with slash commands. See [Quoting message text](https://github.com/fallleaves01/dsh-vscode#quoting-message-text).
@@ -30,7 +30,7 @@ DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It pr
 - **Compact change review.** Expand the file-count and line-count summary, or open Review in VS Code's Diff Editor. Keep/Revert actions retain per-turn snapshots and are bound to their originating conversation and project; confirmation rechecks the target before a revert.
 - **Answer file links.** Open a file named in an answer from the start line the link carries. Hash fragments `#L5` and `#L5-L9` and colon suffixes `path:5`, `path:5:3` and `path:5-9` are accepted; the range end and column are validated only, so the file opens at the start line without selecting a range or applying a column. An invalid fragment or line (`#L5:3`, `#L0`, `#L2-L1`, `#5`) opens the file without a selection instead of dropping the link.
 - **DeepSeek authentication.** Configure an API key or use browser account sign-in, inspect account state and balance, and sign out. Remote sign-in uses VS Code port forwarding.
-- **Runtime plugins and configuration.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks. Open the settings gear for Models, Shell, Agent loop, Subagents, Web search and General settings. Add providers, edit model catalogs and manage write-only credentials through DSH. The Experimental bundles and Third-party bundles cards offer **Details…**, which reads the bundle's localized long description and opens it in a read-only Markdown preview as an opaque virtual document; relative images in these documents are not rendered. The VS Code Markdown preview applies its own resource policy: a third-party detail document can reference remote images that the preview then requests, which reveals the reader's address and timing to that host. The sidebar never fetches or rewrites those resources.
+- **Runtime plugins and configuration.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks. Open the settings gear for Models, Shell, Agent loop, Subagents, Web search and General settings. Add providers, edit model catalogs and manage write-only credentials through DSH. When the runtime reports a registry update source for an installed third-party profile bundle (`update: 'registry'` on `0.2.2-rc.2`, `updatable` on `0.2.2-rc.1`), the Plugins page lists its published versions and updates it after a confirmation; a Git-installed bundle is shown read-only there. The Experimental bundles and Third-party bundles cards offer **Details…**, which reads the bundle's localized long description and opens it in a read-only Markdown preview as an opaque virtual document; relative images in these documents are not rendered. The VS Code Markdown preview applies its own resource policy: a third-party detail document can reference remote images that the preview then requests, which reveals the reader's address and timing to that host. The sidebar never fetches or rewrites those resources.
 - **Runtime recovery.** Reuse a managed runtime across VS Code windows, reconnect, diagnose conversation ownership, and end a verified leftover managed runtime. Saved external runtimes are attach-only.
 - **Runtime manager.** Run **DeepSeek Harness: Manage Runtimes**, or click the **External**/**DSH**/**Shared** status control, to list the current connection, saved external runtimes and extension-started runtime records. Start a managed runtime, connect by launch URL, restart, reconnect, disconnect, end a verified extension-started runtime, forget a saved runtime, or open occupancy diagnostics. Runtimes you started yourself without connecting or saving are not listed.
 - **Native debugging and keyboard access.** Enable autonomous debugging for `.vscode/launch.json`, including breakpoints, stepping, stack frames, and variables. `Cmd/Ctrl+Alt+D` opens chat, `Cmd/Ctrl+Alt+L` adds the selection, and `Cmd/Ctrl+Alt+F` requests a file fix. Chat and task details support dark, light, and high-contrast themes.
@@ -43,7 +43,7 @@ DSH Sidebar runs the official DeepSeek Harness CLI on your machine. Install it f
 npm install -g @deepseek-ai/dsh
 ```
 
-Install DSH on the extension host; for Remote SSH, install it on the remote host. You need VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`. DeepSeek Harness `0.1.2-rc.1` or newer is required; history search and Schedule need `0.2.0-rc.2` or newer, the conversation event-stream client is verified against `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1`, and the experimental bundles are verified against `0.2.2-alpha.2` (`0.2.1-rc.2` and `0.2.1-rc.3` remain supported). Schedule supports the `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1` catalogs and history. The alpha CLI requires Node.js 24.9 or newer. The npm `latest` dist-tag now resolves to `0.2.2-rc.1` (`next` names the same version), so a default install uses the current runtime baseline.
+Install DSH on the extension host; for Remote SSH, install it on the remote host. You need VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`. DeepSeek Harness `0.1.2-rc.1` or newer is required; history search and Schedule need `0.2.0-rc.2` or newer, the conversation event-stream client is verified against `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1`, and the experimental bundles are verified against `0.2.2-alpha.2` (`0.2.1-rc.2` and `0.2.1-rc.3` remain supported). Schedule supports the `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1` catalogs and history. The alpha CLI requires Node.js 24.9 or newer. This build also supports `0.2.2-rc.2`: its adapted plugin-manager, Agent Teams, web-search and subagent calls are covered by unit tests and an isolated runtime probe. The npm `latest` tag still resolves to `0.2.2-rc.1`; `next` names `0.2.2-rc.2`, so a default install keeps rc.1 and rc.2 needs `@next` or the exact version.
 
 Download this fork's `.vsix` from [GitHub Releases](https://github.com/fallleaves01/dsh-vscode/releases) and run **Extensions: Install from VSIX...**. Its extension ID is `fallleaves01.dsh-sidebar`. The latest release is **0.2.2-rc.1.5**. Release assets can lag behind the source version; build from the repository with `pnpm install --frozen-lockfile && pnpm run package` when the desired version is not yet available.
 
@@ -163,7 +163,9 @@ The page follows the official DSH settings cards: account status and session-log
 upload, provider endpoints and model catalogs, Shell timeout/output limits,
 parallel tool calls, subagent limits and allowed model routes, and web search.
 Search supports the official Messages API or the paired Search / Fetch APIs,
-with separate endpoints, limits, and write-only credentials. Custom Pi provider
+with separate endpoints, limits, and write-only credentials. On `0.2.2-rc.2`
+the card also exposes the runtime's search and fetch billing selects (Automatic,
+Signed-in DeepSeek account, DeepSeek API key). Custom Pi provider
 models offer a reasoning-level/API-value table when the runtime schema supports it.
 Appearance and keyboard shortcuts use VS Code's native settings.
 
@@ -232,7 +234,10 @@ implemented in the **Background jobs** menu above.
   reason when expanded.
 - **Agent Teams.** With the `agentTeam` Session projection, Tasks shows the
   durable roster and shared task board; the board is read-only and owned by the
-  runtime. Member rows show their phase and Running/Inactive.
+  runtime. On `0.2.2-rc.2` the projection carries an `enabled` selection instead
+  of a roster: the panel shows **Team on**/**Team off** with an
+  **Enable team**/**Disable team** control, and teammate rows come from the
+  conversation's named subagents. An `0.2.2-rc.1` runtime keeps its roster view.
 - **Live conversation titles.** Titles refresh from the `title` projection
   without reloading the conversation list.
 - **Experimental settings and bundle management.** Settings → Plugins →
@@ -243,15 +248,17 @@ implemented in the **Background jobs** menu above.
   `cotTranslation/limits` and `cotTranslation/translate`, with the translation
   shown by default and a View original action; plugin market discovery/search/
   install and speech capture/transcription are not implemented. The same page
-  lists an installed third-party profile bundle the runtime marks `updatable`
-  under **Third-party bundles**: **Check for updates** shows published versions
+  lists an installed third-party profile bundle the runtime reports as
+  registry-updatable (`update: 'registry'` on `0.2.2-rc.2`; `updatable` on
+  `0.2.2-rc.1`) under **Third-party bundles**: **Check for updates** shows published versions
   with date, prerelease, deprecation and incompatibility markers, and a chosen
   version is installed only after a modal confirmation. Registry URLs, attempt
   reasons and package-manager diagnostics are not shown; the result reports
   updated, restart required, restored, unrestored or unchanged (the update was
   not accepted and the installed version is still in place); a listed version
   that declares no plugin bundle is shown disabled with an explanation; and the
-  controls are disabled for attach-only and read-only runtimes. Both bundle
+  controls are disabled for attach-only and read-only runtimes; a Git-installed
+  bundle appears read-only in the same section. Both bundle
   areas also offer **Details…**: `pluginManager/readBundleDetail` returns the
   bundle's localized long description (its locale file or README) and opens it
   in a read-only Markdown preview as a virtual document; read-only and

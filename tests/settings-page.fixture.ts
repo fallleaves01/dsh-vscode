@@ -139,3 +139,50 @@ export function updatableBundlePageState(): SettingsPageState {
   state.bundles = publicBundles(updatableBundleFixture())
   return state
 }
+/**
+ * rc.2 `pluginManager/listBundles` rows: `update` replaces rc.1 `updatable`.
+ *
+ * The registry row is the rc.2 counterpart of the rc.1 third-party update flow;
+ * the Git row is replaceable only by another commit of the same repository, so
+ * the page shows it without a version check; the fixed row is not replaceable at
+ * all and therefore not a third-party update entry.
+ */
+export function rc2BundleFixture(): Record<string, unknown>[] {
+  return [
+    { name: '@acme/dsh-registry-bundle', official: false, availability: 'profile', version: '1.2.0', enabled: true, installed: true, optional: false, removable: false, update: 'registry', meta: { title: 'Registry third-party plugin' } },
+    { name: '@acme/dsh-git-bundle', official: false, availability: 'profile', version: '0.9.0', enabled: true, installed: true, optional: false, removable: false, update: 'git', meta: { title: 'Git third-party plugin', description: 'Installed from a repository commit.' } },
+    { name: '@acme/dsh-fixed-bundle', official: false, availability: 'profile', version: '1.0.0', enabled: true, installed: true, optional: false, removable: false, meta: { title: 'Fixed third-party plugin' } },
+    { name: '@acme/dsh-registry-uninstalled', official: false, availability: 'profile', version: '1.3.0', enabled: false, installed: false, optional: false, removable: false, update: 'registry', meta: { title: 'Uninstalled registry plugin' } },
+  ]
+}
+export function rc2BundlePageState(): SettingsPageState {
+  const state = pageState()
+  state.bundles = publicBundles(rc2BundleFixture())
+  return state
+}
+
+/** An rc.2 `web-deepseek-api` namespace: billing selects replace the old endpoint fields. */
+export function rc2SearchBillingNamespace(): SettingsNamespace {
+  const ns = namespace('web-deepseek-api', { count: 10, searchBilling: 'auto', fetchBilling: 'auto' })
+  ns.schema = { uid: 1, refs: {
+    '1': { type: 'object', dict: { count: 2, searchBilling: 3, fetchBilling: 4 } },
+    '2': { type: 'number', meta: { min: 1, max: 50 } },
+    '3': { type: 'union', list: [5, 6, 7] },
+    '4': { type: 'union', list: [5, 6, 7] },
+    '5': { type: 'const', value: 'auto' },
+    '6': { type: 'const', value: 'account' },
+    '7': { type: 'const', value: 'api-key' },
+  } }
+  return ns
+}
+export function rc2SearchFixture() {
+  const data = searchFixture()
+  data.description.namespaces = data.description.namespaces.map(ns => ns.ns === 'web-deepseek-api' ? rc2SearchBillingNamespace() : ns)
+  return data
+}
+export function rc2SearchPageState(): SettingsPageState {
+  const data = rc2SearchFixture(), state = pageState()
+  state.forms = settingsForms(data.description)
+  state.search = searchSettings(data.description, data.credentials)
+  return state
+}

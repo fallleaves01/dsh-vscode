@@ -1,13 +1,19 @@
 /**
  * Pure view model for the Agent Teams `agentTeam` Session projection.
  *
- * DSH 0.2.1-rc.3 publishes the durable Team roster, the non-deleted task board,
+ * DSH 0.2.2-rc.1 publishes the durable Team roster, the non-deleted task board,
  * and the first rejected persistent Team record as one sequenced projection on
- * the Lead Session. The host already validates the value it writes, but the
- * value crosses a process and a package-version boundary, so this module
- * re-validates it defensively and derives the small, sorted view a narrow
- * sidebar renders. Every export is pure: no `vscode` import, no I/O, no
- * mutation of the parsed input, and no function throws.
+ * the Lead Session. DSH 0.2.2-rc.2 changes that wire view (state version 7) to
+ * the durable Team selection plus the same task board: the roster is gone
+ * because teammates are ordinary subagents, which the existing
+ * `subagentCatalog` projection already lists. This module accepts both shapes:
+ * an rc.1 roster renders exactly as before, and an rc.2 selection renders its
+ * enabled state, its task board, and teammate rows derived from the catalog.
+ * The host already validates the value it writes, but the value crosses a
+ * process and a package-version boundary, so this module re-validates it
+ * defensively and derives the small, sorted view a narrow sidebar renders.
+ * Every export is pure: no `vscode` import, no I/O, no mutation of the parsed
+ * input, and no function throws.
  */
 
 export type AgentTeamMemberRole = 'lead' | 'teammate'
@@ -53,6 +59,12 @@ export interface AgentTeamView {
   failure?: string
   completedCount: number
   totalCount: number
+  /**
+   * The durable Team selection an rc.2 projection reports. Absent on an rc.1
+   * projection, whose roster carries no selection; the two shapes are kept
+   * distinguishable so an old runtime renders exactly as it did.
+   */
+  enabled?: boolean
 }
 
 /**
@@ -61,23 +73,50 @@ export interface AgentTeamView {
  * @param projectionsValues - a Session's `projections.values` map, as carried by
  *   the session summary or built from one `session/projection` frame. A bare
  *   projection object is not accepted: the key is part of the contract.
+ * @param subagentCatalog - optional `subagentCatalog` value used to derive
+ *   teammate rows for an rc.2 selection. When omitted, the catalog already
+ *   present in `projectionsValues` is used; an rc.1 roster ignores it.
  * @returns the normalized view, or `undefined` when the projection is absent,
- *   not an object, or carries neither members, tasks, nor a failure.
+ *   not an object, carries no usable shape, or describes a disabled team with
+ *   nothing on the board.
  */
-export function agentTeamOf(projectionsValues: unknown): AgentTeamView | undefined {
+export function agentTeamOf(projectionsValues: unknown, subagentCatalog?: unknown): AgentTeamView | undefined {
   const values = recordOf(projectionsValues)
   if (values === undefined) return undefined
   const projection = recordOf(values.agentTeam)
   if (projection === undefined) return undefined
-  const members = membersOf(projection.members)
   const tasks = tasksOf(projection.tasks)
   const failure = textOf(projection.failure)
-  // A present projection with nothing to show is treated as absent so the
-  // sidebar can hide the panel instead of rendering an empty shell.
-  if (members.length === 0 && tasks.length === 0 && failure === undefined) return undefined
+  // rc.1: the durable roster shape. Its members are authoritative, so the
+  // catalog is never consulted and the view keeps its historical arithmetic.
+  if (Array.isArray(projection.members)) {
+    const members = membersOf(projection.members)
+    // A present projection with nothing to show is treated as absent so the
+    // sidebar can hide the panel instead of rendering an empty shell.
+    if (members.length === 0 && tasks.length === 0 && failure === undefined) return undefined
+    return {
+      members,
+      tasks,
+      ...(failure === undefined ? {} : { failure }),
+      completedCount: tasks.filter(task => task.status === 'completed').length,
+      totalCount: tasks.length,
+    }
+  }
+  // rc.2: the durable selection shape. `enabled` is the discriminator, because
+  // the strict wire schema requires it and a version-7 projection always
+  // carries the task array.
+  if (typeof projection.enabled !== 'boolean') return undefined
+  const enabled = projection.enabled
+  // The probe of a real rc.2 runtime shows `{enabled:false, tasks:[]}` for a
+  // new conversation. An off team with nothing on the board has nothing to
+  // show, so the panel stays hidden; a disabled board with tasks, or any
+  // failure, must stay visible.
+  if (!enabled && tasks.length === 0 && failure === undefined) return undefined
+  const catalog = subagentCatalog === undefined ? values.subagentCatalog : subagentCatalog
   return {
-    members,
+    members: catalogMembersOf(catalog),
     tasks,
+    enabled,
     ...(failure === undefined ? {} : { failure }),
     completedCount: tasks.filter(task => task.status === 'completed').length,
     totalCount: tasks.length,
@@ -87,12 +126,22 @@ export function agentTeamOf(projectionsValues: unknown): AgentTeamView | undefin
 /**
  * One line for a collapsed task panel, e.g. `2 members · 3/5 tasks done`.
  *
+ * An rc.2 view names the selection first (`Team on`/`Team off`) because the
+ * sidebar can no longer infer it from a roster, and includes the derived
+ * teammate count only when rows exist.
+ *
  * @param view - a view from {@link agentTeamOf}.
  * @returns the summary, or an empty string when there is no team to show.
  */
 export function agentTeamSummaryOf(view: AgentTeamView | undefined): string {
   if (view === undefined) return ''
   const members = `${view.members.length} ${view.members.length === 1 ? 'member' : 'members'}`
+  if (view.enabled !== undefined) {
+    const parts = [view.enabled ? 'Team on' : 'Team off']
+    if (view.members.length > 0) parts.push(members)
+    if (view.totalCount > 0) parts.push(`${view.completedCount}/${view.totalCount} tasks done`)
+    return parts.join(' · ')
+  }
   if (view.totalCount === 0) return members
   return `${members} · ${view.completedCount}/${view.totalCount} tasks done`
 }
@@ -143,6 +192,37 @@ function memberOf(value: unknown): AgentTeamMember | undefined {
   if (id === undefined || id.length > MAX_TEAM_ID || role === undefined || phase === undefined || typeof row.name !== 'string') return undefined
   const error = textOf(row.error)
   return { id, name: clampText(row.name, MAX_TEAM_TEXT), role, phase, ...(error === undefined ? {} : { error: clampText(error, MAX_TEAM_TEXT) }) }
+}
+
+/**
+ * Derive teammate rows from the `subagentCatalog` projection of an rc.2 Session.
+ *
+ * The rc.2 wire view publishes no roster: teammates are ordinary subagents, and
+ * the catalog lists their ids, modes and (since catalog version 3) names. Only
+ * continuable local children are derived as teammate rows:
+ * - a one-shot child is finished work that cannot be contacted again;
+ * - an external execution has no local conversation to open, and the sidebar
+ *   already lists external work in the Subagents section.
+ * The catalog records membership at creation and carries no lifecycle, so the
+ * durable phase stays the established `active`; the Webview still derives
+ * Running/Failed from the live Session status rather than from this row. A
+ * historical checkpoint without a name falls back to the child id.
+ */
+function catalogMembersOf(value: unknown): AgentTeamMember[] {
+  if (!Array.isArray(value)) return []
+  const members: AgentTeamMember[] = []
+  const seen = new Set<string>()
+  for (const entry of value) {
+    if (members.length >= MAX_TEAM_MEMBERS) break
+    const row = recordOf(entry)
+    if (row === undefined || row.mode !== 'continuable') continue
+    const id = textOf(row.id)
+    if (id === undefined || id.length > MAX_TEAM_ID || seen.has(id)) continue
+    const name = textOf(row.name) ?? id
+    seen.add(id)
+    members.push({ id, name: clampText(name, MAX_TEAM_TEXT), role: 'teammate', phase: 'active' })
+  }
+  return members.sort((left, right) => compareText(left.name, right.name) || compareText(left.id, right.id))
 }
 
 /** A parsed task before readiness and blocking are derived from its siblings. */

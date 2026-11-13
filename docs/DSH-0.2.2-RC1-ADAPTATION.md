@@ -355,3 +355,145 @@ A 类 10 条的覆盖状态：
 | 既有未实施项 | 第 7 节与第 9.5 节所列图片即时上传与 50 MiB 对齐、工作步骤折叠、Web-only 面板、统一右键菜单与内嵌文件树（有意不做）、WebSocket 压缩（loopback 收益低）等保持不变；本轮无新增未实施适配项 |
 
 第 9–10 节分别记录 2026-11-06 与 2026-11-09 两个维护轮次；本节为增量记录，第 1–9 节既有事实保持不变。
+
+## 11. 维护轮次 2026-11-13（侧栏 0.2.2-rc.2.1，运行时基线升级到 rc.2）
+
+### 11.1 版本核验
+
+本轮是真实版本升级：DSH 从 `0.2.2-rc.1` 升级到 `0.2.2-rc.2`，侧栏版本从 `0.2.2-rc.1.6` 升到 `0.2.2-rc.2.1`，同时继续支持 rc.1。
+
+| 项目 | 值 |
+|---|---|
+| npm dist-tags（2026-11-13T15:02:49+08:00 复核） | `latest = 0.2.2-rc.1`、`next = 0.2.2-rc.2`、`alpha = 0.2.2-alpha.3` |
+| rc.2 npm 发布时间 | `2026-11-12T02:16:12.076Z`（2026-11-12 10:16:12 +08:00）；`time.modified = 2026-11-12T02:16:12.425Z` |
+| rc.2 GitHub Release | `dsh-v0.2.2-rc.2`，prerelease，published_at `2026-11-11T11:33:06Z`（2026-11-11 19:33:06 +08:00） |
+| 提交规模 | GitHub compare `dsh-v0.2.2-rc.1...dsh-v0.2.2-rc.2`：`ahead_by = 1568`、`total_commits = 1568`，files 列表 300 条（compare API 单页上限） |
+| npm 版本数 | 43；末项 `0.2.2-rc.2`；无 rc.3 或更高版本；GitHub tags 39 条，首项 `dsh-v0.2.2-rc.2` |
+| 官方升级指南 | rc.2 元包 `docs/upgrade-guide/v0.2.2-rc.1` 共 19 项 |
+| 判定 | **真实升级轮次**；rc.2 只在 `next` 通道，`latest` 仍为 rc.1，因此默认安装不变 |
+
+说明：npm dist-tags 与 `time` 于 2026-11-13T15:02:49+08:00 独立复核；GitHub API 在最终复核时被速率限制，GitHub 数据采用本轮分析报告在 2026-11-13T14:32–14:35 的核验记录与 `/tmp` 原始响应（`gh-releases-20261113.json`、`gh-tags-20261113.json`、`rc1-rc2-compare.json`），见 `artifacts/team/maintenance-2026-11-13/upgrade-guide-matrix.md` 第 2 节与 `wire-delta.md` 第 2 节。
+
+### 11.2 19 项升级指南适用性摘要
+
+| 类别 | 指南条目 | 本轮处理 |
+|---|---|---|
+| 协议级直接（P0） | #12 `plugin-update-method`：`BundleInfo.updatable` 改为 `update: 'registry' \| 'git'`；新增 `unexpected-package` | A；不处理会导致第三方 bundle 更新区块在 rc.2 整体消失 |
+| 协议级直接（P1） | #18 `web-search-billing`：`web-deepseek-api` 字段与凭据来源变化 | B；设置页新计费项、隐藏旧端点字段、更新提示 |
+| 用户可见副作用（P1） | #3 `archive-worktrees`：归档时可能删除干净 Git 工作树 | 仅文档与升级提示（11.3 G、README）；侧栏不管理工作树 |
+| 显示/说明层 | #4 `attachment-error-codes`、#15 `subagent-interrupt-default`、#16 `terminal-backend-cleanup-error` | F 补新错误码文案；#15/#16 走通用失败路径，无专用逻辑 |
+| 不适用（13 项） | `account-notification-fields`、`account-remote-provider`、CUA 3 项、Forge 3 项、`dsh-doc-skill`、`runtime-context-reminders`、`session-append-overloads`、`terminal-bundle-sidebar-backend`、`window-drag-regions` | 侧栏不消费对应表面；账号余额字段经 wire 核对未变 |
+| 指南外协议级（P0） | rc.2 移除 `subagents/interruptByParent`，改为 `subagents/interruptByUser`（见 `wire-delta.md` §3.3） | D；不处理会导致停止子代理失败 |
+
+### 11.3 A–G 实施内容与代码触点
+
+**A. 插件更新契约（`updatable` → `update`）**
+
+- `src/dsh-client.ts:71-77`：`DshBundleInfo` 同时保留 rc.1 的 `updatable?: boolean` 与 rc.2 的 `update?: 'registry' | 'git'`；`:256-259` 的安装错误码白名单加入 `unexpected-package`。
+- `src/settings-page-state.ts:69-127`：`BundleView` 增加 `update`；`publicBundles` 把 `update` 与 rc.1 `updatable` 归一为同一对字段（`updatable: update === 'registry'`），因此 rc.2 的 registry 行仍显示更新入口，Git 行以 `updatable: false` 加 `update: 'git'` 进入页面。
+- `src/settings-page.mts:600-670`：Third-party bundles 过滤条件为 `updatable === true || update === 'git'`；registry 行保留 **Check for updates**、版本列表与更新；Git 行显示只读说明（`:630`），不调用 `listVersions`。
+- `src/settings-panel.ts:357`、`:380`：两条写路径仍以 `updatable === true` 为守卫，即只允许 registry 来源更新；`:38` 为 `unexpected-package` 提供独立解释。`src/dsh-errors.ts:77` 同步错误文案。
+- 未实现：`updateBundle` 的 `options.spec` 与 Git 版本更新（见 11.8）。
+
+**B. Web 搜索计费**
+
+- `src/settings-page-state.ts:285-292`：`web-deepseek-api` 表单新增 `searchBilling`、`fetchBilling` 两个 `select` 字段及说明；rc.1 schema 不含这两个键时由既有动态表单逻辑自动隐藏。`:336-338` 增加 `auto`/`account`/`api-key` 三个选项标签（Automatic、Signed-in DeepSeek account、DeepSeek API key）。
+- `src/settings-page.mts:314-327`：rc.2 下 API Key 提示为“No key is configured; the signed-in DeepSeek account can be used when the billing setting allows it.”；rc.1 无计费字段，保留原提示“only conversations using a DeepSeek Account model can search”。端点与计数的说明只附加到对应字段；rc.2 未声明的旧端点字段不渲染。
+- 兼容：`searchSelectionMutations` 写入的 provider id 集合在 rc.2 仍有效；rc.2 默认搜索提供方改为 `deepseek-search-api`，既有开关会显示为已启用。
+
+**C. AgentTeam 投影 v7 与团队开关**
+
+- `src/agent-team-state.ts:59-126`：`AgentTeamView` 增加可选 `enabled`；`agentTeamOf`（`:83`）接受两种形状——存在 `members` 数组时走 rc.1 名册路径（逐字段行为不变）；存在布尔 `enabled` 时走 rc.2 选择路径，队友行由 `catalogMembersOf`（`:211`）从 `subagentCatalog` 派生（仅 continuable 本地子代理；名称缺失时回退会话 ID；结果排序）。rc.2 下 `{enabled:false, tasks:[]}` 视为无内容，面板保持隐藏。
+- `src/dsh-client.ts:1156-1162`：新增 `setAgentTeamEnabled`，发送 `agentTeams/setEnabled { agentId, enabled }`（wire 键为 `agentId`）；rc.1 的未知方法失败由调用方分类为“不支持”。
+- `src/extension.ts:479-491` 的 `teamToggleFailure` 把失败分为 `unsupported` / `not-found` / `failed` 三类固定文案；`:2024-2044` 的 `setTeamEnabled` 校验当前会话、忽略重复点击（`teamBusy`）、输出通道只记录分类；`:5687-5699` 处理 `set-team-enabled` 消息。
+- `src/webview.ts:4590-4695`：任务面板在 rc.2 下按 `enabled` 决定可见性（`:4593`），渲染 **Team on**/**Team off**、**Enable team**/**Disable team** 按钮（`:4665-4685`，按钮在 `:4672` 创建并带 `aria-pressed` 与 busy 状态）；rc.1 名册路径不渲染该控件。摘要行在 rc.2 下显示 `Team on · n members · x/y tasks done`（`:4608`）。
+
+**D. 子代理停止 RPC 兼容**
+
+- `src/dsh-client.ts:1398-1416`：`interruptSubagent` 先调用 `subagents/interruptByUser { childSessionId }`；仅当失败属于“方法缺失”类（`MISSING_RPC_CODES`，见 `:846-866`；含 gateway 未知方法、`gateway/method-unavailable`、HTTP 404；不再把泛化的 not implemented 文本当作方法缺失）时回退到 rc.1 的 `subagents/interruptByParent { childSessionId, parentSessionId, mode: 'continuable' }`。两种形状都要求返回 `{accepted:true}`；传输失败不触发回退。
+- 调用点保持原签名：任务面板停止与子会话取消无需改动，rc.1 与 rc.2 均可用。
+
+**E. 具名子代理与工具寻址**
+
+- `src/subagent-tools.ts:22-40`：`send_message` / `interrupt_agent` 先认 rc.1 `agent_id`，再认 rc.2 `agent`（名称，返回 `memberName` 供渲染层解析），最后认旧 Team `target`；`:44-46` 明确 `wait_agent` 与 `team_task_*` 不产生子代理链接。
+- `:134-160`：`list_agents` 同时解析 rc.2 的 `{name, status, description}` 行、旧 `{target}`/`members` 行，以及渲染文本 `name [status] — description`；`activation` 的 rc.2 `name` 被收集为待解析名称。
+- `src/extension.ts:212-221` 定义 `SubagentCatalogItem`；`:447-473` 的 `subagentCatalogItemsOf` 只保留 id/name/mode，上限 200 行、名称 300 字符；该投影随 `ChatViewState` 下发（`:233`），并在会话读取与 `subagentCatalog` 投影帧时刷新（`:898`、`:3794-3808`）。
+- `src/webview.ts:2211-2225` 用 Team 名册与 `subagentCatalogItems` 合并出“名称 → 会话 ID”映射；`:3420-3435` 的 `teamLinkKey` 把目录也纳入重绘依据，使晚到的目录能重新解析已绘制的工具卡；无法解析的名称保持普通工具卡，不生成死链。
+
+**F. 小项**
+
+- `src/dsh-errors.ts:77-97`：新增 `unexpected-package` 与附件/图片准入错误码的可读文案（附件与图片码共 17 个，另有 `unexpected-package` 一个）。
+- `src/webview.ts:3265-3268`：失败行补充 `INVALID_IMAGE`、`IMAGE_TOO_LARGE` 与 `ATTACHMENT_*` 前缀文案；未知码沿用原回退。
+- `src/settings-page.mts:498`：自定义提供商协议标签增加 `google-generative-ai → Gemini API`；协议选项本身来自运行时 schema，rc.1 不显示该项。
+
+**G. 双版本兼容策略**
+
+- rc.2 只发布在 `next`；`latest` 仍为 rc.1，因此默认安装仍是 rc.1，侧栏必须同时兼容两者。
+- 所有受影响的解码保留 rc.1 字段回退：bundle `updatable`、Team `members`、`interruptByParent`、旧 `list_agents` 行形状均继续可用；rc.2 新增字段在 rc.1 上缺失时按原行为处理。
+- 设置页按运行时 schema 渲染：rc.2 的 `searchBilling`/`fetchBilling` 只在 schema 声明时出现，rc.1 的旧端点字段只在 schema 声明时出现。
+- 能力缺口在调用时检测并转为固定文案：Team 开关在 rc.1 显示“不支持”，子代理停止只在方法缺失时回退。
+- 归档工作树行为属 runtime 行为变化，侧栏不添加确认步骤，只在升级说明与功能说明中提示，避免夸大侧栏的控制能力。
+
+### 11.4 真实 rc.2 运行时探针
+
+环境与方法：隔离 `HOME=/tmp/probe-rc2/home`、`DSH_HOME=/tmp/probe-rc2/dsh`，运行时为 `@deepseek-ai/dsh@0.2.2-rc.2` 的 `lib/bin.js`，命令 `web --host 127.0.0.1 --port 0 --no-open`，Node v26.12.0；探针脚本 `probe.mjs`、`probe-team.mjs` 通过启动 URL token 认证后调用 HTTP RPC。完整记录见 `artifacts/team/maintenance-2026-11-13/rc2-runtime-probe.md`。
+
+实测结论：
+
+1. `settings/describe` 的 `web-deepseek-api` schema 字段为 `count`、`searchRequestsPerSecond`、`sendOriginalQuestion`、`searchBilling`、`fetchBilling`、`searchBaseURL`、`searchApiKeyEnv`、`fetchBaseURL`、`fetchApiKeyEnv`；`searchBilling`/`fetchBilling` 为 `auto|account|api-key` 联合类型，默认 `auto`；旧 `baseURL`/`apiKeyEnv`/`apiKey` 不再是 schema 字段。
+2. `pluginManager/listBundles` 的默认 profile 返回 23 行；安装型与可选 bundle 行不含 `update`，也不含 rc.1 的 `updatable`；`pluginManager/listVersions {name:'@deepseek-ai/dsh-base'}` 返回 `refused / not-updatable`，与侧栏对非可更新 bundle 的处理一致。
+3. 新建会话的 `agentTeam` 投影为 `{enabled:false, tasks:[]}`（无 members）；调用 `agentTeams/setEnabled { agentId:<sid>, enabled:true }` 成功，随后投影为 `{enabled:true, tasks:[]}`；对不存在会话调用返回 `session/not-found`。
+4. 同一运行时暴露 `subagents/interruptByUser`；`subagentCatalog` 投影为空数组（新会话无子代理），catalog 条目在 rc.2 viewSchema 中新增可选 `name`。
+5. 其他记录：`imageLimits` 默认单图 50 MiB、每消息 20 张、单消息 200 MiB、6400 万像素、单边 65535；`llm-pi-ai` 设置 schema 含模型请求重试配置（侧栏本轮不新增该 UI）。
+
+边界：
+
+- 探针只调用非模型 RPC，未执行任何模型对话轮次；未在真实 VS Code 扩展宿主中手工冒烟，也未验证浏览器渲染与自动加载等 UI 行为。
+- 默认 profile 未安装第三方 registry bundle，因此 `update: 'registry'` 的正向更新路径由 rc.2 契约类型与单元测试覆盖；探针确认的是字段缺失形态与 `listVersions` 拒绝行为。
+- 归档工作树清理为用户可见副作用，未在探针中执行归档操作；该行为依据官方升级指南与 wire 报告记录。
+
+### 11.5 隐私与安全
+
+1. 子代理目录投影仅保留 id、可选名称（≤300 字符）与模式（≤40 字符），最多 200 行，只用于“名称 → 会话 ID”的本地链接解析；不写入日志、Output 通道或遥测，也不持久化；随视图状态下发的只有这些有界字段。
+2. Team 开关只对当前打开的会话执行，校验会话 ID、忽略重复点击，输出通道只记录 `unsupported`/`not-found`/`failed` 分类，不显示 runtime 原始错误文本。
+3. 子代理停止对两种 RPC 都要求 `{accepted:true}`；只有明确的方法缺失信号才回退，传输失败不会被误判为旧运行时。
+4. 新错误码（附件、图片、plugin 包不符）只使用固定文案，不回显包名、路径、诊断或异常原文；既有未知码回退不变。
+5. 归档工作树清理不在侧栏代码中实现，侧栏不读取或删除工作目录；升级说明明确提示“分支与提交保留、需要保留目录时应开启工作树服务的 `retainOnArchive`”。
+6. 本轮未新增网络出口、持久化或遥测；搜索计费与 Gemini 协议标签均为显示层。
+
+### 11.6 验证记录
+
+2026-11-13T15:02–15:16+08:00（本机最终工作树；版本复核于 15:02:49，审核后修复与复跑于 15:07–15:16）：
+
+| 命令 | 结果 |
+|---|---|
+| `npx tsc -p tsconfig.json --noEmit` | 通过（退出码 0） |
+| `node scripts/build.mjs` | 通过；输出 `dist/extension.js`、`dist/runtime-host.js` 与 Webview bundles |
+| `CI=true npx vitest run --config vitest.config.ts` | **132 个测试文件通过；2632 passed / 1 skipped / 0 failed（2633 个用例）** |
+
+- 代码层工作树改动（相对 HEAD `f50018e`）：19 个已修改文件（9 个 `src/` 文件、10 个 `tests/` 文件，含 `tests/settings-page.fixture.ts`），无新增文件；另有本任务 6 个文档与版本文件。
+- 测试增量：10 个测试文件（含 1 个 fixture）中，9 个 spec 文件共新增 49 个 `it` 声明（其中 1 个 `it.each` 展开 3 例），并在既有参数化表格中补充用例；全量执行用例净增 51（2581 → 2632）。
+- 覆盖要点：`update`/`updatable` 两种 bundle 行形状与 registry/Git 分流；`unexpected-package` 白名单与文案；rc.2 计费字段只在 schema 声明时出现、旧端点字段隐藏；AgentTeam rc.1 名册与 rc.2 选择双形状、catalog 派生成员、开关成功/重复点击/不支持/会话消失/通用失败；`interruptByUser` 首选与 `interruptByParent` 回退（含 404、gateway 码、文本提示三类），传输失败不回退；具名子代理的 `agent`/`name` 寻址、`list_agents` 新旧行形状、目录晚到后的工具卡重解析、`team_task_*`/`wait_agent` 不产生链接；Gemini 协议标签；附件/图片错误码文案。
+- 审核后修复：独立审核发现 1 项 Major（团队开关 busy 状态未纳入任务面板重绘条件，开关在 RPC 返回后可能停留于 “Updating team…” 禁用态），已把 `teamBusy` 纳入 `src/webview.ts` 的重绘快照与触发条件，并补真实 `state-update` patch 路径测试。随后处理 4 项 Minor：rc.1 搜索提示不再引用不存在的计费设置；子代理中断回退分类收窄（补 `gateway/method-unavailable`，不再把泛化 not implemented 文本当方法缺失，并补 gateway/internal 不重试用例）；子代理目录不再暴露 external/unknown 行（无本地会话可打开）；catalog 投影帧缺少 summary 时不再清空已渲染的团队视图。残留 2 项 Minor（teamToggleFailure 未复用缺失方法分类，rc.1 不渲染开关故无用户可见影响；webview 附件文案与扩展侧表重复且无独立测试）记录为后续项。
+- **边界声明**：本轮未执行真实模型对话轮次的端到端运行，未在真实 VS Code 扩展宿主中手工冒烟；真实运行时验证限于 11.4 的非模型 RPC 探针；未运行浏览器渲染检查。
+
+### 11.7 延后项
+
+| 项目 | 说明 |
+|---|---|
+| Git spec bundle 更新 | 需要 Git spec 输入与 `updateBundle` 的 `spec` 参数；页面本轮只读提示，避免调用失败的半功能 |
+| 插件索引 Star/周下载量 | 由索引 `metadata.sortKeys` 携带而非 wire 字段；侧栏解码白名单丢弃，展示属产品增强 |
+| 模型请求重试设置 UI | rc.2 设置 schema 已含重试配置，侧栏 Models 页本轮不新增编辑 UI |
+| 工作树审阅 UI | 属 DSH Web 的 Forge/变更请求面板，侧栏使用 VS Code 原生 diff |
+| 聊天自动加载更早消息 | Web 聊天行为改进；侧栏已有手动加载历史入口 |
+| 聊天代码差异着色/语言高亮 | Web UI 渲染增强；侧栏自绘 diff，另立项 |
+| Agent 终端面板 | Web 专属终端面板，侧栏不实现 |
+| MCP 动态注册 UI | 运行时管理能力，侧栏插件清单动态读取即可 |
+| 账号通知 UI | Web 账号通知入口，侧栏账号面板本轮不新增 |
+| Office/CUA/Live Share/Stagehand | Web/桌面专属面板，侧栏不实现 |
+| 图片 50 MiB 上限与“进入输入框即上传” | 仍受本地草稿上限与附件流水线约束，需端到端探针后另行实施 |
+| `web/listProviders` 与 `web/providers-changed` | rc.2 新增提供方枚举与事件；侧栏搜索开关仍用运行时 schema，本轮不消费 |
+| 继续生成（空 content prompt）与 `conversationContinuation` | 新能力，需失败 Turn 的 UI 与本地空文本守卫调整，另行实施 |
+| `subagents/prompt` 旧字段清理 | 侧栏仍发送 `parentSessionId`/`mode`，rc.2 非严格解码会忽略；不影响功能，后续清理 |
+
+第 9–11 节分别记录 2026-11-06、2026-11-09 与 2026-11-13 三个维护轮次；本节为增量记录，第 1–10 节既有事实保持不变。

@@ -61,3 +61,59 @@ describe('official subagent tool navigation metadata', () => {
     expect(subagentToolReferences('spawn_teammate', { name: 'reviewer', description: 'R', prompt: 'P' }, '', undefined, true)).toEqual([])
   })
 })
+
+describe('rc.2 named subagent tools', () => {
+  it('addresses send_message and interrupt_agent by the rc.2 agent name', () => {
+    expect(subagentToolReferences('send_message', { agent: 'reviewer', message: 'hello' }))
+      .toEqual([{ id: 'reviewer', memberName: 'reviewer' }])
+    expect(subagentToolReferences('interrupt_agent', { agent: 'reviewer/checker' }))
+      .toEqual([{ id: 'reviewer/checker', memberName: 'reviewer/checker' }])
+    // The rc.1 Session id stays the stronger address when both are present.
+    expect(subagentToolReferences('send_message', { agent_id: 'session-1', agent: 'reviewer', message: 'hi' }))
+      .toEqual([{ id: 'session-1' }])
+    // The earlier Team spelling keeps working.
+    expect(subagentToolReferences('send_message', { target: 'reviewer', message: 'hi' }))
+      .toEqual([{ id: 'reviewer', memberName: 'reviewer' }])
+  })
+
+  it('reads the rc.2 list_agents rows and the old target/members shapes', () => {
+    expect(subagentToolReferences('list_agents', {},
+      '[{"name":"lead","status":"running","description":"root agent"},{"name":"reviewer","status":"inactive","description":"Audit"}]'))
+      .toEqual([{ id: 'lead', memberName: 'lead' }, { id: 'reviewer', memberName: 'reviewer' }])
+    // The rendered row text is also accepted when the raw JSON is unavailable.
+    expect(subagentToolReferences('list_agents', {}, 'lead [running] — root agent\nreviewer/checker [inactive] — Audit'))
+      .toEqual([{ id: 'lead', memberName: 'lead' }, { id: 'reviewer/checker', memberName: 'reviewer/checker' }])
+    // Old shapes stay readable.
+    expect(subagentToolReferences('list_agents', {}, '[{"target":"lead"},{"target":"reviewer"}]'))
+      .toEqual([{ id: 'lead', memberName: 'lead' }, { id: 'reviewer', memberName: 'reviewer' }])
+    expect(subagentToolReferences('list_agents', {}, '{"members":[{"target":"lead"}]}'))
+      .toEqual([{ id: 'lead', memberName: 'lead' }])
+    expect(subagentToolReferences('list_agents', {}, 'not a roster')).toEqual([])
+  })
+
+  it('links a named rc.2 activation through the catalog instead of using the name as a session id', () => {
+    expect(subagentToolReferences('subagent',
+      { name: 'reviewer', description: 'Review the auth flow', prompt: 'Audit it' },
+      '{"kind":"activation","name":"reviewer"}', { kind: 'activation', name: 'reviewer' }))
+      .toEqual([{ id: 'reviewer', memberName: 'reviewer', label: 'Review the auth flow' }])
+    // The rendered line repeats the name; it must not become a second raw id.
+    expect(subagentToolReferences('subagent',
+      { name: 'reviewer', description: 'Review the auth flow', prompt: 'Audit it' },
+      'started subagent reviewer', { kind: 'activation', name: 'reviewer' }))
+      .toEqual([{ id: 'reviewer', memberName: 'reviewer', label: 'Review the auth flow' }])
+    // rc.1 activation ids still become direct links.
+    expect(subagentToolReferences('subagent',
+      { description: 'Review the allocator', prompt: 'Inspect it' },
+      '{"kind":"activation","subagentId":"child-1"}', { kind: 'activation', subagentId: 'child-1' }))
+      .toEqual([{ id: 'child-1', label: 'Review the allocator' }])
+  })
+
+  it('never turns the new rc.2 tools into subagent links', () => {
+    expect(subagentToolReferences('wait_agent', { timeout_ms: 30000, agent: 'reviewer' }, '{"timedOut":true}')).toEqual([])
+    for (const name of ['team_task_create', 'team_task_get', 'team_task_update', 'team_task_list']) {
+      expect(subagentToolReferences(name,
+        { subject: 'Audit', description: 'Details', agent: 'reviewer', prompt: 'p' },
+        '{"id":"task-1","tasks":[]}')).toEqual([])
+    }
+  })
+})

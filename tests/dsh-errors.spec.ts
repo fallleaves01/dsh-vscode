@@ -155,4 +155,13 @@ describe('a conversation held by another DSH process', () => {
       expect(text).toContain('another running DSH instance')
     }
   })
+
+  it('explains the rc.2 plugin package and attachment failure codes', () => {
+    expect(dshErrorText(failure('unexpected-package', 'the run left another package'))).toContain('different package or version')
+    expect(dshErrorText(failure('ATTACHMENT_NOT_FOUND', 'attachment is missing'))).toContain('Attach the file again')
+    expect(dshErrorText(failure('ATTACHMENT_CORRUPT', 'attachment could not be decoded'))).toContain('damaged')
+    expect(dshErrorText(failure('IMAGE_TOO_LARGE', 'image exceeds the limit'))).toContain('smaller image')
+    // Codes outside the table keep their original text.
+    expect(dshErrorText(failure('SOME_UNKNOWN_CODE', 'keep this text'))).toBe('keep this text')
+  })
 })

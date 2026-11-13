@@ -220,6 +220,7 @@ function testClient() {
     openSession: vi.fn(async () => ({ events: [], hasMore: false, projections: { ...projections }, isCurrent: () => true, activate() {} })),
     createSession: vi.fn(async () => ({ sessionId: 'created' })),
     sessionMarkdown: vi.fn(async () => '# Session markdown\n\nComplete history.\n'),
+    setAgentTeamEnabled: vi.fn(async () => {}),
     models: vi.fn(async () => models()), currentModels: vi.fn(() => models()),
     listCommands: vi.fn(async () => [{ name: 'plan', description: 'Plan' }]),
     listSkills: vi.fn(async (): Promise<SkillDescriptor[]> => []),
@@ -1286,6 +1287,141 @@ describe('host surface wiring', () => {
   })
 
 
+
+  describe('agent team host wiring', () => {
+    const notices = (h: { posts: () => Array<Record<string, any>> }): Array<Record<string, any>> =>
+      h.posts().filter(packet => packet.type === 'session-notice')
+    it('derives the rc.2 selection and catalog rows from projection frames', async () => {
+      const h = await activated()
+      h.emit({ type: 'session/projection', sessionId: 'a', key: 'agentTeam', value: { enabled: true, tasks: [] } }, 'mux')
+      await vi.waitFor(() => expect(h.mergedState().team).toEqual({
+        members: [], tasks: [], enabled: true, completedCount: 0, totalCount: 0,
+      }))
+      h.emit({ type: 'session/projection', sessionId: 'a', key: 'subagentCatalog', value: [
+        { id: 'mate', createdAt: 1, mode: 'continuable', label: 'Reviewer', name: 'reviewer' },
+        { id: 'done', createdAt: 2, mode: 'one-shot', label: 'Finished' },
+      ] }, 'mux')
+      await vi.waitFor(() => expect(h.mergedState().subagentCatalogItems).toEqual([
+        { id: 'mate', name: 'reviewer', mode: 'continuable' },
+        { id: 'done', mode: 'one-shot' },
+      ]))
+      await vi.waitFor(() => expect(h.mergedState().team).toMatchObject({
+        enabled: true,
+        members: [{ id: 'mate', name: 'reviewer', role: 'teammate', phase: 'active' }],
+      }))
+    })
+
+    it('keeps an rc.1 roster shaped exactly as before', async () => {
+      const h = await activated()
+      h.emit({ type: 'session/projection', sessionId: 'a', key: 'agentTeam', value: {
+        members: [{ id: 's-lead', name: 'lead', role: 'lead', phase: 'active' }],
+        tasks: [],
+      } }, 'mux')
+      await vi.waitFor(() => expect(h.mergedState().team).toEqual({
+        members: [{ id: 's-lead', name: 'lead', role: 'lead', phase: 'active' }],
+        tasks: [], completedCount: 0, totalCount: 0,
+      }))
+      // No rc.2 field leaks into an rc.1 view.
+      expect(Object.hasOwn(h.mergedState().team as any, 'enabled')).toBe(false)
+    })
+
+    it('hides the rc.2 default selection and sanitizes the catalog rows it exposes', async () => {
+      const h = await activated()
+      h.emit({ type: 'session/projection', sessionId: 'a', key: 'agentTeam', value: { enabled: false, tasks: [] } }, 'mux')
+      // The real rc.2 runtime reports this for a new conversation: nothing to
+      // show, so the sidebar keeps the panel hidden.
+      await vi.waitFor(() => expect(h.mergedState().team).toBeNull())
+      h.emit({ type: 'session/projection', sessionId: 'a', key: 'subagentCatalog', value: [
+        { id: 'mate', createdAt: 1, mode: 'continuable', label: 'Reviewer', name: 'reviewer' },
+        { id: '', mode: 'continuable', name: 'blank-id' },
+        { id: 'no-name', createdAt: 2, mode: 'one-shot', label: 'Finished' },
+        { id: 'remote', createdAt: 3, mode: 'external', name: 'remote-worker' },
+        'not-a-row',
+      ] }, 'mux')
+      await vi.waitFor(() => expect(h.mergedState().subagentCatalogItems).toEqual([
+        { id: 'mate', name: 'reviewer', mode: 'continuable' },
+        { id: 'no-name', mode: 'one-shot' },
+      ]))
+      // The disabled selection still has no team view to render.
+      expect(h.mergedState().team).toBeNull()
+    })
+
+    it('calls the client and notifies on a successful team toggle', async () => {
+      const h = await activated()
+      h.client.setAgentTeamEnabled.mockClear()
+      h.send({ type: 'set-team-enabled', sessionId: 'a', enabled: true })
+      await vi.waitFor(() => expect(h.client.setAgentTeamEnabled).toHaveBeenCalledWith('a', true))
+      await vi.waitFor(() => expect(notices(h).at(-1)).toEqual({ type: 'session-notice', text: 'Agent team enabled.' }))
+      // The busy flag is published with the request and cleared when it settles;
+      // a resolving mock can coalesce the two frames, so only the resting value
+      // is asserted here (the pending test observes the busy window).
+      await vi.waitFor(() => expect(h.mergedState().teamBusy).toBe(false))
+    })
+
+    it('ignores a repeated toggle while the first one is in flight', async () => {
+      const h = await activated()
+      let finish!: () => void
+      h.client.setAgentTeamEnabled.mockClear()
+      h.client.setAgentTeamEnabled.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+      h.send({ type: 'set-team-enabled', sessionId: 'a', enabled: true })
+      await vi.waitFor(() => expect(h.client.setAgentTeamEnabled).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(h.mergedState().teamBusy).toBe(true))
+      h.send({ type: 'set-team-enabled', sessionId: 'a', enabled: false })
+      await new Promise(resolve => setTimeout(resolve, 10))
+      expect(h.client.setAgentTeamEnabled).toHaveBeenCalledTimes(1)
+      finish()
+      await vi.waitFor(() => expect(h.mergedState().teamBusy).toBe(false))
+    })
+
+    it('maps an rc.1 runtime without the RPC to an unsupported sentence', async () => {
+      const h = await activated()
+      mocks.output.length = 0
+      h.client.setAgentTeamEnabled.mockRejectedValueOnce(
+        new DshConnectionError('http-error', 'DSH agentTeams/setEnabled failed: HTTP 404.', 404))
+      h.send({ type: 'set-team-enabled', sessionId: 'a', enabled: true })
+      await vi.waitFor(() => expect(notices(h).at(-1)).toEqual({
+        type: 'session-notice', text: 'This runtime does not support the team toggle.', tone: 'error',
+      }))
+      expect(JSON.stringify(h.posts())).not.toContain('HTTP 404')
+      expect(mocks.output.join('\n')).toContain('[team] toggle failed (unsupported)')
+      expect(mocks.output.join('\n')).not.toContain('HTTP 404')
+    })
+
+    it('classifies an unknown method as unsupported and a vanished conversation separately', async () => {
+      const unknown = await activated()
+      unknown.client.setAgentTeamEnabled.mockRejectedValueOnce(
+        new DshConnectionError('gateway/unknown-method', 'unknown method: agentTeams/setEnabled'))
+      unknown.send({ type: 'set-team-enabled', sessionId: 'a', enabled: false })
+      await vi.waitFor(() => expect(notices(unknown).at(-1)?.text).toBe('This runtime does not support the team toggle.'))
+
+      const vanished = await activated()
+      vanished.client.setAgentTeamEnabled.mockRejectedValueOnce(
+        new DshConnectionError('session/not-found', 'Session a does not exist.'))
+      vanished.send({ type: 'set-team-enabled', sessionId: 'a', enabled: true })
+      await vi.waitFor(() => expect(notices(vanished).at(-1)?.text).toBe('The conversation is no longer available.'))
+    })
+
+    it('keeps a generic failure free of the raw diagnostic', async () => {
+      const h = await activated()
+      mocks.output.length = 0
+      h.client.setAgentTeamEnabled.mockRejectedValueOnce(new Error('persistence failed at /srv/secret/team.jsonl'))
+      h.send({ type: 'set-team-enabled', sessionId: 'a', enabled: true })
+      await vi.waitFor(() => expect(notices(h).at(-1)).toEqual({
+        type: 'session-notice', text: 'The team setting could not be changed. Try again.', tone: 'error',
+      }))
+      expect(JSON.stringify(h.posts())).not.toContain('secret')
+      expect(mocks.output.join('\n')).toContain('[team] toggle failed (failed)')
+      expect(mocks.output.join('\n')).not.toContain('secret')
+    })
+
+    it('refuses to change a team setting for a conversation that is not open', async () => {
+      const h = await activated()
+      h.client.setAgentTeamEnabled.mockClear()
+      h.send({ type: 'set-team-enabled', sessionId: 'b', enabled: true })
+      await vi.waitFor(() => expect(notices(h).at(-1)?.text).toBe('Open this conversation before changing its team setting.'))
+      expect(h.client.setAgentTeamEnabled).not.toHaveBeenCalled()
+    })
+  })
 
   describe('background task host wiring', () => {
   it('answers an inline output open for an unknown job with an error message', async () => {

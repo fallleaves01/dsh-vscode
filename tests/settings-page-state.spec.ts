@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { credentialRef, endpoint, fieldMutations, protocols, providerMutations, providerViews, publicBundles, publicBundleVersions, publicPluginInventory, reasoningLevels, restartReasonText, RESTART_REASON_CODES, RESTART_REASON_TEXT, searchSelectionMutations, searchSettings, settingsForms, validProviderId } from '../src/settings-page-state.js'
-import { cotTranslationNamespace, experimentalPageState, fixture, pluginMarketNamespace, searchFixture } from './settings-page.fixture.js'
+import { cotTranslationNamespace, experimentalPageState, fixture, pluginMarketNamespace, rc2SearchBillingNamespace, rc2SearchFixture, searchFixture } from './settings-page.fixture.js'
 
 describe('official settings form boundaries', () => {
   it('projects the plugin roster without configuration, conditions or error payloads', () => {
@@ -307,5 +307,58 @@ describe('restart reason copy source', () => {
     expect(restartReasonText(undefined)).toBeUndefined()
     expect(restartReasonText(42)).toBeUndefined()
     expect(RESTART_REASON_CODES.has('__proto__')).toBe(false)
+  })
+})
+
+describe('DSH rc.2 bundle update and web billing contracts', () => {
+  it('projects rc.1 updatable and rc.2 update into one capability pair', () => {
+    const projected = publicBundles([
+      { name: '@acme/rc1-registry', updatable: true },
+      { name: '@acme/rc1-fixed', updatable: false },
+      { name: '@acme/rc2-registry', update: 'registry' },
+      { name: '@acme/rc2-git', update: 'git' },
+      { name: '@acme/rc2-fixed' },
+      { name: '@acme/rc2-unknown', update: 'svn' },
+    ])
+    expect(projected.map(bundle => ({ name: bundle.name, updatable: bundle.updatable, update: bundle.update }))).toEqual([
+      // rc.1's boolean true is the rc.2 registry capability.
+      { name: '@acme/rc1-registry', updatable: true, update: 'registry' },
+      { name: '@acme/rc1-fixed', updatable: false },
+      { name: '@acme/rc2-registry', updatable: true, update: 'registry' },
+      // A Git-installed bundle is replaceable by the runtime, but no version
+      // list exists for this page.
+      { name: '@acme/rc2-git', updatable: false, update: 'git' },
+      { name: '@acme/rc2-fixed', updatable: false },
+      { name: '@acme/rc2-unknown', updatable: false },
+    ])
+  })
+  it('offers rc.2 billing choices only when the schema declares them', () => {
+    const rc2 = settingsForms({ writable: true, hasDocument: true, namespaces: [rc2SearchBillingNamespace()] })[0]!
+    expect(rc2.fields.map(field => field.key)).toEqual(['count', 'searchBilling', 'fetchBilling'])
+    const choices = [
+      { value: 'auto', label: 'Automatic' },
+      { value: 'account', label: 'Signed-in DeepSeek account' },
+      { value: 'api-key', label: 'DeepSeek API key' },
+    ]
+    expect(rc2.fields.find(field => field.key === 'searchBilling')).toMatchObject({ type: 'select', options: choices })
+    expect(rc2.fields.find(field => field.key === 'fetchBilling')).toMatchObject({ type: 'select', options: choices })
+    // rc.1 keeps the endpoint field and must not gain the rc.2 selects.
+    const rc1 = settingsForms(searchFixture().description).find(form => form.ns === 'web-deepseek-api')!
+    expect(rc1.fields.map(field => field.key)).toEqual(['baseURL', 'count'])
+    const ns = rc2SearchBillingNamespace()
+    expect(fieldMutations(ns, { searchBilling: 'account', fetchBilling: '' })).toEqual([
+      { op: 'set', path: ['searchBilling'], value: 'account' },
+      { op: 'unset', path: ['fetchBilling'] },
+    ])
+    expect(() => fieldMutations(ns, { searchBilling: 'invented' })).toThrow('offered values')
+  })
+  it('keeps the rc.2 search profile and its credential usable without endpoint fields', () => {
+    const data = rc2SearchFixture()
+    const view = searchSettings(data.description, data.credentials)
+    expect(view.selection).toMatchObject({ enabled: false, available: true })
+    expect(view.profiles.find(profile => profile.ns === 'web-deepseek-api')).toMatchObject({
+      extensionKey: true,
+      credential: { configured: true, writable: false },
+    })
   })
 })

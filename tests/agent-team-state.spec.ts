@@ -257,6 +257,115 @@ describe('agent team projection view', () => {
     }))).toBe('0 members · 0/1 tasks done')
   })
 
+  describe('rc.2 selection shape', () => {
+    const catalog = [
+      { id: 's-mate', createdAt: 1, mode: 'continuable', label: 'Reviewer', name: 'reviewer' },
+      { id: 's-anon', createdAt: 2, mode: 'continuable', label: 'Helper' },
+      { id: 's-done', createdAt: 3, mode: 'one-shot', label: 'Finished' },
+      { id: 'ext-remote', createdAt: 4, mode: 'external', label: 'Provider', name: 'remote-reviewer' },
+      { id: 's-unknown', createdAt: 5, mode: 'unknown', label: 'Legacy' },
+    ]
+
+    it('reads the durable selection and derives teammates from the subagent catalog', () => {
+      const view = agentTeamOf({
+        agentTeam: {
+          enabled: true,
+          tasks: [taskWire({ id: 'task-1', status: 'in_progress', ownerName: 'reviewer' })],
+        },
+        subagentCatalog: catalog,
+      })
+      expect(view).toEqual({
+        members: [
+          { id: 's-mate', name: 'reviewer', role: 'teammate', phase: 'active' },
+          { id: 's-anon', name: 's-anon', role: 'teammate', phase: 'active' },
+        ],
+        tasks: [expect.objectContaining({ id: 'task-1', ownerName: 'reviewer', status: 'in_progress' })],
+        enabled: true,
+        completedCount: 0,
+        totalCount: 1,
+      })
+      // A one-shot child is finished work, an external execution has no local
+      // conversation, and an unknown row claims nothing; none becomes a member.
+      expect(view!.members.some(member => member.id === 's-done')).toBe(false)
+      expect(view!.members.some(member => member.id === 'ext-remote')).toBe(false)
+      expect(view!.members.some(member => member.id === 's-unknown')).toBe(false)
+    })
+
+    it('accepts an explicit catalog argument and tolerates malformed catalog rows', () => {
+      const view = agentTeamOf({ agentTeam: { enabled: true, tasks: [] } }, [
+        null, 'mate', 7, [],
+        { id: '', mode: 'continuable' },
+        { id: 's-1', mode: 'continuable', name: '' },
+        { id: 's-2', mode: 'continuable', name: 42 },
+        { id: 's-2', mode: 'continuable', name: 'reviewer' },
+        { id: 's-3', mode: 'continuable', name: 'reviewer' },
+      ])
+      expect(view).toBeDefined()
+      // Unnamed historical rows fall back to the id; duplicate ids keep the
+      // first row; names repeat but the ids stay distinct.
+      expect(view!.members).toEqual([
+        { id: 's-3', name: 'reviewer', role: 'teammate', phase: 'active' },
+        { id: 's-1', name: 's-1', role: 'teammate', phase: 'active' },
+        { id: 's-2', name: 's-2', role: 'teammate', phase: 'active' },
+      ])
+    })
+
+    it('hides an off team with an empty board but shows the selection with tasks or a failure', () => {
+      // The real rc.2 runtime reports this shape for a new conversation.
+      expect(agentTeamOf({ agentTeam: { enabled: false, tasks: [] } })).toBeUndefined()
+      // ... even when the catalog already lists subagents; the team is off.
+      expect(agentTeamOf({
+        agentTeam: { enabled: false, tasks: [] },
+        subagentCatalog: [{ id: 's-mate', mode: 'continuable', name: 'reviewer' }],
+      })).toBeUndefined()
+      // An enabled empty team is a state to show, and so is a disabled board.
+      expect(agentTeamOf({ agentTeam: { enabled: true, tasks: [] } })).toEqual({
+        members: [], tasks: [], enabled: true, completedCount: 0, totalCount: 0,
+      })
+      expect(agentTeamOf({ agentTeam: { enabled: false, tasks: [taskWire()] } })).toMatchObject({
+        members: [], enabled: false, totalCount: 1,
+      })
+      const failure = 'persisted team/task payload is invalid'
+      expect(agentTeamOf({ agentTeam: { enabled: false, tasks: [], failure } })).toEqual({
+        members: [], tasks: [], failure, enabled: false, completedCount: 0, totalCount: 0,
+      })
+    })
+
+    it('rejects a selection whose enabled flag is not a boolean', () => {
+      expect(agentTeamOf({ agentTeam: { enabled: 'yes', tasks: [] } })).toBeUndefined()
+      expect(agentTeamOf({ agentTeam: { enabled: 1, tasks: [] } })).toBeUndefined()
+      // An rc.1 roster is still recognized when the flag is absent.
+      expect(agentTeamOf({ agentTeam: { members: [memberWire()] } })).toBeDefined()
+    })
+
+    it('summarizes the rc.2 selection and its progress', () => {
+      const on = agentTeamOf({
+        agentTeam: {
+          enabled: true,
+          tasks: [taskWire({ id: 'task-1', status: 'completed' }), taskWire({ id: 'task-2' })],
+        },
+        subagentCatalog: [
+          { id: 's-a', mode: 'continuable', name: 'alpha' },
+          { id: 's-b', mode: 'continuable', name: 'beta' },
+        ],
+      })
+      expect(agentTeamSummaryOf(on)).toBe('Team on · 2 members · 1/2 tasks done')
+      expect(agentTeamSummaryOf(agentTeamOf({ agentTeam: { enabled: true, tasks: [taskWire()] } })))
+        .toBe('Team on · 0/1 tasks done')
+      expect(agentTeamSummaryOf(agentTeamOf({ agentTeam: { enabled: false, tasks: [taskWire()] } })))
+        .toBe('Team off · 0/1 tasks done')
+      expect(agentTeamSummaryOf(agentTeamOf({ agentTeam: { enabled: true, tasks: [] } }))).toBe('Team on')
+    })
+
+    it('does not mutate the rc.2 projection or catalog it parses', () => {
+      const projection = { enabled: true, tasks: [taskWire()] }
+      const rows = structuredClone(catalog)
+      const snapshot = JSON.stringify({ projection, rows })
+      agentTeamOf({ agentTeam: projection, subagentCatalog: rows })
+      expect(JSON.stringify({ projection, rows })).toBe(snapshot)
+    })
+  })
+
   it('does not mutate the projection it parses', () => {
     const members = [
       memberWire({ id: 's-2', name: 'zeta', role: 'teammate' }),
