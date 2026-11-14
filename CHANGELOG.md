@@ -90,6 +90,12 @@ VSIX — see the README for installing one.
   subagent catalog is projected to at most 200 rows with 300-character names,
   and the new attachment, image and plugin-package failure codes use classified
   copy only. No runtime diagnostic, local path or exception text is shown.
+- Independent privacy and information-security review covered this round:
+  0 Blocker; one Major functional defect (the team toggle could remain disabled
+  while busy) was found and fixed; 7 Minor residuals were accepted. Privacy
+  filtering passed: no new persistence, telemetry, external network egress or
+  sensitive-value echo was introduced; new DOM text uses `textContent` and
+  `setAttribute`, and new values are closed enums with bounded projections.
 
 ### Notes
 
