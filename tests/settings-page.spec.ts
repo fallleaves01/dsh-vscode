@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { mountSettingsPage } from '../src/settings-page.mjs'
 import { settingsPageHtml } from '../src/settings-page-html.js'
-import { bundlePageState, experimentalPageState, pageState, rc2BundlePageState, rc2SearchPageState, searchPageState, updatableBundlePageState } from './settings-page.fixture.js'
+import { bundlePageState, chatImportPageState, experimentalPageState, pageState, rc2BundlePageState, rc2SearchPageState, searchPageState, updatableBundlePageState } from './settings-page.fixture.js'
 import type { SettingsPageState } from '../src/settings-page-state.js'
 
 let dispose: (() => void) | undefined
@@ -742,5 +742,33 @@ describe('settings button hover and accessible names', () => {
     expect(document.querySelector('[data-focus-key="web-deepseek-api:baseURL"]')).toBeNull()
     // The provider credential control remains reachable on the rc.2 profile.
     expect(document.querySelector('[data-focus-key="api-key"]')).not.toBeNull()
+  })
+  it('lists the rc.3 DeepSeek chat-import optional bundle and enables it', () => {
+    const NAME = '@deepseek-ai/dsh-deepseek-chat-import'
+    const h = harness(chatImportPageState()); h.click('Built-in plugins')
+    // The real row carries a localized title, so the card shows it rather than
+    // the package-name suffix, together with its version.
+    expect(document.body.textContent).toContain('Experimental bundles')
+    const cards = [...document.querySelectorAll<HTMLElement>('article.bundle-card')]
+    const card = cards.find(item => item.textContent?.includes('DeepSeek chat import'))!
+    expect(card).toBeDefined()
+    // A shipped, disabled capability that is not installed in the profile.
+    expect(card.textContent).toContain('Disabled')
+    expect(card.textContent).toContain('v0.2.2-rc.3')
+    expect(card.textContent).toContain('Provided by this installation')
+    // Details… is offered without the bundle being installed or replaceable.
+    const details = [...card.querySelectorAll<HTMLButtonElement>('button')].find(control => control.textContent === 'Details…')!
+    expect(details).toBeDefined()
+    expect(details.disabled).toBe(false)
+    // The switch is visible, off by default, and sends the exact bundle name.
+    const toggle = card.querySelector<HTMLInputElement>(`input[data-focus-key="bundle:${NAME}"]`)!
+    expect(toggle).not.toBeNull()
+    expect(toggle.checked).toBe(false)
+    toggle.click()
+    expect(h.posts.at(-1)).toMatchObject({ type: 'set-bundle', name: NAME, enabled: true })
+    // The generic pending handling applies: the card reads Applying… until the result.
+    expect(document.body.textContent).toContain('Applying…')
+    h.result({ ok: true, application: 'applied' })
+    expect(document.body.textContent).toContain('Bundle updated.')
   })
 })

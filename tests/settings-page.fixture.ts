@@ -186,3 +186,45 @@ export function rc2SearchPageState(): SettingsPageState {
   state.search = searchSettings(data.description, data.credentials)
   return state
 }
+
+/**
+ * The rc.3 experimental DeepSeek chat-import bundle, projected as the runtime lists it.
+ *
+ * Only the fields the settings projection reads are reproduced; localized `icon`
+ * keys are omitted because the sidebar never reads them.
+ *
+ * The row carries the localized title and description, a version, the inserted
+ * row and no update/updatable field: the bundle ships with the installation and
+ * nothing marks it replaceable. The sidebar therefore shows the localized title,
+ * the version and the "Provided by this installation" status, and still offers
+ * the switch. A real rc.3 runtime answered `setBundleEnabled {name, enabled}`
+ * with `applied` and reported the row as enabled afterwards.
+ */
+export function chatImportBundleFixture(): Record<string, unknown>[] {
+  const meta = {
+    title: { en: 'DeepSeek chat import', zh: 'DeepSeek 会话导入' },
+    description: {
+      en: 'Upload a chat export ZIP from the DeepSeek website with the button next to New session; each conversation becomes a session in the workspace you choose.',
+      zh: '点击“新建会话”旁的按钮上传 DeepSeek 官网导出的 ZIP 文件，每段对话都会成为所选工作区中的一个会话。',
+    },
+  }
+  return [{
+    name: '@deepseek-ai/dsh-deepseek-chat-import',
+    official: true,
+    availability: 'installation',
+    version: '0.2.2-rc.3',
+    description: 'Import DeepSeek chat exports as stored Sessions in a chosen Workspace',
+    meta,
+    enabled: false,
+    installed: false,
+    optional: true,
+    removable: false,
+    rows: [{ rowId: 'deepseek-chat-import', moduleName: '@deepseek-ai/dsh-deepseek-chat-import', meta }],
+    overrides: [],
+  }]
+}
+export function chatImportPageState(): SettingsPageState {
+  const state = pageState()
+  state.bundles = publicBundles([...bundleFixture(), ...chatImportBundleFixture()])
+  return state
+}

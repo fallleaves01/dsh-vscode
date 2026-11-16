@@ -497,3 +497,95 @@ A 类 10 条的覆盖状态：
 | `subagents/prompt` 旧字段清理 | 侧栏仍发送 `parentSessionId`/`mode`，rc.2 非严格解码会忽略；不影响功能，后续清理 |
 
 第 9–11 节分别记录 2026-11-06、2026-11-09 与 2026-11-13 三个维护轮次；本节为增量记录，第 1–10 节既有事实保持不变。
+
+## 12. 维护轮次 2026-11-16（侧栏 0.2.2-rc.3.1，运行时升级到 rc.3）
+
+### 12.1 版本核验
+
+| 项目 | 值 |
+|---|---|
+| npm dist-tags（2026-11-16T14:33:48+08:00 复核） | `latest = 0.2.2-rc.1`、`next = 0.2.2-rc.3`、`alpha = 0.2.2-alpha.3` |
+| rc.3 npm 发布时间 | `2026-11-13T08:05:45.455Z`（2026-11-13 16:05:45 +08:00）；`time.modified = 2026-11-13T08:05:45.849Z` |
+| rc.3 GitHub Release | `dsh-v0.2.2-rc.3`，prerelease，published_at `2026-11-13T07:56:55Z`（2026-11-13 15:56:55 +08:00）；发布说明正文 704 字符 |
+| 提交规模 | compare `dsh-v0.2.2-rc.2...dsh-v0.2.2-rc.3`：`ahead_by = 6`、`total_commits = 6`；files 列表 300 条（compare API 单页上限，主要由 release 提交的包版本号变更构成） |
+| 标签 | GitHub tags 40 条，首项 `dsh-v0.2.2-rc.3`；npm 版本 44 项，无 rc.4 或更高版本 |
+| 官方升级指南 | rc.3 元包 `docs/upgrade-guide/` 目录末项为 `v0.2.2-rc.1`，**没有 `v0.2.2-rc.2` 目录或条目**：rc.2 → rc.3 无官方 API 级升级指南 |
+| 判定 | 真实版本升级；rc.3 只在 `next` 通道，`latest` 仍为 rc.1，默认安装不变 |
+
+说明：npm dist-tags、`time` 与 GitHub Release/tags/compare 于 2026-11-16T14:33:48+08:00 独立复核（GitHub API 本轮可用），升级指南目录核对使用 rc.3 元包 `/tmp/dsh-rc3-pkg/package`。分析产物见 `artifacts/team/maintenance-2026-11-16/version-analysis.md`、`wire-delta.md` 与 `rc3-runtime-probe.md`。
+
+### 12.2 6 个提交逐条影响
+
+| 提交 | 内容 | 对侧栏的影响 |
+|---|---|---|
+| `68f83cc992` | fix(ci): cache the verified bubblewrap archive and bound its download | 仅 CI 工作流与脚本，不涉及扩展 |
+| `bbad94f927` | Merge PR #8383（release-0.2.2-ci-bubblewrap-cache） | 合并提交，同上 |
+| `ac904e118e` | Merge PR #8385（restart-status-cwd / Windows 桌面应用内更新修复） | 仅 `apps/desktop/installer` 与桌面测试，不涉及扩展 |
+| `b8c33a1504` | feat(experimental): 导入 DeepSeek 官网对话导出为会话 (#8342) | 新增可选 bundle 与 Web 客户端导入界面；侧栏只按通用逻辑列出 bundle，不实现导入 UI |
+| `4c1cf20cb1` | release(dsh): 0.2.2-rc.3 | 全仓包版本号升级，无接口变化 |
+| `38a6a5c965` | Merge PR #8397（worktree-release-dsh-0.2.2-rc.3） | 合并提交，同上 |
+
+### 12.3 升级指南缺失说明
+
+rc.3 元包的升级指南目录包含 `v0.1.7-rc.2` 至 `v0.2.2-rc.1` 各版本，没有 `v0.2.2-rc.2`。因此 rc.2 → rc.3 没有官方 API 级升级动作；这一结论与 12.4 的契约比对一致。需要说明的是，“没有指南条目”只表示官方未声明破坏性 API 变更，不代表零差异；本节的差异核验以安装树逐文件比对为准。
+
+### 12.4 契约比对结论
+
+对 `/tmp/dsh-trees/rc2` 与 `/tmp/dsh-trees/rc3` 的安装树做逐文件比对（只统计宿主侧 `lib/` 与 `.d.ts` 的语义差异）：
+
+- `dsh-plugin-manager`、`dsh-agent-team`、`dsh-subagent`、`dsh-tool-subagent-control` 的 `lib/` 无差异；`dsh-api-settings-controller`、`dsh-error` 无差异。
+- `dsh-api-session-controller/lib/typert.host.js` 只有一处差异：`RemoteErrorDetailsMap` 的声明文本新增 `'deepseekChatImport/owner-only': {};`；该端点不在侧栏消费面内，RPC 形状与错误码集合未变。
+- `dsh-session-log-export/lib/index.js` 只有一处变更 hunk（第 300 行附近）：zip 会话导出对不可读或缺失的附件改为容忍，并写入缺失附件清单；`/api/session.markdown` 路由代码（同一文件的 `SESSION_MARKDOWN_EXPORT_PATH` 与处理函数）不在变更 hunk 内，逐字相同。
+- `pluginManager/listBundles` 行数从 23 变为 24，新行为完整 bundle 行：`name`、`official: true`、`availability: "installation"`、`version: "0.2.2-rc.3"`、`description`、本地化 `meta.title`/`meta.description`/`meta.icon`、`enabled: false`、`installed: false`、`optional: true`、`removable: false`、`rows` 与 `overrides`；没有 `update`/`updatable` 字段（该 bundle 不可更新）。
+
+结论：**没有必须的侧栏源码适配**；本轮实现改动仅为测试。
+
+### 12.5 24 行 bundle 变化与侧栏兼容测试
+
+- 页面渲染路径：`src/settings-page.mts:693` 用 `bundle.optional` 过滤出 Experimental bundles（`:695` 输出区块标题）；`:704` 的卡片标签为 `bundle.title ?? bundle.name.replace(/^@deepseek-ai\/dsh-/, '')`（真实行有本地化标题，因此显示“DeepSeek chat import”），`:714` 的状态行显示 `Disabled · v0.2.2-rc.3 · Provided by this installation`；**Details…** 按钮与启用开关沿用既有逻辑。新行没有 `update`/`updatable` 字段，因此更新区块不处理它，Experimental bundles 卡片正好覆盖它。
+- 投影路径：`src/settings-page-state.ts` 的 `publicBundles` 只按白名单读取 `name/official/optional/availability/installed/enabled/title/version/description/...`，未知字段丢弃；新行在侧栏投影中表现为一个未安装、未启用的可选 bundle。
+- 测试改动（实施任务，不在本文件写作用域内）：`tests/settings-page.fixture.ts` 新增 `chatImportBundleFixture()`（按真实 rc.3 行形状，含本地化 `meta`、版本与 `rows`）与 `chatImportPageState()`；`tests/settings-page.spec.ts` 新增 1 个 it，断言新 bundle 出现在 Experimental bundles、卡片显示“DeepSeek chat import”与 `v0.2.2-rc.3`、状态为 Disabled/Provided by this installation、**Details…** 可用且启用开关发送精确的 `set-bundle` 请求（含 `Applying…` 与 `Bundle updated.` 结果）。该用例只新增 1 个执行用例，不改生产代码。
+
+### 12.6 真实运行时探针
+
+环境：隔离 `HOME=/tmp/probe-rc3/home`、`DSH_HOME=/tmp/probe-rc3/dsh`；运行时为 `@deepseek-ai/dsh@0.2.2-rc.3` 的 `lib/bin.js`；`web --host 127.0.0.1 --port 0 --no-open`；Node v26.12.0；探针脚本通过启动 URL token 认证后调用 HTTP RPC。
+
+实测结论：
+
+1. `settings/describe` 返回 22 个命名空间，与 rc.2 相同；`web-deepseek-api` 的 rc.2 计费字段继续存在。新导入插件提供部署配置（`maxSessions`、`maxUploadBytes`、`maxEntryBytes`、`maxTitleBytes`），不新增用户设置命名空间。
+2. `pluginManager/listBundles` 返回 24 行；新增行为带本地化标题与版本的可选 bundle 行（`enabled: false`、`installed: false`、`optional: true`），其余 23 行与 rc.2 形状一致。对该 bundle 调用 `pluginManager/setBundleEnabled {name, enabled: true}` 返回 `{changed:true, application:"applied"}`，随后该行 `enabled: true`，再调用 `enabled: false` 也成功；这验证了侧栏启用开关在真实 rc.3 runtime 上对新增 bundle 可用。
+3. 新建会话的 projection keys 与 rc.2 相同（22 个），`agentTeam` 为 `{enabled:false,tasks:[]}`；`agentTeams/setEnabled {agentId,enabled:true}` 调用成功并变为 `{enabled:true,tasks:[]}`；`imageLimits` 默认值与 rc.2 相同。
+4. `GET /api/session.markdown?sessionId=…` 返回 200、`text/markdown; charset=utf-8`，会话 Markdown 复制路径在 rc.3 下可用。
+
+边界：探针只做非模型 RPC，未执行真实模型对话轮次；未在真实 VS Code 扩展宿主中手工冒烟；未验证导入 UI 的实际导入流程（该界面属 DSH Web 客户端插件）。
+
+### 12.7 隐私与安全
+
+1. 本轮生产代码没有改动，没有新增网络出口、持久化位置或遥测；唯一实现改动是测试夹具与渲染测试。
+2. 新 bundle 行包含 `name`、本地化 `meta.title`/`meta.description`/`meta.icon`、`version`、`description`、`rows` 与安装/启用标志；侧栏投影按白名单读取，不读取导入文件、不访问 DeepSeek 服务，也不显示诊断或路径。导入功能的数据流（上传 DeepSeek 导出的压缩包、写入会话）完全在 DSH Web 客户端插件与 runtime 内部完成，不在本扩展功能面内。
+3. 既有契约与错误分类未变，`/api/session.markdown` 的只读、仅剪贴板、固定失败文案等边界继续有效（见第 4、5 节）。
+4. 桌面更新语句与 CI 缓存变化不改变扩展的信任边界。
+
+### 12.8 验证记录
+
+2026-11-16T14:33–14:36+08:00（本机最终工作树；版本复核于 14:33:48）：
+
+| 命令 | 结果 |
+|---|---|
+| `npx tsc -p tsconfig.json --noEmit` | 通过（退出码 0） |
+| `node scripts/build.mjs` | 通过；输出 `dist/extension.js`、`dist/runtime-host.js` 与 Webview bundles |
+| `CI=true npx vitest run --config vitest.config.ts` | **132 个测试文件通过；2633 passed / 1 skipped / 0 failed（2634 个用例）** |
+
+- 工作树改动：实施任务 2 个测试文件（`tests/settings-page.fixture.ts`、`tests/settings-page.spec.ts`），加上本任务的 6 个文档与版本文件；无 `src/` 改动。
+- 测试增量：在 0.2.2-rc.2.1 已提交基线（2632 个通过用例）上新增 1 个执行用例，全量为 2633。
+- 覆盖要点：rc.3 可选 bundle 行在 Experimental bundles 中的出现、包名回退标签、未安装/未启用状态、Details 可用、启用请求与结果文案；其余既有用例全部通过，证明 rc.1/rc.2 双形状行为未受本轮影响。
+- **边界声明**：本轮未执行真实模型对话轮次的端到端运行，未在真实 VS Code 扩展宿主中手工冒烟；真实运行时验证限于 12.6 的非模型 RPC 探针；未验证导入 UI 的导入流程。
+
+### 12.9 延后项
+
+| 项目 | 说明 |
+|---|---|
+| DeepSeek 会话导入 UI | 属 DSH Web 客户端插件功能（上传导出包、预览与写入会话）；侧栏仅列出可选 bundle，不实现导入界面 |
+| 其余既有延后项 | 沿用第 11.8 节：Git spec bundle 更新、插件索引 Star/周下载量、模型请求重试设置 UI、工作树审阅 UI、聊天自动加载更早消息、聊天代码差异着色、Agent 终端面板、MCP 动态注册 UI、账号通知 UI、Office/CUA/Live Share/Stagehand、图片 50 MiB 与即时上传、`web/listProviders` 与 `web/providers-changed`、继续生成（空 content prompt）与 `conversationContinuation`、`subagents/prompt` 旧字段清理 |
+
+第 9–12 节分别记录 2026-11-06、2026-11-09、2026-11-13 与 2026-11-16 四个维护轮次；本节为增量记录，第 1–11 节既有事实保持不变。

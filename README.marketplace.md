@@ -6,7 +6,7 @@
 >
 > Fork: https://github.com/fallleaves01/dsh-vscode
 
-DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, quoted message text, and native change review. This source version is **0.2.2-rc.2.1**.
+DSH Sidebar integrates the official DeepSeek Harness runtime with VS Code. It provides project-aware conversations, independent subagent details, explicit file references, quoted message text, and native change review. This source version is **0.2.2-rc.3.1**.
 
 *This fork is maintained with DeepSeek Flash as the coding agent.*
 
@@ -43,7 +43,7 @@ DSH Sidebar runs the official DeepSeek Harness CLI on your machine. Install it f
 npm install -g @deepseek-ai/dsh
 ```
 
-Install DSH on the extension host; for Remote SSH, install it on the remote host. You need VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`. DeepSeek Harness `0.1.2-rc.1` or newer is required; history search and Schedule need `0.2.0-rc.2` or newer, the conversation event-stream client is verified against `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1`, and the experimental bundles are verified against `0.2.2-alpha.2` (`0.2.1-rc.2` and `0.2.1-rc.3` remain supported). Schedule supports the `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1` catalogs and history. The alpha CLI requires Node.js 24.9 or newer. This build also supports `0.2.2-rc.2`: its adapted plugin-manager, Agent Teams, web-search and subagent calls are covered by unit tests and an isolated runtime probe. The npm `latest` tag still resolves to `0.2.2-rc.1`; `next` names `0.2.2-rc.2`, so a default install keeps rc.1 and rc.2 needs `@next` or the exact version.
+Install DSH on the extension host; for Remote SSH, install it on the remote host. You need VS Code 1.100 or newer and Node.js `^22.19.0` or `>=24.0.0`. DeepSeek Harness `0.1.2-rc.1` or newer is required; history search and Schedule need `0.2.0-rc.2` or newer, the conversation event-stream client is verified against `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1`, and the experimental bundles are verified against `0.2.2-alpha.2` (`0.2.1-rc.2` and `0.2.1-rc.3` remain supported). Schedule supports the `0.2.2-alpha.2`, `0.2.2-alpha.3` and `0.2.2-rc.1` catalogs and history. The alpha CLI requires Node.js 24.9 or newer. This build also supports `0.2.2-rc.3`: rc.3 changes no host contract the sidebar consumes, its new experimental DeepSeek chat-import optional bundle is listed automatically, and support is covered by unit tests and an isolated runtime probe. `0.2.2-rc.2` remains supported. The npm `latest` tag still resolves to `0.2.2-rc.1`; `next` names `0.2.2-rc.3`, so a default install keeps rc.1, rc.3 needs `@next` or the exact version, and `0.2.2-rc.2` remains installable by its exact version.
 
 Download this fork's `.vsix` from [GitHub Releases](https://github.com/fallleaves01/dsh-vscode/releases) and run **Extensions: Install from VSIX...**. Its extension ID is `fallleaves01.dsh-sidebar`. The latest release is **0.2.2-rc.2.1**. Release assets can lag behind the source version; build from the repository with `pnpm install --frozen-lockfile && pnpm run package` when the desired version is not yet available.
 
@@ -264,7 +264,10 @@ implemented in the **Background jobs** menu above.
   in a read-only Markdown preview as a virtual document; read-only and
   attach-only runtimes can use it, while relative images in those documents do
   not render because the VS Code preview cannot authenticate the runtime's
-  detail-file route. Worktree
+  detail-file route. On `0.2.2-rc.3` the new optional
+  `@deepseek-ai/dsh-deepseek-chat-import` bundle appears in the same
+  Experimental bundles list and can be switched; its import screen is a DSH Web
+  client plugin and is not implemented here. Worktree
   `workingDirectory` is not consumed yet, and the sidebar exposes no persistent
   terminal panel. Enabling the session-search bundle with `enableHistorySearch`
   can mount two `session-query-sqlite` rows; check the runtime profile. See the

@@ -10,7 +10,7 @@ DSH Sidebar 将官方 DeepSeek Harness runtime 集成到 VS Code，提供项目�
 
 *本 fork 使用 DeepSeek Flash 作为编码代理进行维护。*
 
-当前源码版本为 **0.2.2-rc.2.1**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
+当前源码版本为 **0.2.2-rc.3.1**。各版本变更见 [CHANGELOG.md](CHANGELOG.md)。原始扩展由 [Lixxx1](https://github.com/Lixxx1) 创建。
 
 > [!IMPORTANT]
 > **自动维护说明。** 当前本 fork 的全部维护工作均由 **deepseek-flash** 模型生成的自动更新完成。代码修改、DSH 适配、测试、文档和发布准备均由该自动流程产出。因此，本仓库是按自动更新模式维护的项目，而不是由人工发布团队维护的项目。生产使用前请审查每个版本。
@@ -64,7 +64,7 @@ Runtime 到侧边栏的状态投递是有界的：同一时刻最多一个视图
 npm install -g @deepseek-ai/dsh
 ```
 
-DSH 应安装在扩展实际运行的主机上；使用 Remote SSH 时，应安装在远程主机上。需要 DeepSeek Harness `0.1.2-rc.1` 或更新版本；历史搜索与 Schedule 需要 `0.2.0-rc.2` 或更新版本，对话事件流客户端已在 `0.2.2-alpha.2`、`0.2.2-alpha.3` 与 `0.2.2-rc.1` 上验证，实验性 bundle 仍在 `0.2.2-alpha.2` 上验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。本版本同时支持 `0.2.2-rc.2`：其 plugin-manager、Agent Teams、网页搜索与子代理调用的适配由单元测试和隔离 runtime 探针覆盖，未进行模型对话轮次的端到端运行。Schedule 支持 `0.2.2-alpha.2`、`0.2.2-alpha.3` 与 `0.2.2-rc.1` 的 catalog 与 history。alpha CLI 本身要求 Node.js 24.9 或更新版本。npm 的 `latest` 仍指向 `0.2.2-rc.1`，`next` 指向 `0.2.2-rc.2`；因此默认安装仍为 rc.1，安装 rc.2 需使用 `npm install -g @deepseek-ai/dsh@next` 或精确版本 `0.2.2-rc.2`。
+DSH 应安装在扩展实际运行的主机上；使用 Remote SSH 时，应安装在远程主机上。需要 DeepSeek Harness `0.1.2-rc.1` 或更新版本；历史搜索与 Schedule 需要 `0.2.0-rc.2` 或更新版本，对话事件流客户端已在 `0.2.2-alpha.2`、`0.2.2-alpha.3` 与 `0.2.2-rc.1` 上验证，实验性 bundle 仍在 `0.2.2-alpha.2` 上验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。本版本同时支持 `0.2.2-rc.3`：rc.3 没有改变侧栏消费的宿主契约（其官方升级指南没有 rc.2 条目），新增的实验性 DeepSeek 对话导入可选 bundle 会被自动列出，支持情况由单元测试与隔离 runtime 探针覆盖，未进行模型对话轮次的端到端运行；`0.2.2-rc.2` 仍受支持。Schedule 支持 `0.2.2-alpha.2`、`0.2.2-alpha.3` 与 `0.2.2-rc.1` 的 catalog 与 history。alpha CLI 本身要求 Node.js 24.9 或更新版本。npm 的 `latest` 仍指向 `0.2.2-rc.1`，`next` 指向 `0.2.2-rc.3`；因此默认安装仍为 rc.1，安装 rc.3 需使用 `npm install -g @deepseek-ai/dsh@next` 或精确版本 `0.2.2-rc.3`，`0.2.2-rc.2` 仍可按精确版本安装。
 
 ### 发布版
 
@@ -94,6 +94,14 @@ pnpm run package
 `reuseExistingRuntime`、`rememberExternalRuntime`、`executable`、`arguments`、
 `startupTimeout` 与 `searchBaseUrl`。
 
+### 升级到 0.2.2-rc.3.1
+
+0.2.2-rc.3.1 增加对 DeepSeek Harness `0.2.2-rc.3` 的支持，同时继续支持 `0.2.2-rc.1` 与 `0.2.2-rc.2`。rc.3 只发布到 npm 的 `next` 通道：`latest` 仍指向 rc.1，因此默认安装不变；安装 rc.3 需执行 `npm install -g @deepseek-ai/dsh@next` 或安装精确版本 `0.2.2-rc.3`（`0.2.2-rc.2` 仍可按精确版本安装）。官方升级指南没有 `v0.2.2-rc.2` 条目，侧栏消费的宿主契约与 rc.2 相同：宿主侧的契约差异只有新增的 `deepseekChatImport/owner-only` 错误声明与更健壮的会话 zip 导出；bundle 清单另新增一条会话导入可选 bundle 数据行；`GET /api/session.markdown` 没有变化。因此本轮不需要修改侧栏源码。
+
+rc.3 唯一用户可见的新增内容是实验性 DeepSeek 对话导入 bundle（`@deepseek-ai/dsh-deepseek-chat-import`）。它会自动出现在 Settings → Plugins → Experimental bundles 中，并使用既有启用开关。运行时返回的行带有本地化标题、版本、描述与插入的行，且没有更新字段，因此卡片显示“DeepSeek chat import”、v0.2.2-rc.3、“Provided by this installation”状态与既有启用开关；真实 rc.3 运行时已验证启用操作成功。导入界面是 DSH Web 客户端插件：用户可在 DSH Web 中导入 DeepSeek App 或网页版的历史会话，本侧边栏不实现导入界面。
+
+rc.3 的 Windows 桌面版应用内更新修复与 CI 的 bubblewrap 缓存变化不属于本扩展的能力范围。验证使用单元测试与隔离 rc.3 runtime 探针（22 个设置命名空间、含新行的 24 行 bundle 清单、`{enabled, tasks}` Agent Teams 投影、团队选择调用，以及会话导出返回 `200 text/markdown`）；未执行模型对话轮次，也未在真实 VS Code 扩展宿主中手工冒烟。更新后请重新加载 VS Code 窗口。
+
 ### 升级到 0.2.2-rc.2.1
 
 0.2.2-rc.2.1 是首个同时支持 DeepSeek Harness `0.2.2-rc.2` 与 `0.2.2-rc.1` 的版本。rc.2 只发布到 npm 的 `next` 通道：`latest` 仍指向 rc.1，因此默认安装不变；安装 rc.2 需执行 `npm install -g @deepseek-ai/dsh@next` 或安装精确版本 `@deepseek-ai/dsh@0.2.2-rc.2`。两个 runtime 共用同一扩展构建，所有发生变化的契约都按两种形状读取。官方 rc.2 升级指南共 19 项：其中 2 项属侧栏协议层变更，归档工作树行为影响用户可见结果，另有 1 项不在指南内的子代理中断 RPC 移除也已完成处理。
@@ -110,7 +118,7 @@ pnpm run package
 
 **错误文案。** 失败轮次与工具结果中的新附件、图片准入错误码，以及 plugin-manager 的 `unexpected-package`，现在显示可操作的说明；未知错误码沿用原有中性回退。Gemini 原生协议在自定义提供商选择器中显示为“Gemini API”。
 
-DeepSeek Harness `0.2.2-rc.2` 是 `next` 通道上的最新版本；`latest` 仍指向 `0.2.2-rc.1`，因此默认安装行为不变。适配后的调用已在真实的隔离 rc.2 runtime 上验证（`settings/describe`、`pluginManager/listBundles`、`agentTeams/setEnabled`、`agentTeam` 投影，以及 `subagents/interruptByUser` 方法的存在性）；未执行模型对话轮次，也未在真实 VS Code 扩展宿主中手工冒烟。更新后请重新加载 VS Code 窗口。
+DeepSeek Harness `0.2.2-rc.2` 是当时 `next` 通道上的最新版本；`latest` 仍指向 `0.2.2-rc.1`，因此默认安装行为不变。适配后的调用已在真实的隔离 rc.2 runtime 上验证（`settings/describe`、`pluginManager/listBundles`、`agentTeams/setEnabled`、`agentTeam` 投影，以及 `subagents/interruptByUser` 方法的存在性）；未执行模型对话轮次，也未在真实 VS Code 扩展宿主中手工冒烟。更新后请重新加载 VS Code 窗口。
 
 ### 升级到 0.2.2-rc.1.6
 
@@ -330,7 +338,7 @@ OS 用户运行的工具。页面不会读回已存密钥；本仓库及其 VSIX
 
 ### DSH 0.2.2-alpha.2 与 alpha.3 实验性功能
 
-对话事件流客户端已针对官方 DeepSeek Harness `0.2.2-alpha.2`、`0.2.2-alpha.3` 与 `0.2.2-rc.1` 运行时完成验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。实验性 bundle 仍只在 `0.2.2-alpha.2` 上验证；Schedule 支持 `0.2.2-alpha.2`、`0.2.2-alpha.3` 与 `0.2.2-rc.1`。本版本增加对 `0.2.2-rc.2` 的支持：其 plugin-manager、Agent Teams、网页搜索与子代理中断接口同时按两种 runtime 形状解析，并由单元测试与隔离 rc.2 runtime 探针验证；未对 rc.2 执行模型对话轮次的端到端运行。实验性 bundle 仍需在运行时 profile 中按需启用；插件不会自动代为启用（runtime 允许写入时，插件页可显式切换），只在运行时暴露相应契约时显示对应界面。运行时缺少该能力时，界面保持原有行为。alpha 版本新增以 Web 端为先的可选 bundle（Live Share、Forge、Computer Use 与个性化推荐）；它们会出现在插件清单中并显示平台/安装状态，但本侧边栏未实现其 Web 面板。
+对话事件流客户端已针对官方 DeepSeek Harness `0.2.2-alpha.2`、`0.2.2-alpha.3` 与 `0.2.2-rc.1` 运行时完成验证；`0.2.1-rc.2` 与 `0.2.1-rc.3` 仍受支持。实验性 bundle 仍只在 `0.2.2-alpha.2` 上验证；Schedule 支持 `0.2.2-alpha.2`、`0.2.2-alpha.3` 与 `0.2.2-rc.1`。本版本增加对 `0.2.2-rc.2` 与 `0.2.2-rc.3` 的支持：rc.2 的相关表面同时按两种 runtime 形状解析，并由单元测试与隔离 rc.2 runtime 探针验证；rc.3 没有改变已消费的契约，其新增的可选 DeepSeek 对话导入 bundle 由通用 Experimental bundles 卡片渲染。未对 rc.2 或 rc.3 执行模型对话轮次的端到端运行。实验性 bundle 仍需在运行时 profile 中按需启用；插件不会自动代为启用（runtime 允许写入时，插件页可显式切换），只在运行时暴露相应契约时显示对应界面。运行时缺少该能力时，界面保持原有行为。alpha 版本新增以 Web 端为先的可选 bundle（Live Share、Forge、Computer Use 与个性化推荐）；它们会出现在插件清单中并显示平台/安装状态，但本侧边栏未实现其 Web 面板。
 
 以下 alpha.2 能力属于 Web 端，本侧边栏未实现：Live Share、Forge、Computer
 Use 与个性化推荐面板；Statistics 标签页；creation、文件拖拽与插件推荐卡片。
@@ -359,7 +367,7 @@ Auto review 的失败（`AUTO_REVIEW_FAILED`）按普通工具失败呈现。Web
 - **Agent Teams。** 存在 `agentTeam` Session 投影时，Tasks 面板显示持久团队名册（生命周期阶段、Lead/Teammate 角色）与共享任务板（状态、就绪、blocked-by、owner、write scopes）。成员行可打开对应会话；Team 工具卡在成员名与投影匹配后链接到该成员。任务板为只读：任务状态由运行时持有，通过 Team 工具写入。在 `0.2.2-rc.2` 下，投影携带 `enabled` 选择与任务板而不带成员名册：面板显示 **Team on**/**Team off**，并提供由 `agentTeams/setEnabled` 支持的 **Enable team**/**Disable team** 按钮；团队开启后，成员行由 `subagentCatalog` 中的具名子代理派生，工具卡中的代理名称经该目录解析为会话链接。未开启且任务板为空的团队保持隐藏；`0.2.2-rc.1` 运行时把该选择调用视为不支持，并保留原有名册视图。
 成员行显示生命周期阶段，并根据会话列表显示 Running、Inactive、Failed 或 Provisioning；投影中的 `phase` 本身只记录成员记录存在。
 - **会话标题实时刷新。** 随对话更新标题的提供者沿用既有 `title` 投影与 `session/title` 事件；侧边栏本就从该投影刷新标题栏与会话列表，因此标题无需重新加载列表即可更新。
-- **实验性设置与 bundle 管理。** 设置页在 Plugins → Experimental bundles 下列出运行时的可选 bundle（启用状态、版本、描述）；当运行时由本扩展管理时，可通过 `pluginManager/setBundleEnabled` 启停。运行中的任务不会阻止修改：该决定由运行时作出，它返回 `applied` 或 `restart-required`，页面如实呈现而不是假装已经生效。切换在以下情况会被拒绝：附加到外部运行时，或 runtime 不允许写入设置；页面会在变更前要求确认。运行时提供相应设置 namespace 时，同一页面还呈现 Reasoning translation（`cot-translation`：提供方、目标语言）、Voice input（`speech-to-text`：提供方、语言）与 Plugin market（`plugin-market`：索引 URL 列表）；未挂载的 bundle 会隐藏对应卡片。挂载翻译 bundle 后，展开的思考内容会经 `cotTranslation/limits` 与 `cotTranslation/translate` 就地翻译，默认显示译文，可切换到原文；所选服务不可用时显示 Retry。展开的思考内容会发送给该翻译服务，可能包含私有代码或对话细节。同一页面在 **Third-party bundles** 下列出 runtime 报告为 registry 可更新的已安装第三方 profile bundle（`0.2.2-rc.2` 为 `update: 'registry'`，`0.2.2-rc.1` 为 `updatable`）：**Check for updates** 显示已发布版本及其发布时间、预发布、弃用与不兼容标记，选定版本后仅在模态确认后安装。页面不显示 registry URL、尝试原因与包管理器诊断；结果分为更新成功、需要重启、已恢复、未恢复与未改变（unchanged，已安装版本保持原样）五类，未声明 plugin bundle 的版本显示为禁用并说明原因，以 Git 安装的 bundle 在该区域只读显示（此页面无法列出 Git 版本），attach-only 外部 runtime 与只读 runtime 禁用写入控件。两个 bundle 区域还提供 **Details…**：`pluginManager/readBundleDetail` 返回 bundle 的本地化长描述（locale 文件或 README），在只读 Markdown 预览中以虚拟文档打开；只读与 attach-only runtime 也可查看。这些文档中的相对图片由 runtime 的认证 detail-file 路由提供，VS Code Markdown 预览无法携带运行时认证并解析该路由，因此图片不渲染。
+- **实验性设置与 bundle 管理。** 设置页在 Plugins → Experimental bundles 下列出运行时的可选 bundle（启用状态、版本、描述）；当运行时由本扩展管理时，可通过 `pluginManager/setBundleEnabled` 启停。运行中的任务不会阻止修改：该决定由运行时作出，它返回 `applied` 或 `restart-required`，页面如实呈现而不是假装已经生效。切换在以下情况会被拒绝：附加到外部运行时，或 runtime 不允许写入设置；页面会在变更前要求确认。运行时提供相应设置 namespace 时，同一页面还呈现 Reasoning translation（`cot-translation`：提供方、目标语言）、Voice input（`speech-to-text`：提供方、语言）与 Plugin market（`plugin-market`：索引 URL 列表）；未挂载的 bundle 会隐藏对应卡片。挂载翻译 bundle 后，展开的思考内容会经 `cotTranslation/limits` 与 `cotTranslation/translate` 就地翻译，默认显示译文，可切换到原文；所选服务不可用时显示 Retry。展开的思考内容会发送给该翻译服务，可能包含私有代码或对话细节。同一页面在 **Third-party bundles** 下列出 runtime 报告为 registry 可更新的已安装第三方 profile bundle（`0.2.2-rc.2` 为 `update: 'registry'`，`0.2.2-rc.1` 为 `updatable`）：**Check for updates** 显示已发布版本及其发布时间、预发布、弃用与不兼容标记，选定版本后仅在模态确认后安装。页面不显示 registry URL、尝试原因与包管理器诊断；结果分为更新成功、需要重启、已恢复、未恢复与未改变（unchanged，已安装版本保持原样）五类，未声明 plugin bundle 的版本显示为禁用并说明原因，以 Git 安装的 bundle 在该区域只读显示（此页面无法列出 Git 版本），attach-only 外部 runtime 与只读 runtime 禁用写入控件。两个 bundle 区域还提供 **Details…**：`pluginManager/readBundleDetail` 返回 bundle 的本地化长描述（locale 文件或 README），在只读 Markdown 预览中以虚拟文档打开；只读与 attach-only runtime 也可查看。这些文档中的相对图片由 runtime 的认证 detail-file 路由提供，VS Code Markdown 预览无法携带运行时认证并解析该路由，因此图片不渲染。在 `0.2.2-rc.3` 下，新增的可选 `@deepseek-ai/dsh-deepseek-chat-import` bundle 会出现在同一 Experimental bundles 列表中并可切换；其导入界面是 DSH Web 客户端插件，因此本侧边栏只列出该能力，不实现导入 UI。
 
 其余实验性 bundle 的现状（完整矩阵与证据见 [alpha.2 适配记录](docs/DSH-0.2.2-ALPHA2-ADAPTATION.md)；此前的 [rc.3 记录](docs/DSH-0.2.1-RC3-ADAPTATION.md) 保留作对照）：
 

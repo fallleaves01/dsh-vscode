@@ -9,6 +9,50 @@ VSIX — see the README for installing one.
 
 ## [Unreleased]
 
+## [0.2.2-rc.3.1] - 2026-11-16
+
+### Added
+
+- Support for DeepSeek Harness `0.2.2-rc.3` alongside `0.2.2-rc.1` and
+  `0.2.2-rc.2`. rc.3 is published on the npm `next` channel only (`latest` still
+  names rc.1), so it is installed explicitly with
+  `npm install -g @deepseek-ai/dsh@next` or the exact `0.2.2-rc.3` version;
+  `0.2.2-rc.2` remains installable by its exact version.
+- The rc.3 experimental **DeepSeek chat import** optional bundle
+  (`@deepseek-ai/dsh-deepseek-chat-import`) is listed automatically under
+  Settings → Plugins → Experimental bundles and can be switched through the
+  existing optional-bundle path. The runtime row carries its localized title, version, description and inserted
+  row, and no `update`/`updatable` field, so the card shows the localized title
+  and version with the "Provided by this installation" status. A real rc.3
+  runtime applied the enable change, and a new rc.3-shaped fixture and rendering
+  test pin this behaviour; the import screen itself is a DSH Web client plugin
+  and is not implemented in this sidebar.
+
+### Changed
+
+- No API-level breaking change reaches the sidebar. rc.3 has no
+  `v0.2.2-rc.2` entry in its official upgrade guide, and the consumed host
+  contracts (session, settings, plugin-manager, Agent Teams and subagent RPCs)
+  are unchanged from rc.2. The only host declarations that differ are a new
+  `deepseekChatImport/owner-only` error-details entry and a more tolerant zip
+  session export; `GET /api/session.markdown` is unchanged. The compatibility
+  matrix now lists rc.1, rc.2 and rc.3.
+- The published `listBundles` roster grows from 23 to 24 rows with the new
+  optional-bundle row. The existing generic optional-bundle rendering already
+  covers it, so no extension source change was required.
+
+### Notes
+
+- The rc.3 Windows desktop in-app update fix (`apps/desktop/installer`) and the
+  CI bubblewrap cache change (workflow scripts only) are outside the
+  extension's capabilities and need no sidebar change.
+- Verification: unit tests plus an isolated rc.3 runtime probe
+  (`settings/describe` with 22 namespaces, `pluginManager/listBundles` with 24
+  rows including the new one, the `agentTeam` `{enabled, tasks}` projection,
+  `agentTeams/setEnabled` and `GET /api/session.markdown` returning
+  `200 text/markdown`). No model conversation turn was run and no manual smoke
+  test was performed in a real VS Code extension host.
+
 ## [0.2.2-rc.2.1] - 2026-11-13
 
 ### Added
