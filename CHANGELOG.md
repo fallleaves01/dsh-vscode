@@ -41,6 +41,14 @@ VSIX — see the README for installing one.
   optional-bundle row. The existing generic optional-bundle rendering already
   covers it, so no extension source change was required.
 
+### Security
+
+- Independent privacy and information-security review covered this
+  compatibility round: 0 Blocker and 0 Major. The round changes only tests and
+  documentation, with no new network egress, persistence, telemetry, credential
+  exposure or sensitive-value echo; the fixture and documentation contain no
+  real sensitive data.
+
 ### Notes
 
 - The rc.3 Windows desktop in-app update fix (`apps/desktop/installer`) and the
